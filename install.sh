@@ -595,14 +595,27 @@ open('integrations/README.md', 'w').writelines(out)
       REPO_NAME="${REPO_NAME:-$DEFAULT_REPO}"
       echo ""
       echo -e "${BLUE}Creating private GitHub repo...${NC}"
-      GH_OUTPUT=$(gh repo create "${GITHUB_USER}/${REPO_NAME}" --private --source=. --push 2>&1) && \
-        echo -e "  ${GREEN}✓${NC} Pushed to github.com/${GITHUB_USER}/${REPO_NAME} (private)" || {
-        echo -e "  ${YELLOW}Could not create repo:${NC}"
-        echo -e "  ${DIM}${GH_OUTPUT}${NC}"
+      # Detect Codespace token limitations
+      if [ -n "$CODESPACES" ]; then
+        echo -e "  ${YELLOW}GitHub Codespaces uses a restricted token that can't create repos.${NC}"
+        echo -e "  ${DIM}No worries — once you install Contextium on your real machine,${NC}"
+        echo -e "  ${DIM}open your AI and say:${NC}"
         echo ""
-        echo -e "  ${DIM}You can do this later:${NC}"
-        echo -e "  ${BOLD}cd $(pwd) && gh repo create ${REPO_NAME} --private --source=. --push${NC}"
-      }
+        echo -e "  ${GREEN}\"Create a private GitHub repo for my Contextium and push it\"${NC}"
+        echo ""
+      else
+        GH_OUTPUT=$(gh repo create "${GITHUB_USER}/${REPO_NAME}" --private --source=. --push 2>&1) && \
+          echo -e "  ${GREEN}✓${NC} Pushed to github.com/${GITHUB_USER}/${REPO_NAME} (private)" || {
+          echo -e "  ${YELLOW}GitHub repo creation didn't work:${NC}"
+          echo -e "  ${DIM}${GH_OUTPUT}${NC}"
+          echo ""
+          echo -e "  ${DIM}No worries — once you're in your first session, just tell your AI:${NC}"
+          echo ""
+          echo -e "  ${GREEN}\"Set up a private GitHub repo to back up my Contextium\"${NC}"
+          echo ""
+          echo -e "  ${DIM}It knows how to do this for you.${NC}"
+        }
+      fi
     fi
   fi
 
