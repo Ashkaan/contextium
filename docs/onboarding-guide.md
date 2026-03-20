@@ -1,90 +1,44 @@
 # Onboarding Guide
 
-This guide defines the quick onboarding experience. When a user says "let's onboard", the AI loads this file and walks them through setup.
+Contextium's onboarding happens during installation — not in a separate step.
 
-## How This Works
+## What the Installer Does
 
-The onboarding is a 5-minute interactive conversation — not a monologue. Ask questions, adapt to responses, skip what's irrelevant.
+When you run `curl -sSL contextium.ai/install | bash`, the installer handles:
 
----
+1. **Your name** — creates your profile at `knowledge/people/{name}/`
+2. **Your AI agent** — installs the correct instruction file (CLAUDE.md, GEMINI.md, .cursorrules, etc.)
+3. **Your integrations** — keeps only the connectors you need, removes the rest
+4. **Communication style** — configures `preferences/user/preferences.md` with your preference
+5. **Professional context** — added to your profile and preferences
+6. **Primary AI goal** — what you want AI to help with most
+7. **First knowledge domain** — creates your first `knowledge/{domain}/` directory
+8. **GitHub backup** — optionally creates a private repo
+9. **CLI install + launch** — installs your agent's CLI and opens your first session
 
-## Step 1: Welcome (30 seconds)
+## After Install
 
-**Say:**
-"Welcome to Contextium — your AI's persistent context system. This repo gives me memory across sessions. The more we use it, the smarter I get about your life and work. Let's set you up in about 5 minutes."
+When your AI opens for the first time, you're already fully configured. No "let's onboard" step needed.
 
-**Ask:** "What's your name?"
+Your AI will:
+- Read your preferences file and match your communication style
+- Use the context router to lazy-load files as needed
+- Start the session lifecycle: classify work → do work → journal → commit → push
 
-**Action:** Note it for file creation.
+## Deeper Configuration
 
----
+For more advanced setup, check the pre-loaded projects in `projects/setup/`:
 
-## Step 2: AI Agent (30 seconds)
+| Project | What You'll Set Up |
+|---------|-------------------|
+| `projects/setup/integrations/` | Connect external services with API credentials |
+| `projects/setup/people-cards/` | Build your relationship directory |
+| `projects/setup/health-tracking/` | Track biomarkers and health decisions |
+| `projects/setup/automation/` | Build your first scheduled workflow |
+| `projects/setup/daily-briefing/` | Configure a morning briefing email |
 
-**Ask:** "What AI tool are you using? Claude Code, Cursor, or Codex CLI?"
+Just tell your AI: "Let's work on the integrations setup project" — it will load the project README and walk you through it.
 
-**Action:** Based on their answer, copy the appropriate config from `agent-configs/` to the repo root:
-- Claude Code → copy `agent-configs/claude/CLAUDE.md` to `./CLAUDE.md`, copy `AGENTS.md` and `GEMINI.md`
-- Cursor → copy `agent-configs/cursor/.cursorrules` to `./.cursorrules` (when available)
-- Codex → copy `agent-configs/codex/AGENTS.md` to `./AGENTS.md` (when available)
+## For Contributors
 
----
-
-## Step 3: Preferences (2 minutes)
-
-**Ask these questions conversationally:**
-1. "How do you prefer AI communication — concise and direct, or thorough with explanations?"
-2. "What do you do professionally? Multiple roles are fine."
-3. "What's your primary goal with AI? Productivity? Learning? Building systems?"
-
-**Action:** Create `preferences/user/preferences.md` with their answers:
-```yaml
-# User Preferences
-
-## Communication
-- Style: [concise/thorough]
-- Tone: [direct/diplomatic]
-
-## Working Style
-- Role: [their answer]
-- Primary AI goal: [their answer]
-
-## AI Assistant Notes
-- [any specific preferences mentioned]
-```
-
----
-
-## Step 4: First Knowledge Domain (1 minute)
-
-**Ask:** "What's one area of your life you'd like me to have persistent context about? Common choices: work, health, finance, relationships, hobbies, a specific project."
-
-**Action:** Create the knowledge domain:
-- `knowledge/{domain}/README.md` with a brief description
-- `knowledge/people/{their-name}/README.md` with their basic info
-
----
-
-## Step 5: Done (30 seconds)
-
-**Say:**
-"Your Contextium is set up. Here's what I now know:
-- Your preferences (how to communicate with you)
-- Your first knowledge domain ({domain})
-- Your profile
-
-Every session from here builds on the last. When you're done working, just say 'close this out' and I'll journal what we did and commit.
-
-**Want to go deeper?** Check `projects/setup/` — there are pre-built guides for:
-- Connecting integrations (Google, Todoist, etc.)
-- Building people cards
-- Setting up health tracking
-- Creating your first automation
-- Configuring a morning briefing
-
-Pick any that interest you, or just start working — we'll build context as we go."
-
-**Action:**
-1. Mark the onboarding project as complete
-2. Create first journal entry
-3. Commit and push
+If you want to improve the onboarding experience, see [CONTRIBUTING.md](../CONTRIBUTING.md). The installer source is `install.sh` at the repo root.

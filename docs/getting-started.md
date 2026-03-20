@@ -1,74 +1,61 @@
-# Getting Started with Contextium
+# Getting Started
 
-> Give your AI an operating system.
+## Install
 
-Contextium gives your AI persistent context, behavioral rules, and cross-domain knowledge — so every session builds on the last.
-
-## Prerequisites
-
-- Git installed
-- An AI coding agent (Claude Code, Cursor, or Codex CLI)
-- 5 minutes for initial setup
-
-## Installation
-
-### Option 1: Installer Script
 ```bash
-curl -sSL https://raw.githubusercontent.com/Ashkaan/contextium/main/install.sh | bash
+curl -sSL contextium.ai/install | bash
 ```
 
-### Option 2: GitHub Template
-```bash
-gh repo create contextium --template Ashkaan/contextium --private --clone
-cd contextium
-```
+The installer walks you through everything:
+- Your name and professional context
+- Which AI agent you use (Claude Code, Gemini, Codex, Cursor, Windsurf, Cline, Aider, Continue, Copilot)
+- Which integrations to include
+- Your communication style and AI goals
+- First knowledge domain
 
-### Option 3: Manual Clone
-```bash
-git clone https://github.com/Ashkaan/contextium.git contextium
-cd contextium
-rm -rf .git && git init
-git remote add upstream https://github.com/Ashkaan/contextium.git
-git add -A && git commit -m "Initial Contextium setup"
-```
+It then installs your AI agent's CLI and launches your first session — fully configured.
 
-## Onboarding
+## Requirements
 
-Open your AI agent in the repo directory and say:
+- **git** — for version control (the foundation of Contextium)
+- **npm** or **Node.js** — needed for some AI agent CLIs (Claude Code, Codex, Gemini)
+- **macOS or Linux** — Windows users should use [WSL](https://docs.microsoft.com/en-us/windows/wsl/)
 
-> **"let's onboard"**
+## After Install
 
-Your AI will walk you through a 5-minute setup:
-1. Your name and role
-2. Which AI agent you're using
-3. What you do professionally
-4. What you want to track first
+Your AI is ready immediately. The context router in your instruction file (CLAUDE.md, GEMINI.md, etc.) tells your AI how to navigate the repo. It will:
 
-That's it. Your Contextium is ready.
+1. Load your preferences on every session
+2. Lazy-load files based on what you're working on
+3. End sessions with a journal entry and git commit
 
-## What Happens Next
+## Deeper Configuration
 
-After onboarding, your AI knows:
-- Your preferences (communication style, working patterns)
-- Your repo structure (where to find and store things)
-- Your rules (behavioral patterns, session discipline)
+After the initial setup, explore the pre-loaded projects in `projects/setup/` for:
+- Connecting external services with API credentials
+- Building your relationship directory (people cards)
+- Setting up health tracking
+- Building your first automation
+- Configuring a morning briefing email
 
-Every session builds on the last. The more you use it, the richer your context becomes.
-
-## Deeper Setup
-
-Check `projects/setup/` for self-paced configuration guides:
-- **Integrations** — Connect external services (Google, Todoist, etc.)
-- **People Cards** — Build your relationship directory
-- **Health Tracking** — Set up biomarker and supplement tracking
-- **Automation** — Build your first scheduled automation
-- **Daily Briefing** — Configure a morning email briefing
+Tell your AI: "Let's work on the integrations setup project" and it will guide you through it.
 
 ## Updating
 
 Pull framework updates without losing your data:
+
 ```bash
 ./install.sh update
 ```
 
-See [update-guide.md](update-guide.md) for details.
+Your personal data in `preferences/user/`, `knowledge/`, `journal/`, and `projects/` is protected during updates. Only framework files get updated.
+
+See [Update Guide](update-guide.md) for details.
+
+## Windows
+
+Contextium requires a Unix-like environment. On Windows, use [WSL (Windows Subsystem for Linux)](https://docs.microsoft.com/en-us/windows/wsl/):
+
+1. Install WSL: `wsl --install`
+2. Open your WSL terminal
+3. Run the installer as normal

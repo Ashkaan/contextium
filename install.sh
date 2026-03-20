@@ -77,11 +77,34 @@ gpgkey=https://repo.charm.sh/yum/gpg.key' | sudo tee /etc/yum.repos.d/charm.repo
   echo -e "${GREEN}gum installed.${NC}"
 }
 
+ensure_prerequisites() {
+  local missing=0
+
+  if ! command -v git &>/dev/null; then
+    echo -e "${YELLOW}git is required but not installed.${NC}"
+    echo -e "  macOS: ${BOLD}xcode-select --install${NC}"
+    echo -e "  Linux: ${BOLD}sudo apt install git${NC} or ${BOLD}sudo yum install git${NC}"
+    missing=1
+  fi
+
+  if ! command -v npm &>/dev/null; then
+    echo -e "${DIM}npm not found — some AI agents (Claude Code, Codex, Gemini) need it for install.${NC}"
+    echo -e "${DIM}You can install Node.js from https://nodejs.org if needed.${NC}"
+  fi
+
+  if [ $missing -eq 1 ]; then
+    echo ""
+    echo -e "${YELLOW}Install the missing prerequisites and run again.${NC}"
+    exit 1
+  fi
+}
+
 # --- Init (fresh install) ---
 
 init() {
   banner
   ensure_gum
+  ensure_prerequisites
 
   # Step 1: Name
   echo -e "${BOLD}What's your name?${NC}"
@@ -433,9 +456,34 @@ Persistent context for ${FIRST_DOMAIN}. Add files here as knowledge accumulates.
 DOMAIN_EOF
   echo -e "  ${GREEN}✓${NC} Knowledge domain created: ${FIRST_DOMAIN}"
 
-  # Update integrations/README.md to only list installed integrations
-  # (keeping the full README but users will see only their chosen ones in the directory)
-  echo -e "  ${GREEN}✓${NC} Repo structure configured"
+  # Update integrations/README.md to only show installed integrations
+  if [ -f integrations/README.md ]; then
+    # Build list of installed integration directories
+    INSTALLED_DIRS=$(find integrations -mindepth 1 -maxdepth 1 -type d -exec basename {} \; | sort)
+
+    # Create a temp file with only the rows for installed integrations
+    # Keep header lines and rows whose link target matches an installed directory
+    python3 -c "
+import os, re, sys
+lines = open('integrations/README.md').readlines()
+installed = set(os.listdir('integrations')) - {'README.md'}
+installed = {d for d in installed if os.path.isdir(f'integrations/{d}')}
+out = []
+in_table = False
+for line in lines:
+    # Detect table rows with integration links like [name](dirname/)
+    m = re.match(r'\| \[.*?\]\((\w[\w-]*)/?\)', line)
+    if m:
+        in_table = True
+        dirname = m.group(1)
+        if dirname in installed:
+            out.append(line)
+    else:
+        out.append(line)
+open('integrations/README.md', 'w').writelines(out)
+" 2>/dev/null || true
+  fi
+  echo -e "  ${GREEN}✓${NC} Integration docs updated to match your selection"
 
   # Git commit
   git add -A
