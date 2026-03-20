@@ -1,23 +1,21 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 520 120" width="520" height="120">
   <defs>
-    <linearGradient id="accent" x1="0%" y1="0%" x2="100%" y2="0%">
+    <linearGradient id="tealgrad" x1="0%" y1="0%" x2="100%" y2="0%">
       <stop offset="0%" style="stop-color:#00b4d8;stop-opacity:1" />
       <stop offset="100%" style="stop-color:#0096c7;stop-opacity:1" />
     </linearGradient>
   </defs>
 
-  <!-- Icon: Three nested brackets representing context layers -->
-  <g transform="translate(12, 10)">
-    <!-- Outer bracket -->
-    <path d="M 14 0 L 0 50 L 14 100" fill="none" stroke="#1a1a2e" stroke-width="4" stroke-linecap="round" stroke-linejoin="round" opacity="0.3"/>
-    <path d="M 72 0 L 86 50 L 72 100" fill="none" stroke="#1a1a2e" stroke-width="4" stroke-linecap="round" stroke-linejoin="round" opacity="0.3"/>
-    <!-- Middle bracket -->
-    <path d="M 24 14 L 14 50 L 24 86" fill="none" stroke="#1a1a2e" stroke-width="4" stroke-linecap="round" stroke-linejoin="round" opacity="0.6"/>
-    <path d="M 62 14 L 72 50 L 62 86" fill="none" stroke="#1a1a2e" stroke-width="4" stroke-linecap="round" stroke-linejoin="round" opacity="0.6"/>
-    <!-- Inner dot (the context) -->
-    <circle cx="43" cy="50" r="9" fill="url(#accent)"/>
+  <!-- Stacked Layers Mark -->
+  <g transform="translate(8, 10)">
+    <!-- Bottom layer -->
+    <rect x="0" y="68" width="90" height="22" rx="5" fill="#1a1a2e" opacity="0.15"/>
+    <!-- Middle layer -->
+    <rect x="10" y="38" width="70" height="22" rx="5" fill="#1a1a2e" opacity="0.35"/>
+    <!-- Top layer (teal) -->
+    <rect x="20" y="8" width="50" height="22" rx="5" fill="url(#tealgrad)"/>
   </g>
 
   <!-- Wordmark -->
-  <text x="116" y="78" font-family="'Inter', 'Helvetica Neue', Arial, sans-serif" font-size="62" font-weight="700" fill="#1a1a2e" letter-spacing="-1">context<tspan fill="url(#accent)">ium</tspan></text>
+  <text x="116" y="78" font-family="'Inter', 'Helvetica Neue', Arial, sans-serif" font-size="62" font-weight="700" fill="#1a1a2e" letter-spacing="-1">context<tspan fill="url(#tealgrad)">ium</tspan></text>
 </svg>
