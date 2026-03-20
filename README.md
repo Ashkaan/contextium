@@ -42,7 +42,7 @@ The more you use it, the richer the context becomes. Your AI learns your goals, 
 | **Behavioral Enforcement** | Rules and hooks prevent AI drift — your preferences are enforced, not suggested |
 | **Multi-Agent Delegation** | Routes work to the right AI: Claude for strategy, Gemini for research, Codex for bulk edits |
 | **Session Compounding** | Journal entries + git history = every session builds on every previous session |
-| **No Vendor Lock-In** | Plain markdown in a git repo — switch AI agents tomorrow and lose nothing |
+| **You Own Your Context** | Plain markdown on your machine — switch AI agents, change providers, or leave entirely. Your accumulated intelligence stays with you, forever |
 | **One-Command Setup** | The installer handles everything — name, AI agent, integrations, CLI install, and launches your first session |
 
 ## Quick Start
@@ -197,7 +197,7 @@ Every pattern in this repo was refined through sustained daily use — not theor
 
 **Delegation over monolith.** One AI can't do everything efficiently. Route research to Gemini, bulk edits to Codex, strategy to Claude. Each agent gets the right task at the right cost.
 
-**Plain text over platforms.** No proprietary formats. No vendor lock-in. No subscription required. Just markdown files in a git repo. Your data is yours, forever.
+**You own your context.** Every other AI tool locks your accumulated context inside their platform. If they change pricing, shut down, or you just want to switch — you lose everything. Contextium is plain markdown on your machine. Switch from Claude to Gemini tomorrow. Your context, your decisions, your knowledge — all of it comes with you.
 
 **Sessions compound.** Every journal entry, every project README, every people card makes the next session richer. This is the flywheel.
 
