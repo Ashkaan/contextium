@@ -43,12 +43,9 @@ The more you use it, the richer the context becomes. Your AI learns your goals, 
 ## Quick Start
 
 ```bash
-# Clone the template
-git clone https://github.com/Ashkaan/contextium.git my-contextium
-cd my-contextium
-
-# Or use the installer
+# Install Contextium
 curl -sSL https://raw.githubusercontent.com/Ashkaan/contextium/main/install.sh | bash
+cd my-contextium
 
 # Start your AI agent and say:
 # "let's onboard"
