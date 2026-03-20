@@ -1,0 +1,88 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check for PII patterns
+        run: |
+          echo "Checking for potential PII..."
+          FOUND=0
+
+          # Check for email patterns (excluding example.com and placeholders)
+          if grep -rEi '[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.(com|net|org|io|me|dev)' \
+            --include="*.md" \
+            --exclude-dir=".git" \
+            . | grep -vE '(example\.com|your-email|you@|user@|placeholder)'; then
+            echo "::warning::Potential email addresses found"
+            FOUND=1
+          fi
+
+          # Check for IP addresses (private ranges)
+          if grep -rE '10\.\d{1,3}\.\d{1,3}\.\d{1,3}' \
+            --include="*.md" \
+            --exclude-dir=".git" \
+            . | grep -vE '(10\.x\.x\.x|10\.0\.0\.0|example)'; then
+            echo "::warning::Potential private IP addresses found"
+            FOUND=1
+          fi
+
+          # Check for 1Password references with real vault names
+          if grep -rE 'op://' \
+            --include="*.md" \
+            --exclude-dir=".git" \
+            . | grep -vE '(YOUR_VAULT|your-vault|example)'; then
+            echo "::warning::Potential 1Password references found"
+            FOUND=1
+          fi
+
+          if [ "$FOUND" -eq 1 ]; then
+            echo "::error::PII check found potential issues. Review the warnings above."
+            exit 1
+          fi
+
+          echo "PII check passed."
+
+      - name: Validate structure
+        run: |
+          echo "Validating repo structure..."
+          MISSING=0
+
+          for f in CLAUDE.md LICENSE CONTRIBUTING.md CHANGELOG.md install.sh \
+                   docs/getting-started.md docs/architecture.md docs/onboarding-guide.md \
+                   preferences/user/preferences.md preferences/rules/README.md \
+                   apps/README.md projects/README.md journal/README.md \
+                   knowledge/README.md integrations/README.md; do
+            if [ ! -f "$f" ]; then
+              echo "::error::Missing required file: $f"
+              MISSING=1
+            fi
+          done
+
+          if [ "$MISSING" -eq 1 ]; then
+            exit 1
+          fi
+
+          echo "Structure validation passed."
+
+      - name: Check markdown links
+        run: |
+          echo "Checking for broken internal links..."
+          # Basic check: find markdown links to local files and verify they exist
+          grep -rhoP '\[.*?\]\(((?!https?://|#).*?)\)' --include="*.md" . | \
+            grep -oP '\(([^)]+)\)' | tr -d '()' | sort -u | while read -r link; do
+            # Strip anchors
+            file=$(echo "$link" | cut -d'#' -f1)
+            if [ -n "$file" ] && [ ! -e "$file" ]; then
+              echo "::warning::Potentially broken link: $link"
+            fi
+          done
+          echo "Link check complete."
