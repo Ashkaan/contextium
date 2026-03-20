@@ -19,14 +19,14 @@ curl -sSL https://raw.githubusercontent.com/Ashkaan/contextium/main/install.sh |
 
 ### Option 2: GitHub Template
 ```bash
-gh repo create my-life --template Ashkaan/contextium --private --clone
-cd my-life
+gh repo create contextium --template Ashkaan/contextium --private --clone
+cd contextium
 ```
 
 ### Option 3: Manual Clone
 ```bash
-git clone https://github.com/Ashkaan/contextium.git my-life
-cd my-life
+git clone https://github.com/Ashkaan/contextium.git contextium
+cd contextium
 rm -rf .git && git init
 git remote add upstream https://github.com/Ashkaan/contextium.git
 git add -A && git commit -m "Initial Contextium setup"

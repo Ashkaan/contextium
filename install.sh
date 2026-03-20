@@ -27,8 +27,8 @@ init() {
   banner
 
   # Ask for directory name
-  read -p "Directory name for your Contextium repo [my-contextium]: " DIR_NAME
-  DIR_NAME="${DIR_NAME:-my-contextium}"
+  read -p "Directory name for your Contextium repo [contextium]: " DIR_NAME
+  DIR_NAME="${DIR_NAME:-contextium}"
 
   if [ -d "$DIR_NAME" ]; then
     echo -e "${YELLOW}Directory '$DIR_NAME' already exists. Use './install.sh update' inside it to update.${NC}"
