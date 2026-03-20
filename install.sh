@@ -670,6 +670,199 @@ update() {
   fi
 }
 
+# --- Test (non-interactive, uses defaults) ---
+
+test_install() {
+  banner
+  echo -e "${BLUE}Running test install with defaults...${NC}"
+  echo ""
+
+  ensure_prerequisites
+
+  # Use test defaults instead of interactive prompts
+  USER_NAME="Test User"
+  DIR_NAME="contextium-test"
+  AI_AGENT="Claude Code (recommended)"
+  INTEGRATIONS="Gemini (delegate web research to Google's AI)"
+  COMM_STYLE="Concise — get to the point, no filler"
+  PROFESSION="Software engineer"
+  AI_GOAL="Ship code faster"
+  FIRST_DOMAIN="work"
+  CREATE_REPO="no"
+
+  if [ -d "$DIR_NAME" ]; then
+    rm -rf "$DIR_NAME"
+  fi
+
+  echo -e "${BLUE}Setting up your Contextium...${NC}"
+  echo ""
+
+  # Clone template
+  git clone --depth 1 "$REPO" "$DIR_NAME" 2>/dev/null
+  cd "$DIR_NAME"
+
+  # Reinitialize git
+  rm -rf .git
+  git init -q
+  git branch -m main 2>/dev/null || true
+
+  # Copy agent config
+  INSTRUCTION_SRC="agent-configs/claude/CLAUDE.md"
+  cp "$INSTRUCTION_SRC" ./CLAUDE.md
+  echo -e "  ${GREEN}✓${NC} Installed → CLAUDE.md"
+
+  # Remove unselected integrations
+  declare -A INTEGRATION_MAP=(
+    ["Gemini (delegate web research to Google's AI)"]="gemini"
+    ["Codex (delegate bulk edits to a second AI agent)"]="codex"
+    ["Browse (browser automation for web scraping and testing)"]="browse"
+    ["1Password (store API keys and credentials securely)"]="1password"
+    ["Google Workspace (Gmail, Calendar, Drive, Sheets)"]="google-workspace google-auth"
+    ["Todoist (task management and to-do tracking)"]="todoist"
+    ["Windmill (self-hosted workflow automation — like Zapier but yours)"]="windmill"
+    ["n8n (self-hosted workflow automation — alternative to Windmill)"]="n8n"
+    ["Cloudflare (DNS, web hosting, serverless functions)"]="cloudflare"
+    ["TrueNAS (NAS and Docker container management via SSH)"]="truenas"
+    ["Home Assistant (smart home control and automation)"]="home-assistant"
+    ["Autotask (PSA/ticketing for managed service providers)"]="autotask"
+    ["NinjaOne (device inventory and remote monitoring)"]="ninjaone"
+    ["QuickBooks Online (business accounting and financial reports)"]="qbo"
+    ["Monarch (personal finance tracking and budgeting)"]="monarch"
+    ["Strety (EOS platform — scorecards, rocks, meeting management)"]="strety"
+    ["Hudu (IT documentation platform)"]="hudu"
+    ["MSPBots (MSP-specific analytics and KPI dashboards)"]="mspbots"
+    ["Garage (S3-compatible object storage for backups)"]="garage"
+    ["TRMNL (e-ink display dashboard for at-a-glance info)"]="trmnl"
+    ["Remote Control (access your AI from your phone)"]="remote-control"
+    ["HAPI (voice interface — talk to your AI)"]="hapi"
+    ["VS Code (remote development tunnel)"]="vscode"
+  )
+
+  SELECTED_DIRS=""
+  while IFS= read -r line; do
+    if [ -n "$line" ] && [ -n "${INTEGRATION_MAP[$line]+x}" ]; then
+      for dir in ${INTEGRATION_MAP[$line]}; do
+        SELECTED_DIRS="$SELECTED_DIRS $dir"
+      done
+    fi
+  done <<< "$INTEGRATIONS"
+  SELECTED_DIRS="$SELECTED_DIRS daedalus host-docs-map"
+
+  REMOVED=0
+  for dir in integrations/*/; do
+    dirname=$(basename "$dir")
+    if ! echo "$SELECTED_DIRS" | grep -qw "$dirname"; then
+      rm -rf "$dir"
+      REMOVED=$((REMOVED + 1))
+    fi
+  done
+  KEPT=$(find integrations -mindepth 1 -maxdepth 1 -type d | wc -l)
+  echo -e "  ${GREEN}✓${NC} ${KEPT} integrations installed (${REMOVED} skipped)"
+
+  # Create user profile
+  USER_NAME_LOWER="test-user"
+  mkdir -p "knowledge/people/${USER_NAME_LOWER}"
+  cat > "knowledge/people/${USER_NAME_LOWER}/README.md" << PROFILE_EOF
+# ${USER_NAME}
+
+**Added:** $(date +%Y-%m-%d)
+
+## About
+
+${PROFESSION}
+
+## AI Goal
+
+${AI_GOAL}
+PROFILE_EOF
+  echo -e "  ${GREEN}✓${NC} Profile created for ${USER_NAME}"
+
+  # Write preferences
+  cat > preferences/user/preferences.md << PREFS_EOF
+# User Preferences — ${USER_NAME}
+
+## Communication
+
+- **Concise over verbose** — get to the point
+- **Direct over diplomatic** — say what you mean
+- **Practical over theoretical** — focus on what works
+
+## Professional Context
+
+${PROFESSION}
+
+## Primary Goal with AI
+
+${AI_GOAL}
+
+## Working Style
+
+*Update this as your AI learns how you work best.*
+PREFS_EOF
+  echo -e "  ${GREEN}✓${NC} Preferences configured (concise communication)"
+
+  # Create first knowledge domain
+  mkdir -p "knowledge/${FIRST_DOMAIN}"
+  cat > "knowledge/${FIRST_DOMAIN}/README.md" << DOMAIN_EOF
+# Work
+
+Persistent context for work. Add files here as knowledge accumulates.
+
+**Created:** $(date +%Y-%m-%d)
+DOMAIN_EOF
+  echo -e "  ${GREEN}✓${NC} Knowledge domain created: ${FIRST_DOMAIN}"
+
+  # Update integrations README
+  if [ -f integrations/README.md ] && command -v python3 &>/dev/null; then
+    python3 -c "
+import os, re
+lines = open('integrations/README.md').readlines()
+installed = set(os.listdir('integrations')) - {'README.md'}
+installed = {d for d in installed if os.path.isdir(f'integrations/{d}')}
+out = []
+for line in lines:
+    m = re.match(r'\| \[.*?\]\((\w[\w-]*)/?\)', line)
+    if m:
+        dirname = m.group(1)
+        if dirname in installed:
+            out.append(line)
+    else:
+        out.append(line)
+open('integrations/README.md', 'w').writelines(out)
+" 2>/dev/null || true
+  fi
+  echo -e "  ${GREEN}✓${NC} Integration docs updated"
+
+  # Git commit
+  git add -A
+  git commit -q -m "Initial Contextium setup for ${USER_NAME} (${VERSION})"
+  git remote add upstream "$REPO"
+
+  # Verify
+  echo ""
+  echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+  echo -e "${GREEN}  Test install complete!${NC}"
+  echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+  echo ""
+
+  # Run verification checks
+  echo -e "${BLUE}Verification:${NC}"
+  [ -f CLAUDE.md ] && echo -e "  ${GREEN}✓${NC} CLAUDE.md exists" || echo -e "  ${YELLOW}✗${NC} CLAUDE.md missing"
+  [ -f preferences/user/preferences.md ] && echo -e "  ${GREEN}✓${NC} Preferences file exists" || echo -e "  ${YELLOW}✗${NC} Preferences missing"
+  [ -d "knowledge/people/test-user" ] && echo -e "  ${GREEN}✓${NC} User profile exists" || echo -e "  ${YELLOW}✗${NC} User profile missing"
+  [ -d "knowledge/work" ] && echo -e "  ${GREEN}✓${NC} Knowledge domain exists" || echo -e "  ${YELLOW}✗${NC} Knowledge domain missing"
+  [ -d "integrations/gemini" ] && echo -e "  ${GREEN}✓${NC} Selected integration (gemini) kept" || echo -e "  ${YELLOW}✗${NC} Selected integration missing"
+  [ ! -d "integrations/todoist" ] && echo -e "  ${GREEN}✓${NC} Unselected integration (todoist) removed" || echo -e "  ${YELLOW}✗${NC} Unselected integration not removed"
+  echo ""
+
+  FILE_COUNT=$(find . -type f -not -path './.git/*' | wc -l)
+  DIR_COUNT=$(find . -type d -not -path './.git/*' -not -path './.git' | wc -l)
+  echo -e "  Files: ${FILE_COUNT} | Directories: ${DIR_COUNT}"
+  echo ""
+  echo -e "  ${DIM}Test directory: $(pwd)${NC}"
+  echo -e "  ${DIM}Clean up with: rm -rf $(pwd)${NC}"
+}
+
 # --- Route ---
 
 case "${1:-init}" in
@@ -679,10 +872,14 @@ case "${1:-init}" in
   update)
     update
     ;;
+  test)
+    test_install
+    ;;
   *)
-    echo "Usage: $0 [init|update]"
+    echo "Usage: $0 [init|update|test]"
     echo "  init   — Set up a new Contextium repo (default)"
     echo "  update — Pull latest framework updates"
+    echo "  test   — Non-interactive test install with defaults"
     exit 1
     ;;
 esac
