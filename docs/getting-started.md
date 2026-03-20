@@ -19,7 +19,7 @@ It then installs your AI agent's CLI and launches your first session — fully c
 
 - **git** — for version control (the foundation of Contextium)
 - **npm** or **Node.js** — needed for some AI agent CLIs (Claude Code, Codex, Gemini)
-- **macOS or Linux** — Windows users should use [WSL](https://docs.microsoft.com/en-us/windows/wsl/)
+- **macOS or Linux** — Windows users should use [WSL](https://learn.microsoft.com/en-us/windows/wsl/)
 
 ## After Install
 
@@ -54,7 +54,7 @@ See [Update Guide](update-guide.md) for details.
 
 ## Windows
 
-Contextium requires a Unix-like environment. On Windows, use [WSL (Windows Subsystem for Linux)](https://docs.microsoft.com/en-us/windows/wsl/):
+Contextium requires a Unix-like environment. On Windows, use [WSL (Windows Subsystem for Linux)](https://learn.microsoft.com/en-us/windows/wsl/):
 
 1. Install WSL: `wsl --install`
 2. Open your WSL terminal
