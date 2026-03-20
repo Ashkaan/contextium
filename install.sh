@@ -85,6 +85,7 @@ init() {
 
   # Step 1: Name
   echo -e "${BOLD}What's your name?${NC}"
+  echo -e "${DIM}Your AI will use this to personalize your experience and create your profile.${NC}"
   USER_NAME=$(gum input --placeholder "Your name" --width 40)
   if [ -z "$USER_NAME" ]; then
     echo -e "${YELLOW}Name is required.${NC}"
@@ -93,7 +94,8 @@ init() {
   echo ""
 
   # Step 2: Directory
-  echo -e "${BOLD}Directory name for your Contextium repo:${NC}"
+  echo -e "${BOLD}Where should we set up your Contextium?${NC}"
+  echo -e "${DIM}This creates a new folder in your current directory.${NC}"
   DIR_NAME=$(gum input --placeholder "contextium" --value "contextium" --width 40)
   DIR_NAME="${DIR_NAME:-contextium}"
   if [ -d "$DIR_NAME" ]; then
@@ -103,7 +105,9 @@ init() {
   echo ""
 
   # Step 3: AI Agent
-  echo -e "${BOLD}Which AI agent is your primary tool?${NC}"
+  echo -e "${BOLD}Which AI coding agent do you use?${NC}"
+  echo -e "${DIM}Contextium will install the right instruction file for your agent.${NC}"
+  echo -e "${DIM}You can always switch later by copying from agent-configs/.${NC}"
   AI_AGENT=$(gum choose --cursor-prefix "[ ] " --selected-prefix "[x] " \
     "Claude Code (recommended)" \
     "Cursor" \
@@ -112,42 +116,46 @@ init() {
   echo ""
 
   # Step 4: Integrations
-  echo -e "${BOLD}Which integrations do you need?${NC}"
-  echo -e "${DIM}Space to toggle, Enter to confirm. Skip any you don't use.${NC}"
+  echo -e "${BOLD}Which tools and services do you want to connect?${NC}"
+  echo -e "${DIM}Contextium includes setup guides for each one. Pick only what you use —${NC}"
+  echo -e "${DIM}you can always add more later. (Space to toggle, Enter to confirm)${NC}"
   echo ""
 
-  INTEGRATIONS=$(gum choose --no-limit --cursor-prefix "[ ] " --selected-prefix "[x] " \
-    --selected="Gemini (AI research delegation)" --selected="Codex (AI bulk editing)" \
-    "1Password (credential vault)" \
-    "Google Workspace (Drive, Gmail, Calendar)" \
-    "Todoist (task management)" \
-    "Gemini (AI research delegation)" \
-    "Codex (AI bulk editing)" \
-    "Browse (browser automation)" \
-    "Windmill (workflow automation)" \
-    "n8n (workflow automation)" \
-    "Cloudflare (DNS, Pages, Workers)" \
-    "TrueNAS (NAS/container management)" \
-    "Home Assistant (smart home)" \
-    "Autotask (PSA/ticketing)" \
-    "NinjaOne (device inventory/RMM)" \
-    "QuickBooks Online (accounting)" \
-    "Monarch (personal finance)" \
-    "Strety (EOS platform)" \
-    "Hudu (IT documentation)" \
-    "MSPBots (MSP analytics)" \
-    "Garage (S3 object storage)" \
-    "TRMNL (e-ink display)" \
-    "Remote Control (mobile AI access)" \
-    "HAPI (voice interface)" \
-    "VS Code (remote tunnel)" \
+  INTEGRATIONS=$(gum choose --no-limit --height 20 --cursor-prefix "[ ] " --selected-prefix "[x] " \
+    --selected="Gemini (AI research — lets your agent delegate web research)" \
+    --selected="Codex (AI bulk editing — lets your agent delegate large code changes)" \
+    "1Password (store API keys and credentials securely)" \
+    "Google Workspace (Gmail, Calendar, Drive, Sheets)" \
+    "Todoist (task management and to-do tracking)" \
+    "Gemini (AI research — lets your agent delegate web research)" \
+    "Codex (AI bulk editing — lets your agent delegate large code changes)" \
+    "Browse (browser automation for web scraping and testing)" \
+    "Windmill (self-hosted workflow automation — like Zapier but yours)" \
+    "n8n (self-hosted workflow automation — alternative to Windmill)" \
+    "Cloudflare (DNS, web hosting, serverless functions)" \
+    "TrueNAS (NAS and Docker container management via SSH)" \
+    "Home Assistant (smart home control and automation)" \
+    "Autotask (PSA/ticketing for managed service providers)" \
+    "NinjaOne (device inventory and remote monitoring)" \
+    "QuickBooks Online (business accounting and financial reports)" \
+    "Monarch (personal finance tracking and budgeting)" \
+    "Strety (EOS platform — scorecards, rocks, meeting management)" \
+    "Hudu (IT documentation platform)" \
+    "MSPBots (MSP-specific analytics and KPI dashboards)" \
+    "Garage (S3-compatible object storage for backups)" \
+    "TRMNL (e-ink display dashboard for at-a-glance info)" \
+    "Remote Control (access your AI from your phone)" \
+    "HAPI (voice interface — talk to your AI)" \
+    "VS Code (remote development tunnel)" \
     || echo "")
   echo ""
 
   # Step 5: Private GitHub repo
   CREATE_REPO="no"
   if command -v gh &>/dev/null && gh auth status &>/dev/null 2>&1; then
-    echo -e "${BOLD}Create a private GitHub repo for your Contextium?${NC}"
+    echo -e "${BOLD}Want to back up your Contextium to GitHub?${NC}"
+    echo -e "${DIM}This creates a private repo so your context is version-controlled and backed up.${NC}"
+    echo -e "${DIM}Only you can see it — it's private by default.${NC}"
     CREATE_REPO=$(gum choose "Yes — create private repo and push" "No — keep it local for now")
   fi
   echo ""
@@ -190,29 +198,29 @@ init() {
 
   # Map integration display names to directory names
   declare -A INTEGRATION_MAP=(
-    ["1Password (credential vault)"]="1password"
-    ["Google Workspace (Drive, Gmail, Calendar)"]="google-workspace google-auth"
-    ["Todoist (task management)"]="todoist"
-    ["Gemini (AI research delegation)"]="gemini"
-    ["Codex (AI bulk editing)"]="codex"
-    ["Browse (browser automation)"]="browse"
-    ["Windmill (workflow automation)"]="windmill"
-    ["n8n (workflow automation)"]="n8n"
-    ["Cloudflare (DNS, Pages, Workers)"]="cloudflare"
-    ["TrueNAS (NAS/container management)"]="truenas"
-    ["Home Assistant (smart home)"]="home-assistant"
-    ["Autotask (PSA/ticketing)"]="autotask"
-    ["NinjaOne (device inventory/RMM)"]="ninjaone"
-    ["QuickBooks Online (accounting)"]="qbo"
-    ["Monarch (personal finance)"]="monarch"
-    ["Strety (EOS platform)"]="strety"
-    ["Hudu (IT documentation)"]="hudu"
-    ["MSPBots (MSP analytics)"]="mspbots"
-    ["Garage (S3 object storage)"]="garage"
-    ["TRMNL (e-ink display)"]="trmnl"
-    ["Remote Control (mobile AI access)"]="remote-control"
-    ["HAPI (voice interface)"]="hapi"
-    ["VS Code (remote tunnel)"]="vscode"
+    ["1Password (store API keys and credentials securely)"]="1password"
+    ["Google Workspace (Gmail, Calendar, Drive, Sheets)"]="google-workspace google-auth"
+    ["Todoist (task management and to-do tracking)"]="todoist"
+    ["Gemini (AI research — lets your agent delegate web research)"]="gemini"
+    ["Codex (AI bulk editing — lets your agent delegate large code changes)"]="codex"
+    ["Browse (browser automation for web scraping and testing)"]="browse"
+    ["Windmill (self-hosted workflow automation — like Zapier but yours)"]="windmill"
+    ["n8n (self-hosted workflow automation — alternative to Windmill)"]="n8n"
+    ["Cloudflare (DNS, web hosting, serverless functions)"]="cloudflare"
+    ["TrueNAS (NAS and Docker container management via SSH)"]="truenas"
+    ["Home Assistant (smart home control and automation)"]="home-assistant"
+    ["Autotask (PSA/ticketing for managed service providers)"]="autotask"
+    ["NinjaOne (device inventory and remote monitoring)"]="ninjaone"
+    ["QuickBooks Online (business accounting and financial reports)"]="qbo"
+    ["Monarch (personal finance tracking and budgeting)"]="monarch"
+    ["Strety (EOS platform — scorecards, rocks, meeting management)"]="strety"
+    ["Hudu (IT documentation platform)"]="hudu"
+    ["MSPBots (MSP-specific analytics and KPI dashboards)"]="mspbots"
+    ["Garage (S3-compatible object storage for backups)"]="garage"
+    ["TRMNL (e-ink display dashboard for at-a-glance info)"]="trmnl"
+    ["Remote Control (access your AI from your phone)"]="remote-control"
+    ["HAPI (voice interface — talk to your AI)"]="hapi"
+    ["VS Code (remote development tunnel)"]="vscode"
   )
 
   # Build list of selected integration directories
