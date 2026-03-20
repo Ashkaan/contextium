@@ -6,9 +6,25 @@ Contextium treats your AI's context as infrastructure — not chat history, not 
 
 ## The Six Layers
 
-### Layer 1: Instruction Files (CLAUDE.md, AGENTS.md, GEMINI.md)
+### Layer 1: Instruction File
 
-The AI's operating manual. Contains:
+The AI's operating manual. The installer places **one** instruction file at the repo root based on which AI agent you chose:
+
+| Agent | Root File |
+|-------|-----------|
+| Claude Code | `CLAUDE.md` |
+| Codex CLI | `AGENTS.md` |
+| Gemini CLI | `GEMINI.md` |
+| Cursor | `.cursorrules` |
+| Windsurf | `.windsurfrules` |
+| Cline | `.clinerules` |
+| Aider | `CONVENTIONS.md` |
+| Continue | `.continue/rules` |
+| GitHub Copilot | `.github/copilot-instructions.md` |
+
+All contain the same core architecture — context router, session lifecycle, delegation rules — formatted for the specific agent's instruction format. Templates for all agents live in `agent-configs/`.
+
+The instruction file contains:
 - **Context Router** — which files to load for which triggers
 - **Session Classification** — New Project / Existing / One-Off
 - **Repo Structure Map** — what each directory contains
