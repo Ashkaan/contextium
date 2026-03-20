@@ -1,8 +1,8 @@
 <div align="center">
 
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/images/logo-dark.svg">
-  <source media="(prefers-color-scheme: light)" srcset="docs/images/logo.svg">
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/logo-dark.svg" />
+  <source media="(prefers-color-scheme: light)" srcset="docs/images/logo.svg" />
   <img src="docs/images/logo.svg" alt="Contextium" width="520" />
 </picture>
 
@@ -14,8 +14,9 @@
 
 <br/>
 
-[![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-1.0.0-green.svg)](CHANGELOG.md)
+[![Open Source](https://img.shields.io/badge/Open_Source-Apache_2.0-00b4d8.svg?style=for-the-badge)](LICENSE)
+[![Version](https://img.shields.io/badge/v1.0.0-1a1a2e.svg?style=for-the-badge)](CHANGELOG.md)
+[![Works With](https://img.shields.io/badge/Works_With-Claude_Code-cc785c.svg?style=for-the-badge)](agent-configs/claude/)
 
 </div>
 
@@ -47,17 +48,12 @@ The more you use it, the richer the context becomes. Your AI learns your goals, 
 ## Quick Start
 
 ```bash
-# Install Contextium
-curl -sSL contextium.ai/install | bash
-cd contextium
-
-# Start your AI agent and say:
-# "let's onboard"
+curl -sSL https://contextium.ai/install.sh | bash
 ```
 
-The onboarding takes about 5 minutes. Your AI will ask your name, preferred tools, what you do, and what you want to track. Then you're running.
+The installer walks you through setup: your name, AI agent, and which integrations to include. Then open your AI and say **"let's onboard"** — 5 minutes to a fully configured system.
 
-For deeper configuration, check the pre-loaded projects in `projects/setup/`.
+For deeper configuration after onboarding, check the pre-loaded projects in `projects/setup/`.
 
 ## Architecture
 
