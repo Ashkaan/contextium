@@ -117,7 +117,7 @@ init() {
   # Step 1: Name
   echo -e "${BOLD}What's your name?${NC}"
   echo -e "${DIM}So your AI recognizes you across sessions and never has to ask again.${NC}"
-  USER_NAME=$(gum input --placeholder "Your name" --width 40)
+  USER_NAME=$(gum input --prompt "" --placeholder "Your name" --width 40)
   if [ -z "$USER_NAME" ]; then
     echo -e "${YELLOW}Name is required.${NC}"
     exit 1
@@ -127,7 +127,7 @@ init() {
   # Step 2: Directory
   echo -e "${BOLD}Where should we set up your Contextium?${NC}"
   echo -e "${DIM}Everything lives in one folder — your AI reads and writes here across sessions.${NC}"
-  DIR_NAME=$(gum input --placeholder "my-context" --value "my-context" --width 40)
+  DIR_NAME=$(gum input --prompt "" --placeholder "my-context" --value "my-context" --width 40)
   DIR_NAME="${DIR_NAME:-my-context}"
   if [ -d "$DIR_NAME" ]; then
     echo -e "${YELLOW}Directory '$DIR_NAME' already exists. Use './install.sh update' inside it to update.${NC}"
@@ -274,13 +274,13 @@ init() {
   # Step 6: Professional context
   echo -e "${BOLD}What do you do? (one line is fine)${NC}"
   echo -e "${DIM}So your AI understands your professional context and can give relevant advice.${NC}"
-  PROFESSION=$(gum input --placeholder "e.g. Software engineer at a startup, MSP owner, freelance designer...")
+  PROFESSION=$(gum input --prompt "" --placeholder "e.g. Software engineer at a startup, MSP owner, freelance designer...")
   echo ""
 
   # Step 7: Primary AI goal
   echo -e "${BOLD}What's the #1 thing you want AI to help with?${NC}"
   echo -e "${DIM}This becomes your AI's north star — it'll prioritize suggestions around this.${NC}"
-  AI_GOAL=$(gum input --placeholder "e.g. Ship code faster, manage my business, organize my life...")
+  AI_GOAL=$(gum input --prompt "" --placeholder "e.g. Ship code faster, manage my business, organize my life...")
   echo ""
 
   # Step 8: First knowledge domain
@@ -295,7 +295,7 @@ init() {
     "home — property, vehicles, maintenance" \
     "Other (I'll type it)")
   if [[ "$FIRST_DOMAIN" == "Other"* ]]; then
-    FIRST_DOMAIN=$(gum input --placeholder "e.g. recipes, gaming, music, legal...")
+    FIRST_DOMAIN=$(gum input --prompt "" --placeholder "e.g. recipes, gaming, music, legal...")
   else
     FIRST_DOMAIN="${FIRST_DOMAIN%% —*}"
   fi
@@ -429,6 +429,10 @@ init() {
 
   # Clean up agent-configs (the right file is already at root)
   rm -rf agent-configs
+  # Remove CI workflow — that's for the upstream project, not user repos
+  rm -rf .github/workflows
+  # Remove issue templates — users don't need these in their private repo
+  rm -rf .github/ISSUE_TEMPLATE .github/PULL_REQUEST_TEMPLATE.md
   echo -e "  ${GREEN}✓${NC} Cleaned up agent templates"
 
   # Also remove the starter CLAUDE.md if a different agent was selected
@@ -615,7 +619,7 @@ open('integrations/README.md', 'w').writelines(out)
       DEFAULT_REPO=$(basename "$(pwd)")
       echo -e "${BOLD}What should the GitHub repo be called?${NC}"
       echo -e "${DIM}This will be private at github.com/${GITHUB_USER}/...${NC}"
-      REPO_NAME=$(gum input --placeholder "$DEFAULT_REPO" --value "$DEFAULT_REPO" --width 40)
+      REPO_NAME=$(gum input --prompt "" --placeholder "$DEFAULT_REPO" --value "$DEFAULT_REPO" --width 40)
       REPO_NAME="${REPO_NAME:-$DEFAULT_REPO}"
       echo ""
       echo -e "${BLUE}Creating private GitHub repo...${NC}"
