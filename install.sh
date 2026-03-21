@@ -151,6 +151,10 @@ init() {
   # 4a: AI delegation
   AI_ITEMS=()
   AI_PRESELECTED=()
+  if [[ "$AI_AGENT" != "Claude"* ]]; then
+    AI_ITEMS+=("Claude Code (delegate strategy and complex reasoning)")
+    AI_PRESELECTED+=("--selected=Claude Code (delegate strategy and complex reasoning)")
+  fi
   if [[ "$AI_AGENT" != "Codex"* ]]; then
     AI_ITEMS+=("Codex (delegate bulk edits to a second AI agent)")
     AI_PRESELECTED+=("--selected=Codex (delegate bulk edits to a second AI agent)")
