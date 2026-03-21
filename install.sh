@@ -616,7 +616,7 @@ open('integrations/README.md', 'w').writelines(out)
       echo ""
       echo -e "${BLUE}Creating private GitHub repo...${NC}"
       # Detect Codespace token limitations
-      if [ -n "$CODESPACES" ]; then
+      if [ -n "${CODESPACES:-}" ]; then
         echo -e "  ${YELLOW}GitHub Codespaces uses a restricted token that can't create repos.${NC}"
         echo -e "  ${DIM}No worries — once you install Contextium on your real machine,${NC}"
         echo -e "  ${DIM}open your AI and say:${NC}"
