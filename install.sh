@@ -274,13 +274,13 @@ init() {
   # Step 6: Professional context
   echo -e "${BOLD}What do you do? (one line is fine)${NC}"
   echo -e "${DIM}So your AI understands your professional context and can give relevant advice.${NC}"
-  PROFESSION=$(gum input --prompt "" --placeholder "e.g. Software engineer at a startup, MSP owner, freelance designer...")
+  PROFESSION=$(gum input --prompt "> " --placeholder "Software engineer, MSP owner, freelance designer..." --width 60)
   echo ""
 
   # Step 7: Primary AI goal
   echo -e "${BOLD}What's the #1 thing you want AI to help with?${NC}"
   echo -e "${DIM}This becomes your AI's north star — it'll prioritize suggestions around this.${NC}"
-  AI_GOAL=$(gum input --prompt "" --placeholder "e.g. Ship code faster, manage my business, organize my life...")
+  AI_GOAL=$(gum input --prompt "> " --placeholder "Ship code faster, manage my business, organize my life..." --width 60)
   echo ""
 
   # Step 8: First knowledge domain
@@ -653,6 +653,26 @@ open('integrations/README.md', 'w').writelines(out)
   HAS_NPM=false
   if command -v npm &>/dev/null; then
     HAS_NPM=true
+  else
+    # Auto-install Node.js if a CLI agent needs npm
+    case "$AI_AGENT" in
+      "Claude Code"*|"Gemini"*|"Codex"*)
+        echo -e "  ${DIM}npm not found — installing Node.js...${NC}"
+        if [[ "$OSTYPE" == "darwin"* ]]; then
+          if command -v brew &>/dev/null; then
+            brew install node 2>/dev/null && HAS_NPM=true
+          fi
+        elif [[ "$OSTYPE" == "linux-gnu"* ]]; then
+          curl -fsSL https://deb.nodesource.com/setup_lts.x 2>/dev/null | sudo -E bash - >/dev/null 2>&1
+          sudo apt-get install -y nodejs >/dev/null 2>&1 && HAS_NPM=true
+        fi
+        if $HAS_NPM; then
+          echo -e "  ${GREEN}✓${NC} Node.js installed"
+        else
+          echo -e "  ${YELLOW}Could not auto-install Node.js. Install manually: https://nodejs.org${NC}"
+        fi
+        ;;
+    esac
   fi
   AGENT_CMD=""
   case "$AI_AGENT" in
