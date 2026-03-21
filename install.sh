@@ -588,6 +588,14 @@ open('integrations/README.md', 'w').writelines(out)
   fi
   echo -e "  ${GREEN}✓${NC} Integration docs updated to match your selection"
 
+  # Set git identity if not configured (uses name from onboarding)
+  if ! git config user.name &>/dev/null; then
+    git config user.name "${USER_NAME}"
+  fi
+  if ! git config user.email &>/dev/null; then
+    git config user.email "contextium@localhost"
+  fi
+
   # Git commit
   git add -A
   git commit -q -m "Initial Contextium setup for ${USER_NAME} (${VERSION})"
@@ -955,6 +963,14 @@ open('integrations/README.md', 'w').writelines(out)
 " 2>/dev/null || true
   fi
   echo -e "  ${GREEN}✓${NC} Integration docs updated"
+
+  # Set git identity if not configured
+  if ! git config user.name &>/dev/null; then
+    git config user.name "${USER_NAME}"
+  fi
+  if ! git config user.email &>/dev/null; then
+    git config user.email "contextium@localhost"
+  fi
 
   # Git commit
   git add -A
