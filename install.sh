@@ -7,7 +7,7 @@ set -euo pipefail
 #   Update:        ./install.sh update
 
 REPO="https://github.com/Ashkaan/contextium.git"
-VERSION="v1.2.0"
+VERSION="v1.2.1"
 
 # Colors
 GREEN='\033[0;32m'
