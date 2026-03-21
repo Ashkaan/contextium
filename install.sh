@@ -854,6 +854,22 @@ update() {
   echo -e "${BLUE}Fetching updates...${NC}"
   git fetch upstream
 
+  # Self-update: if upstream has a newer install.sh, replace ourselves and re-exec
+  UPSTREAM_INSTALLER=$(git show upstream/main:install.sh 2>/dev/null) || true
+  if [ -n "$UPSTREAM_INSTALLER" ]; then
+    LOCAL_HASH=$(md5sum install.sh 2>/dev/null | cut -d' ' -f1)
+    UPSTREAM_HASH=$(echo "$UPSTREAM_INSTALLER" | md5sum | cut -d' ' -f1)
+    if [ "$LOCAL_HASH" != "$UPSTREAM_HASH" ] && [ "${CONTEXTIUM_SELF_UPDATED:-}" != "1" ]; then
+      echo -e "  ${DIM}Updating installer...${NC}"
+      echo "$UPSTREAM_INSTALLER" > install.sh
+      chmod +x install.sh
+      echo -e "  ${GREEN}✓${NC} Installer updated — restarting"
+      echo ""
+      export CONTEXTIUM_SELF_UPDATED=1
+      exec ./install.sh update
+    fi
+  fi
+
   # Show what changed
   LOCAL=$(git rev-parse HEAD)
   UPSTREAM=$(git rev-parse upstream/main 2>/dev/null || echo "")
