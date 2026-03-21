@@ -674,6 +674,11 @@ open('integrations/README.md', 'w').writelines(out)
         ;;
     esac
   fi
+  # Use sudo for npm global installs on Linux
+  NPM_GLOBAL="npm install -g"
+  if [[ "$OSTYPE" == "linux-gnu"* ]]; then
+    NPM_GLOBAL="sudo npm install -g"
+  fi
   AGENT_CMD=""
   case "$AI_AGENT" in
     "Claude Code"*)
@@ -681,9 +686,9 @@ open('integrations/README.md', 'w').writelines(out)
       if ! command -v claude &>/dev/null; then
         if $HAS_NPM; then
           echo -e "  ${DIM}Installing Claude Code...${NC}"
-          npm install -g @anthropic-ai/claude-code 2>/dev/null && \
+          $NPM_GLOBAL @anthropic-ai/claude-code 2>/dev/null && \
             echo -e "  ${GREEN}✓${NC} Claude Code installed" || \
-            echo -e "  ${YELLOW}Install failed. Try: npm install -g @anthropic-ai/claude-code${NC}"
+            echo -e "  ${YELLOW}Install failed. Try: sudo npm install -g @anthropic-ai/claude-code${NC}"
         else
           echo -e "  ${YELLOW}npm not found. To install Claude Code:${NC}"
           echo -e "  ${DIM}1. Install Node.js: https://nodejs.org${NC}"
@@ -698,9 +703,9 @@ open('integrations/README.md', 'w').writelines(out)
       if ! command -v gemini &>/dev/null; then
         if $HAS_NPM; then
           echo -e "  ${DIM}Installing Gemini CLI...${NC}"
-          npm install -g @google/gemini-cli 2>/dev/null && \
+          $NPM_GLOBAL @google/gemini-cli 2>/dev/null && \
             echo -e "  ${GREEN}✓${NC} Gemini CLI installed" || \
-            echo -e "  ${YELLOW}Install failed. Try: npm install -g @google/gemini-cli${NC}"
+            echo -e "  ${YELLOW}Install failed. Try: sudo npm install -g @google/gemini-cli${NC}"
         else
           echo -e "  ${YELLOW}npm not found. To install Gemini CLI:${NC}"
           echo -e "  ${DIM}1. Install Node.js: https://nodejs.org${NC}"
@@ -715,9 +720,9 @@ open('integrations/README.md', 'w').writelines(out)
       if ! command -v codex &>/dev/null; then
         if $HAS_NPM; then
           echo -e "  ${DIM}Installing Codex CLI...${NC}"
-          npm install -g @openai/codex 2>/dev/null && \
+          $NPM_GLOBAL @openai/codex 2>/dev/null && \
             echo -e "  ${GREEN}✓${NC} Codex installed" || \
-            echo -e "  ${YELLOW}Install failed. Try: npm install -g @openai/codex${NC}"
+            echo -e "  ${YELLOW}Install failed. Try: sudo npm install -g @openai/codex${NC}"
         else
           echo -e "  ${YELLOW}npm not found. To install Codex CLI:${NC}"
           echo -e "  ${DIM}1. Install Node.js: https://nodejs.org${NC}"
