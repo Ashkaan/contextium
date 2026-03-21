@@ -18,6 +18,14 @@ DIM='\033[2m'
 BOLD='\033[1m'
 NC='\033[0m'
 
+# Gum theming — brand color #00b4d8 (teal/cyan)
+export GUM_CHOOSE_CURSOR_FOREGROUND="#00b4d8"
+export GUM_CHOOSE_SELECTED_FOREGROUND="#00b4d8"
+export GUM_CHOOSE_HEADER_FOREGROUND="#00b4d8"
+export GUM_INPUT_CURSOR_FOREGROUND="#00b4d8"
+export GUM_INPUT_PROMPT_FOREGROUND="#00b4d8"
+export GUM_CONFIRM_SELECTED_FOREGROUND="#00b4d8"
+
 banner() {
   echo ""
   echo -e "${BLUE}┌─────────────────────────────────────────┐${NC}"
