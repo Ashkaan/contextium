@@ -29,7 +29,7 @@ All notable changes to Contextium are documented here.
 
 ### Agent Configs
 
-- **All 9 agent instruction files** — `agent-configs/` now contains templates for every supported agent
+- **9 agent instruction files** — `agent-configs/` with templates for Claude Code, Gemini, Codex, Cursor, Windsurf, Cline, Aider, Continue, GitHub Copilot (Ollama added in v1.2.5)
 - **Correct filenames** — each agent gets its native instruction file (CLAUDE.md, GEMINI.md, .cursorrules, .windsurfrules, .clinerules, CONVENTIONS.md, .continue/rules, copilot-instructions.md)
 - **Post-install cleanup** — `agent-configs/` removed after copying, keeping the user's repo clean
 

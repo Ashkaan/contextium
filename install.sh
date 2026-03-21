@@ -984,6 +984,7 @@ test_install() {
   USER_NAME="Test User"
   DIR_NAME="contextium-test"
   AI_AGENT="Claude Code (recommended)"
+  OLLAMA_MODEL="llama3.1"
   INTEGRATIONS="Gemini (delegate web research to Google's AI)"
   COMM_STYLE="Concise — get to the point, no filler"
   PROFESSION="Software engineer"
