@@ -2,6 +2,19 @@
 
 All notable changes to Contextium are documented here.
 
+## [1.2.5] — 2026-03-21
+
+### Ollama Support
+
+- **Ollama as 10th primary AI agent** — selectable in the installer alongside Claude Code, Gemini, Codex, Cursor, Windsurf, Cline, Aider, Continue, and GitHub Copilot
+- **Modelfile generation** — installer creates a Modelfile with Contextium instructions baked into the SYSTEM prompt
+- **Model selection** — installer prompts for which Ollama model to use (default: llama3.1)
+- **Auto-install** — installer handles Ollama CLI installation, model pull, and custom model creation
+- **Ollama as delegation target** — available in the AI delegation section for routing local/private/offline tasks
+- **New integration** — `integrations/ollama/README.md` with setup docs, model recommendations, and usage patterns
+
+---
+
 ## [1.1.0] — 2026-03-20
 
 ### Interactive Installer

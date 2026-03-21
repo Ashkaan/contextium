@@ -8,7 +8,7 @@ curl -sSL contextium.ai/install | bash
 
 The installer walks you through everything:
 - Your name and professional context
-- Which AI agent you use (Claude Code, Gemini, Codex, Cursor, Windsurf, Cline, Aider, Continue, Copilot)
+- Which AI agent you use (Claude Code, Gemini, Codex, Cursor, Windsurf, Cline, Aider, Continue, Copilot, Ollama)
 - Which integrations to include
 - Your communication style and AI goals
 - First knowledge domain
@@ -19,11 +19,12 @@ It then installs your AI agent's CLI and launches your first session — fully c
 
 - **git** — for version control (the foundation of Contextium)
 - **npm** or **Node.js** — needed for some AI agent CLIs (Claude Code, Codex, Gemini)
+- **Ollama** — needed only if you choose Ollama as your agent (the installer handles installation)
 - **macOS or Linux** — Windows users should use [WSL](https://learn.microsoft.com/en-us/windows/wsl/)
 
 ## After Install
 
-Your AI is ready immediately. The context router in your instruction file (CLAUDE.md, GEMINI.md, etc.) tells your AI how to navigate the repo. It will:
+Your AI is ready immediately. The context router in your instruction file (CLAUDE.md, GEMINI.md, Modelfile, etc.) tells your AI how to navigate the repo. It will:
 
 1. Load your preferences on every session
 2. Lazy-load files based on what you're working on

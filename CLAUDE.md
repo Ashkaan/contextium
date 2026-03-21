@@ -12,7 +12,7 @@ curl -sSL contextium.ai/install | bash
 
 The installer will:
 1. Gather your name, professional context, and communication style
-2. Ask which AI agent you use (Claude Code, Gemini, Codex, Cursor, Windsurf, Cline, Aider, Continue, Copilot)
+2. Ask which AI agent you use (Claude Code, Gemini, Codex, Cursor, Windsurf, Cline, Aider, Continue, Copilot, Ollama)
 3. Select integrations (calendar, email, task manager, etc.)
 4. Replace this file with the full context router and instruction set for your chosen agent
 

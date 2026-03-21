@@ -7,7 +7,7 @@ Contextium's onboarding happens during installation — not in a separate step.
 When you run `curl -sSL contextium.ai/install | bash`, the installer handles:
 
 1. **Your name** — creates your profile at `knowledge/people/{name}/`
-2. **Your AI agent** — installs the correct instruction file (CLAUDE.md, GEMINI.md, .cursorrules, etc.)
+2. **Your AI agent** — installs the correct instruction file (CLAUDE.md, GEMINI.md, Modelfile, .cursorrules, etc.)
 3. **Your integrations** — keeps only the connectors you need, removes the rest
 4. **Communication style** — configures `preferences/user/preferences.md` with your preference
 5. **Professional context** — added to your profile and preferences

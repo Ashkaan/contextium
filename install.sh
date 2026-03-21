@@ -7,7 +7,7 @@ set -euo pipefail
 #   Update:        ./install.sh update
 
 REPO="https://github.com/Ashkaan/contextium.git"
-VERSION="v1.2.4"
+VERSION="v1.2.5"
 
 # Colors
 GREEN='\033[0;32m'
@@ -149,6 +149,7 @@ init() {
     "Aider" \
     "Continue" \
     "GitHub Copilot" \
+    "Ollama (local)" \
     "Other")
   echo -e "${DIM}Selected: ${AI_AGENT}${NC}"
   echo ""
@@ -170,6 +171,9 @@ init() {
   if [[ "$AI_AGENT" != "Gemini"* ]]; then
     AI_ITEMS+=("Gemini (delegate web research to Google's AI)")
     AI_PRESELECTED+=("--selected=Gemini (delegate web research to Google's AI)")
+  fi
+  if [[ "$AI_AGENT" != "Ollama"* ]]; then
+    AI_ITEMS+=("Ollama (delegate tasks to a local AI — free, private, offline)")
   fi
   AI_ITEMS+=("Browse (browser automation for web scraping and testing)")
 
@@ -420,6 +424,35 @@ init() {
       cp "$INSTRUCTION_SRC" ./.github/copilot-instructions.md
       echo -e "  ${GREEN}✓${NC} Installed → .github/copilot-instructions.md"
       ;;
+    "Ollama"*)
+      echo -e "${DIM}Which Ollama model do you want to use?${NC}"
+      OLLAMA_MODEL=$(gum input --prompt "" --placeholder "llama3.1" --value "llama3.1" --width 40)
+      OLLAMA_MODEL="${OLLAMA_MODEL:-llama3.1}"
+      {
+        echo "FROM ${OLLAMA_MODEL}"
+        echo ""
+        echo 'SYSTEM """'
+        cat "$INSTRUCTION_SRC"
+        echo ""
+        echo "## Ollama-Specific Notes"
+        echo ""
+        echo "You are running as a local Ollama model. You do NOT have:"
+        echo "- File system access (cannot read or write files)"
+        echo "- Tool use (cannot run commands or call APIs)"
+        echo "- Git operations (cannot commit, push, or create journal entries)"
+        echo ""
+        echo "When the user asks you to do something that requires file access, tool use, or git:"
+        echo "1. Provide the content/instructions they need"
+        echo "2. Tell them to copy-paste or run the commands themselves"
+        echo "3. Remind them to create a journal entry and commit at session end"
+        echo ""
+        echo "For context router triggers, ask the user to paste the relevant file contents."
+        echo '"""'
+      } > ./Modelfile
+      echo -e "  ${GREEN}✓${NC} Installed → Modelfile (model: ${OLLAMA_MODEL})"
+      cp "$INSTRUCTION_SRC" ./CLAUDE.md
+      echo -e "  ${DIM}Also created CLAUDE.md for reference (Ollama reads from Modelfile)${NC}"
+      ;;
     "Other"*)
       cp "$INSTRUCTION_SRC" ./CLAUDE.md
       echo -e "  ${GREEN}✓${NC} Installed → CLAUDE.md (universal default)"
@@ -460,7 +493,7 @@ PERSONALREADME
   echo -e "  ${GREEN}✓${NC} Cleaned up upstream files"
 
   # Remove the starter CLAUDE.md if a different agent was selected
-  if [[ "$AI_AGENT" != "Claude Code"* && "$AI_AGENT" != "Other"* ]]; then
+  if [[ "$AI_AGENT" != "Claude Code"* && "$AI_AGENT" != "Other"* && "$AI_AGENT" != "Ollama"* ]]; then
     rm -f CLAUDE.md
   fi
 
@@ -488,6 +521,7 @@ PERSONALREADME
     ["TRMNL (e-ink display dashboard for at-a-glance info)"]="trmnl"
     ["Remote Control (access your AI from your phone)"]="remote-control"
     ["HAPI (voice interface — talk to your AI)"]="hapi"
+    ["Ollama (delegate tasks to a local AI — free, private, offline)"]="ollama"
     ["VS Code (remote development tunnel)"]="vscode"
   )
 
@@ -798,6 +832,29 @@ open('integrations/README.md', 'w').writelines(out)
       echo -e "  ${DIM}GitHub Copilot is a VS Code extension — install it from the VS Code marketplace.${NC}"
       echo -e "  ${GREEN}✓${NC} Opening VS Code in your Contextium directory"
       ;;
+    "Ollama"*)
+      AGENT_CMD="ollama run contextium"
+      if ! command -v ollama &>/dev/null; then
+        echo -e "  ${DIM}Installing Ollama...${NC}"
+        curl -fsSL https://ollama.com/install.sh | sh 2>/dev/null && \
+          echo -e "  ${GREEN}✓${NC} Ollama installed" || \
+          echo -e "  ${YELLOW}Install failed. Try: curl -fsSL https://ollama.com/install.sh | sh${NC}"
+      else
+        echo -e "  ${GREEN}✓${NC} Ollama already installed"
+      fi
+      if command -v ollama &>/dev/null; then
+        echo -e "  ${DIM}Pulling model: ${OLLAMA_MODEL} (this may take a few minutes)...${NC}"
+        ollama pull "$OLLAMA_MODEL" 2>/dev/null && \
+          echo -e "  ${GREEN}✓${NC} Model ${OLLAMA_MODEL} ready" || \
+          echo -e "  ${YELLOW}Could not pull model. Run: ollama pull ${OLLAMA_MODEL}${NC}"
+        if [ -f "Modelfile" ]; then
+          echo -e "  ${DIM}Creating contextium model from Modelfile...${NC}"
+          ollama create contextium -f Modelfile 2>/dev/null && \
+            echo -e "  ${GREEN}✓${NC} Custom model 'contextium' created — run with: ollama run contextium" || \
+            echo -e "  ${YELLOW}Could not create model. Run: ollama create contextium -f Modelfile${NC}"
+        fi
+      fi
+      ;;
     "Other"*)
       AGENT_CMD=""
       echo -e "  ${DIM}Your CLAUDE.md instruction file is ready — most AI agents will read it.${NC}"
@@ -977,6 +1034,7 @@ test_install() {
     ["TRMNL (e-ink display dashboard for at-a-glance info)"]="trmnl"
     ["Remote Control (access your AI from your phone)"]="remote-control"
     ["HAPI (voice interface — talk to your AI)"]="hapi"
+    ["Ollama (delegate tasks to a local AI — free, private, offline)"]="ollama"
     ["VS Code (remote development tunnel)"]="vscode"
   )
 

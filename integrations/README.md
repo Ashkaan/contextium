@@ -18,6 +18,7 @@ Each integration has a README explaining setup and usage. Configure only what yo
 | [Codex](codex/) | AI | Code generation and bulk editing agent |
 | [Gemini](gemini/) | AI | Research and web tasks agent |
 | [Browse](browse/) | AI | Browser automation via Playwright |
+| [Ollama](ollama/) | AI | Local inference — private, offline, cost-free |
 | [Home Assistant](home-assistant/) | Smart Home | Home automation API |
 | [Autotask](autotask/) | Business | PSA/ticketing system |
 | [NinjaOne](ninjaone/) | Business | Device inventory and RMM |

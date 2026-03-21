@@ -15,7 +15,7 @@
 <br/>
 
 [![Open Source](https://img.shields.io/badge/Open_Source-Apache_2.0-00b4d8.svg?style=for-the-badge)](LICENSE)
-[![Version](https://img.shields.io/badge/v1.2.4-1a1a2e.svg?style=for-the-badge)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/v1.2.5-1a1a2e.svg?style=for-the-badge)](CHANGELOG.md)
 
 [![Claude Code](https://img.shields.io/badge/Claude_Code-cc785c?style=flat-square)](agent-configs/claude/)
 [![Cursor](https://img.shields.io/badge/Cursor-7c3aed?style=flat-square)](agent-configs/cursor/)
@@ -26,6 +26,7 @@
 [![Aider](https://img.shields.io/badge/Aider-14b8a6?style=flat-square)](agent-configs/)
 [![Continue](https://img.shields.io/badge/Continue-8b5cf6?style=flat-square)](agent-configs/)
 [![GitHub Copilot](https://img.shields.io/badge/GitHub_Copilot-24292e?style=flat-square)](agent-configs/)
+[![Ollama](https://img.shields.io/badge/Ollama-808080?style=flat-square)](agent-configs/ollama/)
 
 </div>
 
@@ -75,7 +76,7 @@ graph TD
 
     Router --> Apps["Apps<br/>6 sample protocols"]
     Router --> Knowledge["Knowledge<br/>Domain-organized data"]
-    Router --> Integrations["Integrations<br/>27 connectors"]
+    Router --> Integrations["Integrations<br/>28 connectors"]
     Router --> Projects["Projects<br/>Time-boxed work"]
     Router --> Journal["Journal<br/>Session logs"]
     Router --> Preferences["Preferences<br/>Rules & templates"]
@@ -114,7 +115,7 @@ The `CLAUDE.md` file at the repo root acts as a router. When your AI starts a se
 
 Each app is a self-contained directory with a README protocol that your AI follows. Add your own by copying the pattern.
 
-### Integration Connectors (27)
+### Integration Connectors (28)
 
 Organized by category. Each connector has a README with setup instructions — configure only what you need.
 
@@ -124,7 +125,7 @@ Organized by category. Each connector has a README with setup instructions — c
 | **Productivity** | Google Workspace, Todoist, Google Auth |
 | **Automation** | Windmill, n8n |
 | **Infrastructure** | Cloudflare, TrueNAS, Daedalus (runtime) |
-| **AI Agents** | Gemini, Codex, Browse (Playwright) |
+| **AI Agents** | Gemini, Codex, Ollama, Browse (Playwright) |
 | **Business** | QuickBooks Online, Autotask, HuduIT, NinjaOne, MSPbots, Monarch, Strety |
 | **Smart Home** | Home Assistant, Garage |
 | **Interfaces** | TRMNL (e-ink display), VS Code, Remote Control |
@@ -175,6 +176,7 @@ Your primary AI stays focused on strategy. Research and heavy lifting get delega
 | Web research | Gemini CLI | Summarizes externally, only the result enters context |
 | Bulk file edits | Codex CLI | Operates in a separate context window at lower cost |
 | Browser automation | Browse | Playwright-based, runs as an isolated subprocess |
+| Local/private inference | Ollama | Runs locally, no API cost, works offline |
 | Scheduled tasks | Windmill / n8n | Deterministic execution, no AI cost per run |
 
 ### Update System
@@ -196,7 +198,7 @@ Contextium was developed and battle-tested in a production environment before be
 - **35+ app protocols** running across personal, business, and infrastructure domains
 - **100+ completed projects** tracked with full decision history
 - **600+ journal entries** capturing context that compounds daily
-- **27 live integrations** connecting to external services and APIs
+- **28 live integrations** connecting to external services and APIs
 - **Multi-agent delegation** across Claude, Gemini, and Codex in daily use
 
 Every pattern in this repo was refined through sustained daily use — not theoretical design.

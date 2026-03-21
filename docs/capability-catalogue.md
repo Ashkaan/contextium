@@ -4,7 +4,7 @@ Every capability in the Contextium framework, organized by category.
 
 ---
 
-## A. Integrations (27)
+## A. Integrations (28)
 
 ### Credential Management
 
@@ -45,6 +45,7 @@ Every capability in the Contextium framework, organized by category.
 | **Codex CLI** | Code generation and bulk file editing in separate context |
 | **Gemini CLI** | Web research, content summarization, Todoist operations |
 | **Browse** | Browser automation via Playwright for web scraping and UI tasks |
+| **Ollama** | Local AI inference — private, offline, cost-free |
 
 ### Business Tools
 
@@ -140,6 +141,7 @@ Two tiers:
 | Explore codebase (2+ files) | Sub-agent | Saves main context |
 | Web research | Gemini CLI | Summarizes externally |
 | Bulk edits (>2 files) | Codex CLI | Separate context window |
+| Local/private inference | Ollama | Runs locally, no cost, works offline |
 | Scheduled tasks | Windmill/n8n | Deterministic, no AI cost |
 
 ### Context Efficiency

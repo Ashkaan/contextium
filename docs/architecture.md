@@ -21,8 +21,9 @@ The AI's operating manual. The installer places **one** instruction file at the 
 | Aider | `CONVENTIONS.md` |
 | Continue | `.continue/rules` |
 | GitHub Copilot | `.github/copilot-instructions.md` |
+| Ollama | `Modelfile` + `CLAUDE.md` (reference) |
 
-All contain the same core architecture — context router, session lifecycle, delegation rules — formatted for the specific agent's instruction format. Templates for all agents live in `agent-configs/`.
+All contain the same core architecture — context router, session lifecycle, delegation rules — formatted for the specific agent's instruction format. Ollama uses a Modelfile with the instructions baked into the SYSTEM prompt. Templates for all agents live in `agent-configs/`.
 
 The instruction file contains:
 - **Context Router** — which files to load for which triggers
@@ -91,6 +92,7 @@ Route expensive work to the right tool:
 | Web research | Gemini | Summarizes externally, only result enters context |
 | Bulk edits (>2 files) | Codex | Direct editing in separate context |
 | Scheduled tasks | Automation platform | Deterministic, no AI cost |
+| Local/private inference | Ollama | Runs locally, no cost, works offline |
 | Quick facts | Web search | Cheapest, smallest result |
 
 ### Session Lifecycle
