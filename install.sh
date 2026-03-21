@@ -352,6 +352,10 @@ init() {
           echo -e "  ${BOLD}gh repo create $(basename "$(pwd)") --private --source=. --push${NC}"
           CREATE_REPO="no"
         }
+        # Configure git to use gh as credential helper (required for push)
+        if gh auth status &>/dev/null; then
+          gh auth setup-git 2>/dev/null || true
+        fi
       fi
     fi
   fi
@@ -642,15 +646,25 @@ open('integrations/README.md', 'w').writelines(out)
   # Install AI agent CLI
   echo ""
   echo -e "${BLUE}Setting up your AI agent...${NC}"
+  HAS_NPM=false
+  if command -v npm &>/dev/null; then
+    HAS_NPM=true
+  fi
   AGENT_CMD=""
   case "$AI_AGENT" in
     "Claude Code"*)
       AGENT_CMD="claude"
       if ! command -v claude &>/dev/null; then
-        echo -e "  ${DIM}Installing Claude Code...${NC}"
-        npm install -g @anthropic-ai/claude-code 2>/dev/null && \
-          echo -e "  ${GREEN}✓${NC} Claude Code installed" || \
-          echo -e "  ${YELLOW}Could not auto-install. Run: npm install -g @anthropic-ai/claude-code${NC}"
+        if $HAS_NPM; then
+          echo -e "  ${DIM}Installing Claude Code...${NC}"
+          npm install -g @anthropic-ai/claude-code 2>/dev/null && \
+            echo -e "  ${GREEN}✓${NC} Claude Code installed" || \
+            echo -e "  ${YELLOW}Install failed. Try: npm install -g @anthropic-ai/claude-code${NC}"
+        else
+          echo -e "  ${YELLOW}npm not found. To install Claude Code:${NC}"
+          echo -e "  ${DIM}1. Install Node.js: https://nodejs.org${NC}"
+          echo -e "  ${DIM}2. Then run: npm install -g @anthropic-ai/claude-code${NC}"
+        fi
       else
         echo -e "  ${GREEN}✓${NC} Claude Code already installed"
       fi
@@ -658,10 +672,16 @@ open('integrations/README.md', 'w').writelines(out)
     "Gemini"*)
       AGENT_CMD="gemini"
       if ! command -v gemini &>/dev/null; then
-        echo -e "  ${DIM}Installing Gemini CLI...${NC}"
-        npm install -g @anthropic-ai/gemini-cli 2>/dev/null && \
-          echo -e "  ${GREEN}✓${NC} Gemini CLI installed" || \
-          echo -e "  ${YELLOW}Could not auto-install. Run: npm install -g @anthropic-ai/gemini-cli${NC}"
+        if $HAS_NPM; then
+          echo -e "  ${DIM}Installing Gemini CLI...${NC}"
+          npm install -g @google/gemini-cli 2>/dev/null && \
+            echo -e "  ${GREEN}✓${NC} Gemini CLI installed" || \
+            echo -e "  ${YELLOW}Install failed. Try: npm install -g @google/gemini-cli${NC}"
+        else
+          echo -e "  ${YELLOW}npm not found. To install Gemini CLI:${NC}"
+          echo -e "  ${DIM}1. Install Node.js: https://nodejs.org${NC}"
+          echo -e "  ${DIM}2. Then run: npm install -g @google/gemini-cli${NC}"
+        fi
       else
         echo -e "  ${GREEN}✓${NC} Gemini CLI already installed"
       fi
@@ -669,10 +689,16 @@ open('integrations/README.md', 'w').writelines(out)
     "Codex"*)
       AGENT_CMD="codex"
       if ! command -v codex &>/dev/null; then
-        echo -e "  ${DIM}Installing Codex CLI...${NC}"
-        npm install -g @openai/codex 2>/dev/null && \
-          echo -e "  ${GREEN}✓${NC} Codex installed" || \
-          echo -e "  ${YELLOW}Could not auto-install. Run: npm install -g @openai/codex${NC}"
+        if $HAS_NPM; then
+          echo -e "  ${DIM}Installing Codex CLI...${NC}"
+          npm install -g @openai/codex 2>/dev/null && \
+            echo -e "  ${GREEN}✓${NC} Codex installed" || \
+            echo -e "  ${YELLOW}Install failed. Try: npm install -g @openai/codex${NC}"
+        else
+          echo -e "  ${YELLOW}npm not found. To install Codex CLI:${NC}"
+          echo -e "  ${DIM}1. Install Node.js: https://nodejs.org${NC}"
+          echo -e "  ${DIM}2. Then run: npm install -g @openai/codex${NC}"
+        fi
       else
         echo -e "  ${GREEN}✓${NC} Codex already installed"
       fi
