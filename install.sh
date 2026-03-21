@@ -863,6 +863,7 @@ update() {
       echo -e "  ${DIM}Updating installer...${NC}"
       echo "$UPSTREAM_INSTALLER" > install.sh
       chmod +x install.sh
+      git add install.sh && git commit -q -m "self-update: install.sh updated from upstream" 2>/dev/null || true
       echo -e "  ${GREEN}✓${NC} Installer updated — restarting"
       echo ""
       export CONTEXTIUM_SELF_UPDATED=1
