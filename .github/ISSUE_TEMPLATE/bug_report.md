@@ -26,7 +26,7 @@ What actually happens.
 
 ## Environment
 
-- AI Agent: [Claude Code / Cursor / Codex / Other]
+- AI Agent: [Claude Code / Gemini / Codex / Cursor / Windsurf / Cline / Aider / Continue / Copilot / Ollama / Other]
 - OS: [macOS / Linux / Windows WSL]
 - Git version:
 - Contextium version: [e.g., v1.0.0]
