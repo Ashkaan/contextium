@@ -787,15 +787,24 @@ open('integrations/README.md', 'w').writelines(out)
   echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
   echo ""
 
-  # Launch the AI agent in the new directory
-  if command -v ${AGENT_CMD%% *} &>/dev/null; then
-    exec $AGENT_CMD
-  else
+  # Launch the AI agent (or show instructions if piped/not installed)
+  if [ -z "$AGENT_CMD" ]; then
+    echo -e "  Run your AI agent from the ${BOLD}${DIR_NAME}${NC} directory."
+    echo ""
+  elif ! command -v ${AGENT_CMD%% *} &>/dev/null; then
     echo -e "  Your AI agent isn't installed yet. Once installed, run:"
     echo ""
     echo -e "  ${BOLD}cd ${DIR_NAME}${NC}"
     echo -e "  ${BOLD}${AGENT_CMD}${NC}"
-    echo -e "  ${DIM}It will walk you through the rest of the setup.${NC}"
+    echo ""
+  elif [ -t 0 ]; then
+    # stdin is a terminal — safe to launch
+    exec $AGENT_CMD
+  else
+    # stdin is a pipe (curl | bash) — can't launch interactively
+    echo -e "  To start, run:"
+    echo ""
+    echo -e "  ${BOLD}cd ${DIR_NAME} && ${AGENT_CMD}${NC}"
     echo ""
   fi
 }
