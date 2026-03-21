@@ -877,11 +877,17 @@ update() {
   echo -e "${BLUE}Merging updates (your data in preferences/, knowledge/, journal/, projects/ is protected)...${NC}"
 
   if git merge upstream/main --no-edit 2>/dev/null; then
+    # Clean upstream-only files that shouldn't be in user repos
+    rm -rf .github 2>/dev/null
+    rm -f CHANGELOG.md CONTRIBUTING.md 2>/dev/null
+    if [ -n "$(git status --porcelain 2>/dev/null)" ]; then
+      git add -A && git commit -q -m "cleanup: remove upstream-only files after update" 2>/dev/null
+    fi
     echo ""
     echo -e "${GREEN}Update complete!${NC}"
     echo ""
     echo "Updated files:"
-    git diff --name-only HEAD~1..HEAD 2>/dev/null | head -20
+    git diff --name-only HEAD~2..HEAD 2>/dev/null | head -20
   else
     echo ""
     echo -e "${YELLOW}Merge conflicts detected. Resolve them manually:${NC}"
