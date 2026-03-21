@@ -1,10 +1,12 @@
 <div align="center">
 
+<a href="https://contextium.ai">
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/logo-dark.svg" />
   <source media="(prefers-color-scheme: light)" srcset="docs/images/logo.svg" />
   <img src="docs/images/logo.svg" alt="Contextium" width="520" />
 </picture>
+</a>
 
 <br/><br/>
 
