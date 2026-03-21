@@ -427,15 +427,39 @@ init() {
       ;;
   esac
 
-  # Clean up agent-configs (the right file is already at root)
-  rm -rf agent-configs
-  # Remove CI workflow — that's for the upstream project, not user repos
-  rm -rf .github/workflows
-  # Remove issue templates — users don't need these in their private repo
-  rm -rf .github/ISSUE_TEMPLATE .github/PULL_REQUEST_TEMPLATE.md
-  echo -e "  ${GREEN}✓${NC} Cleaned up agent templates"
+  # Clean up — remove upstream project files that users don't need
+  rm -rf agent-configs          # Agent config already copied to root
+  rm -rf .github                # CI, issue templates — upstream only
+  rm -f CHANGELOG.md            # Upstream changelog
+  rm -f CONTRIBUTING.md         # Upstream contributor guide
 
-  # Also remove the starter CLAUDE.md if a different agent was selected
+  # Replace marketing README with a personal one
+  cat > README.md << 'PERSONALREADME'
+# My Contextium
+
+Personal AI context repo. Powered by [Contextium](https://contextium.ai).
+
+## Quick Reference
+
+| Directory | Purpose |
+|-----------|---------|
+| `apps/` | App protocols and automation scripts |
+| `knowledge/` | Domain-organized reference data |
+| `projects/` | Time-boxed work items |
+| `journal/` | Daily session logs |
+| `preferences/` | Your preferences, rules, templates |
+| `integrations/` | External service connectors |
+
+## Update
+
+```bash
+./install.sh update
+```
+PERSONALREADME
+
+  echo -e "  ${GREEN}✓${NC} Cleaned up upstream files"
+
+  # Remove the starter CLAUDE.md if a different agent was selected
   if [[ "$AI_AGENT" != "Claude Code"* && "$AI_AGENT" != "Other"* ]]; then
     rm -f CLAUDE.md
   fi
