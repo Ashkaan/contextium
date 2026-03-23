@@ -17,7 +17,7 @@
 <br/>
 
 [![Open Source](https://img.shields.io/badge/Open_Source-Apache_2.0-00b4d8.svg?style=for-the-badge)](LICENSE)
-[![Version](https://img.shields.io/badge/v1.3.0-1a1a2e.svg?style=for-the-badge)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/v1.3.1-1a1a2e.svg?style=for-the-badge)](CHANGELOG.md)
 
 [![Claude Code](https://img.shields.io/badge/Claude_Code-cc785c?style=flat-square)](agent-configs/claude/)
 [![Cursor](https://img.shields.io/badge/Cursor-7c3aed?style=flat-square)](agent-configs/cursor/)
@@ -76,7 +76,7 @@ For deeper configuration after onboarding, check the pre-loaded projects in `pro
 graph TD
     Router["CLAUDE.md — Context Router"]
 
-    Router --> Apps["Apps<br/>6 sample protocols"]
+    Router --> Apps["Apps<br/>7 sample protocols"]
     Router --> Knowledge["Knowledge<br/>Domain-organized data"]
     Router --> Integrations["Integrations<br/>28 connectors"]
     Router --> Projects["Projects<br/>Time-boxed work"]
@@ -104,7 +104,7 @@ The `CLAUDE.md` file at the repo root acts as a router. When your AI starts a se
 
 ## What's Included
 
-### Sample Apps (6 patterns)
+### Sample Apps (7 patterns)
 
 | App | Pattern | What It Does |
 |-----|---------|-------------|
@@ -114,6 +114,7 @@ The `CLAUDE.md` file at the repo root acts as a router. When your AI starts a se
 | **Today's Agenda** | Briefing | Morning email with calendar, tasks, and focus blocks |
 | **Error Remediation** | System/Event | Auto-retry, diagnose, and escalate system errors |
 | **Shared Utilities** | Utility | Reusable notification, email, and validation functions |
+| **Project Index** | Generator | Builds projects/README.md from project frontmatter |
 
 Each app is a self-contained directory with a README protocol that your AI follows. Add your own by copying the pattern.
 

@@ -21,6 +21,7 @@ Do NOT preload files — lazy load only when needed.
 | Building web apps | `preferences/style_guides/app-development.md` (if exists) |
 | Building presentations/slideshows | `preferences/style_guides/presentations.md` (if exists) |
 | Creating project | `preferences/templates/project_template.md` |
+| Changing project status | Run `npx tsx apps/project-index/generate.ts` after updating frontmatter |
 | Drafting journal entry | `preferences/templates/journal_template.md` |
 | Creating/editing app README | `preferences/templates/app-readme.md` |
 | Creating/updating a people card | `knowledge/people/README.md` |

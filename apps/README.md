@@ -18,5 +18,6 @@ These apps demonstrate the core patterns. Use them as templates for your own.
 | [goals](goals/) | Reference | Personal and professional goal tracking |
 | [health](health/) | Data Sync | Health biomarker tracking with staleness alerts |
 | [news-digest](news-digest/) | Timer + Email | AI-curated daily news and opinion digests |
+| [project-index](project-index/) | Generator | Builds projects/README.md from project frontmatter |
 | [error-remediation](error-remediation/) | System/Event | Auto-recovery for failed automation workflows |
 | [todays-agenda](todays-agenda/) | Briefing | Morning briefing with calendar, tasks, and goals |
