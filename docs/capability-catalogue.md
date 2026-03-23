@@ -85,7 +85,7 @@ Every capability in the Contextium framework, organized by category.
 
 ---
 
-## B. Apps (6 sample protocols)
+## B. Apps (7 sample protocols)
 
 Each app follows a labeled pattern:
 
@@ -97,6 +97,7 @@ Each app follows a labeled pattern:
 | **News Digest** | Timer + Email | Daily | AI-curated daily news and opinion digests from RSS feeds |
 | **Error Remediation** | System/Event | System | Auto-retry failed operations, AI diagnosis, escalation to human |
 | **Today's Agenda** | Briefing | Daily | Morning email with calendar events, tasks, focus blocks, and active projects |
+| **Project Index** | Generator | System | Builds projects/README.md from project frontmatter |
 
 ### Automation Patterns
 
@@ -108,6 +109,7 @@ Each app follows a labeled pattern:
 | **Briefing** | Cron → Aggregate multiple sources → Formatted email | Today's Agenda |
 | **Reference** | Manual protocol → AI follows steps when triggered | Goals |
 | **Utility** | Webhook → Process → Deliver (called by other apps) | Shared Utilities |
+| **Generator** | Scan repo → Parse frontmatter → Write index file | Project Index |
 
 ---
 

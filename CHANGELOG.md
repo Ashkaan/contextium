@@ -2,6 +2,16 @@
 
 All notable changes to Contextium are documented here.
 
+## [1.3.1] — 2026-03-23
+
+### Project Index Generator + Status Change Trigger
+
+- **Project Index app** — new `apps/project-index/generate.ts` script that walks `projects/`, reads frontmatter, and generates a status overview table at `projects/README.md`. Generic (no hardcoded domains), auto-discovers project directories
+- **Project status change trigger** — all 11 agent configs now include "Changing project status → run `npx tsx apps/project-index/generate.ts`" in the context router. This was the last deferred item from v1.2.6
+- **7 sample apps** (was 6) — Project Index added as a Generator pattern
+
+---
+
 ## [1.3.0] — 2026-03-23
 
 ### Instruction File Refresh on Update (Breaking Fix)
