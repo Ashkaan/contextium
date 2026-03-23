@@ -46,6 +46,15 @@ After creating a new directory in `apps/`:
 
 An app without a README has no protocol. An app without a registry entry is invisible to future sessions.
 
+## Automation Scripts — MANDATORY
+
+After editing any automation script that is deployed to an external platform (Windmill, n8n, etc.):
+
+1. Deploy the updated script to the platform
+2. Verify deployment succeeded
+
+Editing without deploying has no effect — the platform runs its own copy. Skip this if no automation platform is configured.
+
 ## Rules
 
 -> `preferences/rules/README.md` (index with enforcement status)

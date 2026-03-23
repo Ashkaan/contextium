@@ -2,6 +2,15 @@
 
 All notable changes to Contextium are documented here.
 
+## [1.2.7] — 2026-03-23
+
+### All Agent Configs Updated + Automation Deploy Guard
+
+- **All 10 agent configs updated** — Session End MANDATORY, New Apps MANDATORY, Automation Scripts MANDATORY, expanded context router triggers, and people card trigger now present in all agent instruction files (Claude, Cursor, Gemini, Windsurf, Cline, Aider, Continue, Copilot, Ollama)
+- **Automation Scripts MANDATORY** — new guarded section: reminds to deploy after editing automation scripts, with "skip if no platform configured" escape hatch for users without Windmill/n8n
+
+---
+
 ## [1.2.6] — 2026-03-23
 
 ### Governance & Router Improvements

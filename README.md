@@ -17,7 +17,7 @@
 <br/>
 
 [![Open Source](https://img.shields.io/badge/Open_Source-Apache_2.0-00b4d8.svg?style=for-the-badge)](LICENSE)
-[![Version](https://img.shields.io/badge/v1.2.6-1a1a2e.svg?style=for-the-badge)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/v1.2.7-1a1a2e.svg?style=for-the-badge)](CHANGELOG.md)
 
 [![Claude Code](https://img.shields.io/badge/Claude_Code-cc785c?style=flat-square)](agent-configs/claude/)
 [![Cursor](https://img.shields.io/badge/Cursor-7c3aed?style=flat-square)](agent-configs/cursor/)
