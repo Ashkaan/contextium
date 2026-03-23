@@ -22,17 +22,23 @@ Behavioral and governance rules with enforcement status.
 | Project lifecycle | `governance.md` | Manual |
 | Session end / journal | `governance.md` | Manual |
 | People & entities | `governance.md` | Manual |
+| Context repo parity | `governance.md` | Manual |
 
 ## Hooks (Optional)
 
-Hooks can be configured in your AI agent's settings to enforce rules automatically. Examples:
-- Block writes to sensitive directories
-- Remind to load integration docs before API calls
-- Track file reads and suggest delegation
-- Session start checklist
+Hooks enforce rules automatically via your AI agent's hook system. They are not included in the default install — configure the ones that matter to you.
 
-## Hooks (Advanced)
+### Example Hooks (Claude Code)
 
-The enforcement hooks listed above are optional and not included in the default install. They demonstrate how behavioral rules can be machine-enforced using your AI agent's hook system (e.g., Claude Code hooks at `~/.claude/hooks/`).
+These go in `~/.claude/hooks/` and are registered in `~/.claude/settings.json` under `hooks`.
 
-To set up hooks for your agent, see your agent's documentation on custom hooks or pre-tool-use triggers.
+| Hook | Event | What it does |
+|------|-------|-------------|
+| `block-memory-writes.sh` | PreToolUse (Write/Edit) | Blocks writes to `~/.claude/` memory directory — use the repo instead |
+| `session-checklist.sh` | UserPromptSubmit | First-message reminder: classify session, load preferences, check context router |
+| `api-docs-gate.sh` | PreToolUse (Bash) | Detects API calls to known hosts, reminds to load integration docs first |
+| `context-efficiency.sh` | PreToolUse (Read) | Tracks file reads, nudges toward sub-agents when reading many files |
+
+**How Claude Code hooks work:** Shell scripts that run on specific events (PreToolUse, PostToolUse, UserPromptSubmit). They can return JSON to block the action or inject context. See [Claude Code docs](https://docs.anthropic.com/en/docs/claude-code) for the hook API.
+
+**Other agents:** Cursor has `.cursorrules` directives, Windsurf has `.windsurfrules`, and Cline has `.clinerules` — each supports inline behavioral constraints. For agents without hook systems, the rules in `behavior.md` and `governance.md` serve as instruction-level enforcement.

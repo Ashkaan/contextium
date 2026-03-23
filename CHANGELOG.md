@@ -2,6 +2,21 @@
 
 All notable changes to Contextium are documented here.
 
+## [1.2.6] — 2026-03-23
+
+### Governance & Router Improvements
+
+- **Session End elevated to MANDATORY** — moved from governance.md to the main CLAUDE.md instruction file so AI agents see it immediately, not buried in rules
+- **New Apps MANDATORY section** — new app directories now require a README protocol and registry entry in `apps/README.md`
+- **Context Repo Parity rule** — governance now enforces that every automation script has a source file in the repo
+- **Journal format guidelines** — recommended structure for journal entries (frontmatter, session headings, Decisions emphasis, target size) framed as defaults
+- **Delegation pre-check trigger** — context router now loads `integrations/README.md` before delegating bulk work, ensuring the right tool is chosen
+- **Style guide triggers** — router now loads style guides for web apps and presentations when relevant
+- **People card trigger** — router loads `knowledge/people/README.md` when creating or updating a people card
+- **Concrete hook examples** — rules README now shows actual hook implementations (block-memory-writes, session-checklist, api-docs-gate, context-efficiency) with event types and descriptions
+
+---
+
 ## [1.2.5] — 2026-03-21
 
 ### Ollama Support
