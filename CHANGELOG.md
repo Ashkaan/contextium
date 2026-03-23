@@ -2,6 +2,23 @@
 
 All notable changes to Contextium are documented here.
 
+## [1.3.0] — 2026-03-23
+
+### Instruction File Refresh on Update (Breaking Fix)
+
+- **Root instruction file now refreshed during `./install.sh update`** — previously, the root file (CLAUDE.md, .cursorrules, etc.) was copied once during install and never updated. Framework improvements to the context router, MANDATORY protocols, and governance rules never reached existing users. Now `update` detects which agent was installed and re-copies from the merged `agent-configs/`
+- **Agent-specific source files** — installer now copies from each agent's native config file (e.g., `agent-configs/cursor/.cursorrules`) instead of always using `agent-configs/claude/CLAUDE.md`
+- **Codex CLI fully supported** — proper `AGENTS.md` instruction file with full context router, MANDATORY protocols, and repo structure (was a placeholder since v1.0)
+- **Ollama Modelfile preserved on update** — user's model choice (`FROM llama3.1`) is preserved when refreshing instructions
+
+### Documentation Updated
+
+- **Capability catalogue** — added MANDATORY protocols section, context repo parity rule, journal format guidelines
+- **Architecture** — updated instruction file layer with MANDATORY protocols and hook-based enforcement
+- **Update guide** — documents the instruction file refresh step and why it matters
+
+---
+
 ## [1.2.7] — 2026-03-23
 
 ### All Agent Configs Updated + Automation Deploy Guard

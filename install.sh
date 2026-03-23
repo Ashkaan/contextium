@@ -7,7 +7,7 @@ set -euo pipefail
 #   Update:        ./install.sh update
 
 REPO="https://github.com/Ashkaan/contextium.git"
-VERSION="v1.2.7"
+VERSION="v1.3.0"
 
 # Colors
 GREEN='\033[0;32m'
@@ -380,81 +380,59 @@ init() {
   # Rename origin to upstream (framework source for future updates)
   git remote rename origin upstream
 
-  # Copy agent config to the correct filename for the selected agent
-  # The content is the same core instruction set — context router, rules, structure —
-  # but each agent reads from a different filename.
-  INSTRUCTION_SRC="agent-configs/claude/CLAUDE.md"
-
+  # Copy agent config to the correct filename for the selected agent.
+  # Each agent has its own instruction file in agent-configs/ with the same core
+  # content (context router, rules, structure) formatted for that agent's conventions.
   case "$AI_AGENT" in
     "Claude Code"*)
-      cp "$INSTRUCTION_SRC" ./CLAUDE.md
+      cp "agent-configs/claude/CLAUDE.md" ./CLAUDE.md
       echo -e "  ${GREEN}✓${NC} Installed → CLAUDE.md"
       ;;
     "Gemini"*)
-      cp "$INSTRUCTION_SRC" ./GEMINI.md
+      cp "agent-configs/gemini/GEMINI.md" ./GEMINI.md
       echo -e "  ${GREEN}✓${NC} Installed → GEMINI.md"
       ;;
     "Codex"*)
-      cp "$INSTRUCTION_SRC" ./AGENTS.md
+      cp "agent-configs/codex/AGENTS.md" ./AGENTS.md
       echo -e "  ${GREEN}✓${NC} Installed → AGENTS.md"
       ;;
     "Cursor"*)
-      cp "$INSTRUCTION_SRC" ./.cursorrules
+      cp "agent-configs/cursor/.cursorrules" ./.cursorrules
       echo -e "  ${GREEN}✓${NC} Installed → .cursorrules"
       ;;
     "Windsurf"*)
-      cp "$INSTRUCTION_SRC" ./.windsurfrules
+      cp "agent-configs/windsurf/.windsurfrules" ./.windsurfrules
       echo -e "  ${GREEN}✓${NC} Installed → .windsurfrules"
       ;;
     "Cline"*)
-      cp "$INSTRUCTION_SRC" ./.clinerules
+      cp "agent-configs/cline/.clinerules" ./.clinerules
       echo -e "  ${GREEN}✓${NC} Installed → .clinerules"
       ;;
     "Aider"*)
-      cp "$INSTRUCTION_SRC" ./CONVENTIONS.md
+      cp "agent-configs/aider/CONVENTIONS.md" ./CONVENTIONS.md
       echo -e "  ${GREEN}✓${NC} Installed → CONVENTIONS.md"
       ;;
     "Continue"*)
       mkdir -p .continue
-      cp "$INSTRUCTION_SRC" ./.continue/rules
+      cp "agent-configs/continue/rules" ./.continue/rules
       echo -e "  ${GREEN}✓${NC} Installed → .continue/rules"
       ;;
     "GitHub Copilot"*)
       mkdir -p .github
-      cp "$INSTRUCTION_SRC" ./.github/copilot-instructions.md
+      cp "agent-configs/copilot/copilot-instructions.md" ./.github/copilot-instructions.md
       echo -e "  ${GREEN}✓${NC} Installed → .github/copilot-instructions.md"
       ;;
     "Ollama"*)
       echo -e "${DIM}Which Ollama model do you want to use?${NC}"
       OLLAMA_MODEL=$(gum input --prompt "" --placeholder "llama3.1" --value "llama3.1" --width 40)
       OLLAMA_MODEL="${OLLAMA_MODEL:-llama3.1}"
-      {
-        echo "FROM ${OLLAMA_MODEL}"
-        echo ""
-        echo 'SYSTEM """'
-        cat "$INSTRUCTION_SRC"
-        echo ""
-        echo "## Ollama-Specific Notes"
-        echo ""
-        echo "You are running as a local Ollama model. You do NOT have:"
-        echo "- File system access (cannot read or write files)"
-        echo "- Tool use (cannot run commands or call APIs)"
-        echo "- Git operations (cannot commit, push, or create journal entries)"
-        echo ""
-        echo "When the user asks you to do something that requires file access, tool use, or git:"
-        echo "1. Provide the content/instructions they need"
-        echo "2. Tell them to copy-paste or run the commands themselves"
-        echo "3. Remind them to create a journal entry and commit at session end"
-        echo ""
-        echo "For context router triggers, ask the user to paste the relevant file contents."
-        echo '"""'
-      } > ./Modelfile
+      sed "s/^FROM .*/FROM ${OLLAMA_MODEL}/" "agent-configs/ollama/Modelfile" > ./Modelfile
       echo -e "  ${GREEN}✓${NC} Installed → Modelfile (model: ${OLLAMA_MODEL})"
-      cp "$INSTRUCTION_SRC" ./CLAUDE.md
+      cp "agent-configs/claude/CLAUDE.md" ./CLAUDE.md
       echo -e "  ${DIM}Also created CLAUDE.md for reference (Ollama reads from Modelfile)${NC}"
       ;;
     "Other"*)
-      cp "$INSTRUCTION_SRC" ./CLAUDE.md
+      cp "agent-configs/claude/CLAUDE.md" ./CLAUDE.md
       echo -e "  ${GREEN}✓${NC} Installed → CLAUDE.md (universal default)"
       echo -e "  ${DIM}Rename to match your agent's instruction file format if needed.${NC}"
       ;;
@@ -957,11 +935,56 @@ update() {
     if [ -n "$(git status --porcelain 2>/dev/null)" ]; then
       git add -A && git commit -q -m "cleanup: remove upstream-only files after update" 2>/dev/null
     fi
+    # Re-copy agent instruction file from updated agent-configs/
+    # The merge updates agent-configs/ but the root instruction file is a copy
+    # that needs to be refreshed manually.
+    if [ -d "agent-configs" ]; then
+      if [ -f ".cursorrules" ] && [ -f "agent-configs/cursor/.cursorrules" ]; then
+        cp "agent-configs/cursor/.cursorrules" ./.cursorrules
+        echo -e "  ${GREEN}✓${NC} Updated .cursorrules"
+      elif [ -f ".windsurfrules" ] && [ -f "agent-configs/windsurf/.windsurfrules" ]; then
+        cp "agent-configs/windsurf/.windsurfrules" ./.windsurfrules
+        echo -e "  ${GREEN}✓${NC} Updated .windsurfrules"
+      elif [ -f ".clinerules" ] && [ -f "agent-configs/cline/.clinerules" ]; then
+        cp "agent-configs/cline/.clinerules" ./.clinerules
+        echo -e "  ${GREEN}✓${NC} Updated .clinerules"
+      elif [ -f "CONVENTIONS.md" ] && [ -f "agent-configs/aider/CONVENTIONS.md" ]; then
+        cp "agent-configs/aider/CONVENTIONS.md" ./CONVENTIONS.md
+        echo -e "  ${GREEN}✓${NC} Updated CONVENTIONS.md"
+      elif [ -f ".continue/rules" ] && [ -f "agent-configs/continue/rules" ]; then
+        cp "agent-configs/continue/rules" ./.continue/rules
+        echo -e "  ${GREEN}✓${NC} Updated .continue/rules"
+      elif [ -f ".github/copilot-instructions.md" ] && [ -f "agent-configs/copilot/copilot-instructions.md" ]; then
+        cp "agent-configs/copilot/copilot-instructions.md" ./.github/copilot-instructions.md
+        echo -e "  ${GREEN}✓${NC} Updated copilot-instructions.md"
+      elif [ -f "GEMINI.md" ] && [ -f "agent-configs/gemini/GEMINI.md" ]; then
+        cp "agent-configs/gemini/GEMINI.md" ./GEMINI.md
+        echo -e "  ${GREEN}✓${NC} Updated GEMINI.md"
+      elif [ -f "AGENTS.md" ] && [ -f "agent-configs/codex/AGENTS.md" ]; then
+        cp "agent-configs/codex/AGENTS.md" ./AGENTS.md
+        echo -e "  ${GREEN}✓${NC} Updated AGENTS.md"
+      elif [ -f "Modelfile" ] && [ -f "agent-configs/ollama/Modelfile" ]; then
+        # Preserve user's model choice, update instructions
+        CURRENT_MODEL=$(head -1 Modelfile | sed 's/^FROM //')
+        sed "s/^FROM .*/FROM ${CURRENT_MODEL}/" "agent-configs/ollama/Modelfile" > ./Modelfile
+        echo -e "  ${GREEN}✓${NC} Updated Modelfile (preserved model: ${CURRENT_MODEL})"
+      fi
+      # Default: CLAUDE.md (Claude Code, Other, or Ollama reference copy)
+      if [ -f "CLAUDE.md" ] && [ -f "agent-configs/claude/CLAUDE.md" ]; then
+        cp "agent-configs/claude/CLAUDE.md" ./CLAUDE.md
+        echo -e "  ${GREEN}✓${NC} Updated CLAUDE.md"
+      fi
+      # Commit instruction file refresh
+      if [ -n "$(git status --porcelain 2>/dev/null)" ]; then
+        git add -A && git commit -q -m "update: refresh instruction file from agent-configs" 2>/dev/null
+      fi
+    fi
+
     echo ""
     echo -e "${GREEN}Update complete!${NC}"
     echo ""
     echo "Updated files:"
-    git diff --name-only HEAD~2..HEAD 2>/dev/null | head -20
+    git diff --name-only HEAD~3..HEAD 2>/dev/null | head -20
   else
     echo ""
     echo -e "${YELLOW}Merge conflicts detected. Resolve them manually:${NC}"
@@ -1006,9 +1029,8 @@ test_install() {
   # Rename origin to upstream
   git remote rename origin upstream
 
-  # Copy agent config
-  INSTRUCTION_SRC="agent-configs/claude/CLAUDE.md"
-  cp "$INSTRUCTION_SRC" ./CLAUDE.md
+  # Copy agent config (test always uses Claude Code)
+  cp "agent-configs/claude/CLAUDE.md" ./CLAUDE.md
   echo -e "  ${GREEN}✓${NC} Installed → CLAUDE.md"
 
   # Remove unselected integrations

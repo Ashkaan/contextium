@@ -26,8 +26,9 @@ The AI's operating manual. The installer places **one** instruction file at the 
 All contain the same core architecture — context router, session lifecycle, delegation rules — formatted for the specific agent's instruction format. Ollama uses a Modelfile with the instructions baked into the SYSTEM prompt. Templates for all agents live in `agent-configs/`.
 
 The instruction file contains:
-- **Context Router** — which files to load for which triggers
+- **Context Router** — which files to load for which triggers (16 triggers including delegation pre-check, style guides, people cards)
 - **Session Classification** — New Project / Existing / One-Off
+- **MANDATORY Protocols** — Session End (journal + commit + push), New Apps (README + registry), Automation Scripts (deploy after edit)
 - **Repo Structure Map** — what each directory contains
 - **Rule Index** — pointers to behavioral and governance rules
 
@@ -102,9 +103,10 @@ Route expensive work to the right tool:
 
 ### Behavioral Enforcement
 Rules aren't aspirational — they can be enforced:
-- Git hooks prevent common mistakes
+- MANDATORY protocols in the instruction file ensure session discipline
+- Optional hooks (Claude Code, Cursor, etc.) can machine-enforce rules like blocking memory writes, gating API calls, or tracking file reads
 - Desired-state reconciliation catches drift
-- Session governance ensures journal + push at session end
+- Context repo parity ensures automation scripts exist in the repo, not just the platform
 
 ## Data Flow
 

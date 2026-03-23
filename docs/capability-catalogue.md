@@ -155,7 +155,15 @@ Two tiers:
 
 1. **Classify** — New Project / Existing / One-Off
 2. **Work** — Read context, make changes, delegate when efficient
-3. **Close** — Journal entry + git commit + push
+3. **Close** — Journal entry + git commit + push (MANDATORY — no exceptions)
+
+### MANDATORY Protocols
+
+| Protocol | When | What |
+|----------|------|------|
+| **Session End** | Every session, no matter how short | Journal entry + commit + push |
+| **New Apps** | After creating a new `apps/` directory | README protocol + registry entry in `apps/README.md` |
+| **Automation Scripts** | After editing deployed scripts | Deploy to platform + verify (skip if no platform configured) |
 
 ### Depth Policy
 
@@ -176,8 +184,9 @@ Two tiers:
 | **Proactive value** | Surface adjacent insights after completing work |
 | **Credential handling** | All secrets in vault, never on disk |
 | **Repo hygiene** | No build artifacts, no nested .gitignore |
+| **Context repo parity** | Every automation script must have a source file in the repo |
 | **Project lifecycle** | Create with README, add to tracker, push immediately |
-| **Session end** | Journal + commit + push together |
+| **Session end** | Journal + commit + push together (MANDATORY) |
 
 ### Templates
 
@@ -195,9 +204,21 @@ Two tiers:
 
 ---
 
+### Journal Format (Recommended Defaults)
+
+- **Frontmatter**: `date` and `tags` only
+- **Session headings**: `### ` per session (project path or `one-off (description)`)
+- **Required**: `**Action:**` summary line under each heading
+- **Optional sections**: Changes, Decisions, Lessons, Blocked, Next
+- **Decisions**: include liberally — capture the WHY. Highest-value entries for future sessions
+- **Target size**: 10-350 lines per day
+
+---
+
 ## F. Update System
 
 - **Installer** (`install.sh`) — fresh install + update in one script
+- **Instruction file refresh** — `./install.sh update` re-copies the root instruction file from updated `agent-configs/`
 - **Protected paths** — `.gitattributes` merge=ours for user data
 - **Semantic versioning** — Major (breaking), Minor (new features), Patch (fixes)
 - **Upstream remote** — `git fetch upstream && git merge upstream/main`

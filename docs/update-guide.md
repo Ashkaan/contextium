@@ -29,7 +29,10 @@ This will:
 1. Fetch the latest from upstream
 2. Show you what changed (new apps, updated docs, etc.)
 3. Merge safely, protecting your data
-4. Report any conflicts (rare)
+4. Re-copy your root instruction file (CLAUDE.md, .cursorrules, etc.) from the updated `agent-configs/`
+5. Report any conflicts (rare)
+
+The instruction file refresh (step 4) is important — your AI reads the root file, not `agent-configs/`. Without this step, framework improvements to the context router, MANDATORY protocols, and governance rules would never reach your AI agent.
 
 ## Manual Update
 
