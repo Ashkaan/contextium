@@ -16,12 +16,12 @@ Pages, Workers, DNS, Tunnels, and Zero Trust for web hosting and infrastructure.
 
 ## Key Services
 
-| Service | Use |
-|---------|-----|
-| Pages | Static site hosting with CI/CD |
-| Workers | Serverless functions at the edge |
-| DNS | Domain management |
-| Tunnels | Expose local services securely |
+| Service    | Use                              |
+| ---------- | -------------------------------- |
+| Pages      | Static site hosting with CI/CD   |
+| Workers    | Serverless functions at the edge |
+| DNS        | Domain management                |
+| Tunnels    | Expose local services securely   |
 | Zero Trust | Access control for internal apps |
 
 ## Common Commands

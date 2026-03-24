@@ -1,6 +1,7 @@
 # Gemini
 
-AI research agent for web research, content summarization, and tasks requiring real-time internet access. Used as a delegated sub-agent when Claude needs to browse the web or interact with external services.
+AI research agent for web research, content summarization, and tasks requiring real-time internet access. Used as a
+delegated sub-agent when Claude needs to browse the web or interact with external services.
 
 ## Requirements
 
@@ -33,13 +34,13 @@ AI research agent for web research, content summarization, and tasks requiring r
 
 Use Gemini when the task requires capabilities Claude does not have natively:
 
-| Scenario | Why Gemini |
-|----------|-----------|
-| Web research | Can browse live URLs and search the web |
-| Current events | Has real-time internet access |
-| URL content extraction | Can fetch and parse web pages |
-| Fact-checking with sources | Can verify claims against live sources |
-| Todoist operations | Can interact with Todoist API directly |
+| Scenario                   | Why Gemini                              |
+| -------------------------- | --------------------------------------- |
+| Web research               | Can browse live URLs and search the web |
+| Current events             | Has real-time internet access           |
+| URL content extraction     | Can fetch and parse web pages           |
+| Fact-checking with sources | Can verify claims against live sources  |
+| Todoist operations         | Can interact with Todoist API directly  |
 
 **Do NOT delegate** when the task only requires reasoning over data already in context -- that is faster to do directly.
 

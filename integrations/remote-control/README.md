@@ -1,6 +1,7 @@
 # Remote Control
 
-Mobile access to your AI agent for text-based interaction from a phone, tablet, or any device with a browser. Lets you query your knowledge base, create tasks, and trigger automations on the go.
+Mobile access to your AI agent for text-based interaction from a phone, tablet, or any device with a browser. Lets you
+query your knowledge base, create tasks, and trigger automations on the go.
 
 ## Requirements
 

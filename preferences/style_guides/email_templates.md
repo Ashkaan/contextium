@@ -17,26 +17,26 @@ Conventions for automated email notifications.
 
 ## Color Palette
 
-| Token | Hex | Use |
-|-------|-----|-----|
+| Token     | Hex       | Use                     |
+| --------- | --------- | ----------------------- |
 | Header BG | `#1a1a2e` | Email header background |
-| Body BG | `#f0f0f0` | Email body background |
-| Card BG | `#ffffff` | Content cards |
-| Border | `#e0e0e0` | Dividers |
-| Green | `#2e7d32` | Success, positive |
-| Blue | `#1565c0` | Info, links |
-| Orange | `#e65100` | Warning |
-| Red | `#c62828` | Error, critical |
+| Body BG   | `#f0f0f0` | Email body background   |
+| Card BG   | `#ffffff` | Content cards           |
+| Border    | `#e0e0e0` | Dividers                |
+| Green     | `#2e7d32` | Success, positive       |
+| Blue      | `#1565c0` | Info, links             |
+| Orange    | `#e65100` | Warning                 |
+| Red       | `#c62828` | Error, critical         |
 
 ## Typography
 
-| Element | Size | Weight | Color |
-|---------|------|--------|-------|
-| Header title | 22px | 700 | white |
-| Section title | 16px | 700 | #333 |
-| Body | 14px | 400 | #333 |
-| Supporting | 13px | 400 | #666 |
-| Stat numbers | 28px | 700 | semantic |
+| Element       | Size | Weight | Color    |
+| ------------- | ---- | ------ | -------- |
+| Header title  | 22px | 700    | white    |
+| Section title | 16px | 700    | #333     |
+| Body          | 14px | 400    | #333     |
+| Supporting    | 13px | 400    | #666     |
+| Stat numbers  | 28px | 700    | semantic |
 
 Font stack: `-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif`
 
@@ -45,5 +45,6 @@ Font stack: `-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif`
 Pattern: `[Name] — [Date or Context]`
 
 Examples:
+
 - `Morning Briefing — Saturday, February 8, 2026`
 - `Weekly Scorecard — Week 10`

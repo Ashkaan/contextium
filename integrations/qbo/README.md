@@ -18,12 +18,12 @@ Business accounting via the QuickBooks Online API.
 
 ## Key Reports
 
-| Report | Endpoint | Use |
-|--------|----------|-----|
-| Profit & Loss | `/reports/ProfitAndLoss` | Revenue and expenses |
-| Balance Sheet | `/reports/BalanceSheet` | Assets and liabilities |
-| General Ledger | `/reports/GeneralLedger` | Transaction detail |
-| Cash Flow | `/reports/CashFlow` | Cash movement |
+| Report         | Endpoint                 | Use                    |
+| -------------- | ------------------------ | ---------------------- |
+| Profit & Loss  | `/reports/ProfitAndLoss` | Revenue and expenses   |
+| Balance Sheet  | `/reports/BalanceSheet`  | Assets and liabilities |
+| General Ledger | `/reports/GeneralLedger` | Transaction detail     |
+| Cash Flow      | `/reports/CashFlow`      | Cash movement          |
 
 ## Token Management
 

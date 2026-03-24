@@ -16,7 +16,8 @@ E-ink dashboard display for at-a-glance information.
 
 ## How It Works
 
-TRMNL displays are updated by pushing data via webhook. Your automations format the data and send it to the TRMNL API, which renders it on the e-ink screen.
+TRMNL displays are updated by pushing data via webhook. Your automations format the data and send it to the TRMNL API,
+which renders it on the e-ink screen.
 
 ## Data Push Format
 

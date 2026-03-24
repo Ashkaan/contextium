@@ -17,12 +17,12 @@ Device inventory and remote monitoring/management (RMM) platform.
 
 ## Key Endpoints
 
-| Resource | Endpoint | Use |
-|----------|----------|-----|
-| Devices | `/devices` | Full device inventory |
-| Organizations | `/organizations` | Client/org list |
-| Alerts | `/alerts` | Active alerts |
-| Activities | `/activities` | Activity log |
+| Resource      | Endpoint         | Use                   |
+| ------------- | ---------------- | --------------------- |
+| Devices       | `/devices`       | Full device inventory |
+| Organizations | `/organizations` | Client/org list       |
+| Alerts        | `/alerts`        | Active alerts         |
+| Activities    | `/activities`    | Activity log          |
 
 ## Use Cases
 

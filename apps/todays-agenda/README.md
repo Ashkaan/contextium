@@ -31,12 +31,12 @@ Timer → Fetch calendar events + tasks + active projects → Compute focus bloc
 
 ## Data Sources
 
-| Source | What | Why |
-|--------|------|-----|
-| Calendar API | Today's events from all calendars | Know your schedule |
-| Task manager | Today's tasks and overdue items | Know your priorities |
-| `projects/README.md` | Active projects list | Know your commitments |
-| `knowledge/growth/goals/current-focus.md` | Current strategic focus | Stay aligned |
+| Source                                    | What                              | Why                   |
+| ----------------------------------------- | --------------------------------- | --------------------- |
+| Calendar API                              | Today's events from all calendars | Know your schedule    |
+| Task manager                              | Today's tasks and overdue items   | Know your priorities  |
+| `projects/README.md`                      | Active projects list              | Know your commitments |
+| `knowledge/growth/goals/current-focus.md` | Current strategic focus           | Stay aligned          |
 
 ## Features
 

@@ -4,12 +4,12 @@
 
 Use Gemini (via `gemini -p "..."`) for tasks that require external information:
 
-| Task | Why Gemini |
-|------|-----------|
-| Web research | Accesses current information |
+| Task                        | Why Gemini                                             |
+| --------------------------- | ------------------------------------------------------ |
+| Web research                | Accesses current information                           |
 | Large content summarization | Processes externally, only summary enters your context |
-| Todoist operations | Direct task management integration |
-| YouTube analysis | Handles JS-rendered content |
+| Todoist operations          | Direct task management integration                     |
+| YouTube analysis            | Handles JS-rendered content                            |
 
 ## How to Invoke
 
@@ -35,5 +35,6 @@ gemini -p "summarize this video: [title] by [author]"
 ## Delegation Logging
 
 When delegating non-trivial research, log in the journal:
+
 - `gemini: researched OAuth2 best practices -> 5 key recommendations`
 - `gemini: summarized 3 competitor products -> comparison matrix`

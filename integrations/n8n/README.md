@@ -16,10 +16,10 @@ Workflow automation platform for multi-step workflows, webhooks, and scheduled j
 
 ## Key Endpoints
 
-| Resource | Endpoint | Use |
-|----------|----------|-----|
-| Workflows | `/api/v1/workflows` | List and manage workflows |
-| Executions | `/api/v1/executions` | View run history |
+| Resource    | Endpoint              | Use                       |
+| ----------- | --------------------- | ------------------------- |
+| Workflows   | `/api/v1/workflows`   | List and manage workflows |
+| Executions  | `/api/v1/executions`  | View run history          |
 | Credentials | `/api/v1/credentials` | Manage stored credentials |
 
 ## When to Use n8n vs. Windmill

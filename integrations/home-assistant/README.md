@@ -1,6 +1,7 @@
 # Home Assistant
 
-Home automation API for device control, sensor data, and automation triggers. Popular with self-hosters for unifying smart home devices under one platform.
+Home automation API for device control, sensor data, and automation triggers. Popular with self-hosters for unifying
+smart home devices under one platform.
 
 ## Requirements
 
@@ -25,15 +26,15 @@ Home automation API for device control, sensor data, and automation triggers. Po
 
 ## Key Endpoints
 
-| Action | Method | Endpoint | Description |
-|--------|--------|----------|-------------|
-| API status | GET | `/api/` | Check if HA is reachable |
-| All states | GET | `/api/states` | Every entity and its current state |
-| Entity state | GET | `/api/states/{entity_id}` | Single entity state and attributes |
-| Call service | POST | `/api/services/{domain}/{service}` | Control a device |
-| Fire event | POST | `/api/events/{event_type}` | Trigger a custom event |
-| History | GET | `/api/history/period/{timestamp}` | Historical state data |
-| Template render | POST | `/api/template` | Render a Jinja2 template |
+| Action          | Method | Endpoint                           | Description                        |
+| --------------- | ------ | ---------------------------------- | ---------------------------------- |
+| API status      | GET    | `/api/`                            | Check if HA is reachable           |
+| All states      | GET    | `/api/states`                      | Every entity and its current state |
+| Entity state    | GET    | `/api/states/{entity_id}`          | Single entity state and attributes |
+| Call service    | POST   | `/api/services/{domain}/{service}` | Control a device                   |
+| Fire event      | POST   | `/api/events/{event_type}`         | Trigger a custom event             |
+| History         | GET    | `/api/history/period/{timestamp}`  | Historical state data              |
+| Template render | POST   | `/api/template`                    | Render a Jinja2 template           |
 
 ## Common Service Calls
 
@@ -70,6 +71,7 @@ curl -s -H "Authorization: Bearer $TOKEN" \
 ## Entity ID Naming
 
 Home Assistant entities follow the pattern `{domain}.{name}`:
+
 - `light.living_room`, `light.bedroom`
 - `switch.office_fan`
 - `sensor.outdoor_temperature`, `sensor.indoor_humidity`

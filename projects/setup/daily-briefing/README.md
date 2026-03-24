@@ -28,6 +28,7 @@ Set up a daily email that summarizes your day before you start working.
 ## Email Format
 
 Use the template from `preferences/style_guides/email_templates.md`:
+
 - Header with date
 - Calendar events section (color-coded by calendar)
 - Tasks section (sorted by priority)

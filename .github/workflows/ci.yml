@@ -13,6 +13,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Check for PII patterns
+        shell: bash
         run: |
           echo "Checking for potential PII..."
           FOUND=0
@@ -44,7 +45,7 @@ jobs:
             FOUND=1
           fi
 
-          if [ "$FOUND" -eq 1 ]; then
+          if [[ "$FOUND" -eq 1 ]]; then
             echo "::error::PII check found potential issues. Review the warnings above."
             exit 1
           fi
@@ -52,6 +53,7 @@ jobs:
           echo "PII check passed."
 
       - name: Validate structure
+        shell: bash
         run: |
           echo "Validating repo structure..."
           MISSING=0
@@ -61,28 +63,58 @@ jobs:
                    preferences/user/preferences.md preferences/rules/README.md \
                    apps/README.md projects/README.md journal/README.md \
                    knowledge/README.md integrations/README.md; do
-            if [ ! -f "$f" ]; then
+            if [[ ! -f "$f" ]]; then
               echo "::error::Missing required file: $f"
               MISSING=1
             fi
           done
 
-          if [ "$MISSING" -eq 1 ]; then
+          if [[ "$MISSING" -eq 1 ]]; then
             exit 1
           fi
 
           echo "Structure validation passed."
 
+      - name: Lint shell scripts
+        run: |
+          echo "Running shellcheck on install.sh..."
+          shellcheck install.sh
+          echo "Shell lint passed."
+
+      - name: Scan for secrets
+        run: |
+          echo "Scanning for secrets..."
+          # Use git grep patterns for common secret formats
+          FOUND=0
+          if grep -rE '(AKIA[0-9A-Z]{16}|sk-[a-zA-Z0-9]{20,}|ghp_[a-zA-Z0-9]{36})' \
+            --include="*.sh" --include="*.md" --include="*.yml" \
+            --exclude-dir=".git" .; then
+            echo "::error::Potential secrets found"
+            FOUND=1
+          fi
+          if [[ "$FOUND" -eq 1 ]]; then
+            exit 1
+          fi
+          echo "Secret scan passed."
+
       - name: Check markdown links
+        shell: bash
         run: |
           echo "Checking for broken internal links..."
-          # Basic check: find markdown links to local files and verify they exist
-          grep -rhoP '\[.*?\]\(((?!https?://|#).*?)\)' --include="*.md" . | \
-            grep -oP '\(([^)]+)\)' | tr -d '()' | sort -u | while read -r link; do
+          BROKEN=0
+
+          # Extract local file links from markdown and verify they exist
+          while IFS= read -r link; do
             # Strip anchors
-            file=$(echo "$link" | cut -d'#' -f1)
-            if [ -n "$file" ] && [ ! -e "$file" ]; then
+            file="${link%%#*}"
+            if [[ -n "$file" ]] && [[ ! -e "$file" ]]; then
               echo "::warning::Potentially broken link: $link"
+              BROKEN=1
             fi
-          done
+          done < <(grep -rhoP '\[.*?\]\(((?!https?://|#).*?)\)' --include="*.md" . | \
+            grep -oP '\(([^)]+)\)' | tr -d '()' | sort -u)
+
+          if [[ "$BROKEN" -eq 1 ]]; then
+            echo "::warning::Some internal links may be broken. Review the warnings above."
+          fi
           echo "Link check complete."

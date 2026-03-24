@@ -7,7 +7,7 @@ set -euo pipefail
 #   Update:        ./install.sh update
 
 REPO="https://github.com/Ashkaan/contextium.git"
-VERSION="v1.3.1"
+VERSION="v1.3.2"
 
 # Colors
 GREEN='\033[0;32m'
@@ -50,7 +50,7 @@ ensure_gum() {
     if command -v brew &>/dev/null; then
       brew install gum 2>/dev/null
     else
-      echo -e "${YELLOW}Please install Homebrew first: https://brew.sh${NC}"
+      echo -e "${YELLOW}Please install Homebrew first: https://brew.sh${NC}" >&2
       exit 1
     fi
   elif [[ "$OSTYPE" == "linux-gnu"* ]]; then
@@ -70,16 +70,16 @@ gpgkey=https://repo.charm.sh/yum/gpg.key' | sudo tee /etc/yum.repos.d/charm.repo
     elif command -v pacman &>/dev/null; then
       sudo pacman -S --noconfirm gum >/dev/null 2>&1
     else
-      echo -e "${YELLOW}Could not auto-install gum. Install manually: https://github.com/charmbracelet/gum${NC}"
+      echo -e "${YELLOW}Could not auto-install gum. Install manually: https://github.com/charmbracelet/gum${NC}" >&2
       exit 1
     fi
   else
-    echo -e "${YELLOW}Unsupported OS. Install gum manually: https://github.com/charmbracelet/gum${NC}"
+    echo -e "${YELLOW}Unsupported OS. Install gum manually: https://github.com/charmbracelet/gum${NC}" >&2
     exit 1
   fi
 
   if ! command -v gum &>/dev/null; then
-    echo -e "${YELLOW}Failed to install gum. Install manually: https://github.com/charmbracelet/gum${NC}"
+    echo -e "${YELLOW}Failed to install gum. Install manually: https://github.com/charmbracelet/gum${NC}" >&2
     exit 1
   fi
   echo -e "${GREEN}gum installed.${NC}"
@@ -89,7 +89,7 @@ ensure_prerequisites() {
   local missing=0
 
   if ! command -v git &>/dev/null; then
-    echo -e "${YELLOW}git is required but not installed.${NC}"
+    echo -e "${YELLOW}git is required but not installed.${NC}" >&2
     echo -e "  macOS: ${BOLD}xcode-select --install${NC}"
     echo -e "  Linux: ${BOLD}sudo apt install git${NC} or ${BOLD}sudo yum install git${NC}"
     missing=1
@@ -100,11 +100,171 @@ ensure_prerequisites() {
     echo -e "${DIM}You can install Node.js from https://nodejs.org if needed.${NC}"
   fi
 
-  if [ $missing -eq 1 ]; then
+  if [[ $missing -eq 1 ]]; then
     echo ""
-    echo -e "${YELLOW}Install the missing prerequisites and run again.${NC}"
+    echo -e "${YELLOW}Install the missing prerequisites and run again.${NC}" >&2
     exit 1
   fi
+}
+
+# --- Shared helpers ---
+
+# Map integration display names to directory names
+declare -A INTEGRATION_MAP=(
+  ["1Password (store API keys and credentials securely)"]="1password"
+  ["Google Workspace (Gmail, Calendar, Drive, Sheets)"]="google-workspace google-auth"
+  ["Todoist (task management and to-do tracking)"]="todoist"
+  ["Gemini (delegate web research to Google's AI)"]="gemini"
+  ["Codex (delegate bulk edits to a second AI agent)"]="codex"
+  ["Browse (browser automation for web scraping and testing)"]="browse"
+  ["Windmill (self-hosted workflow automation — like Zapier but yours)"]="windmill"
+  ["n8n (self-hosted workflow automation — alternative to Windmill)"]="n8n"
+  ["Cloudflare (DNS, web hosting, serverless functions)"]="cloudflare"
+  ["TrueNAS (NAS and Docker container management via SSH)"]="truenas"
+  ["Home Assistant (smart home control and automation)"]="home-assistant"
+  ["Autotask (PSA/ticketing for managed service providers)"]="autotask"
+  ["NinjaOne (device inventory and remote monitoring)"]="ninjaone"
+  ["QuickBooks Online (business accounting and financial reports)"]="qbo"
+  ["Monarch (personal finance tracking and budgeting)"]="monarch"
+  ["Strety (EOS platform — scorecards, rocks, meeting management)"]="strety"
+  ["Hudu (IT documentation platform)"]="hudu"
+  ["MSPBots (MSP-specific analytics and KPI dashboards)"]="mspbots"
+  ["Garage (S3-compatible object storage for backups)"]="garage"
+  ["TRMNL (e-ink display dashboard for at-a-glance info)"]="trmnl"
+  ["Remote Control (access your AI from your phone)"]="remote-control"
+  ["HAPI (voice interface — talk to your AI)"]="hapi"
+  ["Ollama (delegate tasks to a local AI — free, private, offline)"]="ollama"
+  ["VS Code (remote development tunnel)"]="vscode"
+)
+
+# Filter integrations to keep only selected ones
+# Globals: INTEGRATIONS (read), INTEGRATION_MAP (read)
+filter_integrations() {
+  local selected_dirs=""
+  while IFS= read -r line; do
+    if [[ -n "$line" ]] && [[ -n "${INTEGRATION_MAP[$line]+x}" ]]; then
+      # shellcheck disable=SC2086
+      for dir in ${INTEGRATION_MAP[$line]}; do
+        selected_dirs="$selected_dirs $dir"
+      done
+    fi
+  done <<< "$INTEGRATIONS"
+
+  # Always keep: README.md, daedalus, host-docs-map (infrastructure)
+  selected_dirs="$selected_dirs daedalus host-docs-map"
+
+  # Remove unselected integrations
+  local removed=0
+  for dir in integrations/*/; do
+    local dirname
+    dirname=$(basename "$dir")
+    if [[ "$dirname" = "README.md" ]]; then continue; fi
+    if ! echo "$selected_dirs" | grep -qw "$dirname"; then
+      rm -rf "$dir"
+      removed=$((removed + 1))
+    fi
+  done
+  local kept
+  kept=$(find integrations -mindepth 1 -maxdepth 1 -type d | wc -l)
+  echo -e "  ${GREEN}✓${NC} ${kept} integrations installed (${removed} skipped)"
+}
+
+# Create a user profile in knowledge/people/
+# Args: $1=name, $2=name_lower, $3=profession, $4=ai_goal
+create_profile() {
+  mkdir -p "knowledge/people/${2}"
+  cat > "knowledge/people/${2}/README.md" << PROFILE_EOF
+# ${1}
+
+**Added:** $(date +%Y-%m-%d)
+
+## About
+
+${3}
+
+## AI Goal
+
+${4}
+PROFILE_EOF
+  echo -e "  ${GREEN}✓${NC} Profile created for ${1}"
+}
+
+# Write preferences file
+# Args: $1=user_name, $2=comm_short, $3=profession, $4=ai_goal
+write_preferences() {
+  cat > preferences/user/preferences.md << PREFS_EOF
+# User Preferences — ${1}
+
+## Communication
+
+$(case "$2" in
+  concise)
+    echo "- **Concise over verbose** — get to the point"
+    echo "- **Direct over diplomatic** — say what you mean"
+    echo "- **Practical over theoretical** — focus on what works"
+    ;;
+  balanced)
+    echo "- **Brief but reasoned** — include the why, skip the filler"
+    echo "- **Direct but thoughtful** — explain trade-offs when relevant"
+    echo "- **Practical first** — theory only when it informs action"
+    ;;
+  thorough)
+    echo "- **Thorough explanations** — show your reasoning"
+    echo "- **Present alternatives** — help me think through options"
+    echo "- **Context-rich** — include background when it helps"
+    ;;
+esac)
+
+## Professional Context
+
+${3}
+
+## Primary Goal with AI
+
+${4}
+
+## Working Style
+
+*Update this as your AI learns how you work best.*
+PREFS_EOF
+  echo -e "  ${GREEN}✓${NC} Preferences configured (${2} communication)"
+}
+
+# Create a knowledge domain directory
+# Args: $1=domain_name, $2=domain_lower
+create_knowledge_domain() {
+  mkdir -p "knowledge/${2}"
+  cat > "knowledge/${2}/README.md" << DOMAIN_EOF
+# ${1^}
+
+Persistent context for ${1}. Add files here as knowledge accumulates.
+
+**Created:** $(date +%Y-%m-%d)
+DOMAIN_EOF
+  echo -e "  ${GREEN}✓${NC} Knowledge domain created: ${1}"
+}
+
+# Update integrations/README.md to only show installed integrations
+update_integrations_readme() {
+  if [[ -f integrations/README.md ]] && command -v python3 &>/dev/null; then
+    python3 -c "
+import os, re
+lines = open('integrations/README.md').readlines()
+installed = set(os.listdir('integrations')) - {'README.md'}
+installed = {d for d in installed if os.path.isdir(f'integrations/{d}')}
+out = []
+for line in lines:
+    m = re.match(r'\| \[.*?\]\((\w[\w-]*)/?\)', line)
+    if m:
+        dirname = m.group(1)
+        if dirname in installed:
+            out.append(line)
+    else:
+        out.append(line)
+open('integrations/README.md', 'w').writelines(out)
+" 2>/dev/null || true
+  fi
+  echo -e "  ${GREEN}✓${NC} Integration docs updated to match your selection"
 }
 
 # --- Init (fresh install) ---
@@ -118,8 +278,8 @@ init() {
   echo -e "${BOLD}What's your name?${NC}"
   echo -e "${DIM}So your AI recognizes you across sessions and never has to ask again.${NC}"
   USER_NAME=$(gum input --prompt "" --placeholder "Your name" --width 40)
-  if [ -z "$USER_NAME" ]; then
-    echo -e "${YELLOW}Name is required.${NC}"
+  if [[ -z "$USER_NAME" ]]; then
+    echo -e "${YELLOW}Name is required.${NC}" >&2
     exit 1
   fi
   echo ""
@@ -129,8 +289,8 @@ init() {
   echo -e "${DIM}Everything lives in one folder — your AI reads and writes here across sessions.${NC}"
   DIR_NAME=$(gum input --prompt "" --placeholder "my-context" --value "my-context" --width 40)
   DIR_NAME="${DIR_NAME:-my-context}"
-  if [ -d "$DIR_NAME" ]; then
-    echo -e "${YELLOW}Directory '$DIR_NAME' already exists. Use './install.sh update' inside it to update.${NC}"
+  if [[ -d "$DIR_NAME" ]]; then
+    echo -e "${YELLOW}Directory '$DIR_NAME' already exists. Use './install.sh update' inside it to update.${NC}" >&2
     exit 1
   fi
   echo ""
@@ -177,7 +337,7 @@ init() {
   fi
   AI_ITEMS+=("Browse (browser automation for web scraping and testing)")
 
-  if [ ${#AI_ITEMS[@]} -gt 0 ]; then
+  if [[ ${#AI_ITEMS[@]} -gt 0 ]]; then
     echo -e "${BOLD}Want to delegate tasks to other AI agents?${NC}"
     echo -e "${DIM}Your primary AI can route work to cheaper/specialized agents —${NC}"
     echo -e "${DIM}research to Gemini, bulk edits to Codex. Saves tokens and money.${NC}"
@@ -317,14 +477,14 @@ init() {
     if ! command -v gh &>/dev/null; then
       echo -e "${BLUE}Installing GitHub CLI...${NC}"
       if [[ "$OSTYPE" == "darwin"* ]]; then
-        brew install gh 2>/dev/null || { echo -e "${YELLOW}Could not install gh. Install manually: https://cli.github.com${NC}"; CREATE_REPO="no"; }
+        brew install gh 2>/dev/null || { echo -e "${YELLOW}Could not install gh. Install manually: https://cli.github.com${NC}" >&2; CREATE_REPO="no"; }
       elif command -v apt-get &>/dev/null; then
         curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | sudo dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg 2>/dev/null
         echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | sudo tee /etc/apt/sources.list.d/github-cli.list >/dev/null
         sudo apt-get update -qq -o Dir::Etc::sourcelist="sources.list.d/github-cli.list" -o Dir::Etc::sourceparts="-" -o APT::Get::List-Cleanup="0" && sudo apt-get install -y -qq gh >/dev/null 2>&1
         echo -e "  ${GREEN}✓${NC} GitHub CLI installed"
       else
-        echo -e "${YELLOW}Could not install gh. Install manually: https://cli.github.com${NC}"
+        echo -e "${YELLOW}Could not install gh. Install manually: https://cli.github.com${NC}" >&2
         CREATE_REPO="no"
       fi
     fi
@@ -351,7 +511,7 @@ init() {
 
         gh auth login --git-protocol https --web 2>&1 || {
           echo ""
-          echo -e "${YELLOW}GitHub auth didn't complete. No worries — you can do this later:${NC}"
+          echo -e "${YELLOW}GitHub auth didn't complete. No worries — you can do this later:${NC}" >&2
           echo -e "  ${BOLD}gh auth login${NC}"
           echo -e "  ${BOLD}gh repo create $(basename "$(pwd)") --private --source=. --push${NC}"
           CREATE_REPO="no"
@@ -372,10 +532,10 @@ init() {
 
   # Clone template (keep history for upstream merges to work)
   if ! git clone "$REPO" "$DIR_NAME" 2>&1 | tail -1; then
-    echo -e "${YELLOW}Failed to clone the Contextium template. Check your internet connection.${NC}"
+    echo -e "${YELLOW}Failed to clone the Contextium template. Check your internet connection.${NC}" >&2
     exit 1
   fi
-  cd "$DIR_NAME" || { echo -e "${YELLOW}Failed to enter directory '$DIR_NAME'.${NC}"; exit 1; }
+  cd "$DIR_NAME" || { echo -e "${YELLOW}Failed to enter directory '$DIR_NAME'.${NC}" >&2; exit 1; }
 
   # Rename origin to upstream (framework source for future updates)
   git remote rename origin upstream
@@ -475,77 +635,11 @@ PERSONALREADME
     rm -f CLAUDE.md
   fi
 
-  # Map integration display names to directory names
-  declare -A INTEGRATION_MAP=(
-    ["1Password (store API keys and credentials securely)"]="1password"
-    ["Google Workspace (Gmail, Calendar, Drive, Sheets)"]="google-workspace google-auth"
-    ["Todoist (task management and to-do tracking)"]="todoist"
-    ["Gemini (delegate web research to Google's AI)"]="gemini"
-    ["Codex (delegate bulk edits to a second AI agent)"]="codex"
-    ["Browse (browser automation for web scraping and testing)"]="browse"
-    ["Windmill (self-hosted workflow automation — like Zapier but yours)"]="windmill"
-    ["n8n (self-hosted workflow automation — alternative to Windmill)"]="n8n"
-    ["Cloudflare (DNS, web hosting, serverless functions)"]="cloudflare"
-    ["TrueNAS (NAS and Docker container management via SSH)"]="truenas"
-    ["Home Assistant (smart home control and automation)"]="home-assistant"
-    ["Autotask (PSA/ticketing for managed service providers)"]="autotask"
-    ["NinjaOne (device inventory and remote monitoring)"]="ninjaone"
-    ["QuickBooks Online (business accounting and financial reports)"]="qbo"
-    ["Monarch (personal finance tracking and budgeting)"]="monarch"
-    ["Strety (EOS platform — scorecards, rocks, meeting management)"]="strety"
-    ["Hudu (IT documentation platform)"]="hudu"
-    ["MSPBots (MSP-specific analytics and KPI dashboards)"]="mspbots"
-    ["Garage (S3-compatible object storage for backups)"]="garage"
-    ["TRMNL (e-ink display dashboard for at-a-glance info)"]="trmnl"
-    ["Remote Control (access your AI from your phone)"]="remote-control"
-    ["HAPI (voice interface — talk to your AI)"]="hapi"
-    ["Ollama (delegate tasks to a local AI — free, private, offline)"]="ollama"
-    ["VS Code (remote development tunnel)"]="vscode"
-  )
-
-  # Build list of selected integration directories
-  SELECTED_DIRS=""
-  while IFS= read -r line; do
-    if [ -n "$line" ] && [ -n "${INTEGRATION_MAP[$line]+x}" ]; then
-      for dir in ${INTEGRATION_MAP[$line]}; do
-        SELECTED_DIRS="$SELECTED_DIRS $dir"
-      done
-    fi
-  done <<< "$INTEGRATIONS"
-
-  # Always keep: README.md, daedalus, host-docs-map (infrastructure)
-  SELECTED_DIRS="$SELECTED_DIRS daedalus host-docs-map"
-
-  # Remove unselected integrations
-  REMOVED=0
-  for dir in integrations/*/; do
-    dirname=$(basename "$dir")
-    if [ "$dirname" = "README.md" ]; then continue; fi
-    if ! echo "$SELECTED_DIRS" | grep -qw "$dirname"; then
-      rm -rf "$dir"
-      REMOVED=$((REMOVED + 1))
-    fi
-  done
-  KEPT=$(find integrations -mindepth 1 -maxdepth 1 -type d | wc -l)
-  echo -e "  ${GREEN}✓${NC} ${KEPT} integrations installed (${REMOVED} skipped)"
+  filter_integrations
 
   # Create user profile
   USER_NAME_LOWER=$(echo "$USER_NAME" | tr '[:upper:]' '[:lower:]' | tr ' ' '-')
-  mkdir -p "knowledge/people/${USER_NAME_LOWER}"
-  cat > "knowledge/people/${USER_NAME_LOWER}/README.md" << PROFILE_EOF
-# ${USER_NAME}
-
-**Added:** $(date +%Y-%m-%d)
-
-## About
-
-${PROFESSION}
-
-## AI Goal
-
-${AI_GOAL}
-PROFILE_EOF
-  echo -e "  ${GREEN}✓${NC} Profile created for ${USER_NAME}"
+  create_profile "$USER_NAME" "$USER_NAME_LOWER" "$PROFESSION" "$AI_GOAL"
 
   # Write full preferences file
   COMM_SHORT=""
@@ -554,83 +648,13 @@ PROFILE_EOF
     "Balanced"*) COMM_SHORT="balanced" ;;
     "Thorough"*) COMM_SHORT="thorough" ;;
   esac
-  cat > preferences/user/preferences.md << PREFS_EOF
-# User Preferences — ${USER_NAME}
-
-## Communication
-
-$(case "$COMM_SHORT" in
-  concise)
-    echo "- **Concise over verbose** — get to the point"
-    echo "- **Direct over diplomatic** — say what you mean"
-    echo "- **Practical over theoretical** — focus on what works"
-    ;;
-  balanced)
-    echo "- **Brief but reasoned** — include the why, skip the filler"
-    echo "- **Direct but thoughtful** — explain trade-offs when relevant"
-    echo "- **Practical first** — theory only when it informs action"
-    ;;
-  thorough)
-    echo "- **Thorough explanations** — show your reasoning"
-    echo "- **Present alternatives** — help me think through options"
-    echo "- **Context-rich** — include background when it helps"
-    ;;
-esac)
-
-## Professional Context
-
-${PROFESSION}
-
-## Primary Goal with AI
-
-${AI_GOAL}
-
-## Working Style
-
-*Update this as your AI learns how you work best.*
-PREFS_EOF
-  echo -e "  ${GREEN}✓${NC} Preferences configured (${COMM_SHORT} communication)"
+  write_preferences "$USER_NAME" "$COMM_SHORT" "$PROFESSION" "$AI_GOAL"
 
   # Create first knowledge domain
   DOMAIN_LOWER=$(echo "$FIRST_DOMAIN" | tr '[:upper:]' '[:lower:]' | tr ' ' '-')
-  mkdir -p "knowledge/${DOMAIN_LOWER}"
-  cat > "knowledge/${DOMAIN_LOWER}/README.md" << DOMAIN_EOF
-# ${FIRST_DOMAIN^}
+  create_knowledge_domain "$FIRST_DOMAIN" "$DOMAIN_LOWER"
 
-Persistent context for ${FIRST_DOMAIN}. Add files here as knowledge accumulates.
-
-**Created:** $(date +%Y-%m-%d)
-DOMAIN_EOF
-  echo -e "  ${GREEN}✓${NC} Knowledge domain created: ${FIRST_DOMAIN}"
-
-  # Update integrations/README.md to only show installed integrations
-  if [ -f integrations/README.md ]; then
-    # Build list of installed integration directories
-    INSTALLED_DIRS=$(find integrations -mindepth 1 -maxdepth 1 -type d -exec basename {} \; | sort)
-
-    # Create a temp file with only the rows for installed integrations
-    # Keep header lines and rows whose link target matches an installed directory
-    python3 -c "
-import os, re, sys
-lines = open('integrations/README.md').readlines()
-installed = set(os.listdir('integrations')) - {'README.md'}
-installed = {d for d in installed if os.path.isdir(f'integrations/{d}')}
-out = []
-in_table = False
-for line in lines:
-    # Detect table rows with integration links like [name](dirname/)
-    m = re.match(r'\| \[.*?\]\((\w[\w-]*)/?\)', line)
-    if m:
-        in_table = True
-        dirname = m.group(1)
-        if dirname in installed:
-            out.append(line)
-    else:
-        out.append(line)
-open('integrations/README.md', 'w').writelines(out)
-" 2>/dev/null || true
-  fi
-  echo -e "  ${GREEN}✓${NC} Integration docs updated to match your selection"
+  update_integrations_readme
 
   # Set git identity if not configured (uses name from onboarding)
   if ! git config user.name &>/dev/null; then
@@ -651,7 +675,7 @@ open('integrations/README.md', 'w').writelines(out)
   if [[ "$CREATE_REPO" == "Yes"* ]]; then
     echo ""
     GITHUB_USER=$(gh api user --jq '.login' 2>/dev/null || echo "")
-    if [ -n "$GITHUB_USER" ]; then
+    if [[ -n "$GITHUB_USER" ]]; then
       DEFAULT_REPO=$(basename "$(pwd)")
       echo -e "${BOLD}What should the GitHub repo be called?${NC}"
       echo -e "${DIM}This will be private at github.com/${GITHUB_USER}/...${NC}"
@@ -660,17 +684,18 @@ open('integrations/README.md', 'w').writelines(out)
       echo ""
       echo -e "${BLUE}Creating private GitHub repo...${NC}"
       # Detect Codespace token limitations
-      if [ -n "${CODESPACES:-}" ]; then
-        echo -e "  ${YELLOW}GitHub Codespaces uses a restricted token that can't create repos.${NC}"
+      if [[ -n "${CODESPACES:-}" ]]; then
+        echo -e "  ${YELLOW}GitHub Codespaces uses a restricted token that can't create repos.${NC}" >&2
         echo -e "  ${DIM}No worries — once you install Contextium on your real machine,${NC}"
         echo -e "  ${DIM}open your AI and say:${NC}"
         echo ""
         echo -e "  ${GREEN}\"Create a private GitHub repo for my Contextium and push it\"${NC}"
         echo ""
       else
+        # shellcheck disable=SC2015
         GH_OUTPUT=$(gh repo create "${GITHUB_USER}/${REPO_NAME}" --private --source=. --push 2>&1) && \
           echo -e "  ${GREEN}✓${NC} Pushed to github.com/${GITHUB_USER}/${REPO_NAME} (private)" || {
-          echo -e "  ${YELLOW}GitHub repo creation didn't work:${NC}"
+          echo -e "  ${YELLOW}GitHub repo creation didn't work:${NC}" >&2
           echo -e "  ${DIM}${GH_OUTPUT}${NC}"
           echo ""
           echo -e "  ${DIM}No worries — once you're in your first session, just tell your AI:${NC}"
@@ -705,7 +730,7 @@ open('integrations/README.md', 'w').writelines(out)
         if $HAS_NPM; then
           echo -e "  ${GREEN}✓${NC} Node.js installed"
         else
-          echo -e "  ${YELLOW}Could not auto-install Node.js. Install manually: https://nodejs.org${NC}"
+          echo -e "  ${YELLOW}Could not auto-install Node.js. Install manually: https://nodejs.org${NC}" >&2
         fi
         ;;
     esac
@@ -722,11 +747,12 @@ open('integrations/README.md', 'w').writelines(out)
       if ! command -v claude &>/dev/null; then
         if $HAS_NPM; then
           echo -e "  ${DIM}Installing Claude Code...${NC}"
+          # shellcheck disable=SC2086
           $NPM_GLOBAL @anthropic-ai/claude-code 2>/dev/null && \
             echo -e "  ${GREEN}✓${NC} Claude Code installed" || \
-            echo -e "  ${YELLOW}Install failed. Try: sudo npm install -g @anthropic-ai/claude-code${NC}"
+            echo -e "  ${YELLOW}Install failed. Try: sudo npm install -g @anthropic-ai/claude-code${NC}" >&2
         else
-          echo -e "  ${YELLOW}npm not found. To install Claude Code:${NC}"
+          echo -e "  ${YELLOW}npm not found. To install Claude Code:${NC}" >&2
           echo -e "  ${DIM}1. Install Node.js: https://nodejs.org${NC}"
           echo -e "  ${DIM}2. Then run: npm install -g @anthropic-ai/claude-code${NC}"
         fi
@@ -739,11 +765,12 @@ open('integrations/README.md', 'w').writelines(out)
       if ! command -v gemini &>/dev/null; then
         if $HAS_NPM; then
           echo -e "  ${DIM}Installing Gemini CLI...${NC}"
+          # shellcheck disable=SC2086
           $NPM_GLOBAL @google/gemini-cli 2>/dev/null && \
             echo -e "  ${GREEN}✓${NC} Gemini CLI installed" || \
-            echo -e "  ${YELLOW}Install failed. Try: sudo npm install -g @google/gemini-cli${NC}"
+            echo -e "  ${YELLOW}Install failed. Try: sudo npm install -g @google/gemini-cli${NC}" >&2
         else
-          echo -e "  ${YELLOW}npm not found. To install Gemini CLI:${NC}"
+          echo -e "  ${YELLOW}npm not found. To install Gemini CLI:${NC}" >&2
           echo -e "  ${DIM}1. Install Node.js: https://nodejs.org${NC}"
           echo -e "  ${DIM}2. Then run: npm install -g @google/gemini-cli${NC}"
         fi
@@ -756,11 +783,12 @@ open('integrations/README.md', 'w').writelines(out)
       if ! command -v codex &>/dev/null; then
         if $HAS_NPM; then
           echo -e "  ${DIM}Installing Codex CLI...${NC}"
+          # shellcheck disable=SC2086
           $NPM_GLOBAL @openai/codex 2>/dev/null && \
             echo -e "  ${GREEN}✓${NC} Codex installed" || \
-            echo -e "  ${YELLOW}Install failed. Try: sudo npm install -g @openai/codex${NC}"
+            echo -e "  ${YELLOW}Install failed. Try: sudo npm install -g @openai/codex${NC}" >&2
         else
-          echo -e "  ${YELLOW}npm not found. To install Codex CLI:${NC}"
+          echo -e "  ${YELLOW}npm not found. To install Codex CLI:${NC}" >&2
           echo -e "  ${DIM}1. Install Node.js: https://nodejs.org${NC}"
           echo -e "  ${DIM}2. Then run: npm install -g @openai/codex${NC}"
         fi
@@ -795,7 +823,7 @@ open('integrations/README.md', 'w').writelines(out)
         echo -e "  ${DIM}Installing Aider...${NC}"
         pip install aider-chat 2>/dev/null && \
           echo -e "  ${GREEN}✓${NC} Aider installed" || \
-          echo -e "  ${YELLOW}Could not auto-install. Run: pip install aider-chat${NC}"
+          echo -e "  ${YELLOW}Could not auto-install. Run: pip install aider-chat${NC}" >&2
       else
         echo -e "  ${GREEN}✓${NC} Aider already installed"
       fi
@@ -816,7 +844,7 @@ open('integrations/README.md', 'w').writelines(out)
         echo -e "  ${DIM}Installing Ollama...${NC}"
         curl -fsSL https://ollama.com/install.sh | sh 2>/dev/null && \
           echo -e "  ${GREEN}✓${NC} Ollama installed" || \
-          echo -e "  ${YELLOW}Install failed. Try: curl -fsSL https://ollama.com/install.sh | sh${NC}"
+          echo -e "  ${YELLOW}Install failed. Try: curl -fsSL https://ollama.com/install.sh | sh${NC}" >&2
       else
         echo -e "  ${GREEN}✓${NC} Ollama already installed"
       fi
@@ -824,12 +852,12 @@ open('integrations/README.md', 'w').writelines(out)
         echo -e "  ${DIM}Pulling model: ${OLLAMA_MODEL} (this may take a few minutes)...${NC}"
         ollama pull "$OLLAMA_MODEL" 2>/dev/null && \
           echo -e "  ${GREEN}✓${NC} Model ${OLLAMA_MODEL} ready" || \
-          echo -e "  ${YELLOW}Could not pull model. Run: ollama pull ${OLLAMA_MODEL}${NC}"
-        if [ -f "Modelfile" ]; then
+          echo -e "  ${YELLOW}Could not pull model. Run: ollama pull ${OLLAMA_MODEL}${NC}" >&2
+        if [[ -f "Modelfile" ]]; then
           echo -e "  ${DIM}Creating contextium model from Modelfile...${NC}"
           ollama create contextium -f Modelfile 2>/dev/null && \
             echo -e "  ${GREEN}✓${NC} Custom model 'contextium' created — run with: ollama run contextium" || \
-            echo -e "  ${YELLOW}Could not create model. Run: ollama create contextium -f Modelfile${NC}"
+            echo -e "  ${YELLOW}Could not create model. Run: ollama create contextium -f Modelfile${NC}" >&2
         fi
       fi
       ;;
@@ -847,17 +875,18 @@ open('integrations/README.md', 'w').writelines(out)
   echo ""
 
   # Launch the AI agent (or show instructions if piped/not installed)
-  if [ -z "$AGENT_CMD" ]; then
+  if [[ -z "$AGENT_CMD" ]]; then
     echo -e "  Run your AI agent from the ${BOLD}${DIR_NAME}${NC} directory."
     echo ""
-  elif ! command -v ${AGENT_CMD%% *} &>/dev/null; then
+  elif ! command -v "${AGENT_CMD%% *}" &>/dev/null; then
     echo -e "  Your AI agent isn't installed yet. Once installed, run:"
     echo ""
     echo -e "  ${BOLD}cd ${DIR_NAME}${NC}"
     echo -e "  ${BOLD}${AGENT_CMD}${NC}"
     echo ""
-  elif [ -t 0 ]; then
+  elif [[ -t 0 ]]; then
     # stdin is a terminal — safe to launch
+    # shellcheck disable=SC2086
     exec $AGENT_CMD
   else
     # stdin is a pipe (curl | bash) — can't launch interactively
@@ -874,9 +903,9 @@ update() {
   banner
 
   # Verify we're in a Contextium repo (check for any known instruction file or the preferences dir)
-  if [ ! -d "preferences" ] || [ ! -d "knowledge" ]; then
-    echo -e "${YELLOW}This doesn't look like a Contextium repo.${NC}"
-    echo "Run this command from inside your Contextium directory."
+  if [[ ! -d "preferences" ]] || [[ ! -d "knowledge" ]]; then
+    echo -e "${YELLOW}This doesn't look like a Contextium repo.${NC}" >&2
+    echo "Run this command from inside your Contextium directory." >&2
     exit 1
   fi
 
@@ -891,13 +920,14 @@ update() {
 
   # Self-update: if upstream has a newer install.sh, replace ourselves and re-exec
   UPSTREAM_INSTALLER=$(git show upstream/main:install.sh 2>/dev/null) || true
-  if [ -n "$UPSTREAM_INSTALLER" ]; then
+  if [[ -n "$UPSTREAM_INSTALLER" ]]; then
     LOCAL_HASH=$(md5sum install.sh 2>/dev/null | cut -d' ' -f1)
     UPSTREAM_HASH=$(echo "$UPSTREAM_INSTALLER" | md5sum | cut -d' ' -f1)
-    if [ "$LOCAL_HASH" != "$UPSTREAM_HASH" ] && [ "${CONTEXTIUM_SELF_UPDATED:-}" != "1" ]; then
+    if [[ "$LOCAL_HASH" != "$UPSTREAM_HASH" ]] && [[ "${CONTEXTIUM_SELF_UPDATED:-}" != "1" ]]; then
       echo -e "  ${DIM}Updating installer...${NC}"
       echo "$UPSTREAM_INSTALLER" > install.sh
       chmod +x install.sh
+      # shellcheck disable=SC2015
       git add install.sh && git commit -q -m "self-update: install.sh updated from upstream" 2>/dev/null || true
       echo -e "  ${GREEN}✓${NC} Installer updated — restarting"
       echo ""
@@ -910,12 +940,12 @@ update() {
   LOCAL=$(git rev-parse HEAD)
   UPSTREAM=$(git rev-parse upstream/main 2>/dev/null || echo "")
 
-  if [ -z "$UPSTREAM" ]; then
-    echo -e "${YELLOW}Could not find upstream/main. Check your internet connection.${NC}"
+  if [[ -z "$UPSTREAM" ]]; then
+    echo -e "${YELLOW}Could not find upstream/main. Check your internet connection.${NC}" >&2
     exit 1
   fi
 
-  if [ "$LOCAL" = "$UPSTREAM" ]; then
+  if [[ "$LOCAL" = "$UPSTREAM" ]]; then
     echo -e "${GREEN}Already up to date.${NC}"
     exit 0
   fi
@@ -932,50 +962,50 @@ update() {
     # Clean upstream-only files that shouldn't be in user repos
     rm -rf .github 2>/dev/null
     rm -f CHANGELOG.md CONTRIBUTING.md 2>/dev/null
-    if [ -n "$(git status --porcelain 2>/dev/null)" ]; then
+    if [[ -n "$(git status --porcelain 2>/dev/null)" ]]; then
       git add -A && git commit -q -m "cleanup: remove upstream-only files after update" 2>/dev/null
     fi
     # Re-copy agent instruction file from updated agent-configs/
     # The merge updates agent-configs/ but the root instruction file is a copy
     # that needs to be refreshed manually.
-    if [ -d "agent-configs" ]; then
-      if [ -f ".cursorrules" ] && [ -f "agent-configs/cursor/.cursorrules" ]; then
+    if [[ -d "agent-configs" ]]; then
+      if [[ -f ".cursorrules" ]] && [[ -f "agent-configs/cursor/.cursorrules" ]]; then
         cp "agent-configs/cursor/.cursorrules" ./.cursorrules
         echo -e "  ${GREEN}✓${NC} Updated .cursorrules"
-      elif [ -f ".windsurfrules" ] && [ -f "agent-configs/windsurf/.windsurfrules" ]; then
+      elif [[ -f ".windsurfrules" ]] && [[ -f "agent-configs/windsurf/.windsurfrules" ]]; then
         cp "agent-configs/windsurf/.windsurfrules" ./.windsurfrules
         echo -e "  ${GREEN}✓${NC} Updated .windsurfrules"
-      elif [ -f ".clinerules" ] && [ -f "agent-configs/cline/.clinerules" ]; then
+      elif [[ -f ".clinerules" ]] && [[ -f "agent-configs/cline/.clinerules" ]]; then
         cp "agent-configs/cline/.clinerules" ./.clinerules
         echo -e "  ${GREEN}✓${NC} Updated .clinerules"
-      elif [ -f "CONVENTIONS.md" ] && [ -f "agent-configs/aider/CONVENTIONS.md" ]; then
+      elif [[ -f "CONVENTIONS.md" ]] && [[ -f "agent-configs/aider/CONVENTIONS.md" ]]; then
         cp "agent-configs/aider/CONVENTIONS.md" ./CONVENTIONS.md
         echo -e "  ${GREEN}✓${NC} Updated CONVENTIONS.md"
-      elif [ -f ".continue/rules" ] && [ -f "agent-configs/continue/rules" ]; then
+      elif [[ -f ".continue/rules" ]] && [[ -f "agent-configs/continue/rules" ]]; then
         cp "agent-configs/continue/rules" ./.continue/rules
         echo -e "  ${GREEN}✓${NC} Updated .continue/rules"
-      elif [ -f ".github/copilot-instructions.md" ] && [ -f "agent-configs/copilot/copilot-instructions.md" ]; then
+      elif [[ -f ".github/copilot-instructions.md" ]] && [[ -f "agent-configs/copilot/copilot-instructions.md" ]]; then
         cp "agent-configs/copilot/copilot-instructions.md" ./.github/copilot-instructions.md
         echo -e "  ${GREEN}✓${NC} Updated copilot-instructions.md"
-      elif [ -f "GEMINI.md" ] && [ -f "agent-configs/gemini/GEMINI.md" ]; then
+      elif [[ -f "GEMINI.md" ]] && [[ -f "agent-configs/gemini/GEMINI.md" ]]; then
         cp "agent-configs/gemini/GEMINI.md" ./GEMINI.md
         echo -e "  ${GREEN}✓${NC} Updated GEMINI.md"
-      elif [ -f "AGENTS.md" ] && [ -f "agent-configs/codex/AGENTS.md" ]; then
+      elif [[ -f "AGENTS.md" ]] && [[ -f "agent-configs/codex/AGENTS.md" ]]; then
         cp "agent-configs/codex/AGENTS.md" ./AGENTS.md
         echo -e "  ${GREEN}✓${NC} Updated AGENTS.md"
-      elif [ -f "Modelfile" ] && [ -f "agent-configs/ollama/Modelfile" ]; then
+      elif [[ -f "Modelfile" ]] && [[ -f "agent-configs/ollama/Modelfile" ]]; then
         # Preserve user's model choice, update instructions
         CURRENT_MODEL=$(head -1 Modelfile | sed 's/^FROM //')
         sed "s/^FROM .*/FROM ${CURRENT_MODEL}/" "agent-configs/ollama/Modelfile" > ./Modelfile
         echo -e "  ${GREEN}✓${NC} Updated Modelfile (preserved model: ${CURRENT_MODEL})"
       fi
       # Default: CLAUDE.md (Claude Code, Other, or Ollama reference copy)
-      if [ -f "CLAUDE.md" ] && [ -f "agent-configs/claude/CLAUDE.md" ]; then
+      if [[ -f "CLAUDE.md" ]] && [[ -f "agent-configs/claude/CLAUDE.md" ]]; then
         cp "agent-configs/claude/CLAUDE.md" ./CLAUDE.md
         echo -e "  ${GREEN}✓${NC} Updated CLAUDE.md"
       fi
       # Commit instruction file refresh
-      if [ -n "$(git status --porcelain 2>/dev/null)" ]; then
+      if [[ -n "$(git status --porcelain 2>/dev/null)" ]]; then
         git add -A && git commit -q -m "update: refresh instruction file from agent-configs" 2>/dev/null
       fi
     fi
@@ -987,7 +1017,7 @@ update() {
     git diff --name-only HEAD~3..HEAD 2>/dev/null | head -20
   else
     echo ""
-    echo -e "${YELLOW}Merge conflicts detected. Resolve them manually:${NC}"
+    echo -e "${YELLOW}Merge conflicts detected. Resolve them manually:${NC}" >&2
     git diff --name-only --diff-filter=U
     echo ""
     echo "After resolving: git add <files> && git commit"
@@ -1015,7 +1045,7 @@ test_install() {
   FIRST_DOMAIN="work"
   CREATE_REPO="no"
 
-  if [ -d "$DIR_NAME" ]; then
+  if [[ -d "$DIR_NAME" ]]; then
     rm -rf "$DIR_NAME"
   fi
 
@@ -1034,127 +1064,11 @@ test_install() {
   echo -e "  ${GREEN}✓${NC} Installed → CLAUDE.md"
 
   # Remove unselected integrations
-  declare -A INTEGRATION_MAP=(
-    ["Gemini (delegate web research to Google's AI)"]="gemini"
-    ["Codex (delegate bulk edits to a second AI agent)"]="codex"
-    ["Browse (browser automation for web scraping and testing)"]="browse"
-    ["1Password (store API keys and credentials securely)"]="1password"
-    ["Google Workspace (Gmail, Calendar, Drive, Sheets)"]="google-workspace google-auth"
-    ["Todoist (task management and to-do tracking)"]="todoist"
-    ["Windmill (self-hosted workflow automation — like Zapier but yours)"]="windmill"
-    ["n8n (self-hosted workflow automation — alternative to Windmill)"]="n8n"
-    ["Cloudflare (DNS, web hosting, serverless functions)"]="cloudflare"
-    ["TrueNAS (NAS and Docker container management via SSH)"]="truenas"
-    ["Home Assistant (smart home control and automation)"]="home-assistant"
-    ["Autotask (PSA/ticketing for managed service providers)"]="autotask"
-    ["NinjaOne (device inventory and remote monitoring)"]="ninjaone"
-    ["QuickBooks Online (business accounting and financial reports)"]="qbo"
-    ["Monarch (personal finance tracking and budgeting)"]="monarch"
-    ["Strety (EOS platform — scorecards, rocks, meeting management)"]="strety"
-    ["Hudu (IT documentation platform)"]="hudu"
-    ["MSPBots (MSP-specific analytics and KPI dashboards)"]="mspbots"
-    ["Garage (S3-compatible object storage for backups)"]="garage"
-    ["TRMNL (e-ink display dashboard for at-a-glance info)"]="trmnl"
-    ["Remote Control (access your AI from your phone)"]="remote-control"
-    ["HAPI (voice interface — talk to your AI)"]="hapi"
-    ["Ollama (delegate tasks to a local AI — free, private, offline)"]="ollama"
-    ["VS Code (remote development tunnel)"]="vscode"
-  )
-
-  SELECTED_DIRS=""
-  while IFS= read -r line; do
-    if [ -n "$line" ] && [ -n "${INTEGRATION_MAP[$line]+x}" ]; then
-      for dir in ${INTEGRATION_MAP[$line]}; do
-        SELECTED_DIRS="$SELECTED_DIRS $dir"
-      done
-    fi
-  done <<< "$INTEGRATIONS"
-  SELECTED_DIRS="$SELECTED_DIRS daedalus host-docs-map"
-
-  REMOVED=0
-  for dir in integrations/*/; do
-    dirname=$(basename "$dir")
-    if ! echo "$SELECTED_DIRS" | grep -qw "$dirname"; then
-      rm -rf "$dir"
-      REMOVED=$((REMOVED + 1))
-    fi
-  done
-  KEPT=$(find integrations -mindepth 1 -maxdepth 1 -type d | wc -l)
-  echo -e "  ${GREEN}✓${NC} ${KEPT} integrations installed (${REMOVED} skipped)"
-
-  # Create user profile
-  USER_NAME_LOWER="test-user"
-  mkdir -p "knowledge/people/${USER_NAME_LOWER}"
-  cat > "knowledge/people/${USER_NAME_LOWER}/README.md" << PROFILE_EOF
-# ${USER_NAME}
-
-**Added:** $(date +%Y-%m-%d)
-
-## About
-
-${PROFESSION}
-
-## AI Goal
-
-${AI_GOAL}
-PROFILE_EOF
-  echo -e "  ${GREEN}✓${NC} Profile created for ${USER_NAME}"
-
-  # Write preferences
-  cat > preferences/user/preferences.md << PREFS_EOF
-# User Preferences — ${USER_NAME}
-
-## Communication
-
-- **Concise over verbose** — get to the point
-- **Direct over diplomatic** — say what you mean
-- **Practical over theoretical** — focus on what works
-
-## Professional Context
-
-${PROFESSION}
-
-## Primary Goal with AI
-
-${AI_GOAL}
-
-## Working Style
-
-*Update this as your AI learns how you work best.*
-PREFS_EOF
-  echo -e "  ${GREEN}✓${NC} Preferences configured (concise communication)"
-
-  # Create first knowledge domain
-  mkdir -p "knowledge/${FIRST_DOMAIN}"
-  cat > "knowledge/${FIRST_DOMAIN}/README.md" << DOMAIN_EOF
-# Work
-
-Persistent context for work. Add files here as knowledge accumulates.
-
-**Created:** $(date +%Y-%m-%d)
-DOMAIN_EOF
-  echo -e "  ${GREEN}✓${NC} Knowledge domain created: ${FIRST_DOMAIN}"
-
-  # Update integrations README
-  if [ -f integrations/README.md ] && command -v python3 &>/dev/null; then
-    python3 -c "
-import os, re
-lines = open('integrations/README.md').readlines()
-installed = set(os.listdir('integrations')) - {'README.md'}
-installed = {d for d in installed if os.path.isdir(f'integrations/{d}')}
-out = []
-for line in lines:
-    m = re.match(r'\| \[.*?\]\((\w[\w-]*)/?\)', line)
-    if m:
-        dirname = m.group(1)
-        if dirname in installed:
-            out.append(line)
-    else:
-        out.append(line)
-open('integrations/README.md', 'w').writelines(out)
-" 2>/dev/null || true
-  fi
-  echo -e "  ${GREEN}✓${NC} Integration docs updated"
+  filter_integrations
+  create_profile "$USER_NAME" "test-user" "$PROFESSION" "$AI_GOAL"
+  write_preferences "$USER_NAME" "concise" "$PROFESSION" "$AI_GOAL"
+  create_knowledge_domain "$FIRST_DOMAIN" "$FIRST_DOMAIN"
+  update_integrations_readme
 
   # Set git identity if not configured
   if ! git config user.name &>/dev/null; then
@@ -1178,12 +1092,12 @@ open('integrations/README.md', 'w').writelines(out)
 
   # Run verification checks
   echo -e "${BLUE}Verification:${NC}"
-  [ -f CLAUDE.md ] && echo -e "  ${GREEN}✓${NC} CLAUDE.md exists" || echo -e "  ${YELLOW}✗${NC} CLAUDE.md missing"
-  [ -f preferences/user/preferences.md ] && echo -e "  ${GREEN}✓${NC} Preferences file exists" || echo -e "  ${YELLOW}✗${NC} Preferences missing"
-  [ -d "knowledge/people/test-user" ] && echo -e "  ${GREEN}✓${NC} User profile exists" || echo -e "  ${YELLOW}✗${NC} User profile missing"
-  [ -d "knowledge/work" ] && echo -e "  ${GREEN}✓${NC} Knowledge domain exists" || echo -e "  ${YELLOW}✗${NC} Knowledge domain missing"
-  [ -d "integrations/gemini" ] && echo -e "  ${GREEN}✓${NC} Selected integration (gemini) kept" || echo -e "  ${YELLOW}✗${NC} Selected integration missing"
-  [ ! -d "integrations/todoist" ] && echo -e "  ${GREEN}✓${NC} Unselected integration (todoist) removed" || echo -e "  ${YELLOW}✗${NC} Unselected integration not removed"
+  [[ -f CLAUDE.md ]] && echo -e "  ${GREEN}✓${NC} CLAUDE.md exists" || echo -e "  ${YELLOW}✗${NC} CLAUDE.md missing"
+  [[ -f preferences/user/preferences.md ]] && echo -e "  ${GREEN}✓${NC} Preferences file exists" || echo -e "  ${YELLOW}✗${NC} Preferences missing"
+  [[ -d "knowledge/people/test-user" ]] && echo -e "  ${GREEN}✓${NC} User profile exists" || echo -e "  ${YELLOW}✗${NC} User profile missing"
+  [[ -d "knowledge/work" ]] && echo -e "  ${GREEN}✓${NC} Knowledge domain exists" || echo -e "  ${YELLOW}✗${NC} Knowledge domain missing"
+  [[ -d "integrations/gemini" ]] && echo -e "  ${GREEN}✓${NC} Selected integration (gemini) kept" || echo -e "  ${YELLOW}✗${NC} Selected integration missing"
+  [[ ! -d "integrations/todoist" ]] && echo -e "  ${GREEN}✓${NC} Unselected integration (todoist) removed" || echo -e "  ${YELLOW}✗${NC} Unselected integration not removed"
   echo ""
 
   FILE_COUNT=$(find . -type f -not -path './.git/*' | wc -l)

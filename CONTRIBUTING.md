@@ -1,10 +1,12 @@
 # Contributing to Contextium
 
-Thank you for your interest in contributing to Contextium. This document explains how to add new apps, integrations, and improvements.
+Thank you for your interest in contributing to Contextium. This document explains how to add new apps, integrations, and
+improvements.
 
 ## Types of Contributions
 
 ### New App
+
 Apps are self-contained protocols with optional automation scripts. To add one:
 
 1. Create `apps/{name}/README.md` following the [app template](preferences/templates/app-readme.md)
@@ -18,6 +20,7 @@ Apps are self-contained protocols with optional automation scripts. To add one:
 4. Submit a PR using the "New App" issue template
 
 ### New Integration
+
 Integrations connect external services. To add one:
 
 1. Create `integrations/{name}/README.md`
@@ -31,11 +34,13 @@ Integrations connect external services. To add one:
 4. Submit a PR
 
 ### Documentation Improvements
+
 - Fix typos, clarify instructions, add examples
 - Update outdated information
 - Improve the onboarding guide
 
 ### Framework Improvements
+
 - Enhancements to CLAUDE.md, rules, or templates
 - New setup projects in `projects/setup/`
 - CI workflow improvements

@@ -16,18 +16,19 @@ PSA/ticketing system for service desk and business operations.
 
 ## Key Endpoints
 
-| Resource | Endpoint | Use |
-|----------|----------|-----|
-| Tickets | `/Tickets` | Service desk tickets |
-| Companies | `/Companies` | Client/company records |
-| Resources | `/Resources` | Team member data |
+| Resource     | Endpoint       | Use                    |
+| ------------ | -------------- | ---------------------- |
+| Tickets      | `/Tickets`     | Service desk tickets   |
+| Companies    | `/Companies`   | Client/company records |
+| Resources    | `/Resources`   | Team member data       |
 | Time entries | `/TimeEntries` | Billable time tracking |
 
 ## Query Format
 
 Autotask uses a custom query filter format:
+
 ```json
-{"filter": [{"field": "status", "op": "noteq", "value": 5}]}
+{ "filter": [{ "field": "status", "op": "noteq", "value": 5 }] }
 ```
 
 ## Use Cases

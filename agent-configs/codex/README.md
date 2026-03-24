@@ -1,7 +1,7 @@
-# Codex CLI Configuration
+# Codex Standalone Configuration
 
-Codex CLI reads `AGENTS.md` from the repo root as its instruction file.
+> Coming soon. Contextium will support Codex CLI as a primary agent with an `AGENTS.md` adapted from the core context
+> router architecture.
 
-The installer copies `AGENTS.md` from this directory to the root of your Contextium repo. Updates via `./install.sh update` refresh it automatically.
-
-See [AGENTS.md](AGENTS.md) for the full instruction set.
+If you're using Codex as your primary agent and want to help build this config, see
+[CONTRIBUTING.md](../../CONTRIBUTING.md).

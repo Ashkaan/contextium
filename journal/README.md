@@ -15,4 +15,5 @@ See `preferences/templates/journal_template.md` for the format.
 
 ## Why Journal?
 
-Journals capture the **why** behind changes. Git history shows what changed; journals explain why you chose that approach and what you rejected. This prevents re-exploring dead ends in future sessions.
+Journals capture the **why** behind changes. Git history shows what changed; journals explain why you chose that
+approach and what you rejected. This prevents re-exploring dead ends in future sessions.

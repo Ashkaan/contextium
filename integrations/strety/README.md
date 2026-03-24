@@ -1,6 +1,7 @@
 # Strety
 
-EOS (Entrepreneurial Operating System) platform for managing scorecards, rocks, to-dos, and issues. Central hub for weekly L10 meeting data and quarterly goal tracking.
+EOS (Entrepreneurial Operating System) platform for managing scorecards, rocks, to-dos, and issues. Central hub for
+weekly L10 meeting data and quarterly goal tracking.
 
 ## Requirements
 
@@ -24,23 +25,23 @@ EOS (Entrepreneurial Operating System) platform for managing scorecards, rocks, 
 
 ## Key Endpoints
 
-| Resource | Method | Endpoint | Use |
-|----------|--------|----------|-----|
-| Scorecards | GET | `/api/v1/scorecards/{id}` | Weekly KPI metrics and targets |
-| Rocks | GET | `/api/v1/rocks` | Quarterly goals and status |
-| To-Dos | GET | `/api/v1/todos` | Action items from L10 meetings |
-| Issues | GET | `/api/v1/issues` | IDS (Identify, Discuss, Solve) list |
-| Meetings | GET | `/api/v1/meetings` | L10 meeting history and notes |
+| Resource   | Method | Endpoint                  | Use                                 |
+| ---------- | ------ | ------------------------- | ----------------------------------- |
+| Scorecards | GET    | `/api/v1/scorecards/{id}` | Weekly KPI metrics and targets      |
+| Rocks      | GET    | `/api/v1/rocks`           | Quarterly goals and status          |
+| To-Dos     | GET    | `/api/v1/todos`           | Action items from L10 meetings      |
+| Issues     | GET    | `/api/v1/issues`          | IDS (Identify, Discuss, Solve) list |
+| Meetings   | GET    | `/api/v1/meetings`        | L10 meeting history and notes       |
 
 ## EOS Concepts
 
-| Term | Meaning | Frequency |
-|------|---------|-----------|
-| Scorecard | Weekly KPIs with targets (on/off track) | Reviewed weekly |
-| Rock | Major quarterly goal for a team member | Set quarterly |
-| To-Do | Action item assigned in a meeting (7-day deadline) | Created weekly |
-| Issue | Problem to IDS (Identify, Discuss, Solve) | Ongoing list |
-| L10 | Weekly 90-minute leadership team meeting | Every week |
+| Term      | Meaning                                            | Frequency       |
+| --------- | -------------------------------------------------- | --------------- |
+| Scorecard | Weekly KPIs with targets (on/off track)            | Reviewed weekly |
+| Rock      | Major quarterly goal for a team member             | Set quarterly   |
+| To-Do     | Action item assigned in a meeting (7-day deadline) | Created weekly  |
+| Issue     | Problem to IDS (Identify, Discuss, Solve)          | Ongoing list    |
+| L10       | Weekly 90-minute leadership team meeting           | Every week      |
 
 ## Use Cases
 

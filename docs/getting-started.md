@@ -7,6 +7,7 @@ curl -sSL contextium.ai/install | bash
 ```
 
 The installer walks you through everything:
+
 - Your name and professional context
 - Which AI agent you use (Claude Code, Gemini, Codex, Cursor, Windsurf, Cline, Aider, Continue, Copilot, Ollama)
 - Which integrations to include
@@ -24,7 +25,8 @@ It then installs your AI agent's CLI and launches your first session — fully c
 
 ## After Install
 
-Your AI is ready immediately. The context router in your instruction file (CLAUDE.md, GEMINI.md, Modelfile, etc.) tells your AI how to navigate the repo. It will:
+Your AI is ready immediately. The context router in your instruction file (CLAUDE.md, GEMINI.md, Modelfile, etc.) tells
+your AI how to navigate the repo. It will:
 
 1. Load your preferences on every session
 2. Lazy-load files based on what you're working on
@@ -33,6 +35,7 @@ Your AI is ready immediately. The context router in your instruction file (CLAUD
 ## Deeper Configuration
 
 After the initial setup, explore the pre-loaded projects in `projects/setup/` for:
+
 - Connecting external services with API credentials
 - Building your relationship directory (people cards)
 - Setting up health tracking
@@ -49,13 +52,15 @@ Pull framework updates without losing your data:
 ./install.sh update
 ```
 
-Your personal data in `preferences/user/`, `knowledge/`, `journal/`, and `projects/` is protected during updates. Only framework files get updated.
+Your personal data in `preferences/user/`, `knowledge/`, `journal/`, and `projects/` is protected during updates. Only
+framework files get updated.
 
 See [Update Guide](update-guide.md) for details.
 
 ## Windows
 
-Contextium requires a Unix-like environment. On Windows, use [WSL (Windows Subsystem for Linux)](https://learn.microsoft.com/en-us/windows/wsl/):
+Contextium requires a Unix-like environment. On Windows, use
+[WSL (Windows Subsystem for Linux)](https://learn.microsoft.com/en-us/windows/wsl/):
 
 1. Install WSL: `wsl --install`
 2. Open your WSL terminal
