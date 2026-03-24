@@ -32,16 +32,21 @@ Timer → Fetch RSS feeds → AI curation (summarize, deduplicate) → Format HT
 ## Configuration
 
 ### News Sources
+
 Define RSS feeds organized by topic:
+
 - Technology, Science, Politics, World News, etc.
 - Add/remove feeds as interests change
 
 ### Opinion Sources
+
 Define commentary sources across perspectives:
+
 - Different viewpoints ensure balanced coverage
 - AI groups by debate topic, not source
 
 ### Email Format
+
 Uses the shared email template (see `preferences/style_guides/email_templates.md`).
 
 ## Implementation

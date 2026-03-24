@@ -16,12 +16,12 @@ IT documentation platform for knowledge base and client information.
 
 ## Key Endpoints
 
-| Resource | Endpoint | Use |
-|----------|----------|-----|
-| Companies | `/api/v1/companies` | Client list |
-| Articles | `/api/v1/articles` | Knowledge base articles |
-| Asset layouts | `/api/v1/asset_layouts` | Documentation templates |
-| Assets | `/api/v1/companies/{id}/assets` | Client assets |
+| Resource      | Endpoint                        | Use                     |
+| ------------- | ------------------------------- | ----------------------- |
+| Companies     | `/api/v1/companies`             | Client list             |
+| Articles      | `/api/v1/articles`              | Knowledge base articles |
+| Asset layouts | `/api/v1/asset_layouts`         | Documentation templates |
+| Assets        | `/api/v1/companies/{id}/assets` | Client assets           |
 
 ## Use Cases
 

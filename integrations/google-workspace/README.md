@@ -1,6 +1,7 @@
 # Google Workspace
 
-Access Google APIs including Gmail, Calendar, Drive, Sheets, and Contacts. One of the most-used integrations for daily briefings, email automation, and data tracking.
+Access Google APIs including Gmail, Calendar, Drive, Sheets, and Contacts. One of the most-used integrations for daily
+briefings, email automation, and data tracking.
 
 ## Requirements
 
@@ -32,13 +33,13 @@ Access Google APIs including Gmail, Calendar, Drive, Sheets, and Contacts. One o
 
 ## Key APIs and Scopes
 
-| API | Scopes | Use |
-|-----|--------|-----|
-| Gmail | `gmail.send`, `gmail.readonly` | Send and read emails |
-| Calendar | `calendar.readonly`, `calendar.events` | Read/write events |
-| Drive | `drive.readonly`, `drive.file` | File access and search |
-| Sheets | `spreadsheets` | Read/write spreadsheet data |
-| People | `contacts.readonly` | Contact lookup |
+| API      | Scopes                                 | Use                         |
+| -------- | -------------------------------------- | --------------------------- |
+| Gmail    | `gmail.send`, `gmail.readonly`         | Send and read emails        |
+| Calendar | `calendar.readonly`, `calendar.events` | Read/write events           |
+| Drive    | `drive.readonly`, `drive.file`         | File access and search      |
+| Sheets   | `spreadsheets`                         | Read/write spreadsheet data |
+| People   | `contacts.readonly`                    | Contact lookup              |
 
 ## Common API Calls
 

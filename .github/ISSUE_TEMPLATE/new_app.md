@@ -1,7 +1,7 @@
 ---
 name: New App Proposal
 about: Propose a new app pattern for Contextium
-title: '[App] '
+title: "[App] "
 labels: new-app
 ---
 
@@ -16,6 +16,7 @@ Describe the app's purpose in 1-2 sentences.
 ## Pattern
 
 Which automation pattern does it follow?
+
 - [ ] Timer + Email (scheduled delivery)
 - [ ] Data Sync (ingest external data)
 - [ ] System/Event (respond to events)

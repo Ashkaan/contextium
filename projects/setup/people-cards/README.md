@@ -24,10 +24,10 @@ Create persistent context about the important people in your life so your AI doe
 Each person gets a directory: `knowledge/people/{firstname-lastname}/README.md`
 
 ```markdown
-**Relationship:** friend | colleague | family | partner
-**Added:** YYYY-MM-DD
+**Relationship:** friend | colleague | family | partner **Added:** YYYY-MM-DD
 
 ## Notes
+
 - [preference] Prefers email over phone
 - [work] VP Engineering at Company
 - [family] Two kids, ages 8 and 11

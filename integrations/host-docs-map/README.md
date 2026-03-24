@@ -13,12 +13,12 @@ Tracks which documentation and knowledge bases are hosted where, so you know whe
 
 ## Template
 
-| System | Host | URL | Content |
-|--------|------|-----|---------|
-| Hudu | Cloud/Self-hosted | `https://your-hudu-instance` | IT documentation, client info |
-| Wiki | Self-hosted | `https://your-wiki` | Internal knowledge base |
-| This repo | Local | `knowledge/` | Personal knowledge, health, finance |
-| Confluence | Cloud | `https://your-confluence` | Team documentation |
+| System     | Host              | URL                          | Content                             |
+| ---------- | ----------------- | ---------------------------- | ----------------------------------- |
+| Hudu       | Cloud/Self-hosted | `https://your-hudu-instance` | IT documentation, client info       |
+| Wiki       | Self-hosted       | `https://your-wiki`          | Internal knowledge base             |
+| This repo  | Local             | `knowledge/`                 | Personal knowledge, health, finance |
+| Confluence | Cloud             | `https://your-confluence`    | Team documentation                  |
 
 ## Use Cases
 

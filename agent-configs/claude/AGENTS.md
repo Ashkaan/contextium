@@ -4,12 +4,12 @@
 
 Use Codex (via `codex exec "..."`) for tasks that benefit from a separate context window:
 
-| Task | Why Codex |
-|------|-----------|
-| Bulk file edits (>2 files) | Direct editing in separate context |
-| Code generation from spec | Focused generation without polluting main context |
-| Large refactors | Handles multi-file changes atomically |
-| Documentation generation | Can read many files without filling your context |
+| Task                       | Why Codex                                         |
+| -------------------------- | ------------------------------------------------- |
+| Bulk file edits (>2 files) | Direct editing in separate context                |
+| Code generation from spec  | Focused generation without polluting main context |
+| Large refactors            | Handles multi-file changes atomically             |
+| Documentation generation   | Can read many files without filling your context  |
 
 ## How to Invoke
 
@@ -31,5 +31,6 @@ codex exec "update tests in tests/ to match new API signatures"
 ## Delegation Logging
 
 When delegating non-trivial work, log in the journal:
+
 - `codex: bulk-edited 12 files for pattern library scaffolding`
 - `codex: generated test suite for auth module`

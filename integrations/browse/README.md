@@ -17,15 +17,15 @@ Browser automation via Playwright for web scraping and UI interaction.
 
 ```javascript
 // Navigate and extract content
-await page.goto('https://example.com');
-const text = await page.textContent('selector');
+await page.goto("https://example.com");
+const text = await page.textContent("selector");
 
 // Fill forms and click buttons
-await page.fill('input[name="query"]', 'search term');
+await page.fill('input[name="query"]', "search term");
 await page.click('button[type="submit"]');
 
 // Screenshot for verification
-await page.screenshot({ path: 'screenshot.png' });
+await page.screenshot({ path: "screenshot.png" });
 ```
 
 ## When to Use Browse

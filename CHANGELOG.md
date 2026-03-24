@@ -2,6 +2,19 @@
 
 All notable changes to Contextium are documented here.
 
+## [1.3.2] — 2026-03-24
+
+### Code Quality & CI Hardening
+
+- **Shell convention compliance** — all `[ ]` tests converted to `[[ ]]` (bash best practice), error/warning messages now route to stderr (`>&2`), intentional word-splitting sites documented with `shellcheck disable` comments
+- **Installer deduplication** — extracted 6 shared functions (`filter_integrations`, `create_profile`, `write_preferences`, `create_knowledge_domain`, `update_integrations_readme`, top-level `INTEGRATION_MAP`), eliminating ~150 lines of copy-paste between `init()` and `test_install()`
+- **CI: shellcheck added** — `install.sh` is now linted on every push and PR
+- **CI: secret scanning added** — checks for leaked AWS keys, API tokens, and GitHub PATs
+- **CI: link checker fixed** — broken internal links are now properly detected (was silently passing due to pipeline subshell bug)
+- **CI: `shell: bash` declared** — all CI steps now explicitly use bash, with `[[ ]]` conditionals
+
+---
+
 ## [1.3.1] — 2026-03-23
 
 ### Project Index Generator + Status Change Trigger
@@ -57,7 +70,8 @@ All notable changes to Contextium are documented here.
 
 ### Ollama Support
 
-- **Ollama as 10th primary AI agent** — selectable in the installer alongside Claude Code, Gemini, Codex, Cursor, Windsurf, Cline, Aider, Continue, and GitHub Copilot
+- **Ollama as 10th primary AI agent** — selectable in the installer alongside Claude Code, Gemini, Codex, Cursor,
+  Windsurf, Cline, Aider, Continue, and GitHub Copilot
 - **Modelfile generation** — installer creates a Modelfile with Contextium instructions baked into the SYSTEM prompt
 - **Model selection** — installer prompts for which Ollama model to use (default: llama3.1)
 - **Auto-install** — installer handles Ollama CLI installation, model pull, and custom model creation
@@ -70,9 +84,11 @@ All notable changes to Contextium are documented here.
 
 ### Interactive Installer
 
-- **Full onboarding baked into installer** — name, AI agent, integrations, communication style, profession, goals, and first knowledge domain all configured before first session
+- **Full onboarding baked into installer** — name, AI agent, integrations, communication style, profession, goals, and
+  first knowledge domain all configured before first session
 - **9 AI agents supported** — Claude Code, Gemini, Codex, Cursor, Windsurf, Cline, Aider, Continue, GitHub Copilot
-- **Sectioned integration picker** — 6 categories (AI delegation, productivity, automation, infrastructure, business, interfaces) with contextual explanations
+- **Sectioned integration picker** — 6 categories (AI delegation, productivity, automation, infrastructure, business,
+  interfaces) with contextual explanations
 - **Beautiful TUI** — powered by [gum](https://github.com/charmbracelet/gum) with auto-install
 - **GitHub backup** — inline gh CLI install + browser auth flow with QR code support
 - **Agent CLI install** — automatically installs and launches your chosen AI agent
@@ -80,8 +96,10 @@ All notable changes to Contextium are documented here.
 
 ### Agent Configs
 
-- **9 agent instruction files** — `agent-configs/` with templates for Claude Code, Gemini, Codex, Cursor, Windsurf, Cline, Aider, Continue, GitHub Copilot (Ollama added in v1.2.5)
-- **Correct filenames** — each agent gets its native instruction file (CLAUDE.md, GEMINI.md, .cursorrules, .windsurfrules, .clinerules, CONVENTIONS.md, .continue/rules, copilot-instructions.md)
+- **9 agent instruction files** — `agent-configs/` with templates for Claude Code, Gemini, Codex, Cursor, Windsurf,
+  Cline, Aider, Continue, GitHub Copilot (Ollama added in v1.2.5)
+- **Correct filenames** — each agent gets its native instruction file (CLAUDE.md, GEMINI.md, .cursorrules,
+  .windsurfrules, .clinerules, CONVENTIONS.md, .continue/rules, copilot-instructions.md)
 - **Post-install cleanup** — `agent-configs/` removed after copying, keeping the user's repo clean
 
 ### Polish
@@ -101,18 +119,22 @@ All notable changes to Contextium are documented here.
 ### Initial Release
 
 **Core Framework:**
-- Structured repo architecture with 6 layers (instruction files, apps, knowledge, integrations, preferences, projects + journal)
+
+- Structured repo architecture with 6 layers (instruction files, apps, knowledge, integrations, preferences, projects +
+  journal)
 - Context router with lazy loading — loads only what's relevant per session
 - Behavioral rules (delegation-first, context efficiency, depth policy)
 - Governance rules (credentials, repo hygiene, project lifecycle, session discipline)
 - `.gitattributes` merge strategy protecting user data during updates
 
 **Onboarding:**
+
 - 5-minute quick onboarding flow ("let's onboard")
 - Dynamic agent config selection (Claude Code, Cursor, Codex)
 - 5 pre-loaded setup projects (integrations, people cards, health tracking, automation, daily briefing)
 
 **Sample Apps (6):**
+
 - Shared Utilities (Utility pattern)
 - Goals (Reference pattern)
 - Health Tracker (Data Sync pattern)
@@ -121,6 +143,7 @@ All notable changes to Contextium are documented here.
 - Today's Agenda (Briefing pattern)
 
 **Integration Connectors (27):**
+
 - Credential management (1Password)
 - Productivity (Google Workspace, Todoist)
 - Automation (Windmill, n8n)
@@ -131,11 +154,13 @@ All notable changes to Contextium are documented here.
 - Interfaces (TRMNL, Remote Control, HAPI, VS Code)
 
 **Templates:**
+
 - Journal entry format
 - Project README format
 - App README format
 - Email template guide
 
 **Installer:**
+
 - `install.sh` with init (fresh install) and update (pull upstream) modes
 - Protected path merging for user data

@@ -21,6 +21,7 @@ When you run `curl -sSL contextium.ai/install | bash`, the installer handles:
 When your AI opens for the first time, you're already fully configured. No "let's onboard" step needed.
 
 Your AI will:
+
 - Read your preferences file and match your communication style
 - Use the context router to lazy-load files as needed
 - Start the session lifecycle: classify work → do work → journal → commit → push
@@ -29,16 +30,18 @@ Your AI will:
 
 For more advanced setup, check the pre-loaded projects in `projects/setup/`:
 
-| Project | What You'll Set Up |
-|---------|-------------------|
-| `projects/setup/integrations/` | Connect external services with API credentials |
-| `projects/setup/people-cards/` | Build your relationship directory |
-| `projects/setup/health-tracking/` | Track biomarkers and health decisions |
-| `projects/setup/automation/` | Build your first scheduled workflow |
-| `projects/setup/daily-briefing/` | Configure a morning briefing email |
+| Project                           | What You'll Set Up                             |
+| --------------------------------- | ---------------------------------------------- |
+| `projects/setup/integrations/`    | Connect external services with API credentials |
+| `projects/setup/people-cards/`    | Build your relationship directory              |
+| `projects/setup/health-tracking/` | Track biomarkers and health decisions          |
+| `projects/setup/automation/`      | Build your first scheduled workflow            |
+| `projects/setup/daily-briefing/`  | Configure a morning briefing email             |
 
-Just tell your AI: "Let's work on the integrations setup project" — it will load the project README and walk you through it.
+Just tell your AI: "Let's work on the integrations setup project" — it will load the project README and walk you through
+it.
 
 ## For Contributors
 
-If you want to improve the onboarding experience, see [CONTRIBUTING.md](../CONTRIBUTING.md). The installer source is `install.sh` at the repo root.
+If you want to improve the onboarding experience, see [CONTRIBUTING.md](../CONTRIBUTING.md). The installer source is
+`install.sh` at the repo root.

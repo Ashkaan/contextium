@@ -9,12 +9,11 @@ Each person gets a directory: `knowledge/people/{firstname-lastname}/`
 At minimum, create a `README.md`:
 
 ```markdown
-**Relationship:** friend | colleague | family | partner | client
-**Added:** YYYY-MM-DD
-**Birthday:** MM-DD (optional)
+**Relationship:** friend | colleague | family | partner | client **Added:** YYYY-MM-DD **Birthday:** MM-DD (optional)
 **Location:** City, State (optional)
 
 ## Notes
+
 - [preference] How they like to communicate
 - [work] What they do professionally
 - [family] Family context
@@ -26,6 +25,7 @@ At minimum, create a `README.md`:
 ## Important People
 
 For people central to your life (partner, close family, business partners), create richer directories:
+
 ```
 knowledge/people/{name}/
 ├── README.md       # Basic info

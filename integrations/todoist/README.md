@@ -16,13 +16,13 @@ Task management via the Todoist REST API.
 
 ## Key Endpoints
 
-| Action | Method | Endpoint |
-|--------|--------|----------|
-| List tasks | GET | `/rest/v2/tasks` |
-| Create task | POST | `/rest/v2/tasks` |
-| Complete task | POST | `/rest/v2/tasks/{id}/close` |
-| List projects | GET | `/rest/v2/projects` |
-| Get stats | GET | `/sync/v9/completed/get_stats` |
+| Action        | Method | Endpoint                       |
+| ------------- | ------ | ------------------------------ |
+| List tasks    | GET    | `/rest/v2/tasks`               |
+| Create task   | POST   | `/rest/v2/tasks`               |
+| Complete task | POST   | `/rest/v2/tasks/{id}/close`    |
+| List projects | GET    | `/rest/v2/projects`            |
+| Get stats     | GET    | `/sync/v9/completed/get_stats` |
 
 ## Use Cases
 

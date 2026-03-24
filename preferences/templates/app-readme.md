@@ -46,7 +46,8 @@ Steps to set up and configure the app with your automation platform.
 
 ## Notes
 
-- The frontmatter block is required: `name`, `description`, `category`, `schedule`, `runtime`, `trigger`, `outputs`, `integrations`.
+- The frontmatter block is required: `name`, `description`, `category`, `schedule`, `runtime`, `trigger`, `outputs`,
+  `integrations`.
 - The `## Pattern:` section names the architectural pattern (Briefing, Data Sync, Timer + Email, etc.).
 - Use `## Architecture` for data-flow descriptions or diagrams.
 - Use `## Protocol` for operational instructions grouped by sub-task.

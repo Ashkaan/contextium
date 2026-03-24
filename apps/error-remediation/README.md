@@ -27,14 +27,16 @@ Reacts to automation failures and attempts recovery before notifying the user.
 ## How It Works
 
 1. **Tier 1 — Retry:** Wait, then re-trigger the failed workflow. Catches transient failures.
-2. **Tier 2 — AI Diagnosis:** If retry fails, an AI code agent reads the script, diagnoses root cause, and attempts a fix.
+2. **Tier 2 — AI Diagnosis:** If retry fails, an AI code agent reads the script, diagnoses root cause, and attempts a
+   fix.
 3. **Verify:** If AI reports a fix, re-trigger once more. Only escalate to user if all attempts fail.
 
 ## Design Rules
 
 - **Max 3 attempts:** original + retry + post-fix verify. No infinite loops.
 - **Never silent:** Every auto-fix sends an info notification so you know it happened.
-- **Retryability flags:** Only workflows marked retryable get automatic retry. Side-effect workflows skip to AI diagnosis.
+- **Retryability flags:** Only workflows marked retryable get automatic retry. Side-effect workflows skip to AI
+  diagnosis.
 - **Constrained AI:** The code agent cannot restart infrastructure, delete files, or modify git history.
 
 ## Implementation

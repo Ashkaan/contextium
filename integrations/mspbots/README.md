@@ -1,6 +1,7 @@
 # MSPBots
 
-MSP-specific analytics platform for business metrics, KPI dashboards, and automated reporting. Aggregates data from PSA and RMM tools into unified dashboards.
+MSP-specific analytics platform for business metrics, KPI dashboards, and automated reporting. Aggregates data from PSA
+and RMM tools into unified dashboards.
 
 ## Requirements
 
@@ -22,22 +23,22 @@ MSP-specific analytics platform for business metrics, KPI dashboards, and automa
 
 ## Key Endpoints
 
-| Resource | Method | Endpoint | Use |
-|----------|--------|----------|-----|
-| Dashboards | GET | `/v1/dashboards` | List available dashboards |
-| Dashboard data | GET | `/v1/dashboards/{id}/data` | Pull data from a specific dashboard |
-| Reports | GET | `/v1/reports` | List available reports |
-| Report data | GET | `/v1/reports/{id}/export` | Export report data |
-| Metrics | GET | `/v1/metrics` | Query specific KPI metrics |
+| Resource       | Method | Endpoint                   | Use                                 |
+| -------------- | ------ | -------------------------- | ----------------------------------- |
+| Dashboards     | GET    | `/v1/dashboards`           | List available dashboards           |
+| Dashboard data | GET    | `/v1/dashboards/{id}/data` | Pull data from a specific dashboard |
+| Reports        | GET    | `/v1/reports`              | List available reports              |
+| Report data    | GET    | `/v1/reports/{id}/export`  | Export report data                  |
+| Metrics        | GET    | `/v1/metrics`              | Query specific KPI metrics          |
 
 ## Key Metrics Available
 
-| Category | Metrics |
-|----------|---------|
+| Category     | Metrics                                                       |
+| ------------ | ------------------------------------------------------------- |
 | Service desk | Ticket volume, response time, resolution time, SLA compliance |
-| Revenue | MRR, revenue per endpoint, revenue by client |
-| Operations | Technician utilization, tickets per tech, backlog age |
-| Clients | Client profitability, agreement coverage, endpoint count |
+| Revenue      | MRR, revenue per endpoint, revenue by client                  |
+| Operations   | Technician utilization, tickets per tech, backlog age         |
+| Clients      | Client profitability, agreement coverage, endpoint count      |
 
 ## Use Cases
 

@@ -29,9 +29,9 @@ Create a scheduled automation that runs without your involvement.
 
 ## Automation Patterns
 
-| Pattern | Example | Flow |
-|---------|---------|------|
-| Timer + Email | News Digest | Cron → Fetch → AI Curate → Email |
-| Data Sync | Health | Webhook → Transform → Write to repo |
-| System/Event | Error Remediation | Error → Retry → AI Diagnose → Notify |
-| Briefing | Today's Agenda | Cron → Aggregate sources → Email |
+| Pattern       | Example           | Flow                                 |
+| ------------- | ----------------- | ------------------------------------ |
+| Timer + Email | News Digest       | Cron → Fetch → AI Curate → Email     |
+| Data Sync     | Health            | Webhook → Transform → Write to repo  |
+| System/Event  | Error Remediation | Error → Retry → AI Diagnose → Notify |
+| Briefing      | Today's Agenda    | Cron → Aggregate sources → Email     |

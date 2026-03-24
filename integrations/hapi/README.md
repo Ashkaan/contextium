@@ -1,6 +1,7 @@
 # HAPI
 
-Voice interface combining speech-to-text (STT) and text-to-speech (TTS) for hands-free AI interaction. Enables voice-based queries, task creation, and knowledge lookups.
+Voice interface combining speech-to-text (STT) and text-to-speech (TTS) for hands-free AI interaction. Enables
+voice-based queries, task creation, and knowledge lookups.
 
 ## Requirements
 
@@ -52,13 +53,13 @@ Voice interface combining speech-to-text (STT) and text-to-speech (TTS) for hand
 
 ## Provider Comparison
 
-| Provider | Type | Latency | Cost | Privacy |
-|----------|------|---------|------|---------|
-| Whisper (local) | STT | ~1-3s | Free | Full privacy |
-| Deepgram | STT | ~300ms | Pay per minute | Cloud processed |
-| Piper (local) | TTS | ~200ms | Free | Full privacy |
-| ElevenLabs | TTS | ~500ms | Pay per character | Cloud processed |
-| OpenAI TTS | TTS | ~400ms | Pay per character | Cloud processed |
+| Provider        | Type | Latency | Cost              | Privacy         |
+| --------------- | ---- | ------- | ----------------- | --------------- |
+| Whisper (local) | STT  | ~1-3s   | Free              | Full privacy    |
+| Deepgram        | STT  | ~300ms  | Pay per minute    | Cloud processed |
+| Piper (local)   | TTS  | ~200ms  | Free              | Full privacy    |
+| ElevenLabs      | TTS  | ~500ms  | Pay per character | Cloud processed |
+| OpenAI TTS      | TTS  | ~400ms  | Pay per character | Cloud processed |
 
 ## Use Cases
 

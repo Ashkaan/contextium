@@ -24,6 +24,7 @@ External health data syncs into the repo. Staleness monitoring alerts when data 
 ## Data
 
 Health data lives in `knowledge/health/`:
+
 - `biomarkers/` — Lab results, blood work
 - `supplements/` — Current supplement stack
 - `genetics/` — Genetic profile and risk factors
@@ -34,14 +35,18 @@ Health data lives in `knowledge/health/`:
 ## Protocol
 
 ### Adding Lab Results
+
 1. Record results in `knowledge/health/biomarkers/{year}.md`
 2. Compare against targets and previous results
 3. Note any supplement or protocol changes needed
 
 ### Supplement Changes
+
 1. Update `knowledge/health/supplements/current.md`
 2. Check for interactions with existing stack
 3. Note evidence level (strong/moderate/weak)
 
 ### Staleness Monitoring
-Configure an automation to check file modification dates. Alert if key files haven't been updated within expected intervals.
+
+Configure an automation to check file modification dates. Alert if key files haven't been updated within expected
+intervals.

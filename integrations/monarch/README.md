@@ -64,13 +64,13 @@ net_worth = await mm.get_net_worth()
 
 ## Key Data
 
-| Data | Method | Use |
-|------|--------|-----|
-| Account balances | `get_accounts()` | Net worth tracking, balance checks |
-| Transactions | `get_transactions()` | Spending review, categorization |
-| Budgets | `get_budgets()` | Budget vs. actual comparison |
-| Cash flow | `get_cashflow_summary()` | Income and expense trends |
-| Net worth | `get_net_worth()` | Long-term wealth tracking |
+| Data             | Method                   | Use                                |
+| ---------------- | ------------------------ | ---------------------------------- |
+| Account balances | `get_accounts()`         | Net worth tracking, balance checks |
+| Transactions     | `get_transactions()`     | Spending review, categorization    |
+| Budgets          | `get_budgets()`          | Budget vs. actual comparison       |
+| Cash flow        | `get_cashflow_summary()` | Income and expense trends          |
+| Net worth        | `get_net_worth()`        | Long-term wealth tracking          |
 
 ## Use Cases
 

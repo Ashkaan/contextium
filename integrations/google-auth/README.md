@@ -23,7 +23,8 @@ OAuth2 credential management for Google APIs. Handles the initial authorization 
 
 ## Multiple Accounts
 
-Supports separate token sets for different Google accounts (e.g., personal and work). Each account gets its own credential entry in the vault.
+Supports separate token sets for different Google accounts (e.g., personal and work). Each account gets its own
+credential entry in the vault.
 
 ## Use Cases
 

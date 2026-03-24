@@ -1,6 +1,7 @@
 # Codex
 
-AI code generation agent for bulk file edits, large refactors, and code generation tasks. Used as a delegated sub-agent when changes span many files or require repetitive pattern application.
+AI code generation agent for bulk file edits, large refactors, and code generation tasks. Used as a delegated sub-agent
+when changes span many files or require repetitive pattern application.
 
 ## Requirements
 
@@ -30,14 +31,15 @@ AI code generation agent for bulk file edits, large refactors, and code generati
 
 ## When to Delegate to Codex
 
-| Scenario | Why Codex |
-|----------|-----------|
-| Bulk file edits (10+ files) | Faster than editing one at a time |
-| Large refactors | Rename variables, restructure imports across a project |
-| Boilerplate generation | Scaffold tests, components, or modules from patterns |
-| Pattern application | Apply the same change to many similar files |
+| Scenario                    | Why Codex                                              |
+| --------------------------- | ------------------------------------------------------ |
+| Bulk file edits (10+ files) | Faster than editing one at a time                      |
+| Large refactors             | Rename variables, restructure imports across a project |
+| Boilerplate generation      | Scaffold tests, components, or modules from patterns   |
+| Pattern application         | Apply the same change to many similar files            |
 
-**Do NOT delegate** for single-file edits, logic-heavy changes requiring deep reasoning, or anything touching security-sensitive code.
+**Do NOT delegate** for single-file edits, logic-heavy changes requiring deep reasoning, or anything touching
+security-sensitive code.
 
 ## Key Commands
 

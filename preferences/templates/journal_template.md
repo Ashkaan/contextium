@@ -18,6 +18,7 @@ Summary line — enough to decide whether to read deeper.
 **Changes:** What changed, where, why (when files/systems changed)
 
 **Decisions:**
+
 - **Chose:** X | **Why:** reason | **Rejected:** Y
 
 **Lessons:** Surprising learnings, gotchas, corrections

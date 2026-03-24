@@ -1,6 +1,7 @@
 # Windmill
 
-Self-hosted workflow automation platform for scheduled jobs, webhooks, and multi-step workflows. This is the core automation engine -- most recurring tasks (data syncs, briefings, reports) run here.
+Self-hosted workflow automation platform for scheduled jobs, webhooks, and multi-step workflows. This is the core
+automation engine -- most recurring tasks (data syncs, briefings, reports) run here.
 
 ## Requirements
 
@@ -41,22 +42,23 @@ wmill resource list                # List configured resources (API keys, etc.)
 
 ## Script Types
 
-| Type | Language | Use |
-|------|----------|-----|
-| Script | TypeScript, Python, Go, Bash | Single-step operations |
-| Flow | YAML + scripts | Multi-step workflows with branching |
-| Schedule | Cron expression | Time-triggered execution |
-| Webhook | HTTP endpoint | Event-triggered execution |
+| Type     | Language                     | Use                                 |
+| -------- | ---------------------------- | ----------------------------------- |
+| Script   | TypeScript, Python, Go, Bash | Single-step operations              |
+| Flow     | YAML + scripts               | Multi-step workflows with branching |
+| Schedule | Cron expression              | Time-triggered execution            |
+| Webhook  | HTTP endpoint                | Event-triggered execution           |
 
 ## Resources and Variables
 
-Windmill stores credentials as **Resources** (typed, e.g., "postgresql", "slack") and configuration as **Variables**. Reference them in scripts:
+Windmill stores credentials as **Resources** (typed, e.g., "postgresql", "slack") and configuration as **Variables**.
+Reference them in scripts:
 
 ```typescript
 // TypeScript script example
 export async function main(apiKey: wmill.Resource<"api_key">) {
   const response = await fetch("https://api.example.com/data", {
-    headers: { Authorization: `Bearer ${apiKey}` }
+    headers: { Authorization: `Bearer ${apiKey}` },
   });
   return await response.json();
 }

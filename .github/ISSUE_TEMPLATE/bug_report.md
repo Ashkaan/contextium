@@ -1,7 +1,7 @@
 ---
 name: Bug Report
 about: Report something that isn't working correctly
-title: '[Bug] '
+title: "[Bug] "
 labels: bug
 ---
 
@@ -12,6 +12,7 @@ A clear description of what's wrong.
 ## To Reproduce
 
 Steps to reproduce:
+
 1. Clone/update Contextium
 2. ...
 3. ...
