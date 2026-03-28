@@ -19,7 +19,7 @@
 [![Open Source](https://img.shields.io/badge/Open_Source-Apache_2.0-00b4d8.svg?style=for-the-badge)](LICENSE)
 [![Version](https://img.shields.io/badge/v1.4.0-1a1a2e.svg?style=for-the-badge)](CHANGELOG.md)
 
-[![Claude Code](https://img.shields.io/badge/Claude_Code-cc785c?style=flat-square)](agent-configs/claude/)
+[![Claude Code](https://img.shields.io/badge/Claude_Code-cc785c.svg?style=flat-square)](agent-configs/claude/)
 [![Cursor](https://img.shields.io/badge/Cursor-7c3aed?style=flat-square)](agent-configs/cursor/)
 [![Codex CLI](https://img.shields.io/badge/Codex_CLI-10a37f?style=flat-square)](agent-configs/codex/)
 [![Gemini CLI](https://img.shields.io/badge/Gemini_CLI-4285F4?style=flat-square)](agent-configs/)
