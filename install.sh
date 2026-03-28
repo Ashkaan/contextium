@@ -7,7 +7,7 @@ set -euo pipefail
 #   Update:        ./install.sh update
 
 REPO="https://github.com/Ashkaan/contextium.git"
-VERSION="v1.3.2"
+VERSION="v1.4.0"
 
 # Colors
 GREEN='\033[0;32m'
@@ -117,6 +117,9 @@ declare -A INTEGRATION_MAP=(
   ["Gemini (delegate web research to Google's AI)"]="gemini"
   ["Codex (delegate bulk edits to a second AI agent)"]="codex"
   ["Browse (browser automation for web scraping and testing)"]="browse"
+  ["Stitch (Google's AI UI design tool — text to working UI)"]="stitch"
+  ["Notion (knowledge base, wikis, and project management)"]="notion"
+  ["Zoom (meeting summaries via AI Companion)"]="zoom"
   ["Windmill (self-hosted workflow automation — like Zapier but yours)"]="windmill"
   ["n8n (self-hosted workflow automation — alternative to Windmill)"]="n8n"
   ["Cloudflare (DNS, web hosting, serverless functions)"]="cloudflare"
@@ -336,6 +339,7 @@ init() {
     AI_ITEMS+=("Ollama (delegate tasks to a local AI — free, private, offline)")
   fi
   AI_ITEMS+=("Browse (browser automation for web scraping and testing)")
+  AI_ITEMS+=("Stitch (Google's AI UI design tool — text to working UI)")
 
   if [[ ${#AI_ITEMS[@]} -gt 0 ]]; then
     echo -e "${BOLD}Want to delegate tasks to other AI agents?${NC}"
@@ -361,6 +365,8 @@ init() {
     "1Password (store API keys and credentials securely)" \
     "Google Workspace (Gmail, Calendar, Drive, Sheets)" \
     "Todoist (task management and to-do tracking)" \
+    "Notion (knowledge base, wikis, and project management)" \
+    "Zoom (meeting summaries via AI Companion)" \
     || echo "")
   INTEGRATIONS="${INTEGRATIONS}${PROD_SELECTED}"$'\n'
   echo ""

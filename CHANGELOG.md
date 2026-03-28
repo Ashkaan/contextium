@@ -2,6 +2,60 @@
 
 All notable changes to Contextium are documented here.
 
+## [1.4.0] — 2026-03-27
+
+### Rules, Style Guide, Templates & New Integrations
+
+**Rules — behavior.md (6 improvements):**
+- **"Don't write to agent memory, use repo"** — explicit anti-pattern guidance for agents with native memory features
+- **Fresh context for complex builds** — new subsection: delegate 3+ iteration builds to sub-agents with fresh context windows
+- **Tracking Completions** — new section: when user marks items done, update the docs immediately (prevents stale next-steps)
+- **Focused agent prompts** — new context efficiency rule: "What function handles X?" not "Read file Y and summarize"
+- **Depth policy enhancement** — decisions must state why when skipping deep analysis
+- **Proactive value expanded** — concrete examples: cross-project connections, timing opportunities, risk flags
+
+**Rules — governance.md (4 new sections):**
+- **"Never exclude to avoid fixing"** — .gitignore philosophy: don't add entries to work around lint/format issues, fix the actual content
+- **Automation Quality** — no silent failures: a "successful" job with missing data is worse than a failed job
+- **Email Policy** — AI should never send emails on behalf of the user; draft for review instead
+- **Project status change workflow** — `blocked-on` for waiting status, frontmatter as source of truth, generation script integration
+
+**Rules — incident-response.md (new file):**
+- Restore-first triage protocol for monitoring alerts, failing schedules, and outages
+- Six-step flow: diagnose → minimum fix → commit + push → deploy → verify → then improve
+
+**Style guide — code-conventions.md (new file):**
+- Comprehensive TypeScript conventions: type safety, naming, file structure, imports, functions, types, error handling, comments, anti-patterns
+- Shell script conventions: safety flags, naming, formatting, quoting, functions, error messages
+- Deno fmt formatting reference
+- Sourced from Deno style guide, Effective TypeScript, and Google shell guide
+
+**Template — automation-spec.md (new file):**
+- Structured specification template for automation scripts with frontmatter, success criteria, outcome validation, architecture, error handling, credentials, and testing sections
+
+**Agent configs — all 11 updated:**
+- **"Every session" row now loads rules** — `behavior.md` and `governance.md` are loaded alongside `preferences.md` and `integrations/README.md`. Previously, rules were invisible unless manually triggered
+- **Lazy-load instruction clarified** — "MUST be loaded before doing any work" for every-session items
+- **3 new context router triggers** — screenshots/visual verification → browse, monitoring alerts → incident-response, TypeScript/shell → code-conventions
+- Removed web app and presentation triggers (style guides not shipped in this release)
+
+**New integrations (3):**
+- **Notion** — knowledge base, wikis, and project management (API setup, authentication, usage examples)
+- **Stitch** — Google's AI UI design tool (delegation-first workflow, Gemini CLI extension setup)
+- **Zoom** — meeting summaries via AI Companion (Server-to-Server OAuth, scopes, API docs, double-encoding gotcha)
+- All three added to installer integration picker (30 total integrations)
+
+**Rules README updated:**
+- Enforcement matrix expanded with new rules (automation quality, email policy, incident response, tracking completions)
+- incident-response.md added to rule files table
+
+**Documentation updated:**
+- Capability catalogue — integration count updated to 30, new entries for Notion/Stitch/Zoom, code-conventions style guide, automation-spec template, incident-response and new governance rules added
+- Architecture — trigger count updated to 18
+- Templates README — new index file listing all 4 templates
+
+---
+
 ## [1.3.2] — 2026-03-24
 
 ### Code Quality & CI Hardening

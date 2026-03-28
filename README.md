@@ -17,7 +17,7 @@
 <br/>
 
 [![Open Source](https://img.shields.io/badge/Open_Source-Apache_2.0-00b4d8.svg?style=for-the-badge)](LICENSE)
-[![Version](https://img.shields.io/badge/v1.3.2-1a1a2e.svg?style=for-the-badge)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/v1.4.0-1a1a2e.svg?style=for-the-badge)](CHANGELOG.md)
 
 [![Claude Code](https://img.shields.io/badge/Claude_Code-cc785c?style=flat-square)](agent-configs/claude/)
 [![Cursor](https://img.shields.io/badge/Cursor-7c3aed?style=flat-square)](agent-configs/cursor/)
@@ -86,7 +86,7 @@ graph TD
 
     Router --> Apps["Apps<br/>6 sample protocols"]
     Router --> Knowledge["Knowledge<br/>Domain-organized data"]
-    Router --> Integrations["Integrations<br/>28 connectors"]
+    Router --> Integrations["Integrations<br/>30 connectors"]
     Router --> Projects["Projects<br/>Time-boxed work"]
     Router --> Journal["Journal<br/>Session logs"]
     Router --> Preferences["Preferences<br/>Rules & templates"]

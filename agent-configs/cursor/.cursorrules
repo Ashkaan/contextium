@@ -6,14 +6,18 @@ Classify: **New Project** (multi-session -> project + tracker + journal) | **Exi
 
 ## Context Router
 
-Do NOT preload files — lazy load only when needed.
+Do NOT preload files — lazy load only when needed, **except** items marked "Every session" which MUST be loaded before doing any work. Re-evaluate triggers when task scope changes mid-session — if a new trigger matches, load it then.
 
 | Trigger | Load |
 |---------|------|
-| Every session | `preferences/user/preferences.md`, `integrations/README.md` |
+| Every session | `preferences/user/preferences.md`, `preferences/rules/behavior.md`, `preferences/rules/governance.md`, `integrations/README.md` |
+| Before delegating bulk/multi-file work | `integrations/README.md` → pick the right tool before spawning subagents |
 | Non-trivial task | `knowledge/growth/goals/current-focus.md` |
 | Project work | `projects/README.md` |
 | Writing emails | `preferences/style_guides/email_templates.md` |
+| Writing / reviewing TypeScript or shell | `preferences/style_guides/code-conventions.md` (if exists) |
+| Screenshots / visual verification | `integrations/browse/README.md` |
+| Monitoring alert / outage / failing schedule | `preferences/rules/incident-response.md` |
 | Creating project | `preferences/templates/project_template.md` |
 | Drafting journal entry | `preferences/templates/journal_template.md` |
 | Creating/editing app README | `preferences/templates/app-readme.md` |

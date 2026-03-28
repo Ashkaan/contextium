@@ -30,8 +30,7 @@ specific agent's instruction format. Ollama uses a Modelfile with the instructio
 Templates for all agents live in `agent-configs/`.
 
 The instruction file contains:
-
-- **Context Router** — which files to load for which triggers
+- **Context Router** — which files to load for which triggers (18 triggers including delegation pre-check, code conventions, incident response, people cards)
 - **Session Classification** — New Project / Existing / One-Off
 - **Repo Structure Map** — what each directory contains
 - **Rule Index** — pointers to behavioral and governance rules

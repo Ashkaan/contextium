@@ -4,7 +4,7 @@ Every capability in the Contextium framework, organized by category.
 
 ---
 
-## A. Integrations (28)
+## A. Integrations (30)
 
 ### Credential Management
 
@@ -19,6 +19,8 @@ Every capability in the Contextium framework, organized by category.
 | **Google Workspace** | Drive, Sheets, Gmail, Calendar, Contacts, Docs via OAuth2. Multi-account support |
 | **Google Auth**      | OAuth2 credential management for Google APIs                                     |
 | **Todoist**          | Task management — CRUD operations, completion stats, project tracking            |
+| **Notion**           | Knowledge base, wikis, and project management via API                            |
+| **Zoom**             | Meeting summaries via AI Companion — Server-to-Server OAuth                      |
 | **Strety**           | EOS platform — scorecards, rocks, to-dos, meeting prep                           |
 
 ### Automation Platforms
@@ -40,12 +42,13 @@ Every capability in the Contextium framework, organized by category.
 
 ### AI Delegation Agents
 
-| Integration    | What It Does                                                    |
-| -------------- | --------------------------------------------------------------- |
-| **Codex CLI**  | Code generation and bulk file editing in separate context       |
-| **Gemini CLI** | Web research, content summarization, Todoist operations         |
-| **Browse**     | Browser automation via Playwright for web scraping and UI tasks |
-| **Ollama**     | Local AI inference — private, offline, cost-free                |
+| Integration    | What It Does                                                             |
+| -------------- | ------------------------------------------------------------------------ |
+| **Codex CLI**  | Code generation and bulk file editing in separate context                |
+| **Gemini CLI** | Web research, content summarization, Todoist operations                  |
+| **Browse**     | Browser automation via Playwright for web scraping and UI tasks          |
+| **Ollama**     | Local AI inference — private, offline, cost-free                         |
+| **Stitch**     | Google's AI UI design tool — text-to-working-UI via Gemini CLI extension |
 
 ### Business Tools
 
@@ -169,30 +172,36 @@ Two tiers:
 
 ### Rules
 
-| Rule                    | What It Does                                         |
-| ----------------------- | ---------------------------------------------------- |
-| **Delegation-first**    | Prefer tools that use separate context windows       |
-| **Context efficiency**  | Minimize token consumption, use sub-agents           |
-| **Depth policy**        | Go deep on decisions, stay concise on execution      |
-| **Proactive value**     | Surface adjacent insights after completing work      |
-| **Credential handling** | All secrets in vault, never on disk                  |
-| **Repo hygiene**        | No build artifacts, no nested .gitignore             |
-| **Project lifecycle**   | Create with README, add to tracker, push immediately |
-| **Session end**         | Journal + commit + push together                     |
+| Rule                      | What It Does                                                                |
+| ------------------------- | --------------------------------------------------------------------------- |
+| **Delegation-first**      | Prefer tools that use separate context windows                              |
+| **Context efficiency**    | Minimize token consumption, use sub-agents                                  |
+| **Depth policy**          | Go deep on decisions, stay concise on execution                             |
+| **Proactive value**       | Surface adjacent insights after completing work                             |
+| **Credential handling**   | All secrets in vault, never on disk                                         |
+| **Repo hygiene**          | No build artifacts, no nested .gitignore                                    |
+| **Context repo parity**   | Every automation script must have a source file in the repo                 |
+| **Automation quality**    | No silent failures — validate all expected outputs before returning success |
+| **Email policy**          | AI never sends emails on behalf of user — draft for review instead          |
+| **Project lifecycle**     | Create with README, add to tracker, push immediately                        |
+| **Incident response**     | Restore service first, investigate after — 6-step triage protocol           |
+| **Session end**           | Journal + commit + push together (MANDATORY)                                |
 
 ### Templates
 
-| Template           | Purpose                                                       |
-| ------------------ | ------------------------------------------------------------- |
-| **Journal**        | Structured session log format (YAML frontmatter + sections)   |
-| **Project README** | Standard project tracker (goal, status checkboxes, progress)  |
-| **App README**     | App protocol format (frontmatter, protocol, data, automation) |
+| Template            | Purpose                                                                                      |
+| ------------------- | -------------------------------------------------------------------------------------------- |
+| **Journal**         | Structured session log format (YAML frontmatter + sections)                                  |
+| **Project README**  | Standard project tracker (goal, status checkboxes, progress)                                 |
+| **App README**      | App protocol format (frontmatter, protocol, data, automation)                                |
+| **Automation Spec** | Structured specification for automation scripts (success criteria, validation, architecture)  |
 
 ### Style Guides
 
 | Guide               | Covers                                                   |
 | ------------------- | -------------------------------------------------------- |
 | **Email Templates** | HTML email design tokens for automation-generated emails |
+| **Code Conventions** | TypeScript and shell script standards — type safety, naming, error handling, formatting |
 
 ---
 
