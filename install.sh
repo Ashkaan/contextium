@@ -7,7 +7,7 @@ set -euo pipefail
 #   Update:        ./install.sh update
 
 REPO="https://github.com/Ashkaan/contextium.git"
-VERSION="v1.4.0"
+VERSION="v2.0.0"
 
 # Colors
 GREEN='\033[0;32m'
@@ -109,69 +109,6 @@ ensure_prerequisites() {
 
 # --- Shared helpers ---
 
-# Map integration display names to directory names
-declare -A INTEGRATION_MAP=(
-  ["1Password (store API keys and credentials securely)"]="1password"
-  ["Google Workspace (Gmail, Calendar, Drive, Sheets)"]="google-workspace google-auth"
-  ["Todoist (task management and to-do tracking)"]="todoist"
-  ["Gemini (delegate web research to Google's AI)"]="gemini"
-  ["Codex (delegate bulk edits to a second AI agent)"]="codex"
-  ["Browse (browser automation for web scraping and testing)"]="browse"
-  ["Stitch (Google's AI UI design tool — text to working UI)"]="stitch"
-  ["Notion (knowledge base, wikis, and project management)"]="notion"
-  ["Zoom (meeting summaries via AI Companion)"]="zoom"
-  ["Windmill (self-hosted workflow automation — like Zapier but yours)"]="windmill"
-  ["n8n (self-hosted workflow automation — alternative to Windmill)"]="n8n"
-  ["Cloudflare (DNS, web hosting, serverless functions)"]="cloudflare"
-  ["TrueNAS (NAS and Docker container management via SSH)"]="truenas"
-  ["Home Assistant (smart home control and automation)"]="home-assistant"
-  ["Autotask (PSA/ticketing for managed service providers)"]="autotask"
-  ["NinjaOne (device inventory and remote monitoring)"]="ninjaone"
-  ["QuickBooks Online (business accounting and financial reports)"]="qbo"
-  ["Monarch (personal finance tracking and budgeting)"]="monarch"
-  ["Strety (EOS platform — scorecards, rocks, meeting management)"]="strety"
-  ["Hudu (IT documentation platform)"]="hudu"
-  ["MSPBots (MSP-specific analytics and KPI dashboards)"]="mspbots"
-  ["Garage (S3-compatible object storage for backups)"]="garage"
-  ["TRMNL (e-ink display dashboard for at-a-glance info)"]="trmnl"
-  ["Remote Control (access your AI from your phone)"]="remote-control"
-  ["HAPI (voice interface — talk to your AI)"]="hapi"
-  ["Ollama (delegate tasks to a local AI — free, private, offline)"]="ollama"
-  ["VS Code (remote development tunnel)"]="vscode"
-)
-
-# Filter integrations to keep only selected ones
-# Globals: INTEGRATIONS (read), INTEGRATION_MAP (read)
-filter_integrations() {
-  local selected_dirs=""
-  while IFS= read -r line; do
-    if [[ -n "$line" ]] && [[ -n "${INTEGRATION_MAP[$line]+x}" ]]; then
-      # shellcheck disable=SC2086
-      for dir in ${INTEGRATION_MAP[$line]}; do
-        selected_dirs="$selected_dirs $dir"
-      done
-    fi
-  done <<< "$INTEGRATIONS"
-
-  # Always keep: README.md, daedalus, host-docs-map (infrastructure)
-  selected_dirs="$selected_dirs daedalus host-docs-map"
-
-  # Remove unselected integrations
-  local removed=0
-  for dir in integrations/*/; do
-    local dirname
-    dirname=$(basename "$dir")
-    if [[ "$dirname" = "README.md" ]]; then continue; fi
-    if ! echo "$selected_dirs" | grep -qw "$dirname"; then
-      rm -rf "$dir"
-      removed=$((removed + 1))
-    fi
-  done
-  local kept
-  kept=$(find integrations -mindepth 1 -maxdepth 1 -type d | wc -l)
-  echo -e "  ${GREEN}✓${NC} ${kept} integrations installed (${removed} skipped)"
-}
-
 # Create a user profile in knowledge/people/
 # Args: $1=name, $2=name_lower, $3=profession, $4=ai_goal
 create_profile() {
@@ -193,7 +130,7 @@ PROFILE_EOF
 }
 
 # Write preferences file
-# Args: $1=user_name, $2=comm_short, $3=profession, $4=ai_goal
+# Args: $1=user_name, $2=comm_short, $3=profession, $4=ai_goal, $5=autonomy_short, $6=work_style_short
 write_preferences() {
   cat > preferences/user/preferences.md << PREFS_EOF
 # User Preferences — ${1}
@@ -226,48 +163,73 @@ ${3}
 
 ${4}
 
+## Autonomy
+
+$(case "$5" in
+  cautious)
+    echo "- **Always ask before acting** — present your plan first"
+    echo "- **No side effects without approval** — confirm before creating, deleting, or sending"
+    ;;
+  balanced)
+    echo "- **Act on routine tasks** — file edits, lookups, formatting"
+    echo "- **Ask on big decisions** — destructive actions, external calls, architectural changes"
+    ;;
+  autonomous)
+    echo "- **Act directly** — create files, edit code, run builds, commit changes"
+    echo "- **Only ask when stuck** — ambiguous tasks, destructive operations, or blocked"
+    ;;
+esac)
+
+## Work Style
+
+$(case "$6" in
+  solo)
+    echo "- **Solo operator** — optimize for individual productivity"
+    ;;
+  team)
+    echo "- **Team player** — consider collaboration, communication, and shared context"
+    ;;
+esac)
+
 ## Working Style
 
 *Update this as your AI learns how you work best.*
 PREFS_EOF
-  echo -e "  ${GREEN}✓${NC} Preferences configured (${2} communication)"
+  echo -e "  ${GREEN}✓${NC} Preferences configured (${2} communication, ${5} autonomy)"
 }
 
-# Create a knowledge domain directory
-# Args: $1=domain_name, $2=domain_lower
-create_knowledge_domain() {
-  mkdir -p "knowledge/${2}"
-  cat > "knowledge/${2}/README.md" << DOMAIN_EOF
-# ${1^}
-
-Persistent context for ${1}. Add files here as knowledge accumulates.
-
-**Created:** $(date +%Y-%m-%d)
-DOMAIN_EOF
-  echo -e "  ${GREEN}✓${NC} Knowledge domain created: ${1}"
-}
-
-# Update integrations/README.md to only show installed integrations
-update_integrations_readme() {
-  if [[ -f integrations/README.md ]] && command -v python3 &>/dev/null; then
-    python3 -c "
-import os, re
-lines = open('integrations/README.md').readlines()
-installed = set(os.listdir('integrations')) - {'README.md'}
-installed = {d for d in installed if os.path.isdir(f'integrations/{d}')}
-out = []
-for line in lines:
-    m = re.match(r'\| \[.*?\]\((\w[\w-]*)/?\)', line)
-    if m:
-        dirname = m.group(1)
-        if dirname in installed:
-            out.append(line)
-    else:
-        out.append(line)
-open('integrations/README.md', 'w').writelines(out)
-" 2>/dev/null || true
+# Apply autonomy mode to behavior.md
+# Args: $1=autonomy_short
+apply_autonomy_mode() {
+  local behavior_file="preferences/rules/behavior.md"
+  if [[ ! -f "$behavior_file" ]]; then
+    return
   fi
-  echo -e "  ${GREEN}✓${NC} Integration docs updated to match your selection"
+
+  case "$1" in
+    cautious)
+      cat >> "$behavior_file" << 'CAUTIOUS_EOF'
+
+## Cautious Mode
+
+Always ask the user before: creating files, running commands, making commits, sending anything externally. Present your plan first.
+CAUTIOUS_EOF
+      echo -e "  ${GREEN}✓${NC} Behavior set to cautious mode"
+      ;;
+    balanced)
+      # behavior.md is already balanced by default — no changes needed
+      echo -e "  ${GREEN}✓${NC} Behavior set to balanced mode (default)"
+      ;;
+    autonomous)
+      cat >> "$behavior_file" << 'AUTONOMOUS_EOF'
+
+## Autonomous Mode
+
+Act directly on routine tasks: create files, edit code, run builds, commit changes. Only ask when: the task is ambiguous, you're about to do something destructive, or you're stuck.
+AUTONOMOUS_EOF
+      echo -e "  ${GREEN}✓${NC} Behavior set to autonomous mode"
+      ;;
+  esac
 }
 
 # --- Init (fresh install) ---
@@ -317,161 +279,44 @@ init() {
   echo -e "${DIM}Selected: ${AI_AGENT}${NC}"
   echo ""
 
-  # Step 4: Integrations (sectioned by category)
-  INTEGRATIONS=""
-
-  # 4a: AI delegation
-  AI_ITEMS=()
-  AI_PRESELECTED=()
-  if [[ "$AI_AGENT" != "Claude"* ]]; then
-    AI_ITEMS+=("Claude Code (delegate strategy and complex reasoning)")
-    AI_PRESELECTED+=("--selected=Claude Code (delegate strategy and complex reasoning)")
-  fi
-  if [[ "$AI_AGENT" != "Codex"* ]]; then
-    AI_ITEMS+=("Codex (delegate bulk edits to a second AI agent)")
-    AI_PRESELECTED+=("--selected=Codex (delegate bulk edits to a second AI agent)")
-  fi
-  if [[ "$AI_AGENT" != "Gemini"* ]]; then
-    AI_ITEMS+=("Gemini (delegate web research to Google's AI)")
-    AI_PRESELECTED+=("--selected=Gemini (delegate web research to Google's AI)")
-  fi
-  if [[ "$AI_AGENT" != "Ollama"* ]]; then
-    AI_ITEMS+=("Ollama (delegate tasks to a local AI — free, private, offline)")
-  fi
-  AI_ITEMS+=("Browse (browser automation for web scraping and testing)")
-  AI_ITEMS+=("Stitch (Google's AI UI design tool — text to working UI)")
-
-  if [[ ${#AI_ITEMS[@]} -gt 0 ]]; then
-    echo -e "${BOLD}Want to delegate tasks to other AI agents?${NC}"
-    echo -e "${DIM}Your primary AI can route work to cheaper/specialized agents —${NC}"
-    echo -e "${DIM}research to Gemini, bulk edits to Codex. Saves tokens and money.${NC}"
-    echo -e "${DIM}(Space to toggle, Enter to confirm)${NC}"
-    echo ""
-    AI_SELECTED=$(gum choose --no-limit --cursor-prefix "[ ] " --selected-prefix "[x] " \
-      "${AI_PRESELECTED[@]}" \
-      "${AI_ITEMS[@]}" \
-      || echo "")
-    INTEGRATIONS="${INTEGRATIONS}${AI_SELECTED}"$'\n'
-    echo ""
-  fi
-
-  # 4b: Productivity
-  echo -e "${BOLD}Which productivity tools do you use?${NC}"
-  echo -e "${DIM}Your AI can read your calendar, manage tasks, and access files —${NC}"
-  echo -e "${DIM}so it has context about your schedule and priorities.${NC}"
-  echo -e "${DIM}(Space to toggle, Enter to confirm)${NC}"
-  echo ""
-  PROD_SELECTED=$(gum choose --no-limit --cursor-prefix "[ ] " --selected-prefix "[x] " \
-    "1Password (store API keys and credentials securely)" \
-    "Google Workspace (Gmail, Calendar, Drive, Sheets)" \
-    "Todoist (task management and to-do tracking)" \
-    "Notion (knowledge base, wikis, and project management)" \
-    "Zoom (meeting summaries via AI Companion)" \
-    || echo "")
-  INTEGRATIONS="${INTEGRATIONS}${PROD_SELECTED}"$'\n'
+  # Step 4: About You
+  echo -e "${BOLD}Tell us about yourself${NC}"
+  echo -e "${DIM}This shapes how your AI communicates and what it focuses on.${NC}"
   echo ""
 
-  # 4c: Automation
-  echo -e "${BOLD}Do you want to automate recurring tasks?${NC}"
-  echo -e "${DIM}Automation platforms let your AI schedule workflows —${NC}"
-  echo -e "${DIM}morning briefings, data syncs, alerts — that run without you.${NC}"
-  echo -e "${DIM}(Space to toggle, Enter to confirm)${NC}"
-  echo ""
-  AUTO_SELECTED=$(gum choose --no-limit --cursor-prefix "[ ] " --selected-prefix "[x] " \
-    "Windmill (self-hosted workflow automation — like Zapier but yours)" \
-    "n8n (self-hosted workflow automation — alternative to Windmill)" \
-    || echo "")
-  INTEGRATIONS="${INTEGRATIONS}${AUTO_SELECTED}"$'\n'
-  echo ""
-
-  # 4d: Infrastructure
-  echo -e "${BOLD}Do you self-host or manage infrastructure?${NC}"
-  echo -e "${DIM}If you run servers, a NAS, or manage DNS — your AI can${NC}"
-  echo -e "${DIM}monitor, deploy, and troubleshoot alongside you.${NC}"
-  echo -e "${DIM}(Space to toggle, Enter to confirm)${NC}"
-  echo ""
-  INFRA_SELECTED=$(gum choose --no-limit --cursor-prefix "[ ] " --selected-prefix "[x] " \
-    "Cloudflare (DNS, web hosting, serverless functions)" \
-    "TrueNAS (NAS and Docker container management via SSH)" \
-    "Garage (S3-compatible object storage for backups)" \
-    "Home Assistant (smart home control and automation)" \
-    || echo "")
-  INTEGRATIONS="${INTEGRATIONS}${INFRA_SELECTED}"$'\n'
-  echo ""
-
-  # 4e: Business tools
-  echo -e "${BOLD}Do you use any business or finance tools?${NC}"
-  echo -e "${DIM}Your AI can pull reports, track KPIs, and manage tickets —${NC}"
-  echo -e "${DIM}skip these if you don't run a business.${NC}"
-  echo -e "${DIM}(Space to toggle, Enter to confirm)${NC}"
-  echo ""
-  BIZ_SELECTED=$(gum choose --no-limit --cursor-prefix "[ ] " --selected-prefix "[x] " \
-    "QuickBooks Online (business accounting and financial reports)" \
-    "Monarch (personal finance tracking and budgeting)" \
-    "Autotask (PSA/ticketing for managed service providers)" \
-    "NinjaOne (device inventory and remote monitoring)" \
-    "Strety (EOS platform — scorecards, rocks, meeting management)" \
-    "Hudu (IT documentation platform)" \
-    "MSPBots (MSP-specific analytics and KPI dashboards)" \
-    || echo "")
-  INTEGRATIONS="${INTEGRATIONS}${BIZ_SELECTED}"$'\n'
-  echo ""
-
-  # 4f: Interfaces
-  echo -e "${BOLD}Want additional ways to access your AI?${NC}"
-  echo -e "${DIM}Beyond your terminal — e-ink dashboards, voice control,${NC}"
-  echo -e "${DIM}mobile access, or remote development.${NC}"
-  echo -e "${DIM}(Space to toggle, Enter to confirm)${NC}"
-  echo ""
-  IFACE_SELECTED=$(gum choose --no-limit --cursor-prefix "[ ] " --selected-prefix "[x] " \
-    "TRMNL (e-ink display dashboard for at-a-glance info)" \
-    "Remote Control (access your AI from your phone)" \
-    "HAPI (voice interface — talk to your AI)" \
-    "VS Code (remote development tunnel)" \
-    || echo "")
-  INTEGRATIONS="${INTEGRATIONS}${IFACE_SELECTED}"
-  echo ""
-
-  # Step 5: Communication style
-  echo -e "${BOLD}How should your AI communicate with you?${NC}"
-  echo -e "${DIM}This shapes every interaction — your AI will match your style from day one.${NC}"
   COMM_STYLE=$(gum choose \
     "Concise — get to the point, no filler" \
-    "Balanced — brief but include reasoning" \
-    "Thorough — explain your thinking, show alternatives")
+    "Balanced — clear and detailed when needed" \
+    "Thorough — explain reasoning, show your work")
   echo ""
 
-  # Step 6: Professional context
   echo -e "${BOLD}What do you do? (one line is fine)${NC}"
   echo -e "${DIM}So your AI understands your professional context and can give relevant advice.${NC}"
   PROFESSION=$(gum input --prompt "> " --placeholder "Software engineer, MSP owner, freelance designer..." --width 60)
   echo ""
 
-  # Step 7: Primary AI goal
   echo -e "${BOLD}What's the #1 thing you want AI to help with?${NC}"
   echo -e "${DIM}This becomes your AI's north star — it'll prioritize suggestions around this.${NC}"
   AI_GOAL=$(gum input --prompt "> " --placeholder "Ship code faster, manage my business, organize my life..." --width 60)
   echo ""
 
-  # Step 8: First knowledge domain
-  echo -e "${BOLD}Pick a knowledge domain to start with.${NC}"
-  echo -e "${DIM}This is just your first one — more will naturally appear as you work.${NC}"
-  echo -e "${DIM}Your AI creates knowledge directories on demand, so don't overthink this.${NC}"
-  FIRST_DOMAIN=$(gum choose \
-    "work — professional projects, clients, strategy" \
-    "health — biomarkers, supplements, fitness" \
-    "finance — budgets, investments, tax planning" \
-    "growth — goals, learning, personal development" \
-    "home — property, vehicles, maintenance" \
-    "Other (I'll type it)")
-  if [[ "$FIRST_DOMAIN" == "Other"* ]]; then
-    FIRST_DOMAIN=$(gum input --prompt "" --placeholder "e.g. recipes, gaming, music, legal...")
-  else
-    FIRST_DOMAIN="${FIRST_DOMAIN%% —*}"
-  fi
+  # Step 5: How should your AI operate?
+  echo -e "${BOLD}How should your AI operate?${NC}"
+  echo -e "${DIM}This shapes guardrails and how independently your AI acts.${NC}"
   echo ""
 
-  # Step 9: Private GitHub repo
+  AUTONOMY=$(gum choose \
+    "Cautious — always ask before acting" \
+    "Balanced — act on routine tasks, ask on big decisions" \
+    "Autonomous — act and report, only ask when stuck")
+  echo ""
+
+  WORK_STYLE=$(gum choose \
+    "Solo — just me" \
+    "Team — I work with others")
+  echo ""
+
+  # Step 6: Private GitHub repo
   CREATE_REPO="no"
   echo -e "${BOLD}Want to back up your Contextium to GitHub?${NC}"
   echo -e "${DIM}Your context compounds over time — losing it means starting over.${NC}"
@@ -641,26 +486,36 @@ PERSONALREADME
     rm -f CLAUDE.md
   fi
 
-  filter_integrations
-
   # Create user profile
   USER_NAME_LOWER=$(echo "$USER_NAME" | tr '[:upper:]' '[:lower:]' | tr ' ' '-')
   create_profile "$USER_NAME" "$USER_NAME_LOWER" "$PROFESSION" "$AI_GOAL"
 
-  # Write full preferences file
+  # Derive short values for preferences
   COMM_SHORT=""
   case "$COMM_STYLE" in
     "Concise"*)  COMM_SHORT="concise" ;;
     "Balanced"*) COMM_SHORT="balanced" ;;
     "Thorough"*) COMM_SHORT="thorough" ;;
   esac
-  write_preferences "$USER_NAME" "$COMM_SHORT" "$PROFESSION" "$AI_GOAL"
 
-  # Create first knowledge domain
-  DOMAIN_LOWER=$(echo "$FIRST_DOMAIN" | tr '[:upper:]' '[:lower:]' | tr ' ' '-')
-  create_knowledge_domain "$FIRST_DOMAIN" "$DOMAIN_LOWER"
+  AUTONOMY_SHORT=""
+  case "$AUTONOMY" in
+    "Cautious"*)   AUTONOMY_SHORT="cautious" ;;
+    "Balanced"*)   AUTONOMY_SHORT="balanced" ;;
+    "Autonomous"*) AUTONOMY_SHORT="autonomous" ;;
+  esac
 
-  update_integrations_readme
+  WORK_STYLE_SHORT=""
+  case "$WORK_STYLE" in
+    "Solo"*) WORK_STYLE_SHORT="solo" ;;
+    "Team"*) WORK_STYLE_SHORT="team" ;;
+  esac
+
+  # Write full preferences file
+  write_preferences "$USER_NAME" "$COMM_SHORT" "$PROFESSION" "$AI_GOAL" "$AUTONOMY_SHORT" "$WORK_STYLE_SHORT"
+
+  # Apply autonomy mode to behavior.md
+  apply_autonomy_mode "$AUTONOMY_SHORT"
 
   # Set git identity if not configured (uses name from onboarding)
   if ! git config user.name &>/dev/null; then
@@ -1044,11 +899,11 @@ test_install() {
   DIR_NAME="contextium-test"
   AI_AGENT="Claude Code (recommended)"
   OLLAMA_MODEL="llama3.1"
-  INTEGRATIONS="Gemini (delegate web research to Google's AI)"
   COMM_STYLE="Concise — get to the point, no filler"
   PROFESSION="Software engineer"
   AI_GOAL="Ship code faster"
-  FIRST_DOMAIN="work"
+  AUTONOMY="Balanced — act on routine tasks, ask on big decisions"
+  WORK_STYLE="Solo — just me"
   CREATE_REPO="no"
 
   if [[ -d "$DIR_NAME" ]]; then
@@ -1069,12 +924,20 @@ test_install() {
   cp "agent-configs/claude/CLAUDE.md" ./CLAUDE.md
   echo -e "  ${GREEN}✓${NC} Installed → CLAUDE.md"
 
-  # Remove unselected integrations
-  filter_integrations
+  # Clean up upstream files
+  rm -rf agent-configs
+  rm -rf .github
+  rm -f CHANGELOG.md CONTRIBUTING.md
+  echo -e "  ${GREEN}✓${NC} Cleaned up upstream files"
+
+  # Create profile and preferences
   create_profile "$USER_NAME" "test-user" "$PROFESSION" "$AI_GOAL"
-  write_preferences "$USER_NAME" "concise" "$PROFESSION" "$AI_GOAL"
-  create_knowledge_domain "$FIRST_DOMAIN" "$FIRST_DOMAIN"
-  update_integrations_readme
+
+  COMM_SHORT="concise"
+  AUTONOMY_SHORT="balanced"
+  WORK_STYLE_SHORT="solo"
+  write_preferences "$USER_NAME" "$COMM_SHORT" "$PROFESSION" "$AI_GOAL" "$AUTONOMY_SHORT" "$WORK_STYLE_SHORT"
+  apply_autonomy_mode "$AUTONOMY_SHORT"
 
   # Set git identity if not configured
   if ! git config user.name &>/dev/null; then
@@ -1087,7 +950,6 @@ test_install() {
   # Git commit
   git add -A
   git commit -q -m "Initial Contextium setup for ${USER_NAME} (${VERSION})"
-  git remote add upstream "$REPO"
 
   # Verify
   echo ""
@@ -1101,9 +963,8 @@ test_install() {
   [[ -f CLAUDE.md ]] && echo -e "  ${GREEN}✓${NC} CLAUDE.md exists" || echo -e "  ${YELLOW}✗${NC} CLAUDE.md missing"
   [[ -f preferences/user/preferences.md ]] && echo -e "  ${GREEN}✓${NC} Preferences file exists" || echo -e "  ${YELLOW}✗${NC} Preferences missing"
   [[ -d "knowledge/people/test-user" ]] && echo -e "  ${GREEN}✓${NC} User profile exists" || echo -e "  ${YELLOW}✗${NC} User profile missing"
-  [[ -d "knowledge/work" ]] && echo -e "  ${GREEN}✓${NC} Knowledge domain exists" || echo -e "  ${YELLOW}✗${NC} Knowledge domain missing"
-  [[ -d "integrations/gemini" ]] && echo -e "  ${GREEN}✓${NC} Selected integration (gemini) kept" || echo -e "  ${YELLOW}✗${NC} Selected integration missing"
-  [[ ! -d "integrations/todoist" ]] && echo -e "  ${GREEN}✓${NC} Unselected integration (todoist) removed" || echo -e "  ${YELLOW}✗${NC} Unselected integration not removed"
+  [[ -f preferences/rules/behavior.md ]] && echo -e "  ${GREEN}✓${NC} Behavior file exists" || echo -e "  ${YELLOW}✗${NC} Behavior file missing"
+  [[ ! -d "agent-configs" ]] && echo -e "  ${GREEN}✓${NC} agent-configs removed" || echo -e "  ${YELLOW}✗${NC} agent-configs still present"
   echo ""
 
   FILE_COUNT=$(find . -type f -not -path './.git/*' | wc -l)

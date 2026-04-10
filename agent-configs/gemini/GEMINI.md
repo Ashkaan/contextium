@@ -17,18 +17,28 @@ Do NOT preload files — lazy load only when needed, **except** items marked "Ev
 | Project work                                   | `projects/README.md`                                                                                                              |
 | Writing emails                                 | `preferences/style_guides/email_templates.md`                                                                                     |
 | Writing / reviewing TypeScript or shell        | `preferences/style_guides/code-conventions.md` (if exists)                                                                        |
-| Screenshots / visual verification              | `integrations/browse/README.md`                                                                                                   |
+| Screenshots / visual verification              | `integrations/browse/README.md` (if configured, else `templates/integrations/browse/`)                                             |
 | Monitoring alert / outage / failing schedule   | `preferences/rules/incident-response.md`                                                                                          |
 | Creating project                               | `preferences/templates/project_template.md`                                                                                       |
 | Changing project status                        | Run `npx tsx apps/project-index/generate.ts` after updating frontmatter                                                           |
 | Drafting journal entry                         | `preferences/templates/journal_template.md`                                                                                       |
 | Creating/editing app README                    | `preferences/templates/app-readme.md`                                                                                             |
 | Creating/updating a people card                | `knowledge/people/README.md`                                                                                                      |
-| Any integration/API call                       | `integrations/{name}/README.md`                                                                                                   |
-| Credential handling                            | `integrations/1password/README.md`                                                                                                |
+| Any integration/API call                       | `integrations/{name}/README.md` (if it exists, else `templates/integrations/{name}/`)                                              |
+| Credential handling                            | `templates/integrations/1password/README.md`                                                                                       |
 | Personal context                               | `knowledge/people/{your-name}/bio.md`                                                                                             |
 | Person mentioned                               | `knowledge/people/{name}/`                                                                                                        |
 | Prior work referenced                          | `journal/` (latest)                                                                                                               |
+
+## First Session
+
+If `journal/` contains no date files (only README.md), this is the user's first session.
+
+- Greet them by name (from `preferences/user/preferences.md`)
+- Acknowledge their profession and what they want AI to help with
+- Invite conversation: "Tell me about what you're working on" or "Who are the key people I should know about?"
+- Do NOT explain the repo structure, do NOT suggest setting up integrations
+- Just talk. The context will build naturally.
 
 ## Session End — MANDATORY
 
@@ -49,14 +59,14 @@ After creating a new directory in `apps/`:
 
 An app without a README has no protocol. An app without a registry entry is invisible to future sessions.
 
-## Automation Scripts — MANDATORY
+## Automation Scripts
 
-After editing any automation script that is deployed to an external platform (Windmill, n8n, etc.):
+If you use an automation platform (Windmill, n8n, etc.) and edit a deployed script:
 
 1. Deploy the updated script to the platform
 2. Verify deployment succeeded
 
-Editing without deploying has no effect — the platform runs its own copy. Skip this if no automation platform is configured.
+Editing without deploying has no effect — the platform runs its own copy. Skip if no automation platform is configured.
 
 ## Rules
 

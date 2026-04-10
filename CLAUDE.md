@@ -3,7 +3,7 @@
 > Give your AI an operating system.
 
 This is a Contextium repo. If you're seeing this default file, the installer hasn't been run yet. Run it to configure
-your profile, choose your AI agent, and replace this file with your full agent-specific instruction set.
+your profile, choose your AI agent, and replace this file with your full instruction set.
 
 ## Install
 
@@ -13,28 +13,26 @@ curl -sSL contextium.ai/install | bash
 
 The installer will:
 
-1. Gather your name, professional context, and communication style
+1. Gather your name, communication style, and professional context
 2. Ask which AI agent you use (Claude Code, Gemini, Codex, Cursor, Windsurf, Cline, Aider, Continue, Copilot, Ollama)
-3. Select integrations (calendar, email, task manager, etc.)
+3. Ask how autonomous your AI should be
 4. Replace this file with the full context router and instruction set for your chosen agent
 
 ## Repo Structure
 
 Once installed, the repo is organized as follows:
 
-| Directory                   | Purpose                                                      |
-| --------------------------- | ------------------------------------------------------------ |
-| `/apps/{name}/`             | Self-contained apps: protocol (README) + automation scripts  |
-| `/apps/shared/`             | Shared utilities (notifications, email, etc.)                |
-| `/knowledge/{domain}/`      | Data organized by domain                                     |
-| `/knowledge/people/{name}/` | People & entities                                            |
-| `/projects/{domain}/`       | Self-contained projects: `YYYY-MM-DD_brief-description/`     |
-| `/journal/`                 | Daily session logs: `YYYY-MM-DD.md`                          |
-| `/preferences/`             | User preferences, rules, templates, style guides             |
-| `/integrations/`            | External service connectors (auth, APIs, docs)               |
-| `/agent-configs/`           | Agent-specific instruction files for all supported AI agents |
+| Directory        | Purpose                                                     |
+| ---------------- | ----------------------------------------------------------- |
+| `/preferences/`  | Your rules, voice, templates, and style guides              |
+| `/knowledge/`    | Your domain data (people, goals, business context)          |
+| `/apps/`         | Your automations (starts empty — grows as you build)        |
+| `/integrations/` | Your connected tools (starts empty — set up as needed)      |
+| `/projects/`     | Your tracked initiatives                                    |
+| `/journal/`      | Daily session logs                                          |
+| `/templates/`    | Reference catalog of example apps and integration connectors |
 
 ## Without the Installer
 
-If you prefer to set up manually, copy the instruction file from `agent-configs/` for your agent (e.g.,
-`agent-configs/claude/CLAUDE.md`) to the repo root, then populate `preferences/user/preferences.md` with your profile.
+Copy the instruction file from `agent-configs/` for your agent (e.g., `agent-configs/claude/CLAUDE.md`) to the repo
+root, then populate `preferences/user/preferences.md` with your profile.

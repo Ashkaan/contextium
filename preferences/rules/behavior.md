@@ -6,13 +6,16 @@ How the AI should think and act during sessions.
 
 Prefer tools that use separate context windows to preserve main session capacity.
 
-| Need                        | Route to                | Why                                 |
-| --------------------------- | ----------------------- | ----------------------------------- |
-| Explore codebase (2+ files) | Sub-agent               | Separate context, controlled return |
-| Web research                | Gemini / research agent | Summarizes externally               |
-| Bulk edits (>2 files)       | Codex / code agent      | Direct editing, separate context    |
-| Scheduled/recurring tasks   | Automation platform     | Deterministic, no AI cost           |
-| Quick fact lookup           | Web search              | Cheapest, smallest result           |
+| Need                        | Route to  | Why                                 |
+| --------------------------- | --------- | ----------------------------------- |
+| Explore codebase (2+ files) | Sub-agent | Separate context, controlled return |
+| Quick fact lookup            | Web search | Cheapest, smallest result           |
+
+<!-- Add rows as you configure integrations:
+| Web research     | Research agent (see templates/integrations/gemini/)  | Summarizes externally |
+| Bulk edits       | Code agent (see templates/integrations/codex/)       | Direct editing, separate context |
+| Recurring tasks  | Automation platform (see templates/integrations/windmill/) | Deterministic, no AI cost |
+-->
 
 If delegation fails, proceed directly. Lazy-loaded reads (prefs, journal) are exempt.
 
@@ -20,9 +23,7 @@ If delegation fails, proceed directly. Lazy-loaded reads (prefs, journal) are ex
 
 ### Delegation Logging
 
-When delegating non-trivial work (not quick lookups), include a one-line summary in the journal:
-- `gemini: researched X -> key findings`
-- `codex: bulk-edited N files for Y`
+When delegating non-trivial work (not quick lookups), include a one-line summary in the journal.
 
 ## Context Efficiency
 
@@ -46,15 +47,14 @@ Sub-agents run in separate context — only the summary enters yours.
 
 ### Fresh context for complex builds
 
-When building a new automation or app with 3+ iteration rounds, delegate implementation phases to sub-agents with fresh context:
+When building something with 3+ iteration rounds, delegate implementation phases to sub-agents with fresh context:
 
 **When to delegate:**
-- You've already done 2+ rounds of significant edits to the same script
-- The script exceeds ~200 lines and you're still adding features
-- You're wiring multiple integrations (API + storage + UI + automation)
+- You've done 2+ rounds of significant edits to the same file
+- The file exceeds ~200 lines and you're still adding features
 
 **How:**
-- Pass the sub-agent: file path, current implementation, specific task ("add these 3 flags with these signatures"), and verification criteria
+- Pass the sub-agent: file path, current implementation, specific task, and verification criteria
 - Keep planning/design in main context (needs user interaction)
 - Commit between phases so sub-agents work on clean state
 
@@ -74,7 +74,7 @@ When building a new automation or app with 3+ iteration rounds, delegate impleme
 
 - Present alternatives with trade-offs
 - Flag risks and dependencies
-- If skipping deep analysis, state why (e.g., "single viable approach, no meaningful alternatives")
+- If skipping deep analysis, state why
 
 **Execution** (writing code, routine changes, data entry):
 
@@ -82,13 +82,13 @@ When building a new automation or app with 3+ iteration rounds, delegate impleme
 
 ## Tracking Completions
 
-When the user reports completing a tracked item (journal Next, project README next-steps, action items), update the docs in the same turn — don't just acknowledge conversationally. Dangling items confuse future sessions into thinking work is still pending.
+When the user reports completing a tracked item (journal Next, project README next-steps, action items), update the docs in the same turn — don't just acknowledge conversationally. Dangling items confuse future sessions.
 
 ## Proactive Value
 
-After completing a milestone or research task, include a brief "Also consider:" with 1-3 adjacent insights the user didn't ask for. Examples:
-- Cross-project connections ("This also applies to [other project]")
-- Timing opportunities ("Good time to do X since you're already in this area")
-- Risk flags ("This decision affects [dependency] — worth checking")
+After completing a milestone or research task, include a brief "Also consider:" with 1-3 adjacent insights. Examples:
+- Cross-project connections
+- Timing opportunities
+- Risk flags
 
 Keep it to 2-3 lines. Useful, not noisy. Skip if nothing useful to add.
