@@ -8,7 +8,7 @@ Time-boxed work items organized by domain.
 | ------ | ------- | ------ | ------- |
 |        |         |        |         |
 
-_Run the onboarding to create your first project._
+_Tell your AI "start a project for [thing]" to create your first one._
 
 ## Domain Legend
 

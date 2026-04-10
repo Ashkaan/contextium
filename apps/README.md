@@ -1,23 +1,33 @@
 # Apps
 
-Each folder is a self-contained app — a capability with a protocol (README) and optionally automation code.
+Each app is a self-contained capability — a protocol (README) and optionally automation code.
 
 **What belongs here:** Protocols, SOPs, and automation scripts.
-
 **What doesn't:** Data, records, entries, logs. Those live in `knowledge/`.
 
-**Boundary test:** Delete `knowledge/{domain}/` and the app still works (no data). Delete `apps/{name}/` and you have
-data with no protocol.
+## Your Apps
 
-## Sample Apps
+*No apps installed yet. Apps appear here as you build them.*
 
-These apps demonstrate the core patterns. Use them as templates for your own.
+## Example Apps
 
-| App                                     | Pattern       | Purpose                                          |
-| --------------------------------------- | ------------- | ------------------------------------------------ |
-| [shared](shared/)                       | Utility       | Reusable notification and email functions        |
-| [goals](goals/)                         | Reference     | Personal and professional goal tracking          |
-| [health](health/)                       | Data Sync     | Health biomarker tracking with staleness alerts  |
-| [news-digest](news-digest/)             | Timer + Email | AI-curated daily news and opinion digests        |
-| [error-remediation](error-remediation/) | System/Event  | Auto-recovery for failed automation workflows    |
-| [todays-agenda](todays-agenda/)         | Briefing      | Morning briefing with calendar, tasks, and goals |
+Browse `templates/apps/` for patterns you can use as starting points — or just ask your AI:
+
+> "I want a daily morning briefing email"
+> "Set up goal tracking"
+> "I want to automate my weekly report"
+
+Your AI will scaffold the right app structure for you.
+
+| Template | Pattern | Purpose |
+|----------|---------|---------|
+| [goals](../templates/apps/goals/) | Reference | Personal and professional goal tracking |
+| [health](../templates/apps/health/) | Data Sync | Health biomarker tracking with staleness alerts |
+| [news-digest](../templates/apps/news-digest/) | Timer + Email | AI-curated daily news digests |
+| [todays-agenda](../templates/apps/todays-agenda/) | Briefing | Morning briefing with calendar, tasks, and goals |
+| [error-remediation](../templates/apps/error-remediation/) | System/Event | Auto-recovery for failed automation workflows |
+| [project-index](../templates/apps/project-index/) | System | Generates projects/README.md from frontmatter |
+
+## Shared Utilities
+
+The `shared/` directory contains reusable functions for notifications, email, and other common operations.

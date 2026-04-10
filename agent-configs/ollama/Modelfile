@@ -19,16 +19,26 @@ Do NOT preload files — lazy load only when needed, **except** items marked "Ev
 | Project work | `projects/README.md` |
 | Writing emails | `preferences/style_guides/email_templates.md` |
 | Writing / reviewing TypeScript or shell | `preferences/style_guides/code-conventions.md` (if exists) |
-| Screenshots / visual verification | `integrations/browse/README.md` |
+| Screenshots / visual verification | `integrations/browse/README.md` (if configured, else `templates/integrations/browse/`) |
 | Monitoring alert / outage / failing schedule | `preferences/rules/incident-response.md` |
 | Creating project | `preferences/templates/project_template.md` |
 | Drafting journal entry | `preferences/templates/journal_template.md` |
 | Creating/editing app README | `preferences/templates/app-readme.md` |
-| Any integration/API call | `integrations/{name}/README.md` |
-| Credential handling | `integrations/1password/README.md` |
+| Any integration/API call | `integrations/{name}/README.md` (if it exists, else `templates/integrations/{name}/`) |
+| Credential handling | `templates/integrations/1password/README.md` |
 | Personal context | `knowledge/people/{your-name}/bio.md` |
 | Person mentioned | `knowledge/people/{name}/` |
 | Prior work referenced | `journal/` (latest) |
+
+## First Session
+
+If `journal/` contains no date files (only README.md), this is the user's first session.
+
+- Greet them by name (from `preferences/user/preferences.md`)
+- Acknowledge their profession and what they want AI to help with
+- Invite conversation: "Tell me about what you're working on" or "Who are the key people I should know about?"
+- Do NOT explain the repo structure, do NOT suggest setting up integrations
+- Just talk. The context will build naturally.
 
 ## Rules
 
