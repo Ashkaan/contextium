@@ -34,7 +34,7 @@ your AI how to navigate the repo. It will:
 
 ## Deeper Configuration
 
-After the initial setup, explore the pre-loaded projects in `projects/setup/` for:
+After the initial setup, check `GETTING-STARTED.md` at the repo root for guided next steps:
 
 - Connecting external services with API credentials
 - Building your relationship directory (people cards)
@@ -42,7 +42,7 @@ After the initial setup, explore the pre-loaded projects in `projects/setup/` fo
 - Building your first automation
 - Configuring a morning briefing email
 
-Tell your AI: "Let's work on the integrations setup project" and it will guide you through it.
+Just ask your AI what to work on next — it will guide you through it.
 
 ## Updating
 

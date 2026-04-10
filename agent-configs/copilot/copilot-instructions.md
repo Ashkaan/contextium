@@ -20,7 +20,6 @@ Do NOT preload files — lazy load only when needed, **except** items marked "Ev
 | Screenshots / visual verification              | `integrations/browse/README.md` (if configured, else `templates/integrations/browse/`)                                             |
 | Monitoring alert / outage / failing schedule   | `preferences/rules/incident-response.md`                                                                                          |
 | Creating project                               | `preferences/templates/project_template.md`                                                                                       |
-| Changing project status                        | Run `npx tsx apps/project-index/generate.ts` after updating frontmatter                                                           |
 | Drafting journal entry                         | `preferences/templates/journal_template.md`                                                                                       |
 | Creating/editing app README                    | `preferences/templates/app-readme.md`                                                                                             |
 | Creating/updating a people card                | `knowledge/people/README.md`                                                                                                      |

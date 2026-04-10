@@ -22,5 +22,9 @@ dist/
 .next/
 *.lock
 
-# Claude Code
-.claude/
+# Claude Code (ignore everything inside, then whitelist specific paths)
+.claude/**
+# Claude Code hooks and settings (tracked)
+!.claude/hooks/
+!.claude/hooks/**
+!.claude/settings.json

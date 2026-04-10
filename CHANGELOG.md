@@ -2,6 +2,19 @@
 
 All notable changes to Contextium are documented here.
 
+## [2.0.0] — 2026-04-09
+
+### Restructure — Templates, Setup Projects Removed, Config Cleanup
+
+- **`apps/project-index/generate.ts` moved to `templates/apps/`** — the project index generator is now a template, not a shipped app. AI agents can maintain project tables from instructions alone
+- **`projects/setup/` removed** — setup projects replaced by templates in `templates/` and AI-guided onboarding
+- **Project-index trigger removed from all agent configs** — the "Changing project status → run generate.ts" context router row removed from all 5 configs that had it (Claude, Gemini, Codex, Aider, Copilot)
+- **4 agent configs completed** — Cursor, Cline, Continue, and Windsurf now include Session End, New Apps, Automation Scripts sections and the people card trigger
+- **Docs updated** — getting-started, onboarding-guide, and CONTRIBUTING.md no longer reference `projects/setup/`
+- **`.claude/hooks/` and `.claude/settings.json` tracked** — .gitignore updated to allow Claude Code hooks and settings while keeping other .claude/ contents ignored
+
+---
+
 ## [1.4.0] — 2026-03-27
 
 ### Rules, Style Guide, Templates & New Integrations

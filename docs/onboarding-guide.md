@@ -28,18 +28,12 @@ Your AI will:
 
 ## Deeper Configuration
 
-For more advanced setup, check the pre-loaded projects in `projects/setup/`:
+For more advanced setup, check the app and integration templates in `templates/`:
 
-| Project                           | What You'll Set Up                             |
-| --------------------------------- | ---------------------------------------------- |
-| `projects/setup/integrations/`    | Connect external services with API credentials |
-| `projects/setup/people-cards/`    | Build your relationship directory              |
-| `projects/setup/health-tracking/` | Track biomarkers and health decisions          |
-| `projects/setup/automation/`      | Build your first scheduled workflow            |
-| `projects/setup/daily-briefing/`  | Configure a morning briefing email             |
+- **App templates** — example automations you can copy into `apps/` and customize
+- **Integration templates** — connector scaffolds for external services
 
-Just tell your AI: "Let's work on the integrations setup project" — it will load the project README and walk you through
-it.
+Just ask your AI what you'd like to set up — it knows the templates and will walk you through it.
 
 ## For Contributors
 

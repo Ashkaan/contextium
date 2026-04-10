@@ -42,7 +42,7 @@ Integrations connect external services. To add one:
 ### Framework Improvements
 
 - Enhancements to CLAUDE.md, rules, or templates
-- New setup projects in `projects/setup/`
+- New app templates in `templates/apps/`
 - CI workflow improvements
 
 ## Pull Request Process
