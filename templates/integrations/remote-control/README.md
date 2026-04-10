@@ -36,7 +36,7 @@ query your knowledge base, create tasks, and trigger automations on the go.
 1. Create a bot on your preferred platform (e.g., Telegram BotFather)
 2. Deploy a bridge service that relays messages between the bot and your AI agent
 3. Store the bot token in your credential vault
-4. Configure as a systemd service for persistence (see `integrations/daedalus/`)
+4. Configure as a systemd service for persistence
 
 ## Security Considerations
 

@@ -49,7 +49,7 @@ voice-based queries, task creation, and knowledge lookups.
 5. Configure activation mode:
    - **Wake word**: Always listening, activates on a keyword (e.g., "Hey assistant")
    - **Push-to-talk**: Activates only when a button is pressed (lower resource usage)
-6. Deploy as a systemd service for always-on availability (see `integrations/daedalus/`)
+6. Deploy as a systemd service for always-on availability
 
 ## Provider Comparison
 

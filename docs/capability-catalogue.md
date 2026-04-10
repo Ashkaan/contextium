@@ -37,7 +37,6 @@ Every capability in the Contextium framework, organized by category.
 | **Cloudflare** | Pages, Workers, DNS, Tunnels, Zero Trust access              |
 | **TrueNAS**    | NAS and Docker container management via SSH                  |
 | **Garage**     | S3-compatible object storage for backups and assets          |
-| **Daedalus**   | Local service management — systemd services, timers, daemons |
 | **VS Code**    | Remote development tunnel                                    |
 
 ### AI Delegation Agents
