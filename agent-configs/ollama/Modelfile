@@ -24,6 +24,7 @@ Do NOT preload files — lazy load only when needed, **except** items marked "Ev
 | Creating project | `preferences/templates/project_template.md` |
 | Drafting journal entry | `preferences/templates/journal_template.md` |
 | Creating/editing app README | `preferences/templates/app-readme.md` |
+| Creating/updating a people card | `knowledge/people/README.md` |
 | Any integration/API call | `integrations/{name}/README.md` (if it exists, else `templates/integrations/{name}/`) |
 | Credential handling | `templates/integrations/1password/README.md` |
 | Personal context | `knowledge/people/{your-name}/bio.md` |

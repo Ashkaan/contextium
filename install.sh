@@ -206,6 +206,10 @@ apply_autonomy_mode() {
     return
   fi
 
+  # Remove any existing autonomy section before appending (idempotent)
+  sed -i '/^## Cautious Mode$/,/^$/d' "$behavior_file" 2>/dev/null
+  sed -i '/^## Autonomous Mode$/,/^$/d' "$behavior_file" 2>/dev/null
+
   case "$1" in
     cautious)
       cat >> "$behavior_file" << 'CAUTIOUS_EOF'
@@ -865,9 +869,11 @@ update() {
         cp "agent-configs/claude/CLAUDE.md" ./CLAUDE.md
         echo -e "  ${GREEN}✓${NC} Updated CLAUDE.md"
       fi
-      # Commit instruction file refresh
+      # Clean up agent-configs (configs already copied to root)
+      rm -rf agent-configs 2>/dev/null
+      # Commit instruction file refresh + cleanup
       if [[ -n "$(git status --porcelain 2>/dev/null)" ]]; then
-        git add -A && git commit -q -m "update: refresh instruction file from agent-configs" 2>/dev/null
+        git add -A && git commit -q -m "update: refresh instruction file, remove agent-configs" 2>/dev/null
       fi
     fi
 
