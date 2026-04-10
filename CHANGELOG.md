@@ -214,7 +214,7 @@ All notable changes to Contextium are documented here.
 - Credential management (1Password)
 - Productivity (Google Workspace, Todoist)
 - Automation (Windmill, n8n)
-- Infrastructure (Cloudflare, TrueNAS, Garage, Daedalus)
+- Infrastructure (Cloudflare, TrueNAS, Garage)
 - AI agents (Codex, Gemini, Browse)
 - Business tools (Autotask, NinjaOne, QuickBooks, Monarch, Strety, Hudu, MSPBots)
 - Smart home (Home Assistant)
