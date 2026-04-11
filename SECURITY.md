@@ -13,7 +13,7 @@
 
 ### Preferred: GitHub Private Security Advisory
 
-1. Go to the [Security Advisories](https://github.com/AshkaanF/contextium/security/advisories) page
+1. Go to the [Security Advisories](https://github.com/Ashkaan/contextium/security/advisories) page
 2. Click **"Report a vulnerability"**
 3. Fill in the details and submit
 
