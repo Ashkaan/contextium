@@ -131,29 +131,62 @@ PROFILE_EOF
 
 # Write preferences file
 # Args: $1=user_name, $2=comm_short, $3=profession, $4=ai_goal, $5=autonomy_short, $6=work_style_short
+#
+# Note: blocks are built into variables before the heredoc rather than via
+# inline $(case ... esac) substitution. macOS ships bash 3.2 (2007), whose
+# parser fails on case patterns inside command substitution within an
+# unquoted heredoc — leaking raw shell into the output file.
 write_preferences() {
+  local comm_block autonomy_block work_style_block
+
+  case "$2" in
+    concise)
+      comm_block="- **Concise over verbose** — get to the point
+- **Direct over diplomatic** — say what you mean
+- **Practical over theoretical** — focus on what works"
+      ;;
+    balanced)
+      comm_block="- **Brief but reasoned** — include the why, skip the filler
+- **Direct but thoughtful** — explain trade-offs when relevant
+- **Practical first** — theory only when it informs action"
+      ;;
+    thorough)
+      comm_block="- **Thorough explanations** — show your reasoning
+- **Present alternatives** — help me think through options
+- **Context-rich** — include background when it helps"
+      ;;
+  esac
+
+  case "$5" in
+    cautious)
+      autonomy_block="- **Always ask before acting** — present your plan first
+- **No side effects without approval** — confirm before creating, deleting, or sending"
+      ;;
+    balanced)
+      autonomy_block="- **Act on routine tasks** — file edits, lookups, formatting
+- **Ask on big decisions** — destructive actions, external calls, architectural changes"
+      ;;
+    autonomous)
+      autonomy_block="- **Act directly** — create files, edit code, run builds, commit changes
+- **Only ask when stuck** — ambiguous tasks, destructive operations, or blocked"
+      ;;
+  esac
+
+  case "$6" in
+    solo)
+      work_style_block="- **Solo operator** — optimize for individual productivity"
+      ;;
+    team)
+      work_style_block="- **Team player** — consider collaboration, communication, and shared context"
+      ;;
+  esac
+
   cat > preferences/user/preferences.md << PREFS_EOF
 # User Preferences — ${1}
 
 ## Communication
 
-$(case "$2" in
-  concise)
-    echo "- **Concise over verbose** — get to the point"
-    echo "- **Direct over diplomatic** — say what you mean"
-    echo "- **Practical over theoretical** — focus on what works"
-    ;;
-  balanced)
-    echo "- **Brief but reasoned** — include the why, skip the filler"
-    echo "- **Direct but thoughtful** — explain trade-offs when relevant"
-    echo "- **Practical first** — theory only when it informs action"
-    ;;
-  thorough)
-    echo "- **Thorough explanations** — show your reasoning"
-    echo "- **Present alternatives** — help me think through options"
-    echo "- **Context-rich** — include background when it helps"
-    ;;
-esac)
+${comm_block}
 
 ## Professional Context
 
@@ -165,31 +198,11 @@ ${4}
 
 ## Autonomy
 
-$(case "$5" in
-  cautious)
-    echo "- **Always ask before acting** — present your plan first"
-    echo "- **No side effects without approval** — confirm before creating, deleting, or sending"
-    ;;
-  balanced)
-    echo "- **Act on routine tasks** — file edits, lookups, formatting"
-    echo "- **Ask on big decisions** — destructive actions, external calls, architectural changes"
-    ;;
-  autonomous)
-    echo "- **Act directly** — create files, edit code, run builds, commit changes"
-    echo "- **Only ask when stuck** — ambiguous tasks, destructive operations, or blocked"
-    ;;
-esac)
+${autonomy_block}
 
 ## Work Style
 
-$(case "$6" in
-  solo)
-    echo "- **Solo operator** — optimize for individual productivity"
-    ;;
-  team)
-    echo "- **Team player** — consider collaboration, communication, and shared context"
-    ;;
-esac)
+${work_style_block}
 
 ## Working Style
 
