@@ -1,0 +1,8 @@
+[
+  { "slug": "personal", "display": "Personal & Wellness" },
+  { "slug": "home", "display": "Home & Infra" },
+  { "slug": "daily", "display": "Daily Automations" },
+  { "slug": "content", "display": "Content" },
+  { "slug": "work", "display": "Work" },
+  { "slug": "system", "display": "System" }
+]

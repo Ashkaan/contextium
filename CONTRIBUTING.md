@@ -9,7 +9,7 @@ improvements.
 
 Apps are self-contained protocols with optional automation scripts. To add one:
 
-1. Create `apps/{name}/README.md` following the [app template](preferences/templates/app-readme.md)
+1. Create `apps/{name}/README.md` following the shape of an existing app under `apps/`
 2. Include:
    - YAML frontmatter (name, description, category, schedule, runtime, trigger)
    - What the app does

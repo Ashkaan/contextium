@@ -4,22 +4,18 @@
 
 | Version | Supported |
 | ------- | --------- |
-| 1.4.x   | Yes       |
-| < 1.4   | No        |
+| 3.x     | Yes       |
+| < 3.0   | No        |
 
 ## Reporting a Vulnerability
 
 **Do not open a public issue for security vulnerabilities.**
 
-### Preferred: GitHub Private Security Advisory
+Use a GitHub Private Security Advisory:
 
 1. Go to the [Security Advisories](https://github.com/Ashkaan/contextium/security/advisories) page
 2. Click **"Report a vulnerability"**
 3. Fill in the details and submit
-
-### Alternative: Email
-
-Send details to **ashkaan@strety.com** with subject line `[SECURITY] contextium`.
 
 ## What to Include
 
@@ -38,7 +34,7 @@ Send details to **ashkaan@strety.com** with subject line `[SECURITY] contextium`
 
 Contextium is a local-first framework with no hosted services. Security scope covers:
 
-- Framework code (templates, agent configs, integrations)
+- Framework code (the `.claude/` AI layer, templates, integrations)
 - The installer script (`install.sh`)
 - Supply chain concerns (dependencies, external fetches)
 

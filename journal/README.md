@@ -1,19 +1,5 @@
 # Journal
 
-Daily structured session logs. Each file is `YYYY-MM-DD.md`.
-
-## Format
-
-See `preferences/templates/journal_template.md` for the format.
-
-## Rules
-
-- One file per day, multiple sessions per file
-- Structured format (not prose) — decisions, lessons, next steps
-- Created at session end ("close this out")
-- Target: 10-350 lines per day
-
-## Why Journal?
-
-Journals capture the **why** behind changes. Git history shows what changed; journals explain why you chose that
-approach and what you rejected. This prevents re-exploring dead ends in future sessions.
+Daily session logs, one file per day (`YYYY-MM-DD.md`) with structured frontmatter
+(Action / Changes / Decisions / Issues / Lessons / Next). This is the WHY layer of memory;
+the git log is the WHAT layer. Written by `/close`. Starts empty.

@@ -1,67 +1,108 @@
 # Getting Started
 
+This walks you from a clone to your first trip through the loop. It's short because the methodology is
+short. The interesting part is the habit, and you pick that up by doing it once.
+
+## What you need
+
+- git, since the whole thing is a git repo.
+- Claude Code, the agent that drives the loop.
+- bash, on macOS or Linux. On Windows, use WSL.
+
+That's the list. There's no service to stand up and nothing to deploy.
+
 ## Install
 
-```bash
-curl -sSL contextium.ai/install | bash
-```
-
-The installer walks you through everything:
-
-- Your name and professional context
-- Which AI agent you use (Claude Code, Gemini, Codex, Cursor, Windsurf, Cline, Aider, Continue, Copilot, Ollama)
-- Which integrations to include
-- Your communication style and AI goals
-- First knowledge domain
-
-It then installs your AI agent's CLI and launches your first session — fully configured.
-
-## Requirements
-
-- **git** — for version control (the foundation of Contextium)
-- **npm** or **Node.js** — needed for some AI agent CLIs (Claude Code, Codex, Gemini)
-- **Ollama** — needed only if you choose Ollama as your agent (the installer handles installation)
-- **macOS or Linux** — Windows users should use [WSL](https://learn.microsoft.com/en-us/windows/wsl/)
-
-## After Install
-
-Your AI is ready immediately. The context router in your instruction file (CLAUDE.md, GEMINI.md, Modelfile, etc.) tells
-your AI how to navigate the repo. It will:
-
-1. Load your preferences on every session
-2. Lazy-load files based on what you're working on
-3. End sessions with a journal entry and git commit
-
-## Deeper Configuration
-
-After the initial setup, check `GETTING-STARTED.md` at the repo root for guided next steps:
-
-- Connecting external services with API credentials
-- Building your relationship directory (people cards)
-- Setting up health tracking
-- Building your first automation
-- Configuring a morning briefing email
-
-Just ask your AI what to work on next — it will guide you through it.
-
-## Updating
-
-Pull framework updates without losing your data:
+Clone the template, then run the installer pointed at the project you want to set up.
 
 ```bash
-./install.sh update
+git clone https://github.com/your-org/contextium.git
+cd contextium
+bash install.sh ~/code/my-project
 ```
 
-Your personal data in `preferences/user/`, `knowledge/`, `journal/`, and `projects/` is protected during updates. Only
-framework files get updated.
+The installer asks two things: your name and whether the agent should ask before changing
+infrastructure or act and report on its own. Then it lays the `.claude/` AI layer into the target, drops
+a starter `CLAUDE.md`, and creates the empty data directories. It's safe to re-run. On a second run it
+refreshes the AI layer and leaves your data and your customized `CLAUDE.md` alone.
 
-See [Update Guide](update-guide.md) for details.
+If you'd rather install into the current directory, run `bash install.sh .` from inside it.
 
-## Windows
+## Open it in Claude Code
 
-Contextium requires a Unix-like environment. On Windows, use
-[WSL (Windows Subsystem for Linux)](https://learn.microsoft.com/en-us/windows/wsl/):
+```bash
+cd ~/code/my-project
+claude
+```
 
-1. Install WSL: `wsl --install`
-2. Open your WSL terminal
-3. Run the installer as normal
+The first thing a session does is read `CLAUDE.md`, which is the router. It's deliberately short. It
+names the loop, tells the agent where things live, and points at the rules under `.claude/rules/`.
+Everything else loads when it's relevant, not all at once.
+
+## Your first loop
+
+The loop is three verbs. Walk through all three once and the rest is muscle memory.
+
+### Think: `/project`
+
+Run `/project` with no arguments and you'll get the project index. On a fresh install it's empty,
+which is expected. The index is where active work shows up once you have some.
+
+To start something, describe it:
+
+```
+/project set up a morning briefing that emails me my calendar and todos
+```
+
+The think flow does what its name says: it thinks. It asks the questions it needs, pushes back if the
+idea is half-baked, and lands on a plan. The output is a SPEC written with the lean template. Four
+sections: what you actually asked for in your own words, what success looks like including the edge
+cases, the files to touch, and the exact check that proves it works. You review the SPEC and sign off.
+
+Resist the urge to make the SPEC long. Four sections is enough to build against and enough to review.
+The template even says so. Heavier sections come later, when a real project demands them.
+
+### Do: `/implement`
+
+Here's the move that makes the methodology work. Start a fresh session before you implement.
+
+`/implement` refuses to run in a long context. That's not a quirk, it's the design. The thinking
+session is full of dead ends and revisions, and feeding all of that into the build step makes the work
+worse. The SPEC is the clean handoff. So you close the thinking session, open a new one, and run:
+
+```
+/implement my-project
+```
+
+It reads the SPEC back, builds against it, and validates as it goes. Because it starts cold, it builds
+what the SPEC says rather than re-litigating the choices you already made.
+
+### Wrap: `/close`
+
+When the work is done:
+
+```
+/close
+```
+
+This writes the day's journal entry, updates any project it touched, and commits. For substantial
+changes it runs an adversarial review first, so blind spots surface before the commit rather than after
+a bug ships. The journal records why you did things the way you did, which the git log can't capture.
+Together they're your memory: the log for what changed, the journal for why.
+
+## Two more skills worth knowing early
+
+`/probe` is a standalone adversarial pass over work you just finished. `/close` runs it for you on big
+changes, but you can call it directly any time you want a second look before you trust something.
+
+`/explain` is for understanding before touching. When you inherit a tangle and need to know why it's
+shaped that way, `/explain` investigates until it's confident and hands you the root cause instead of a
+guess.
+
+## Where to go next
+
+Read `docs/architecture.md` for how the pieces fit, especially the fresh-context boundary and the way
+rules are backed by hooks. Then build something small with the loop. The first real value shows up when
+you start adding your own rules: the agent does something wrong, you correct it, and you write the
+correction down so the next session doesn't repeat it. That loop, more than any single feature, is what
+makes the setup yours.

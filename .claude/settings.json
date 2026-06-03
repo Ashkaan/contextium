@@ -20,6 +20,19 @@
             "command": "bash .claude/hooks/block-memory-writes.sh"
           }
         ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash .claude/hooks/check-destructive-git.sh"
+          },
+          {
+            "type": "command",
+            "command": "bash .claude/hooks/commit-gate.sh"
+          }
+        ]
       }
     ]
   }

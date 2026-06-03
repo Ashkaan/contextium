@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# Tool-agnostic git pre-commit hook. Scans the staged diff for secrets before
+# the commit lands, regardless of which agent staged it.
+# Turn on with: git config core.hooksPath .githooks   (the installer does this).
+set -euo pipefail
+root="$(git rev-parse --show-toplevel)"
+exec bash "$root/apps/quality/check-secrets.sh"

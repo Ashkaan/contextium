@@ -2,6 +2,45 @@
 
 All notable changes to Contextium are documented here.
 
+## [3.0.0] — 2026-06-02
+
+Re-derived the public template from a `.claude/`-centric architecture. This is a major, breaking
+restructure: the `preferences/`-based layout and the multi-agent `agent-configs/` directory are gone.
+The AI layer now lives entirely under `.claude/` and the template targets Claude Code.
+
+### Added
+- `.claude/rules/` — 8 always-loaded principle rules (voice, depth-policy, boundary-inputs,
+  simplest-solution-default, no-deferral, mechanisms-not-prose, journal-format, write-your-own-rules).
+- `.claude/skills/` — the Loop (`/project`, `/implement`, `/close`) plus `/probe`, `/explain`,
+  `/debate`, `/propose-rule`.
+- `.claude/agents/` — 4 fresh-context sub-reviewers (code-reviewer, probe-reviewer, research-agent,
+  spirit-check).
+- `.claude/hooks/` — mechanisms that fire: `commit-gate.sh` (subject discipline + secret scan),
+  `check-destructive-git.sh`, `block-memory-writes.sh`, `session-checklist.sh`, wired via
+  `.claude/settings.json`.
+- `.claude/templates/spec-lean.md` — a 4-section SPEC template (ask / behavior / files / done).
+- `apps/{project,app,integration}-index/` — index generators that run against the skeleton.
+- `templates/integrations/` — 15 docs-only connector starters.
+- New `docs/` — architecture, getting-started, update-guide for the `.claude/`/Loop model.
+- Multi-tool support: `apps/projector/project-rules.sh` generates `AGENTS.md` and per-tool instruction
+  files (Cursor, Gemini, Copilot, Windsurf, Cline, Aider) from one source. Tool-agnostic enforcement
+  via git hooks in `.githooks/` (commit-subject + secret scan, shared with the Claude commit gate). The
+  installer gained a tool-picker and a git-hook step.
+
+### Changed
+- Root `CLAUDE.md` is now a short working-surface router instead of an install stub.
+- `install.sh` rewritten for the `.claude/` layout: refreshes the AI layer, protects your data dirs
+  and customized `CLAUDE.md`. No AI-agent picker (Claude Code only).
+
+### Removed
+- `preferences/` and `agent-configs/`. The methodology moved into `.claude/rules/` and `.claude/`.
+
+### Notes
+- Ships lean on purpose. The heavier enforcement machinery (orchestration platforms, large reconcilers,
+  multi-model SPEC review, per-session worktrees, runtime-pinning rules) is described as advanced
+  patterns to grow into, not wired in.
+
+
 ## [2.0.0] — 2026-04-09
 
 ### Restructure — Templates, Setup Projects Removed, Config Cleanup
@@ -216,7 +255,7 @@ All notable changes to Contextium are documented here.
 - Automation (Windmill, n8n)
 - Infrastructure (Cloudflare, TrueNAS, Garage)
 - AI agents (Codex, Gemini, Browse)
-- Business tools (Autotask, NinjaOne, QuickBooks, Monarch, Strety, Hudu, MSPBots)
+- Business tools (accounting, CRM, PSA, and budgeting connectors)
 - Smart home (Home Assistant)
 - Interfaces (TRMNL, Remote Control, HAPI, VS Code)
 

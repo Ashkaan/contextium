@@ -1,33 +1,21 @@
 # Apps
 
-Each app is a self-contained capability — a protocol (README) and optionally automation code.
+Code you wrote lives here, one folder per app. An "app" is anything repo-authored: an automation, a
+scheduled task, a library other apps import, a CLI, or a collection of check scripts. Name the folder
+for what the code does, not for an external product (those go in `integrations/`).
 
-**What belongs here:** Protocols, SOPs, and automation scripts.
-**What doesn't:** Data, records, entries, logs. Those live in `knowledge/`.
+The template ships with a small starter set:
 
-## Your Apps
+| App | What it does |
+|---|---|
+| `project-index/` | Generates `projects/README.md` from each project's status frontmatter. |
+| `app-index/` | Generates this `apps/README.md` from each app's frontmatter. |
+| `integration-index/` | Generates `integrations/README.md` from each connector's frontmatter. |
+| `quality/` | The repo's quality checks. Ships with the commit gate wired; grow it from there. |
+| `shared/` | Small helpers the index generators import (`parse_frontmatter.ts`, `validate_outcome.ts`). |
 
-*No apps installed yet. Apps appear here as you build them.*
+The three index generators run with `node apps/<name>/generate.ts`. They read frontmatter as the single
+source of truth and rewrite the matching index, so you edit the per-item README and let the index
+regenerate rather than hand-maintaining a file list.
 
-## Example Apps
-
-Browse `templates/apps/` for patterns you can use as starting points — or just ask your AI:
-
-> "I want a daily morning briefing email"
-> "Set up goal tracking"
-> "I want to automate my weekly report"
-
-Your AI will scaffold the right app structure for you.
-
-| Template | Pattern | Purpose |
-|----------|---------|---------|
-| [goals](../templates/apps/goals/) | Reference | Personal and professional goal tracking |
-| [health](../templates/apps/health/) | Data Sync | Health biomarker tracking with staleness alerts |
-| [news-digest](../templates/apps/news-digest/) | Timer + Email | AI-curated daily news digests |
-| [todays-agenda](../templates/apps/todays-agenda/) | Briefing | Morning briefing with calendar, tasks, and goals |
-| [error-remediation](../templates/apps/error-remediation/) | System/Event | Auto-recovery for failed automation workflows |
-| [project-index](../templates/apps/project-index/) | System | Generates projects/README.md from frontmatter |
-
-## Shared Utilities
-
-The `shared/` directory contains reusable functions for notifications, email, and other common operations.
+See `docs/architecture.md` for the apps-vs-integrations boundary.
