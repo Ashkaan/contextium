@@ -30,6 +30,32 @@ VERSION="v3.0.0"
 # target. Resolved relative to the directory this script lives in (the clone).
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 
+# --- Self-bootstrap ---
+# When run detached from the template payload (the `curl -sSL contextium.ai/install
+# | bash` one-liner pipes only this script, with no .claude/ alongside it), clone
+# the template to a temp dir and re-run from there. A normal `bash install.sh` from
+# a clone skips this — .claude/ is already next to the script. The env guard stops
+# the re-run from looping.
+REPO_URL="${CONTEXTIUM_REPO:-https://github.com/Ashkaan/contextium.git}"
+if [ ! -d "$SCRIPT_DIR/.claude" ] && [ -z "${CONTEXTIUM_BOOTSTRAPPED:-}" ]; then
+  if ! command -v git >/dev/null 2>&1; then
+    printf '%s\n' "Contextium needs git to install. Install git and re-run, or clone the repo and run: bash install.sh" >&2
+    exit 1
+  fi
+  boot_tmp="$(mktemp -d "${TMPDIR:-/tmp}/contextium-XXXXXX")" || exit 1
+  trap 'rm -rf "$boot_tmp"' EXIT INT TERM
+  printf '%s\n' "Fetching Contextium..." >&2
+  if ! git clone --depth 1 --quiet "$REPO_URL" "$boot_tmp/contextium"; then
+    printf '%s\n' "Could not clone $REPO_URL — check your network and try again." >&2
+    exit 1
+  fi
+  CONTEXTIUM_BOOTSTRAPPED=1 bash "$boot_tmp/contextium/install.sh" "$@"
+  boot_status=$?
+  rm -rf "$boot_tmp"
+  trap - EXIT INT TERM
+  exit "$boot_status"
+fi
+
 # Paths the installer refreshes on every run (the methodology layer + the
 # template-owned apps). Whole-path refresh keeps user data dirs (named below)
 # and any apps the user authored (other subdirs of apps/) untouched.
@@ -72,6 +98,18 @@ else
   GREEN=''; BLUE=''; CYAN=''; YELLOW=''; DIM=''; BOLD=''; NC=''
 fi
 
+# Interactive input source. Prefer real stdin; fall back to /dev/tty so the
+# `curl … | bash` one-liner (whose stdin is the script pipe, not the keyboard)
+# can still prompt. Empty when there's no terminal at all (CI) — callers then
+# take their non-interactive default.
+if [ -t 0 ]; then
+  TTY_IN="/dev/stdin"
+elif [ -r /dev/tty ]; then
+  TTY_IN="/dev/tty"
+else
+  TTY_IN=""
+fi
+
 # --- Helpers (functions before code) ---
 
 err() { printf '%s\n' "${YELLOW}$*${NC}" >&2; }
@@ -88,7 +126,7 @@ banner() {
   printf '\n'
 }
 
-is_tty() { [ -t 0 ]; }
+is_tty() { [ -n "$TTY_IN" ]; }
 
 # Prompt for a value with a default. Non-interactive (no TTY or --yes) returns
 # the default without reading. Args: $1=prompt $2=default
@@ -99,7 +137,7 @@ ask() {
     return 0
   fi
   printf '%s' "${BOLD}${prompt}${NC} ${DIM}[${default}]${NC} " >&2
-  IFS= read -r answer || answer=""
+  IFS= read -r answer <"$TTY_IN" || answer=""
   if [ -z "$answer" ]; then
     printf '%s\n' "$default"
   else
@@ -119,7 +157,7 @@ choose_autonomy() {
   printf '%s\n' "  ${CYAN}1${NC}) ask        ${DIM}ask before host/infra changes (recommended)${NC}" >&2
   printf '%s\n' "  ${CYAN}2${NC}) autonomous ${DIM}act and report, only ask when stuck${NC}" >&2
   printf '%s' "${DIM}Choose 1 or 2${NC} ${DIM}[1]${NC} " >&2
-  IFS= read -r answer || answer=""
+  IFS= read -r answer <"$TTY_IN" || answer=""
   case "$answer" in
     2) printf '%s\n' "autonomous" ;;
     *) printf '%s\n' "ask" ;;
@@ -243,7 +281,7 @@ ask_yesno() {
     return 0
   fi
   printf '%s' "${BOLD}${prompt}${NC} ${DIM}[${default}]${NC} " >&2
-  IFS= read -r answer || answer=""
+  IFS= read -r answer <"$TTY_IN" || answer=""
   case "$answer" in
     [Yy]*) printf 'y\n' ;;
     [Nn]*) printf 'n\n' ;;
@@ -263,7 +301,7 @@ choose_tools() {
   printf '%s\n' "  ${CYAN}1${NC}) Cursor     ${CYAN}2${NC}) Gemini CLI   ${CYAN}3${NC}) GitHub Copilot" >&2
   printf '%s\n' "  ${CYAN}4${NC}) Windsurf   ${CYAN}5${NC}) Cline        ${CYAN}6${NC}) Aider" >&2
   printf '%s' "${DIM}Numbers, space-separated (Enter for AGENTS.md only)${NC} " >&2
-  IFS= read -r answer || answer=""
+  IFS= read -r answer <"$TTY_IN" || answer=""
   for n in $answer; do
     case "$n" in
       1) out="$out cursor" ;;

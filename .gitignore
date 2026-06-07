@@ -22,9 +22,19 @@ dist/
 .next/
 *.lock
 
-# Claude Code (ignore everything inside, then whitelist specific paths)
+# Claude Code AI layer — this IS the template's product, so track it.
+# Ignore everything inside .claude/ by default, then whitelist the layer the
+# installer (install.sh REFRESH_PATHS) lays down. Transient session artifacts
+# (worktrees, plans, locks) stay ignored by falling through the default.
 .claude/**
-# Claude Code hooks and settings (tracked)
 !.claude/hooks/
 !.claude/hooks/**
 !.claude/settings.json
+!.claude/skills/
+!.claude/skills/**
+!.claude/rules/
+!.claude/rules/**
+!.claude/agents/
+!.claude/agents/**
+!.claude/templates/
+!.claude/templates/**
