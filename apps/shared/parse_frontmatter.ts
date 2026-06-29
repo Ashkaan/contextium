@@ -1,9 +1,7 @@
 // Shared YAML frontmatter parser for index generators.
 // Handles key-value pairs, >- multiline folded scalars, and YAML lists.
 
-export function parseFrontmatter(
-  content: string,
-): Record<string, string> | null {
+export function parseFrontmatter(content: string): Record<string, string> | null {
   if (!content.startsWith("---")) return null;
   const end = content.indexOf("\n---", 3);
   if (end === -1) return null;
@@ -34,10 +32,7 @@ export function parseFrontmatter(
     }
 
     // Strip surrounding quotes
-    if (
-      (value.startsWith('"') && value.endsWith('"')) ||
-      (value.startsWith("'") && value.endsWith("'"))
-    ) {
+    if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
       value = value.slice(1, -1);
     }
 

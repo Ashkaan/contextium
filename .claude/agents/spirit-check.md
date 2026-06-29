@@ -2,7 +2,7 @@
 name: spirit-check
 description: Fresh-context reviewer that checks whether a SPEC's interpretation matches the user's verbatim ask. Reads ONLY the user's literal words + the SPEC's Behavior section — nothing else. Flags interpretation drift (e.g., user said "function", SPEC describes "deployed service"). Dispatch it after writing a SPEC, before sign-off. Job: catch misreads of what the user asked for, not bugs or edge cases.
 model: inherit
-allowed-tools: [Read]
+tools: [Read]
 peers: [.claude/skills/project/SKILL.md]
 enforces: []
 ---

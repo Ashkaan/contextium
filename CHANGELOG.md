@@ -2,6 +2,44 @@
 
 All notable changes to Contextium are documented here.
 
+## [3.1.0] — 2026-06-29
+
+Anchors each review to the artifact it reviews. The Loop's Think verb now splits cleanly: `/project`
+plans, `/spec` writes the SPEC. The code reviewer is renamed and consolidated to one reviewer fired by
+the producer of the diff. No layout change — this re-derives the existing `.claude/` template from the
+current source, with the loop refactor folded in.
+
+### Added
+- `.claude/skills/spec/` — the SPEC-writing half of the Think verb, broken out of `/project`. Writes
+  the lean 4-section SPEC, can sanity-check its own interpretation against your ask via the
+  `spirit-check` agent, and presents it for sign-off. `/project` now hands the agreed design to `/spec`
+  (`think-step-4-dispatch-spec`); `/spec` is also callable ad-hoc when a change turns out to need a SPEC
+  mid-session.
+- `.claude/skills/author/` — scaffold a conforming rule, skill, hook, or agent so a new piece of the
+  layer matches the existing shape instead of drifting. Absorbs the old `/propose-rule` (now its rule
+  branch).
+- `apps/app-index/` now groups apps by **domain** (the top-level `apps/<domain>/` folder) instead of a
+  `category:` frontmatter field; flat apps with no domain folder render in one ungrouped table.
+
+### Changed
+- `/probe` → `/implement-audit`. The adversarial code reviewer is renamed and reframed as the loop's
+  **single** code reviewer, fired by the producer of the diff: `/implement` runs it automatically on a
+  substantial change; `/close` runs it only as a backstop for substantial work done outside `/implement`
+  (no more double-review). Standalone `/implement-audit` still works for an ad-hoc second look.
+- The two review agents (`code-reviewer`, `probe-reviewer`) collapse into one — `implement-audit-reviewer`.
+  One fresh-context reviewer, one triage vocabulary, one recursion cap.
+- Skills, agents, and the `docs/` + `CLAUDE.md` + `README.md` Loop tables updated for the `/project` →
+  `/spec` → `/implement` → `/close` flow and the rename.
+
+### Removed
+- `/propose-rule` — folded into `/author` (its rule branch). No capability lost.
+- The `notion` integration starter (the upstream connector was retired). Fourteen integration starters
+  remain.
+
+### Notes
+- Still lean on purpose. Heavier SPEC review (an external-model consensus pass) and the once-per-session
+  audit-dedupe machinery stay described as advanced patterns to grow into, not wired in.
+
 ## [3.0.0] — 2026-06-02
 
 Re-derived the public template from a `.claude/`-centric architecture. This is a major, breaking

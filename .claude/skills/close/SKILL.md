@@ -1,25 +1,25 @@
 ---
 name: close
-description: The "wrap" verb of the loop — end the session by writing the journal entry, updating touched project READMEs, committing, and pushing. Dispatches /probe for substantial changes. Use when the user says "close", "wrap up", "let's close", or similar.
+description: The "wrap" verb of the loop — end the session by writing the journal entry, updating touched project READMEs, committing, and pushing. Dispatches /implement-audit as a backstop for substantial ad-hoc changes not already reviewed by /implement. Use when the user says "close", "wrap up", "let's close", or similar.
 disable-model-invocation: false
 allowed-tools: "Bash(.claude/skills/close/scripts/*:*) Bash(git *:*) Bash(node *:*) Read Edit Write Task Skill AskUserQuestion"
 peers:
   - .claude/rules/journal-format.md
-  - .claude/skills/probe/SKILL.md
+  - .claude/skills/implement-audit/SKILL.md
 handoffs_to:
-  - .claude/skills/probe/SKILL.md
+  - .claude/skills/implement-audit/SKILL.md
 handoffs_from:
   - .claude/skills/implement/SKILL.md
 enforces:
   - "@rule:journal-format"
   - "@rule:no-deferral"
 steps:
-  - id: probe
+  - id: code-review
     kind: gate
     gate:
       tool: skill
       on_fail: continue
-      condition: "If the session made substantial changes (new app/dir, or a large code diff), dispatch /probe with the session SHA range + a brief. Fix every ready finding before finishing. Trivial sessions (README/config/journal-only) skip."
+      condition: "If the session made substantial changes (new app/dir, or a large code diff) that were NOT already reviewed by /implement this session, dispatch /implement-audit with the session SHA range + a brief. Fix every ready finding before finishing. Trivial sessions (README/config/journal-only) and changes already audited by /implement skip."
   - id: journal
     kind: action
     action: "Write today's session block to journal/<today>.md with labeled markers per @rule:journal-format: Action / Changes / Decisions / Issues / Lessons / Next."
@@ -35,26 +35,29 @@ steps:
 
 The "wrap" verb of the loop. A session isn't closed by `git commit` alone — the journal entry is
 load-bearing. `/close` writes the journal, updates any touched project README, commits, and pushes, in
-one pass. For substantial changes it runs `/probe` first so blind spots get caught before the work is
-sealed.
+one pass. For substantial changes that weren't already reviewed by `/implement`, it runs
+`/implement-audit` first so blind spots get caught before the work is sealed.
 
 ## Critical
 
 - **The journal is required.** Do not stop after `git commit`. The journal entry (§2) is what makes a
   past decision reconstructable later per `@rule:journal-format`; the commit alone is not "closed."
-- **Probe substantial changes.** §1 dispatches `/probe` for new apps or large diffs and fixes every
-  ready finding before the commit. Do not skip it to close faster.
-- **Land the full scope.** Fix the probe findings this session per `@rule:no-deferral`; don't stage
+- **Audit substantial ad-hoc changes.** §1 dispatches `/implement-audit` for new apps or large diffs
+  that didn't go through `/implement`, and fixes every ready finding before the commit. Do not skip it
+  to close faster. (Work built via `/implement` was already audited there — don't re-review it.)
+- **Land the full scope.** Fix the audit findings this session per `@rule:no-deferral`; don't stage
   them in a README as "follow-ups."
 
-## 1. Pre-Close Probe (substantial changes only)
+## 1. Pre-Close Audit (substantial ad-hoc changes only)
 
-If the session made a substantial change, dispatch the `/probe` skill before committing. The trigger:
-the session introduced a new directory under `apps/` (at any nesting depth), or modified a large amount
-of code (roughly >50 lines across the code you touched). README/docs/config/journal-only sessions skip
-this step.
+`/implement-audit` is the loop's single code reviewer, normally fired by `/implement`. `/close` is the
+backstop for substantial work done OUTSIDE `/implement` — a quick fix that grew, a refactor you did by
+hand. If such a change wasn't already reviewed this session, dispatch `/implement-audit` before
+committing. The trigger: the session introduced a new directory under `apps/` (at any nesting depth), or
+modified a large amount of code (roughly >50 lines across the code you touched). README/docs/config/
+journal-only sessions skip this step, and so does anything `/implement` already audited.
 
-Detect the session's commit range and brief `/probe` with it:
+Detect the session's commit range and brief `/implement-audit` with it:
 
 ```bash
 # N = number of commits this session made (recall from your own git-commit calls)
@@ -63,14 +66,14 @@ HEAD_SHA=$(git rev-parse HEAD)
 git diff "$BASE_SHA" "$HEAD_SHA"
 ```
 
-Pass `/probe`: the SHA range, the diff, the SPEC path if one exists for the touched code, and a
-one-paragraph brief of what was built. `/probe` returns triaged findings (`fix-now` /
-`nice-to-have` / `out-of-scope`). Fix EVERY finding whose fix is ready this session
-— both `fix-now` and `nice-to-have`. The triage label orders work within the round; it does not
-schedule across sessions. A finding with a known fix ships now, per `@rule:no-deferral`. Defer to a
-future session ONLY when the fix needs an unmade design decision (track it in a project folder) or is
-blocked on something external. After fixing, re-invoke `/probe` if any `fix-now` items came back; the
-recursion cap lives inside `/probe` itself.
+Pass `/implement-audit`: the SHA range, the diff, the SPEC path if one exists for the touched code, and
+a one-paragraph brief of what was built. It returns triaged findings (`fix-now` / `nice-to-have` /
+`out-of-scope`). Fix EVERY finding whose fix is ready this session — both `fix-now` and `nice-to-have`.
+The triage label orders work within the round; it does not schedule across sessions. A finding with a
+known fix ships now, per `@rule:no-deferral`. Defer to a future session ONLY when the fix needs an
+unmade design decision (track it in a project folder) or is blocked on something external. After fixing,
+re-invoke `/implement-audit` if any `fix-now` items came back; the recursion cap lives inside
+`/implement-audit` itself.
 
 ## 2. Journal Entry
 
@@ -136,14 +139,18 @@ the user knows nothing is lost by closing the tab.
 
 ## Examples
 
-**Quick fix (no probe).** The user runs `/close` after a 5-minute edit to a single README. §1 skips
+**Quick fix (no audit).** The user runs `/close` after a 5-minute edit to a single README. §1 skips
 (no substantial code change). §2 appends the journal entry with labeled markers. §3 skips (no project
 touched). §4 stages the README, commits with a verb-led subject, pushes. Summary names the pushed SHA.
 
-**Close after /implement.** The user runs `/implement my-feature` then `/close`. §1 detects the large
-diff in `apps/my-feature/`, dispatches `/probe`, gets 2 fix-now + 1 nice-to-have findings — all
-ready — and fixes every one this session. §2 writes the journal entry. §3 updates the project README
-status to completed. §4 commits the implementation + report + journal + README and pushes.
+**Close after /implement.** The user runs `/implement my-feature` then `/close`. §1 skips the audit —
+`/implement` already ran `/implement-audit` on this diff, so re-reviewing would be redundant. §2 writes
+the journal entry. §3 updates the project README status to completed. §4 commits the implementation +
+report + journal + README and pushes.
+
+**Close after ad-hoc work.** The user fixed a bug by hand (no `/implement`), touching ~120 lines across
+`apps/parser/`. §1 detects the large unaudited diff, dispatches `/implement-audit`, gets 2 fix-now + 1
+nice-to-have findings — all ready — and fixes every one this session. §2–4 run as normal.
 
 **Ops-only close.** The session was rule edits and journal cleanup, no code. §1 skips. §2–4 still run:
 journal entry, commit the rule edits, push.
@@ -152,7 +159,7 @@ journal entry, commit the rule edits, push.
 
 | Failure | Symptom | Fix |
 |---|---|---|
-| Probe returns fix-now items | `/probe` triage lists ready fixes | Fix every ready finding this session per `@rule:no-deferral`; re-invoke `/probe` if fix-now items recurred. |
+| Audit returns fix-now items | `/implement-audit` triage lists ready fixes | Fix every ready finding this session per `@rule:no-deferral`; re-invoke `/implement-audit` if fix-now items recurred. |
 | Commit rejected by hook | `commit-gate.sh` exits non-zero | Read the hook's message; fix the named issue (subject shape, staged content) and re-commit. |
 | Push rejected | `git push` non-fast-forward / auth / network | Run `scripts/push-with-retry.sh`; if it exhausts retries, resolve out-of-band, then re-run. |
 | Journal format off | A future `/project` or review can't parse the entry | Format SSOT is `@rule:journal-format`: labeled markers (Action / Changes / Decisions / Issues / Lessons / Next). Fix the field in-place via Edit. |

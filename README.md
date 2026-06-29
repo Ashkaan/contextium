@@ -16,7 +16,7 @@ three things:
 
    | Verb | Skill | What it does |
    |---|---|---|
-   | Think | `/project` | Plan, and write a short SPEC of what success looks like. |
+   | Think | `/project` → `/spec` | Plan, then write a short SPEC of what success looks like. |
    | Do | `/implement` | Execute the SPEC with self-validation, starting from a clean context. |
    | Wrap | `/close` | Journal what happened and why, then commit. |
 
@@ -33,9 +33,10 @@ three things:
 
 ## What's in the box
 
-- Seven skills: the Loop (`/project`, `/implement`, `/close`) plus `/probe` (adversarial self-review),
-  `/explain` (deep investigation), `/debate`, and `/propose-rule`.
-- Four fresh-context review agents the skills dispatch when they need a second set of eyes.
+- Eight skills: the Loop (`/project` → `/spec`, `/implement`, `/close`) plus `/implement-audit`
+  (adversarial code review), `/explain` (deep investigation), `/debate`, and `/author` (scaffold a
+  conforming rule, skill, hook, or agent).
+- Three fresh-context review agents the skills dispatch when they need a second set of eyes.
 - Eight always-loaded principle rules, kept short on purpose.
 - A handful of wired hooks, a lean 4-section SPEC template, and 15 docs-only integration starters.
 

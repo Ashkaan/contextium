@@ -91,7 +91,7 @@ Dispatch 2-3 `research-agent` instances in parallel, each scoped to a different 
 
 Check for contradictions across sources. If sources conflict, dispatch a targeted
 follow-up research-agent to resolve the specific disagreement — do not guess. If the
-topic touches this session's work, run `/probe` to verify against actual state.
+topic touches this session's work, run `/implement-audit` to verify against actual state.
 
 ## step-4-synthesize
 

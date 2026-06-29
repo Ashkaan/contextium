@@ -1,7 +1,7 @@
 # Lean SPEC Schema (4 sections)
 
-Reference for [`/project`](../SKILL.md) `think-step-4-generate-spec`. Loaded by Claude when writing a
-SPEC, not held in always-loaded context.
+Reference for the [`/spec`](../../spec/SKILL.md) skill (dispatched by [`/project`](../SKILL.md)'s
+`think-step-4-dispatch-spec`). Loaded by Claude when writing a SPEC, not held in always-loaded context.
 
 The canonical template lives at [`.claude/templates/spec-lean.md`](../../../templates/spec-lean.md) —
 copy it, don't reinvent the section set. A SPEC is four sections: **ask / behavior / files / done**.

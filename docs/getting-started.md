@@ -55,9 +55,11 @@ To start something, describe it:
 ```
 
 The think flow does what its name says: it thinks. It asks the questions it needs, pushes back if the
-idea is half-baked, and lands on a plan. The output is a SPEC written with the lean template. Four
-sections: what you actually asked for in your own words, what success looks like including the edge
-cases, the files to touch, and the exact check that proves it works. You review the SPEC and sign off.
+idea is half-baked, and lands on a plan. Then it hands the plan to `/spec`, which writes the SPEC with
+the lean template. Four sections: what you actually asked for in your own words, what success looks like
+including the edge cases, the files to touch, and the exact check that proves it works. `/spec` can
+sanity-check its own interpretation against your ask before you sign off. You review the SPEC and sign
+off. (You can also call `/spec` directly when a change turns out to need a SPEC mid-session.)
 
 Resist the urge to make the SPEC long. Four sections is enough to build against and enough to review.
 The template even says so. Heavier sections come later, when a real project demands them.
@@ -92,8 +94,9 @@ Together they're your memory: the log for what changed, the journal for why.
 
 ## Two more skills worth knowing early
 
-`/probe` is a standalone adversarial pass over work you just finished. `/close` runs it for you on big
-changes, but you can call it directly any time you want a second look before you trust something.
+`/implement-audit` is a standalone adversarial pass over code you just finished. `/implement` runs it
+for you on substantial changes, but you can call it directly any time you want a second look before you
+trust something.
 
 `/explain` is for understanding before touching. When you inherit a tangle and need to know why it's
 shaped that way, `/explain` investigates until it's confident and hands you the root cause instead of a

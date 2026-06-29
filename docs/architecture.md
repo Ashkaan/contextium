@@ -44,7 +44,7 @@ slogan is the boundary between thinking and doing.
 
 | Verb | Skill | What it does |
 |---|---|---|
-| Think | `/project` | Plan the work and write a lean SPEC |
+| Think | `/project` → `/spec` | Plan the work, then write a lean SPEC |
 | Do | `/implement` | Execute the SPEC, validating as it goes |
 | Wrap | `/close` | Journal the session, then commit |
 
@@ -59,24 +59,28 @@ This is the single most useful idea in the methodology. A SPEC written by a tire
 executed by that same tired context tends to drift, because the model is still arguing with itself
 about choices it already made. Cut the context between the two and each step does one job well.
 
-The SPEC itself is short. The template has four sections: the ask in the human's own words, the
-behavior that counts as success, the files to touch, and how you'll know it works. That's enough for a
-fresh session to build against and enough for a reviewer to check. Heavier projects grow their own
-sections when a real gap bites, not before.
+The SPEC itself is short, and `/project` doesn't write it directly — it hands the agreed plan to
+`/spec`, which writes the file and can sanity-check its own interpretation against your ask before you
+sign off. The template has four sections: the ask in the human's own words, the behavior that counts as
+success, the files to touch, and how you'll know it works. That's enough for a fresh session to build
+against and enough for a reviewer to check. Heavier projects grow their own sections when a real gap
+bites, not before. Splitting `/spec` out of `/project` means a SPEC can also be written ad-hoc, any time
+work turns out to need one, without running the full think flow.
 
 ### Supporting skills
 
 The loop is the spine. A few other skills hang off it.
 
-`/probe` is an adversarial pass over work you just finished. It looks for what you missed, what's
-inconsistent, what breaks at the edges. `/close` runs it automatically for substantial changes, so the
-review happens before the commit rather than after a bug ships.
+`/implement-audit` is an adversarial pass over code you just finished. It looks for what you missed,
+what's inconsistent, what breaks at the edges. `/implement` runs it automatically for substantial
+changes, so the review happens before the commit rather than after a bug ships. It's the loop's single
+code reviewer — one fix loop, one recursion cap, whether it fires inside `/implement` or standalone.
 
 `/explain` is for the times you need to understand why something is the way it is before you touch it.
 It investigates until it's confident, then gives you a root-cause summary instead of a guess.
 
-There's also `/debate` for talking through a decision from more than one side, and `/propose-rule`
-for the moment you've corrected the agent once too often and want the correction to stick.
+There's also `/debate` for talking through a decision from more than one side, and `/author`
+for scaffolding a new rule, skill, hook, or agent in the shape the existing ones already use (its rule branch is the old propose-rule flow).
 
 ## Rules are mechanisms, not prose
 

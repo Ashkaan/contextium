@@ -58,11 +58,14 @@ the amendment in the Files-to-Change list.
 
 ## Why the SPEC stays lean, and the user signs off
 
-The think flow ends by writing a four-section SPEC (Ask / Behavior / Files / Done) and presenting it
-to the user for sign-off. There is no heavyweight machine-review gate in front of the user — the SPEC
-is short enough to read, and the user is the arbiter of whether it matches intent. The discipline that
-keeps the SPEC trustworthy lives in the steps before it: goal-alignment up front, the primitives grep,
-boundary cites against real code. A SPEC that clears those is ready for the human to read directly.
+The think flow ends by handing the agreed design to `/spec` (`think-step-4-dispatch-spec`), which
+writes the four-section SPEC (Ask / Behavior / Files / Done), optionally runs the `spirit-check` agent
+to catch interpretation drift, and presents it to the user for sign-off. There is no heavyweight
+machine-review gate in front of the user — the SPEC is short enough to read, and the user is the arbiter
+of whether it matches intent. The discipline that keeps the SPEC trustworthy lives in the steps before
+it: goal-alignment up front, the primitives grep, boundary cites against real code. A SPEC that clears
+those is ready for the human to read directly. Splitting `/spec` out of `/project` also means a SPEC can
+be written ad-hoc, without the full think flow, whenever work turns out to need one.
 
 Keep the SPEC lean per `@rule:simplest-solution-default`. A heavy multi-section schema forces an author
 to fill boilerplate on every SPEC, most of which degrades to "N/A" and hides the parts that matter. Let

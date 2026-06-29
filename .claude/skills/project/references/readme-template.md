@@ -13,7 +13,7 @@ priority: high|medium|low   # required on active/blocked/monitor
 created: YYYY-MM-DD
 tags: [category, technology, type]
 description: One-line summary for the project index
-next: Current next steps (use blocked-on when status is blocked; monitoring-until when status is monitor)
+next: One short sentence — the single immediate next action (shown verbatim in the project index; the full backlog + context live in the body sections below). Use blocked-on when status is blocked; monitoring-until when status is monitor.
 ---
 
 # Project: [Descriptive Name]

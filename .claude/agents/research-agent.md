@@ -2,7 +2,7 @@
 name: research-agent
 description: Fresh-context in-repo investigator. Dispatched by `/explain` (and any skill needing a focused deep-dive that shouldn't pollute the main context). Returns structured findings with exact file:line citations so the caller can synthesize without carrying the search traffic. Single-round, cannot self-invoke.
 model: inherit
-allowed-tools: [Read, Grep, Glob, Bash, WebSearch, WebFetch]
+tools: [Read, Grep, Glob, Bash, WebSearch, WebFetch]
 peers: [.claude/skills/explain/SKILL.md]
 enforces: []
 ---

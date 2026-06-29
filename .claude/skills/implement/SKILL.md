@@ -6,6 +6,7 @@ disable-model-invocation: false
 allowed-tools: "Bash(git *:*) Bash(npm *:*) Bash(node *:*) Bash(npx *:*) Read Edit Write Task Skill AskUserQuestion"
 peers:
   - .claude/skills/project/SKILL.md
+  - .claude/skills/implement-audit/SKILL.md
   - .claude/skills/close/SKILL.md
   - .claude/templates/spec-lean.md
 enforces:
@@ -16,6 +17,7 @@ enforces:
 handoffs_from:
   - .claude/skills/project/SKILL.md
 handoffs_to:
+  - .claude/skills/implement-audit/SKILL.md
   - .claude/skills/close/SKILL.md
 reads:
   - projects/{domain}/{date}_{slug}/{name}.spec.md
@@ -38,9 +40,15 @@ steps:
       tool: halt
       on_fail: halt
       condition: "Re-read § 1. Write one line: 'Agreed to X. Diff does X.' If it reads 'Diff does Y', halt and either fix the diff or AskUserQuestion before reporting."
+  - id: implement-audit
+    kind: gate
+    gate:
+      tool: skill
+      on_fail: halt
+      condition: "For a substantial change (a new app, or a large diff across code files), dispatch /implement-audit on the session diff. It runs the project checks + a fresh-context reviewer, then fixes every ready finding this round (2-round cap; round 3 fires AskUserQuestion ship|redesign|defer). Proceed to the report only on a clean pass. Minor edits skip this."
   - id: report
     kind: action
-    action: "Write a short {name}-report.md next to the SPEC: tasks, validation results, deviations. Point at /close."
+    action: "Write a short {name}-report.md next to the SPEC: tasks, validation results (incl. the implement-audit result), deviations. Point at /close."
 ---
 
 # /implement — SPEC-Driven Executor
@@ -146,6 +154,20 @@ Drift patterns to watch for:
 - Ask said "make it persistent" → you added a one-shot fix instead of a scheduled job.
 - Ask said "a shared function" → you built a deployed service (see `@rule:simplest-solution-default`).
 
+## Phase — Code review (substantial changes)
+
+The diff works and is the right mechanism. Now it gets its one machine review before it lands.
+
+For a **substantial change** — a new app, or a large diff across code files — dispatch `/implement-audit`
+via the Skill tool, scoped to this session's diff. It is the loop's single code reviewer: it runs the
+project's own checks, dispatches a fresh-context reviewer that has no attachment to the code, merges the
+triaged findings, and fixes every ready finding in this session (per `@rule:no-deferral`), re-reviewing
+up to a 2-round cap. On round 3 it fires `AskUserQuestion` (`ship | redesign | defer`). Proceed to the
+report only on a clean pass.
+
+Minor edits — a README tweak, a typo, a config bump — skip this; the review is for changes big enough to
+hide a real bug.
+
 ## Phase — Report
 
 Write `{spec-name}-report.md` next to the SPEC (its project folder, or `apps/<name>/` for an app SPEC):
@@ -154,7 +176,7 @@ Write `{spec-name}-report.md` next to the SPEC (its project folder, or `apps/<na
     **SPEC**: `{spec-path}`  **Status**: COMPLETE
     ## Summary — {what was implemented}
     ## Tasks Completed — table of # / task / file / status
-    ## Validation Results — table of check / result (type-check, lint, tests, E2E § 4, mechanism-match)
+    ## Validation Results — table of check / result (type-check, lint, tests, implement-audit, E2E § 4, mechanism-match)
     ## Deviations from SPEC — list with rationale, or "None — implementation matched the SPEC."
 
 The SPEC stays in place; the report sits beside it. `/close` commits both. Then print a closing
@@ -166,7 +188,8 @@ summary and point the user at `/close` to journal + commit + push.
 Load resolves `projects/<domain>/<date>_<slug>/*.spec.md` and reads its four sections. Execute runs
 each file with Verify-Assumptions → Implement → Validate-Immediately. Validate-all writes tests, runs
 the suite, then exercises the § 4 done-commands against the running surface. Mechanism-match writes
-"Agreed to X. Diff does X." Report writes `<slug>-report.md`. Done.
+"Agreed to X. Diff does X." For a substantial change, `/implement-audit` runs and its findings are fixed
+this round. Report writes `<slug>-report.md`. Done.
 
 **No SPEC yet.** `/implement <slug>` against a folder with no `*.spec.md` hits the "0 SPEC files" row
 and HALTs: "no SPEC in `<project>` — run `/project <project>` to write one first."

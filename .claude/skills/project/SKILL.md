@@ -1,10 +1,11 @@
 ---
 name: project
-description: Single entry point for project work. No args renders the live priority-sorted project index. Existing slug loads the README, detects stage via scripts/detect-stage.sh, and routes to the right action (think flow, /implement, /close, or report-state). New freeform creates a project and runs the think flow. complete/update modes do status changes only. Composes /implement and /close as primitives. Use when the user says "/project", "/project [slug]", "let's work on [project]", "create a project for [X]", "complete [slug]", or "update [slug]".
+description: Single entry point for project work. No args renders the live priority-sorted project index. Existing slug loads the README, detects stage via scripts/detect-stage.sh, and routes to the right action (think flow, /implement, /close, or report-state). New freeform creates a project and runs the think flow. complete/update modes do status changes only. Composes /spec, /implement, and /close as primitives. Use when the user says "/project", "/project [slug]", "let's work on [project]", "create a project for [X]", "complete [slug]", or "update [slug]".
 disable-model-invocation: false
 argument-hint: "[create|complete|update] [description or domain/slug]"
 allowed-tools: "Bash(.claude/skills/project/scripts/*:*) Bash(node apps/project-index/generate.ts:*) Read Edit Write Task AskUserQuestion Skill"
 peers:
+  - .claude/skills/spec/SKILL.md
   - .claude/skills/implement/SKILL.md
   - .claude/skills/close/SKILL.md
   - apps/project-index/generate.ts
@@ -14,6 +15,7 @@ enforces:
   - "@rule:simplest-solution-default"
   - "@rule:no-deferral"
 handoffs_to:
+  - .claude/skills/spec/SKILL.md
   - .claude/skills/implement/SKILL.md
   - .claude/skills/close/SKILL.md
 writes:
@@ -49,15 +51,12 @@ steps:
   - id: think-step-3-design
     kind: action
     action: Map files to CREATE / UPDATE. Identify risks with mitigations. Enumerate boundary cases per @rule:boundary-inputs (0/1/empty/max/error).
-  - id: think-step-4-generate-spec
-    kind: action
-    action: "Write the SPEC file using the lean 4-section template at .claude/templates/spec-lean.md. Location: projects/{domain}/{date}_{slug}/{name}.spec.md."
-  - id: think-step-5-user-review-gate
+  - id: think-step-4-dispatch-spec
     kind: gate
     gate:
-      tool: halt
+      tool: skill
       on_fail: halt
-      condition: "SPEC written. HALT — present the SPEC for user sign-off. Do not proceed to /implement; that runs in a fresh context (a new tab, or /clear)."
+      condition: "Hand the agreed design to /spec. Dispatch the /spec skill, which writes the lean 4-section SPEC at projects/{domain}/{date}_{slug}/{name}.spec.md, optionally spirit-checks it, and HALTS presenting it for user sign-off. /project does NOT write the SPEC inline and does NOT roll into /implement — that runs in a fresh context."
 ---
 
 # /project — the project entry point
@@ -70,7 +69,7 @@ steps:
 - **No copy-paste-command outputs as the default.** When the router lands on `ready-to-implement` in a short session, INVOKE `/implement [slug]` inline — do not tell the user to paste a command. The only acceptable copy-paste output is the long-session fresh-tab handoff (see `step-2-turn-count-gate`), and only because `/implement`'s fresh-context boundary is load-bearing.
 - **Stage detection is a script result, not a judgment.** Run `scripts/detect-stage.sh` to get the stage; don't infer from prose.
 - **Blank-mode: paste the generator output INTO your response.** After `step-0.5-render-index` runs Bash, the captured stdout is in your context but NOT yet visible to the user (the Bash tool card is truncated). You MUST copy the entire stdout into your assistant message body. "Ran the generator" is not the deliverable; the user reading the index in your reply IS.
-- **The SPEC stays lean.** Four sections — Ask / Behavior / Files / Done — per `.claude/templates/spec-lean.md`. Don't pad it with boilerplate that degrades to "N/A"; a heavy project grows its own sections when a real gap bites, per `@rule:simplest-solution-default`.
+- **The SPEC stays lean, and `/project` doesn't write it — `/spec` does.** The think flow ends by dispatching `/spec` (`think-step-4-dispatch-spec`), which writes the four-section SPEC (Ask / Behavior / Files / Done per `.claude/templates/spec-lean.md`) and presents it for sign-off. Don't pad it with boilerplate that degrades to "N/A"; a heavy project grows its own sections when a real gap bites, per `@rule:simplest-solution-default`.
 
 ## Modes (`step-0-resolve-mode`, `step-0.5-render-index`)
 
@@ -88,7 +87,7 @@ For existing-project-slug paths only. Load `projects/<domain>/<date>_<slug>/READ
 
 | Detected stage | Detection signal | What /project does |
 |---|---|---|
-| **needs-planning** | `status: active` + no `*.spec.md` file in project folder | Run the think flow (steps 0–5 below). HALT at user-review per `think-step-5-user-review-gate`. |
+| **needs-planning** | `status: active` + no `*.spec.md` file in project folder | Run the think flow (steps 0–4 below); `think-step-4-dispatch-spec` hands off to `/spec`, which presents the SPEC for sign-off. |
 | **ready-to-implement** | `status: active` + `*.spec.md` exists + no corresponding `*-report.md` | Check session turn count (see § Turn-count gate below). Fresh session → invoke `/implement <slug>` inline. Long session → emit a single-line message: "Long session — open a fresh tab and paste: `/implement <slug>`." |
 | **ready-to-close** | `status: active` + `*-report.md` exists + no `journal/<today>.md` session block referencing this slug | Invoke `/close` inline. |
 | **monitor** | `status: monitor` | Read `monitoring-until:` + watch criteria. Report state. No further action. |
@@ -178,30 +177,13 @@ Document patterns in a table: `Category | File:Lines | Pattern` (NAMING / ERRORS
 - Identify risks in a `Risk | Mitigation` table
 - Land the full scope in this session — list every downstream consumer that needs updating, nothing deferred, per `@rule:no-deferral`.
 
-### `think-step-4-generate-spec` — write the SPEC file
+### `think-step-4-dispatch-spec` — hand off to /spec
 
-The SPEC is a committed artifact. It captures WHAT this work delivers + HOW + done criteria, using the lean 4-section template at [`.claude/templates/spec-lean.md`](../../templates/spec-lean.md): **Ask / Behavior / Files / Done**. See [references/spec-schema.md](references/spec-schema.md) for the section-by-section explainer.
+`/project` does not write the SPEC inline. Once the design is agreed (goal-aligned, explored, mapped), dispatch the [`/spec`](../spec/SKILL.md) skill with the design context. `/spec` writes the lean 4-section SPEC (**Ask / Behavior / Files / Done** per [`.claude/templates/spec-lean.md`](../../templates/spec-lean.md); see [references/spec-schema.md](references/spec-schema.md) for the explainer) to `projects/{domain}/{date}_{slug}/{name}.spec.md`, optionally runs the `spirit-check` agent to catch interpretation drift, and HALTS presenting the SPEC for user sign-off.
 
-Write the SPEC to `projects/{domain}/{date}_{slug}/{name}.spec.md`. A multi-session project produces multiple SPECs over its life (`foundation.spec.md`, then per-phase SPECs) — name each for what it covers. Genuinely one-off work too small for the think flow skips it entirely: do the work directly and journal it.
+A multi-session project produces multiple SPECs over its life (`foundation.spec.md`, then per-phase SPECs) — name each for what it covers. Genuinely one-off work too small for the think flow skips it entirely: do the work directly and journal it.
 
-### `think-step-5-user-review-gate` — HALT for user review
-
-Optional check before presenting: dispatch the `spirit-check` agent with the user's verbatim ask plus the SPEC's Ask and Behavior sections, to catch interpretation drift (you asked for X, the SPEC describes Y). Then present.
-
-Hard stop. The SPEC file is written. Present it for user sign-off. **Do not start implementing.** `/implement` runs in a fresh context — open a new tab (or `/clear`), then `/implement <project-slug>`.
-
-Emit:
-
-```markdown
-## SPEC Created
-
-**File**: `<spec-path>`
-**Summary**: {2-3 sentence overview}
-**Scope**: {N} files to CREATE, {M} to UPDATE, {K} total tasks
-**Key Patterns**: {pattern with file:line}, {pattern with file:line}
-
-**Next Step**: review the SPEC, then in a fresh context (a new tab, or `/clear`): `/implement <project-slug>`
-```
+**Do not start implementing.** `/implement` runs in a fresh context — open a new tab (or `/clear`), then `/implement <project-slug>`. That fresh-context boundary is why the think flow ends at `/spec`'s sign-off halt rather than rolling into the build.
 
 ## Complete
 
@@ -252,9 +234,9 @@ Actions:
 1. `step-0-resolve-mode` → `mode: existing-slug`, payload `lead-intake-automation`.
 2. `step-1-stage-detect-and-route` → `find-project.sh lead-intake-automation` → `PATH:projects/business/2026-05-05_lead-intake-automation`.
 3. `detect-stage.sh projects/business/2026-05-05_lead-intake-automation` → `stage: needs-planning`.
-4. Run the think flow (step-0-goal-alignment first per Critical, then step-1-context-load → step-4-generate-spec → step-5-user-review-gate HALT).
+4. Run the think flow (step-0-goal-alignment first per Critical, then step-1-context-load → step-3-design → step-4-dispatch-spec, which invokes `/spec`).
 
-Output: a SPEC file at `projects/business/2026-05-05_lead-intake-automation/{name}.spec.md`, HALTED at user-review with the SPEC presented for sign-off.
+Output: `/spec` writes a SPEC file at `projects/business/2026-05-05_lead-intake-automation/{name}.spec.md` and HALTS with it presented for sign-off.
 
 ### Example 3: existing slug, ready-to-implement, short session
 

@@ -8,7 +8,7 @@ allowed-tools:
   - Task
   - AskUserQuestion
 peers:
-  - .claude/skills/probe/SKILL.md
+  - .claude/skills/implement-audit/SKILL.md
   - .claude/skills/explain/SKILL.md
 enforces:
   - "@rule:mechanisms-not-prose"

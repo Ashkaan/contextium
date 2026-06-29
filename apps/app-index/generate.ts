@@ -7,16 +7,25 @@ import { join } from "path";
 import { parseFrontmatter } from "../shared/parse_frontmatter.ts";
 import { validateOutcome } from "../shared/validate_outcome.ts";
 
-// ── Category display order ───────────────────────────────────────────
-// Edit these to match the `category:` values you use in your app READMEs.
+// ── Domain labels ────────────────────────────────────────────────────
+// Apps are grouped by domain — the top-level folder under apps/ (the first
+// path segment of dirName, e.g. "media" in "media/my-app"). A flat app at
+// apps/<app>/ (no domain folder) has no domain and lands in the ungrouped
+// fallback, so this works whether you nest apps under domain folders or keep
+// them flat. Domains render alphabetically. Add a DOMAIN_LABELS entry only to
+// override display casing (e.g. an acronym); unlisted domains capitalize the
+// first letter.
+const DOMAIN_LABELS: Record<string, string> = {};
 
-const CATEGORIES: { key: string; label: string }[] = [
-  { key: "daily", label: "Daily" },
-  { key: "personal", label: "Personal" },
-  { key: "infra", label: "Infra" },
-  { key: "content", label: "Content" },
-  { key: "system", label: "System" },
-];
+function domainLabel(domain: string): string {
+  return DOMAIN_LABELS[domain] ?? domain.charAt(0).toUpperCase() + domain.slice(1);
+}
+
+// The domain is the first path segment of a nested app; a flat app (dirName
+// without "/") has no domain and returns "".
+function appDomain(dirName: string): string {
+  return dirName.includes("/") ? dirName.split("/")[0] : "";
+}
 
 const SKIP_DIRS = new Set(["shared", ".git"]);
 
@@ -25,7 +34,6 @@ const SKIP_DIRS = new Set(["shared", ".git"]);
 interface AppMeta {
   name: string;
   description: string;
-  category: string;
   schedule: string;
   runtime: string;
   dirName: string;
@@ -64,11 +72,8 @@ function parseAppReadme(appsDir: string, relDir: string, warnings: string[]): Ap
 
   const name = fm.name;
   const description = fm.description;
-  const category = fm.category;
-  if (!name || !description || !category) {
-    const missing = [!name && "name", !description && "description", !category && "category"]
-      .filter(Boolean)
-      .join(", ");
+  if (!name || !description) {
+    const missing = [!name && "name", !description && "description"].filter(Boolean).join(", ");
     warnings.push(`${relDir}: missing ${missing}`);
     return null;
   }
@@ -76,7 +81,6 @@ function parseAppReadme(appsDir: string, relDir: string, warnings: string[]): Ap
   return {
     name,
     description,
-    category,
     schedule: fm.schedule || "—",
     runtime: fm.runtime || "—",
     dirName: relDir,
@@ -168,21 +172,26 @@ function buildReadme(apps: AppMeta[]): string {
     "",
   ];
 
-  for (const cat of CATEGORIES) {
-    const catApps = apps.filter((a) => a.category === cat.key);
-    if (catApps.length === 0) continue;
-    sections.push(`## ${cat.label}`, "");
-    sections.push(buildTable(catApps));
-    sections.push("");
-  }
+  const domains = [...new Set(apps.map((a) => appDomain(a.dirName)))].filter(Boolean).sort();
+  const flatApps = apps.filter((a) => appDomain(a.dirName) === "");
 
-  // Catch any apps with unknown categories
-  const knownKeys = new Set(CATEGORIES.map((c) => c.key));
-  const uncategorized = apps.filter((a) => !knownKeys.has(a.category));
-  if (uncategorized.length > 0) {
-    sections.push("## Other", "");
-    sections.push(buildTable(uncategorized));
+  if (domains.length === 0) {
+    // All apps are flat (no domain folders) — render one untitled table.
+    sections.push(buildTable(flatApps));
     sections.push("");
+  } else {
+    for (const domain of domains) {
+      const domainApps = apps.filter((a) => appDomain(a.dirName) === domain);
+      sections.push(`## ${domainLabel(domain)}`, "");
+      sections.push(buildTable(domainApps));
+      sections.push("");
+    }
+    // Mixed layout: flat apps that aren't under any domain folder.
+    if (flatApps.length > 0) {
+      sections.push("## Other", "");
+      sections.push(buildTable(flatApps));
+      sections.push("");
+    }
   }
 
   sections.push(`**Total: ${apps.length} apps**`, "");
@@ -232,7 +241,10 @@ validateOutcome("generate_app_index", [
   { check: "README content generated", pass: () => readme.length > 0 },
 ]);
 
-const byCat = new Map<string, number>();
-for (const a of apps) byCat.set(a.category, (byCat.get(a.category) ?? 0) + 1);
-const breakdown = [...byCat.entries()].map(([k, v]) => `${k}=${v}`).join(", ");
+const byDomain = new Map<string, number>();
+for (const a of apps) {
+  const domain = appDomain(a.dirName) || "(flat)";
+  byDomain.set(domain, (byDomain.get(domain) ?? 0) + 1);
+}
+const breakdown = [...byDomain.entries()].sort().map(([k, v]) => `${k}=${v}`).join(", ");
 console.log(`Generated apps/README.md: ${apps.length} apps (${breakdown})`);
