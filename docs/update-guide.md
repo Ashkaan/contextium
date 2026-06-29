@@ -16,20 +16,20 @@ Refreshed on every run (the methodology, replaced wholesale with the newer versi
 - `.claude/hooks/`
 - `.claude/templates/`
 - `.claude/settings.json`
-- `docs/`
-- `templates/`
+- `.githooks/`
+- the template-owned `apps/` helpers (the index generators, `quality/`, `shared/`)
 
 Protected, never clobbered once they exist:
 
-- `apps/`
+- `.claude/CLAUDE.md`
+- your own apps under `apps/`
 - `integrations/`
 - `knowledge/`
 - `journal/`
 - `projects/`
-- `CLAUDE.md`
 
-So your code, your connectors, your knowledge, your journal, your projects, and your customized router
-all survive. The AI layer that drives them gets the upgrade.
+So your code, your connectors, your knowledge, your journal, your projects, and your customized
+`CLAUDE.md` all survive. The AI layer that drives them gets the upgrade.
 
 ## How to update
 
@@ -51,21 +51,22 @@ It's the thing you pull and re-run; your project is the thing it installs into.
 
 ## Your CLAUDE.md is protected
 
-The root `CLAUDE.md` is yours to customize, and the installer won't overwrite it. That's deliberate. It
-holds your preferences, your tech-stack notes, whatever you've added to the router. The cost is that
-genuinely new router content from a template release won't appear there automatically.
+Your `.claude/CLAUDE.md` is yours to customize, and the installer won't overwrite it. That's
+deliberate. It holds your preferences, your tech-stack notes, whatever you've added to the router. The
+cost is that genuinely new router content from a template release won't appear there automatically.
 
 If you want to fold in the newer starter router, look at the freshly refreshed copy the template ships
-and merge in by hand what you want. Or, if your `CLAUDE.md` hasn't drifted much from the starter, back
-it up and take the new one:
+and merge in by hand what you want. Or, if your `.claude/CLAUDE.md` hasn't drifted much from the
+starter, back it up and take the new one:
 
 ```bash
-cp ~/code/my-project/CLAUDE.md ~/code/my-project/CLAUDE.md.bak
+cp ~/code/my-project/.claude/CLAUDE.md ~/code/my-project/.claude/CLAUDE.md.bak
 bash install.sh ~/code/my-project --force
 ```
 
-The `--force` flag replaces `CLAUDE.md` and writes a `.bak` first, so you can diff the two and lift
-back any customizations you'd added. Without `--force`, your `CLAUDE.md` is left exactly as it is.
+The `--force` flag replaces `.claude/CLAUDE.md` and writes a `.bak` first, so you can diff the two and
+lift back any customizations you'd added. Without `--force`, your `.claude/CLAUDE.md` is left exactly as
+it is.
 
 ## Keeping your own rules and skills across updates
 

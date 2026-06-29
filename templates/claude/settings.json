@@ -1,4 +1,41 @@
 {
+  "permissions": {
+    "allow": [
+      "Bash",
+      "Grep",
+      "Glob",
+      "WebFetch",
+      "WebSearch",
+      "Skill",
+      "Monitor",
+      "Edit",
+      "Read",
+      "Write",
+      "Agent",
+      "ToolSearch",
+      "TodoWrite",
+      "AskUserQuestion",
+      "ExitPlanMode",
+      "EnterPlanMode",
+      "ScheduleWakeup",
+      "CronCreate",
+      "CronDelete",
+      "CronList",
+      "EnterWorktree",
+      "ExitWorktree",
+      "Workflow",
+      "NotebookEdit"
+    ],
+    "ask": [
+      "Bash(kill *)",
+      "Bash(killall *)",
+      "Bash(reboot *)",
+      "Bash(shutdown *)",
+      "Bash(dd *)",
+      "Bash(mkfs *)"
+    ],
+    "additionalDirectories": ["/"]
+  },
   "hooks": {
     "UserPromptSubmit": [
       {

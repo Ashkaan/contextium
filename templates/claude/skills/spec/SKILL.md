@@ -66,7 +66,7 @@ A multi-session project produces multiple SPECs over its life (`foundation.spec.
 
 Optional but recommended, and the lightest review the methodology ships with. Dispatch the `spirit-check` agent with the user's verbatim ask plus the SPEC's Ask and Behavior sections. The agent reads ONLY those — its single job is to catch interpretation drift (you asked for a function, the SPEC describes a deployed service). On a MATCH, proceed. On DRIFT, fix the SPEC; if the drift is a genuine choice the user must make, that's a `@rule:depth-policy` decision — surface it.
 
-Heavier multi-model SPEC review (an external reviewer pass, a consensus loop) is an advanced pattern to grow into, not wired into the starter template. See `docs/architecture.md`.
+Heavier multi-model SPEC review (an external reviewer pass, a consensus loop) is an advanced pattern to grow into, not wired into the starter template.
 
 ## step-3-user-review — HALT for user review
 

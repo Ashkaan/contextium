@@ -16,7 +16,7 @@ That's the list. There's no service to stand up and nothing to deploy.
 Clone the template, then run the installer pointed at the project you want to set up.
 
 ```bash
-git clone https://github.com/your-org/contextium.git
+git clone https://github.com/Ashkaan/contextium.git
 cd contextium
 bash install.sh ~/code/my-project
 ```

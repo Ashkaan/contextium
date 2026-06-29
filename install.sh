@@ -1,18 +1,23 @@
 #!/usr/bin/env bash
 # Contextium v3 installer.
 #
-# Lays the Contextium AI layer (the .claude/ methodology layer plus a starter
-# CLAUDE.md and skeleton data dirs) into a target project so Claude Code can
-# drive the Think / Do / Wrap loop from the first session.
+# Lays the Contextium AI layer into a target project so Claude Code can drive the
+# Think / Do / Wrap loop from the first session. The layer's source lives in this
+# repo under templates/claude/ (a normal, non-dotted folder); the installer
+# materializes it as a real .claude/ in YOUR project, with CLAUDE.md inside it.
 #
 # Usage:
 #   bash install.sh [TARGET_DIR] [--force] [--name "Your Name"]
-#                   [--autonomy ask|autonomous] [--yes]
+#                   [--autonomy ask|autonomous]
+#                   [--integrations "github todoist ..." | --no-integrations]
+#                   [--yes]
 #
 #   TARGET_DIR   where to install (default: prompted, falls back to current dir)
 #   --force      back up and replace a customized CLAUDE.md (CLAUDE.md.bak)
 #   --name       skip the name prompt
 #   --autonomy   skip the autonomy prompt
+#   --integrations  copy these integration starters (space-separated names)
+#   --no-integrations  start with an empty integrations/ (README stub only)
 #   --yes        non-interactive: accept all defaults, never prompt
 #
 # Idempotent and safe to re-run: it refreshes the .claude/ layer and never
@@ -24,28 +29,22 @@ set -euo pipefail
 
 # --- Constants ---
 
-VERSION="v3.1.0"
+VERSION="v3.2.0"
 
-# The template's own AI layer + starter files this installer copies INTO a
-# target. Resolved relative to the directory this script lives in (the clone).
+# This repo (the clone). The layer source is templates/claude/; integration
+# starters are templates/integrations/. Resolved relative to this script.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 
-# Paths the installer refreshes on every run (the methodology layer + the
-# template-owned apps). Whole-path refresh keeps user data dirs (named below)
-# and any apps the user authored (other subdirs of apps/) untouched.
+# Items of the AI layer, copied from templates/claude/<item> INTO the target's
+# .claude/<item> on every run (whole-path refresh). CLAUDE.md is handled
+# separately (protected unless --force).
+LAYER_ITEMS="rules skills agents hooks templates settings.json"
+
+# Non-.claude template-owned paths refreshed on every run (same relative path in
+# source and target). User-authored apps are their own subdirs and untouched.
 REFRESH_PATHS="
-.claude/rules
-.claude/skills
-.claude/agents
-.claude/hooks
-.claude/templates
-.claude/settings.json
 .githooks
-docs
-templates
-AGENTS.md
 apps/README.md
-apps/projector
 apps/quality
 apps/app-index
 apps/project-index
@@ -54,10 +53,8 @@ apps/shared
 "
 
 # Skeleton data dirs laid down on a fresh install and never clobbered after.
-# apps/ is NOT here: its template-owned subdirs refresh above; user-authored
-# apps are their own subdirs and the targeted refreshes never touch them.
+# integrations/ is handled by the picker, not here.
 PROTECTED_DIRS="
-integrations
 knowledge
 journal
 projects
@@ -90,8 +87,8 @@ banner() {
 
 is_tty() { [ -t 0 ]; }
 
-# Prompt for a value with a default. Non-interactive (no TTY or --yes) returns
-# the default without reading. Args: $1=prompt $2=default
+# Prompt for a value with a default. Non-interactive returns the default.
+# Args: $1=prompt $2=default
 ask() {
   local prompt="$1" default="$2" answer=""
   if [ "$NONINTERACTIVE" = "1" ] || ! is_tty; then
@@ -107,8 +104,7 @@ ask() {
   fi
 }
 
-# Ask a yes/no choice between two labels. Args: $1=prompt $2=default(1|2)
-# $3=label1 $4=label2 — echoes the chosen label's short key (echoed by caller).
+# Ask the autonomy preference. Echoes "ask" or "autonomous".
 choose_autonomy() {
   local default="$1" answer=""
   if [ "$NONINTERACTIVE" = "1" ] || ! is_tty; then
@@ -124,115 +120,6 @@ choose_autonomy() {
     2) printf '%s\n' "autonomous" ;;
     *) printf '%s\n' "ask" ;;
   esac
-}
-
-# Copy a refresh path from the template into the target, replacing any prior
-# copy of that same path. Args: $1=relpath
-refresh_path() {
-  local rel="$1" src="$SCRIPT_DIR/$1" dst="$TARGET/$1"
-  if [ ! -e "$src" ]; then
-    return 0
-  fi
-  if [ -d "$src" ]; then
-    rm -rf "$dst"
-    mkdir -p "$(dirname "$dst")"
-    cp -R "$src" "$dst"
-  else
-    mkdir -p "$(dirname "$dst")"
-    cp "$src" "$dst"
-  fi
-  ok "refreshed ${rel}"
-}
-
-# Lay down a skeleton data dir only if absent (never clobber user data).
-# Args: $1=relpath
-seed_dir() {
-  local rel="$1" src="$SCRIPT_DIR/$1" dst="$TARGET/$1"
-  if [ -e "$dst" ]; then
-    ok "kept ${rel}/ (your data, untouched)"
-    return 0
-  fi
-  if [ -d "$src" ]; then
-    cp -R "$src" "$dst"
-  else
-    mkdir -p "$dst"
-    cat > "$dst/README.md" <<EOF
-# ${rel}
-
-Starter directory. See \`docs/getting-started.md\` for how this fits the loop.
-EOF
-  fi
-  ok "created ${rel}/"
-}
-
-# Write the starter CLAUDE.md. Prefer copying the template's root CLAUDE.md and
-# substituting the name placeholder; fall back to a short inline starter.
-# Honors protected (existing) CLAUDE.md unless --force.
-# Args: $1=name $2=autonomy
-install_claude_md() {
-  local name="$1" autonomy="$2"
-  local dst="$TARGET/CLAUDE.md" src="$SCRIPT_DIR/CLAUDE.md"
-  local autonomy_line
-
-  if [ "$autonomy" = "autonomous" ]; then
-    autonomy_line="Act and report on routine work; only stop to ask when genuinely stuck."
-  else
-    autonomy_line="Ask before host or infrastructure changes; diagnose and propose freely, but get a yes before mutating shared infra."
-  fi
-
-  if [ -f "$dst" ]; then
-    if [ "$FORCE" = "1" ]; then
-      cp "$dst" "$dst.bak"
-      ok "backed up existing CLAUDE.md -> CLAUDE.md.bak"
-    else
-      ok "kept your CLAUDE.md (use --force to replace)"
-      return 0
-    fi
-  fi
-
-  if [ -f "$src" ] && [ "$src" != "$dst" ]; then
-    # Copy the template's root CLAUDE.md, substituting placeholders.
-    sed -e "s/{{NAME}}/$name/g" \
-        -e "s/{{AUTONOMY}}/$autonomy_line/g" \
-        "$src" > "$dst"
-    ok "installed CLAUDE.md (from template, personalized for ${name})"
-    return 0
-  fi
-
-  # Fallback: short inline starter (kept minimal — full instructions live in
-  # .claude/rules and docs/, not duplicated here).
-  cat > "$dst" <<EOF
-# CLAUDE.md
-
-Working surface for ${name}. Read this first each session; the methodology
-lives in \`.claude/rules/\` and the loop skills in \`.claude/skills/\`.
-
-## The Loop
-
-| Verb | Skill | Use when |
-|---|---|---|
-| Think | \`/project\` | starting or routing a piece of work |
-| Do | \`/implement\` | executing an approved SPEC in fresh context |
-| Wrap | \`/close\` | journaling, committing, pushing at session end |
-
-## Operating preference
-
-${autonomy_line}
-
-## Where things live
-
-| Directory | Purpose |
-|---|---|
-| \`.claude/\` | the AI layer: rules, skills, agents, hooks, templates |
-| \`apps/\` | code you author |
-| \`integrations/\` | external service connectors |
-| \`knowledge/\` | reference data |
-| \`projects/\` | multi-session work with status frontmatter |
-| \`journal/\` | daily session logs |
-
-See \`docs/getting-started.md\` to begin.
-EOF
-  ok "installed CLAUDE.md (starter, personalized for ${name})"
 }
 
 # Yes/no prompt. Non-interactive returns the default. Args: $1=prompt $2=default(y|n)
@@ -251,35 +138,179 @@ ask_yesno() {
   esac
 }
 
-# Multi-select the tools to generate instruction files for. AGENTS.md is always
-# generated (the cross-tool default). Echoes a space-separated list of tool keys.
-choose_tools() {
-  local answer="" out="agents" n
-  if [ "$NONINTERACTIVE" = "1" ] || ! is_tty; then
-    printf '%s\n' "$out"
-    return 0
+# Copy a same-relative-path item from the template into the target, replacing any
+# prior copy. Args: $1=relpath
+refresh_path() {
+  local rel="$1" src="$SCRIPT_DIR/$1" dst="$TARGET/$1"
+  [ -e "$src" ] || return 0
+  if [ -d "$src" ]; then
+    rm -rf "$dst"; mkdir -p "$(dirname "$dst")"; cp -R "$src" "$dst"
+  else
+    mkdir -p "$(dirname "$dst")"; cp "$src" "$dst"
   fi
-  printf '%s\n' "${BOLD}Which AI tools will use this repo?${NC} ${DIM}(AGENTS.md is always generated)${NC}" >&2
-  printf '%s\n' "  ${CYAN}1${NC}) Cursor     ${CYAN}2${NC}) Gemini CLI   ${CYAN}3${NC}) GitHub Copilot" >&2
-  printf '%s\n' "  ${CYAN}4${NC}) Windsurf   ${CYAN}5${NC}) Cline        ${CYAN}6${NC}) Aider" >&2
-  printf '%s' "${DIM}Numbers, space-separated (Enter for AGENTS.md only)${NC} " >&2
-  IFS= read -r answer || answer=""
-  for n in $answer; do
-    case "$n" in
-      1) out="$out cursor" ;;
-      2) out="$out gemini" ;;
-      3) out="$out copilot" ;;
-      4) out="$out windsurf" ;;
-      5) out="$out cline" ;;
-      6) out="$out aider" ;;
-    esac
-  done
-  printf '%s\n' "$out"
+  ok "refreshed ${rel}"
 }
 
-# Turn on the tool-agnostic git hooks (commit-subject + secret scan) by pointing
-# core.hooksPath at the tracked .githooks/ dir. No-op if the target isn't a git
-# repo yet.
+# Copy from an explicit source into an explicit destination (paths differ).
+# Args: $1=src-abs $2=dst-abs $3=label
+copy_into() {
+  local src="$1" dst="$2" label="$3"
+  [ -e "$src" ] || return 0
+  if [ -d "$src" ]; then
+    rm -rf "$dst"; mkdir -p "$(dirname "$dst")"; cp -R "$src" "$dst"
+  else
+    mkdir -p "$(dirname "$dst")"; cp "$src" "$dst"
+  fi
+  ok "refreshed ${label}"
+}
+
+# Lay down a skeleton data dir only if absent (never clobber user data).
+# Args: $1=relpath
+seed_dir() {
+  local rel="$1" dst="$TARGET/$1"
+  if [ -e "$dst" ]; then
+    ok "kept ${rel}/ (your data, untouched)"
+    return 0
+  fi
+  mkdir -p "$dst"
+  cat > "$dst/README.md" <<EOF
+# ${rel}
+
+Starter directory. See the Contextium docs for how this fits the loop.
+EOF
+  ok "created ${rel}/"
+}
+
+# Materialize the AI layer: templates/claude/<item> -> TARGET/.claude/<item>.
+install_ai_layer() {
+  local item
+  mkdir -p "$TARGET/.claude"
+  for item in $LAYER_ITEMS; do
+    copy_into "$SCRIPT_DIR/templates/claude/$item" "$TARGET/.claude/$item" ".claude/$item"
+  done
+}
+
+# Write the starter CLAUDE.md into TARGET/.claude/CLAUDE.md, substituting the
+# name + autonomy placeholders. Protected (kept) unless --force.
+# Args: $1=name $2=autonomy
+install_claude_md() {
+  local name="$1" autonomy="$2"
+  local src="$SCRIPT_DIR/templates/claude/CLAUDE.md" dst="$TARGET/.claude/CLAUDE.md"
+  local autonomy_line
+
+  if [ "$autonomy" = "autonomous" ]; then
+    autonomy_line="Act and report on routine work; only stop to ask when genuinely stuck."
+  else
+    autonomy_line="Ask before host or infrastructure changes; diagnose and propose freely, but get a yes before mutating shared infra."
+  fi
+
+  if [ -f "$dst" ]; then
+    if [ "$FORCE" = "1" ]; then
+      cp "$dst" "$dst.bak"
+      ok "backed up existing .claude/CLAUDE.md -> CLAUDE.md.bak"
+    else
+      ok "kept your .claude/CLAUDE.md (use --force to replace)"
+      return 0
+    fi
+  fi
+
+  mkdir -p "$TARGET/.claude"
+  if [ -f "$src" ]; then
+    sed -e "s/{{NAME}}/$name/g" \
+        -e "s/{{AUTONOMY}}/$autonomy_line/g" \
+        "$src" > "$dst"
+    ok "installed .claude/CLAUDE.md (personalized for ${name})"
+  else
+    cat > "$dst" <<EOF
+# CLAUDE.md
+
+Working surface for ${name}. Read this first each session; the methodology
+lives in \`.claude/rules/\` and the loop skills in \`.claude/skills/\`.
+
+## The Loop
+
+| Verb | Skill | Use when |
+|---|---|---|
+| Think | \`/project\` -> \`/spec\` | starting or routing a piece of work |
+| Do | \`/implement\` | executing an approved SPEC in fresh context |
+| Wrap | \`/close\` | journaling, committing, pushing at session end |
+
+## Operating preference
+
+${autonomy_line}
+EOF
+    ok "installed .claude/CLAUDE.md (starter, personalized for ${name})"
+  fi
+}
+
+# List available integration starters (one name per line).
+list_integrations() {
+  local d
+  for d in "$SCRIPT_DIR"/templates/integrations/*/; do
+    [ -d "$d" ] || continue
+    basename "$d"
+  done
+}
+
+# Prompt for which integration starters to install. Echoes space-separated names
+# (empty = none). Non-interactive uses ARG_INTEGRATIONS verbatim.
+choose_integrations() {
+  if [ "$NONINTERACTIVE" = "1" ] || ! is_tty; then
+    printf '%s\n' "$ARG_INTEGRATIONS"
+    return 0
+  fi
+  local names i n answer out=""
+  names=$(list_integrations)
+  [ -n "$names" ] || { printf '%s\n' ""; return 0; }
+  printf '%s\n' "${BOLD}Which integration starters do you want?${NC} ${DIM}(Enter for none)${NC}" >&2
+  i=1
+  for n in $names; do
+    printf '  %s) %s\n' "${CYAN}${i}${NC}" "$n" >&2
+    i=$((i + 1))
+  done
+  printf '%s' "${DIM}Numbers, space-separated${NC} " >&2
+  IFS= read -r answer || answer=""
+  for n in $answer; do
+    i=1
+    local m
+    for m in $names; do
+      if [ "$n" = "$i" ]; then out="$out $m"; fi
+      i=$((i + 1))
+    done
+  done
+  # shellcheck disable=SC2086
+  printf '%s\n' $out
+}
+
+# Copy the selected integration starters into TARGET/integrations/. Always leaves
+# integrations/ present; if it ends up empty, drop a README stub.
+install_integrations() {
+  local selected="$1" name src dst
+  mkdir -p "$TARGET/integrations"
+  for name in $selected; do
+    src="$SCRIPT_DIR/templates/integrations/$name"
+    [ -d "$src" ] || { err "no such integration starter: $name"; continue; }
+    dst="$TARGET/integrations/$name"
+    if [ -e "$dst" ]; then
+      ok "kept integrations/${name} (yours, untouched)"
+    else
+      cp -R "$src" "$dst"
+      ok "added integrations/${name}"
+    fi
+  done
+  if [ -z "$(ls -A "$TARGET/integrations" 2>/dev/null)" ]; then
+    cat > "$TARGET/integrations/README.md" <<EOF
+# integrations
+
+External service connectors. Add one folder per product you wrap (README with
+\`hosts:\` + the typed client). Starter examples ship in the Contextium repo under
+\`templates/integrations/\` — re-run install.sh to pull any in.
+EOF
+    ok "created integrations/ (empty starter)"
+  fi
+}
+
+# Turn on the tool-agnostic git hooks by pointing core.hooksPath at .githooks/.
 wire_git_hooks() {
   if [ ! -d "$TARGET/.git" ]; then
     info "Not a git repo yet — skipping hooks. After 'git init', run: git -C \"$TARGET\" config core.hooksPath .githooks"
@@ -299,17 +330,17 @@ Usage: bash install.sh [TARGET_DIR] [options]
   TARGET_DIR            install location (default: prompted, else current dir)
 
 Options:
-  --force               replace a customized CLAUDE.md (backs up to .bak first)
-  --name "Your Name"    set the name without prompting
+  --force                 replace a customized CLAUDE.md (backs up to .bak first)
+  --name "Your Name"      set the name without prompting
   --autonomy ask|autonomous   set autonomy without prompting
-  --tools "cursor gemini ..."  generate these tool files (default: prompt; AGENTS.md always)
-  --hooks / --no-hooks  wire (or skip) the tool-agnostic git hooks without prompting
-  --yes                 non-interactive; accept defaults, never prompt
-  -h, --help            show this help
+  --integrations "a b c"  install these integration starters without prompting
+  --no-integrations       start with an empty integrations/ (README stub only)
+  --hooks / --no-hooks    wire (or skip) the git hooks without prompting
+  --yes                   non-interactive; accept defaults, never prompt
+  -h, --help              show this help
 
 Re-running refreshes the .claude/ AI layer + template apps and never clobbers
-your data dirs or your own apps. Supported tool keys: cursor, gemini, copilot,
-windsurf, cline, aider (AGENTS.md is always generated).
+your data dirs or your own apps.
 EOF
 }
 
@@ -320,7 +351,7 @@ FORCE="0"
 NONINTERACTIVE="0"
 ARG_NAME=""
 ARG_AUTONOMY=""
-ARG_TOOLS=""
+ARG_INTEGRATIONS=""
 ARG_HOOKS=""
 
 while [ $# -gt 0 ]; do
@@ -329,7 +360,8 @@ while [ $# -gt 0 ]; do
     --yes|-y) NONINTERACTIVE="1"; shift ;;
     --name) ARG_NAME="${2:-}"; shift 2 ;;
     --autonomy) ARG_AUTONOMY="${2:-}"; shift 2 ;;
-    --tools) ARG_TOOLS="${2:-}"; shift 2 ;;
+    --integrations) ARG_INTEGRATIONS="${2:-}"; shift 2 ;;
+    --no-integrations) ARG_INTEGRATIONS=""; shift ;;
     --hooks) ARG_HOOKS="y"; shift ;;
     --no-hooks) ARG_HOOKS="n"; shift ;;
     -h|--help) usage; exit 0 ;;
@@ -342,9 +374,9 @@ done
 
 banner
 
-# Verify the template payload is present alongside this script.
-if [ ! -d "$SCRIPT_DIR/.claude" ]; then
-  err "Could not find the Contextium AI layer (.claude/) next to install.sh."
+# Verify the layer payload is present alongside this script.
+if [ ! -d "$SCRIPT_DIR/templates/claude" ]; then
+  err "Could not find the Contextium AI layer (templates/claude/) next to install.sh."
   err "Run this from a fresh clone of the template."
   exit 1
 fi
@@ -354,11 +386,11 @@ DEFAULT_TARGET="$PWD"
 if [ -z "$TARGET" ]; then
   TARGET="$(ask 'Install Contextium into which directory?' "$DEFAULT_TARGET")"
 fi
-# Expand a leading ~ without eval.
-case "$TARGET" in
-  "~") TARGET="$HOME" ;;
-  "~/"*) TARGET="$HOME/${TARGET#~/}" ;;
-esac
+if [ "$TARGET" = "~" ]; then
+  TARGET="$HOME"
+elif [ "${TARGET#"~/"}" != "$TARGET" ]; then
+  TARGET="$HOME/${TARGET#"~/"}"
+fi
 mkdir -p "$TARGET"
 TARGET="$(cd "$TARGET" && pwd)"
 
@@ -392,8 +424,12 @@ case "$AUTONOMY" in
 esac
 printf '\n'
 
-# Lay down / refresh the AI layer.
+# Lay down / refresh the AI layer (.claude/), then CLAUDE.md inside it.
 info "Installing the AI layer..."
+install_ai_layer
+install_claude_md "$NAME" "$AUTONOMY"
+
+# Refresh non-.claude template-owned paths.
 for rel in $REFRESH_PATHS; do
   refresh_path "$rel"
 done
@@ -403,28 +439,15 @@ for rel in $PROTECTED_DIRS; do
   seed_dir "$rel"
 done
 
-# Starter CLAUDE.md (protected unless --force).
-install_claude_md "$NAME" "$AUTONOMY"
+# Integration starters: pick, then copy the selected ones.
+SELECTED_INTEGRATIONS="$(choose_integrations)"
+install_integrations "$SELECTED_INTEGRATIONS"
 printf '\n'
-
-# Generate per-tool instruction files from one source (AGENTS.md always).
-TOOLS="$ARG_TOOLS"
-if [ -z "$TOOLS" ]; then
-  TOOLS="$(choose_tools)"
-fi
-if [ -f "$TARGET/apps/projector/project-rules.sh" ]; then
-  # shellcheck disable=SC2086
-  if bash "$TARGET/apps/projector/project-rules.sh" $TOOLS >/dev/null 2>&1; then
-    ok "generated agent instruction files: ${TOOLS}"
-  else
-    err "projector failed; run 'bash apps/projector/project-rules.sh' by hand."
-  fi
-fi
 
 # Wire the tool-agnostic git hooks (commit-subject + secret scan).
 HOOKS="$ARG_HOOKS"
 if [ -z "$HOOKS" ]; then
-  HOOKS="$(ask_yesno 'Wire git hooks so enforcement works under any tool?' y)"
+  HOOKS="$(ask_yesno 'Wire git hooks so enforcement works at commit time?' y)"
 fi
 if [ "$HOOKS" = "y" ]; then
   wire_git_hooks
@@ -446,7 +469,5 @@ else
   printf '%s\n' "Next steps:"
 fi
 printf '%s\n' "  1. In Claude Code: ${BOLD}cd ${TARGET} && claude${NC}, then try ${BOLD}/project${NC}."
-printf '%s\n' "  2. In any other tool: it reads ${BOLD}AGENTS.md${NC} (and the tool file you generated)."
-printf '%s\n' "  3. Read ${BOLD}CLAUDE.md${NC}, ${BOLD}AGENTS.md${NC}, and ${BOLD}docs/getting-started.md${NC}."
-printf '%s\n' "  Regenerate tool files anytime: ${BOLD}bash apps/projector/project-rules.sh all${NC}"
+printf '%s\n' "  2. Read ${BOLD}.claude/CLAUDE.md${NC} to see how the loop works."
 printf '\n'

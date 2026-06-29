@@ -23,14 +23,14 @@ empty and fills in as you use it.
 | `.claude/hooks/` | Scripts the harness runs at edit, commit, and prompt time |
 | `.claude/templates/` | The SPEC template and other starting points |
 | `.claude/settings.json` | Wires the hooks to harness events |
-| `CLAUDE.md` | The root router, read first every session |
+| `.claude/CLAUDE.md` | The router, read first every session |
 | `apps/` | Code you write |
 | `integrations/` | External services you connect to |
 | `knowledge/` | Reference data, organized by domain |
 | `projects/` | Multi-session work, one dated folder each |
 | `journal/` | Daily session logs |
 
-`CLAUDE.md` at the root is the working surface. It's short on purpose. It tells a fresh session where
+`.claude/CLAUDE.md` is the working surface. It's short on purpose. It tells a fresh session where
 things live, names the loop, and points at the rules. Everything else loads on demand.
 
 The data directories ship as empty skeletons with a README each. They aren't part of the methodology,
@@ -124,8 +124,8 @@ The test: if you deleted the external service, would the folder still make sense
 If the folder only exists because that service exists, it's an integration.
 
 The template ships both as empty skeletons, because your apps and your integrations are yours to build.
-What it does include is `templates/integrations/`, a set of 15 docs-only connector starters for common
-services. They're READMEs, not working code: a place to record how you authenticate, where the service
+What it does include is `templates/integrations/`, a set of 14 docs-only connector starters for common
+services the installer lets you pick from. They're READMEs, not working code: a place to record how you authenticate, where the service
 lives, and how you call it. Copy one into `integrations/` when you actually wire that service up, and
 fill in the real details.
 
@@ -166,25 +166,11 @@ Each of those earns its weight only at a certain scale. Add the mechanism when t
 prevents has actually happened to you. Until then, the loop and a few wired rules are plenty, and the
 lean version is the one that stays out of your way.
 
-## Portability across tools
+## Enforcement travels through git
 
 The AI layer under `.claude/` is built on Claude Code primitives (skills, subagents, hooks). The
-methodology those primitives express is portable, and Contextium ships it to other agents from a single
-source so nothing drifts.
-
-`apps/projector/project-rules.sh` assembles `.claude/templates/methodology.md` plus the eight rules and
-writes them into whichever instruction file a tool reads: `AGENTS.md` for agents that follow the
-cross-tool standard, and `.cursor/rules/contextium.mdc`, `GEMINI.md`, `.github/copilot-instructions.md`,
-`.windsurfrules`, `.clinerules`, or `CONVENTIONS.md` for the rest. Edit the source, re-run, and every
-tool file updates together.
-
-Enforcement is portable too, but through git rather than through any one tool. The commit-subject and
-secret-scan checks live once in `apps/quality/check-commit-subject.sh` and `apps/quality/check-secrets.sh`,
-called both by the Claude Code commit-gate hook and by the git hooks in `.githooks/` (turn them on with
-`git config core.hooksPath .githooks`, which the installer offers to do). A commit made by any tool, or
-by hand, passes the same gate.
-
-What does not port is the turnkey layer: the Loop as one-keystroke slash commands and the
-auto-dispatched review agents. Those are Claude Code features. In other tools you run the same Loop as a
-procedure you invoke in plain language. The method and the guardrails are universal; the ergonomics are
-Claude's.
+enforcement that matters, though, is wired through git rather than through the tool, so it fires no
+matter who or what made the commit. The commit-subject and secret-scan checks live once in
+`apps/quality/check-commit-subject.sh` and `apps/quality/check-secrets.sh`, called by the git hooks in
+`.githooks/` (turn them on with `git config core.hooksPath .githooks`, which the installer offers to
+do). A commit made by hand or by Claude passes the same gate.
