@@ -1,10 +1,16 @@
 # Architecture
 
-Contextium is a methodology, not a framework you import. It gives Claude Code an operating layer: a set
-of rules, skills, agents, and hooks under `.claude/`, plus a handful of plain directories where your
-work and your knowledge accumulate over time. The whole thing is markdown and small shell scripts in a
-git repo. You can read every file, change any of it, and move to a different tool tomorrow without
-asking anyone's permission.
+Contextium is a methodology, not a framework you import. It gives your AI coding tool an operating
+layer: a set of rules, skills (or their command equivalent), agents, and hooks, plus a handful of plain
+directories where your work and your knowledge accumulate over time. The whole thing is markdown and
+small shell scripts in a git repo. You can read every file, change any of it, and move to a different
+tool tomorrow without asking anyone's permission.
+
+The richest layer is for Claude Code, described below, under `.claude/`. For other tools (Gemini, Codex,
+Cursor, Copilot) the same methodology and rules are projected into that tool's native config from a
+single source by `apps/projector/project-rules.sh`, so what reads below as `.claude/rules/` arrives in a
+Gemini install as `GEMINI.md`, in a Codex install as `AGENTS.md`, and so on. The git-hook enforcement
+travels to every tool; the fresh-context review agents and PreToolUse guards are Claude Code only.
 
 The point is to make working with an AI agent feel less like chatting and more like running a small
 shop with a routine. There's a way you start work, a way you do it, and a way you wrap up. Each of

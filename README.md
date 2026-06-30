@@ -2,9 +2,12 @@
 
 > Give your AI an operating system.
 
-Contextium is a starting methodology for working with Claude Code. It's a `.claude/` layer (rules,
-skills, agents, hooks, and `CLAUDE.md`) plus a set of empty data directories that grow as you work. The
-point is not a pile of features. The point is a way of working that holds up over months.
+Contextium is a starting methodology for working with AI coding tools. Pick your tools at install time
+and it lays down each one's native config: a full `.claude/` layer for Claude Code, `GEMINI.md` and
+commands for Gemini, `AGENTS.md` and skills for Codex, `.cursor/` rules for Cursor, `.github/` files for
+Copilot. Underneath it is one methodology, projected into each tool's format from a single source, plus
+empty data directories that grow as you work. The point is not a pile of features. The point is a way of
+working that holds up over months, in whatever tool you reach for.
 
 ## The idea
 
@@ -20,6 +23,10 @@ three things:
    | Do | `/implement` | Execute the SPEC with self-validation, starting from a clean context. |
    | Wrap | `/close` | Journal what happened and why, then commit. |
 
+   In Claude Code each verb is a real slash-command skill. In every other tool the same three verbs
+   ship as that tool's native commands (Gemini commands, Codex skills, Cursor commands, Copilot
+   prompts), so the Loop reads the same everywhere.
+
    The fresh-context boundary between `/project` and `/implement` is deliberate. A session that wrote
    the plan and grew attached to its choices is the wrong session to also judge the implementation. A
    new one catches what the invested one defends.
@@ -31,13 +38,33 @@ three things:
 3. **Memory in two layers.** The git log records what changed. The journal records why, one file per
    day, written by `/close`. Reconstructing an old decision needs both, so the system keeps both.
 
+## Works in your tool
+
+Contextium is model-agnostic. The installer asks which tools you use and writes each one's native
+config. One portable source (the methodology, the principle rules, the Loop commands) is projected into
+every tool's format, so the rules read the same no matter what is driving.
+
+| Tool | Instructions file | Loop commands |
+|---|---|---|
+| Claude Code | `.claude/` + `CLAUDE.md` | `.claude/skills/` (real slash commands) |
+| Gemini CLI | `GEMINI.md` | `.gemini/commands/*.toml` |
+| Codex | `AGENTS.md` | `.codex/skills/*/SKILL.md` |
+| Cursor | `.cursor/rules/contextium.mdc` | `.cursor/commands/*.md` |
+| GitHub Copilot | `.github/copilot-instructions.md` | `.github/prompts/*.prompt.md` |
+
+Two things port to every tool: the methodology and rules, and the git-hook enforcement (a verb-led
+commit-subject check and a staged-secret scan, wired through `core.hooksPath`). Two things are a Claude
+Code bonus that other tools cannot run: the fresh-context review agents and the PreToolUse guards. So
+the discipline travels everywhere; the most automation lives in Claude Code.
+
 ## What's in the box
 
-- Eight skills: the Loop (`/project` → `/spec`, `/implement`, `/close`) plus `/implement-audit`
-  (adversarial code review), `/explain` (deep investigation), `/debate`, and `/author` (scaffold a
-  conforming rule, skill, hook, or agent).
-- Three fresh-context review agents the skills dispatch when they need a second set of eyes.
-- Eight always-loaded principle rules, kept short on purpose.
+- Eight Claude Code skills: the Loop (`/project` → `/spec`, `/implement`, `/close`) plus
+  `/implement-audit` (adversarial code review), `/explain` (deep investigation), `/debate`, and
+  `/author` (scaffold a conforming rule, skill, hook, or agent). The four Loop verbs also ship as native
+  commands for every other supported tool.
+- Three fresh-context review agents the Claude skills dispatch when they need a second set of eyes.
+- Eight always-loaded principle rules, kept short on purpose, shared verbatim across all tools.
 - A handful of wired hooks, a lean 4-section SPEC template, and 14 docs-only integration starters you
   pick from at install time.
 
@@ -56,9 +83,11 @@ cd contextium
 bash install.sh
 ```
 
-The installer lays down the `.claude/` layer (with `CLAUDE.md` inside it), asks for your name, how
-autonomous you want the AI to be, and which integration starters to include, and leaves your data
-directories alone on re-runs. Then open the project in Claude Code and try `/project`.
+The installer asks which AI tools you use, your name, how autonomous you want the AI to be, and which
+integration starters to include, then lays down each tool's native config and leaves your data
+directories alone on re-runs. Default is Claude Code; add others interactively or with
+`--tools "claude gemini codex cursor copilot"` (or `--all-tools`). Then open the project in your tool
+and run the Think verb (`/project` in Claude Code, the same command in the others).
 
 See `docs/getting-started.md` for a first walk through the Loop, and `docs/architecture.md` for how the
 pieces fit.
