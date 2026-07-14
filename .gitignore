@@ -1,0 +1,40 @@
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+*.swp
+*.swo
+*~
+.vscode/
+.idea/
+
+# Tokens & credentials
+integrations/tokens/
+*.token
+*.key
+.env
+.env.*
+
+# Build artifacts
+node_modules/
+dist/
+.next/
+*.lock
+
+# Claude Code AI layer — this IS the template's product, so track it.
+# Ignore everything inside .claude/ by default, then whitelist the layer the
+# installer (install.sh REFRESH_PATHS) lays down. Transient session artifacts
+# (worktrees, plans, locks) stay ignored by falling through the default.
+.claude/**
+!.claude/hooks/
+!.claude/hooks/**
+!.claude/settings.json
+!.claude/skills/
+!.claude/skills/**
+!.claude/rules/
+!.claude/rules/**
+!.claude/agents/
+!.claude/agents/**
+!.claude/templates/
+!.claude/templates/**

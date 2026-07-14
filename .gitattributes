@@ -1,0 +1,10 @@
+# Protect user data during upstream merges
+apps/** merge=ours
+knowledge/** merge=ours
+journal/** merge=ours
+projects/** merge=ours
+
+# Ensure consistent line endings
+* text=auto
+*.md text eol=lf
+*.sh text eol=lf

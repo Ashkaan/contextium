@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# Tool-agnostic git commit-msg hook. Fires for commits made by ANY agent or by
+# hand, so the subject discipline travels with the repo, not with one tool.
+# Turn on with: git config core.hooksPath .githooks   (the installer does this).
+set -euo pipefail
+root="$(git rev-parse --show-toplevel)"
+exec bash "$root/.githooks/checks/check-commit-subject.sh" "$1"

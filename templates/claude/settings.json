@@ -1,0 +1,75 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash",
+      "Grep",
+      "Glob",
+      "WebFetch",
+      "WebSearch",
+      "Skill",
+      "Monitor",
+      "Edit",
+      "Read",
+      "Write",
+      "Agent",
+      "ToolSearch",
+      "TodoWrite",
+      "AskUserQuestion",
+      "ExitPlanMode",
+      "EnterPlanMode",
+      "ScheduleWakeup",
+      "CronCreate",
+      "CronDelete",
+      "CronList",
+      "EnterWorktree",
+      "ExitWorktree",
+      "Workflow",
+      "NotebookEdit"
+    ],
+    "ask": [
+      "Bash(kill *)",
+      "Bash(killall *)",
+      "Bash(reboot *)",
+      "Bash(shutdown *)",
+      "Bash(dd *)",
+      "Bash(mkfs *)"
+    ]
+  },
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash .claude/hooks/session-checklist.sh"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash .claude/hooks/block-memory-writes.sh"
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash .claude/hooks/check-destructive-git.sh"
+          },
+          {
+            "type": "command",
+            "command": "bash .claude/hooks/commit-gate.sh"
+          }
+        ]
+      }
+    ]
+  }
+}
