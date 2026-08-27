@@ -1,3 +1,7 @@
+---
+paths: null
+---
+
 # Simplest Solution Default
 
 Reach for the lightest mechanism that actually works. Always loaded.
@@ -20,4 +24,4 @@ more "real." A few specific traps:
 
 When a reviewer or your own instinct says "this needs more structure," make it justify the weight
 against the actual requirement. The first question on any new component is "what is the lightest shape
-that satisfies the need?" — answered before, not after, you build. Pairs with @rule:depth-policy.
+that satisfies the need?" — answered before, not after, you build. Pairs with @rule:depth-policy. [2026-05-15]

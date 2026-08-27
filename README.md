@@ -65,8 +65,8 @@ discipline travels everywhere; the most automation lives in Claude Code.
 
 - Nine Claude Code skills: the Loop (`/project` → `/spec`, `/implement`, `/close`) plus its two
   reviewers — `/spec-audit` (attacks the design before code exists) and `/implement-audit` (attacks the
-  code before it lands) — and `/explain` (deep investigation), `/debate`, and `/author` (scaffold a
-  conforming rule, skill, hook, or agent). The Loop verbs and both reviewers also ship as native
+  code before it lands) — and `/explain` (deep investigation), `/debate`, and `/author` (scaffold and verify a
+  conforming rule, skill, hook, agent, or response style). The Loop verbs and both reviewers also ship as native
   commands for every other supported tool.
 - **Reviews that aren't written by the author.** Claude writes most of the code and most of the SPECs,
   so a Claude reviewer shares the blind spots that produced the work. Both reviewers run on a different
@@ -78,8 +78,16 @@ discipline travels everywhere; the most automation lives in Claude Code.
   reads whether the code was already reviewed instead of guessing — and later rounds review only the
   fixes, not the whole diff again. Both reviewers emit a commit trailer, and a git hook refuses a commit
   that changes a SPEC or a meaningful amount of code without one.
+- **The skills ship with their machinery, not a description of it.** `/debate` builds its role prompts,
+  dispatches the agents and parses their output with scripts; `/explain` runs its hypotheses in
+  parallel; `/author` scaffolds from templates and verifies what it wrote; `/project` and `/close`
+  detect stage, staleness, and remaining work rather than guessing. 14 test suites ship with them.
+- **A panel of models where one would do.** `/debate` and `/explain` use different model CLIs when you
+  have them, because one model asked three times agrees with itself. With only Claude installed they
+  fill every seat with Claude, warn once, and run.
 - Four fresh-context review agents the Claude skills dispatch when they need a second set of eyes.
-- Nine always-loaded principle rules, kept short on purpose, shared verbatim across all tools.
+- Principle rules, kept short on purpose, shared verbatim across all tools — and a commit check that
+  refuses a commit citing a rule that no longer exists.
 - Two response styles (`decision-only` by default, `brevity` alongside it), a lean 4-section SPEC
   template, wired hooks, and 14 docs-only integration starters you pick from at install time.
 

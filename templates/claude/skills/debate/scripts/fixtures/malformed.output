@@ -1,0 +1,6 @@
+Some unstructured prose that never produced the expected schema.
+
+The model wandered off and started writing essay-style content instead of
+following the structured output spec. No `## Position` heading anywhere.
+
+Eventually it just stopped.

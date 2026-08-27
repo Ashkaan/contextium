@@ -4,13 +4,10 @@ paths: null
 
 # Feedback
 
-Always-loaded rules derived from user corrections. Each body is the imperative + `[date]` + a judgment-core marker; the failure story, verbatim quotes, and how-to-apply live in the dated session journal per `@rule:rule-minimal-context`.
+Always-loaded rules derived from user corrections. Each body is the imperative + `[date]` + a judgment-core marker; the failure story, verbatim quotes, and how-to-apply live in the dated session journal with the body kept minimal.
 
 ## goal-alignment
 ONCE, at the START of a task and before work begins, MUST present two plain-English sections — **Goal:** (one sentence to a few bullets, sized to the work) and **Simplest mechanism:** (the lightest-weight way to achieve it) — then MUST wait for explicit approval. Approval = "yes" / "do it" / "go" / equivalent commit; silence is NOT approval. MUST NOT bundle this gate into the same turn as the first design artifact. **ONCE APPROVAL IS GIVEN THE GATE IS SPENT.** For the remainder of that task MUST NOT re-present a goal/mechanism gate, MUST NOT ask for re-approval of work inside the approved scope, and MUST NOT end a turn with "Approve?", "Want me to build it?", or "Say go and I'll…". Work discovered mid-task that serves the approved goal MUST be done and reported, not re-gated. The ONE exception is a discovery that would REVERSE the approved goal or overwrite a decision already made; that MUST be surfaced, naming what was decided and why the evidence now cuts against it. Before claiming done ("shipped", "fixed", "deployed", "live", "all set"), MUST verify the shipped change implements the agreed mechanism. [2026-05-16] [2026-05-26] [2026-08-08]
-
-## simplest-solution-default
-Default to the simplest mechanism that works. Inline scripts > shared modules > daemons. Don't build infrastructure when a function call works. "Shared by other automations" usually means a shared function, NOT a deployed service. Weigh complexity findings against the actual threat model — for a single-user setup with all-your-code callers, defense-in-depth is usually over-engineering. [2026-05-15]
 
 ## no-guessing
 Before asserting any fact about repo state, platform contracts, API limits, versions, counts, timezones, dates, a causal mechanism, or a tool's actual behavior, MUST read the answer first-hand THIS session (Read, Grep, Glob, WebFetch, curl, gh, typed `integrations/` client) and MUST name that reading. MUST NOT assert from training data or inference. For a causal claim, MUST name the competing explanation and the reading that rules it out. If no such reading exists, MUST propose a durable mechanism (apps/ script, hook, docs section). [2026-04-18] [2026-07-27] [2026-08-14]

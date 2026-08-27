@@ -1,44 +1,140 @@
 #!/usr/bin/env bash
 # check-staleness.sh
 #
-# Scan all active/blocked/monitor projects for staleness signals — projects with
-# no journal mention in the last N days (default 14). Emits a flagged list for
-# the /project caller to surface (optional — fires when user asks
-# "anything I'm forgetting?").
+# Two independent "this project needs a decision" scans over projects/*/*/.
 #
-# Deterministic — filesystem + journal grep, no AI.
+#   1. STALE   — active/blocked/monitor project with no journal mention in the
+#                last N days (default 14). Optional; fire when the user asks
+#                "anything I'm forgetting?".
+#   2. EXPIRED — monitor project whose `monitoring-until:` date has already
+#                passed. Fires on every blank-mode /project via
+#                `step-0.5-render-index`.
+#
+# The two answer different questions and a project can trip either alone: a
+# monitor window can lapse while the project is still being mentioned daily,
+# and a stale project can sit well inside its window.
+#
+# WHY EXPIRED EXISTS (@rule:evidence-required-for-new-rules — the failure
+# already happened): projects/homelab/2026-07-24_alert-triage carried
+# `monitoring-until: 2026-08-01` and the 2026-08-16 session found post-ship
+# defects the lapsed window was supposed to have caught. Nothing surfaced the
+# lapse for 15 days. At the time this was written 11 of 24 monitor projects
+# were past their date, so the silence was the norm, not one slip.
+#
+# Deterministic — filesystem + frontmatter + journal grep, no AI.
 #
 # Usage:
-#   check-staleness.sh [days]      # default 14 days
+#   check-staleness.sh                # both scans, 14-day staleness cutoff
+#   check-staleness.sh [days]         # both scans, custom staleness cutoff
+#   check-staleness.sh --expired-only # frontmatter only, no journal grep
 #
-# Output (zero or more lines to stdout, one per stale project):
-#   STALE:<domain>/<slug>:days-since-last-mention=<N>
+# Output (zero or more lines to stdout):
+#   STALE:<domain>/<slug>:days-since-last-mention=<N|never>
+#   EXPIRED:<domain>/<slug>:monitoring-until=<YYYY-MM-DD>:days-overdue=<N>
+#   NOWINDOW:<domain>/<slug>            # status: monitor, no parseable date
 #
-# Output is empty if no projects flagged.
-# Exit code: 0 always.
+# Output is empty if nothing is flagged. Exit code: 0 always.
+#
+# PERFORMANCE — why frontmatter is read by ONE awk, not per-project subshells.
+# `--expired-only` runs on every blank-mode /project, in front of the user, so it
+# is on the interactive path. The first version shelled out per project
+# (basename x2, awk, sed, grep, date) and measured 6.3s across 314 projects —
+# five times SLOWER than the full journal-grep scan it was supposed to be a fast
+# subset of. One awk pass + bash string ops brought it to ~0.1s. Keep it that
+# way: no subshell inside the per-project loop except `date` on an already-known
+# expired row (at most a handful).
+#
+# Dates are compared in the machine's local timezone so a
+# window does not read as lapsed for the last 8 hours of its final day. A window
+# whose date IS today is NOT overdue — the day is still being watched.
+#
+# peers:
+#   .claude/skills/project/scripts/check-staleness.test.sh
+#   .claude/skills/project/SKILL.md  (step-0.5-render-index + scripts table)
 
-set -euo pipefail
+set -uo pipefail
 
-DAYS="${1:-14}"
+export TZ="America/Los_Angeles"
+
+RUN_STALE=1
+DAYS=14
+case "${1:-}" in
+  --expired-only) RUN_STALE=0 ;;
+  "") ;;
+  *) DAYS="$1" ;;
+esac
+
 CUTOFF_DATE=$(date -d "${DAYS} days ago" +%Y-%m-%d 2>/dev/null || date -v-"${DAYS}d" +%Y-%m-%d)
+TODAY=$(date +%Y-%m-%d)
+TODAY_EPOCH=$(date -d "$TODAY" +%s 2>/dev/null || date -j -f "%Y-%m-%d" "$TODAY" +%s)
 
-# For each project folder, find the most recent journal entry mentioning its slug
-for project_dir in projects/*/*/; do
-  [ -d "$project_dir" ] || continue
-  slug=$(basename "$project_dir" | sed 's/^[0-9]\{4\}-[0-9]\{2\}-[0-9]\{2\}_//')
-  domain=$(basename "$(dirname "$project_dir")")
+# One pass over every project README: emit `path <TAB> status <TAB> until-value`.
+# Frontmatter ONLY — the body quotes `monitoring-until:` when narrating a lapse
+# (alert-triage's § Next Steps does), and a prose mention is not a field.
+# The flush-on-next-file shape avoids gawk's ENDFILE, which mawk lacks.
+scan_frontmatter() {
+  awk '
+    function emit() { if (file != "") print file "\t" status "\t" until_ }
+    FNR == 1 {
+      emit()
+      file = FILENAME; status = ""; until_ = ""
+      infm = ($0 == "---") ? 1 : 0
+      next
+    }
+    infm && $0 == "---" { infm = 0; next }
+    infm && /^status:[ \t]/ && status == "" { status = $2 }
+    infm && /^monitoring-until:[ \t]/ && until_ == "" {
+      line = $0; sub(/^monitoring-until:[ \t]*/, "", line); until_ = line
+    }
+    END { emit() }
+  ' projects/*/*/README.md 2>/dev/null
+}
 
-  # Status from frontmatter — only flag active/blocked/monitor
-  readme="${project_dir}README.md"
-  [ -f "$readme" ] || continue
-  status=$(awk '/^status:/{print $2; exit}' "$readme")
+while IFS=$'\t' read -r readme status until_raw; do
   case "$status" in
     active|blocked|monitor) ;;
     *) continue ;;
   esac
 
-  # Most recent journal entry mentioning the slug
-  latest_mention=$(grep -lE "(\b${slug}\b|/${slug}\b)" journal/*.md 2>/dev/null \
+  dir="${readme%/README.md}"
+  slug="${dir##*/}"
+  slug="${slug#[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]_}"
+  domain="${dir%/*}"
+  domain="${domain##*/}"
+
+  # --- EXPIRED (monitor only) ---
+  if [ "$status" = "monitor" ]; then
+    # Value shapes in the wild: a bare date; `2026-08-05 — trailing prose`; and
+    # `"2026-08-27 — prose containing colons and quotes"`. Take the leading ISO
+    # date and ignore the rest.
+    until_date="${until_raw#\"}"
+    until_date="${until_date#\'}"
+    until_date="${until_date:0:10}"
+    until_epoch=""
+    case "$until_date" in
+      [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9])
+        # Shape is right; `date` still rejects an impossible day (2026-13-45).
+        until_epoch=$(date -d "$until_date" +%s 2>/dev/null || date -j -f "%Y-%m-%d" "$until_date" +%s 2>/dev/null || echo "")
+        ;;
+    esac
+
+    if [ -z "$until_epoch" ]; then
+      echo "NOWINDOW:${domain}/${slug}"
+    elif [[ "$until_date" < "$TODAY" ]]; then
+      echo "EXPIRED:${domain}/${slug}:monitoring-until=${until_date}:days-overdue=$(( (TODAY_EPOCH - until_epoch) / 86400 ))"
+    fi
+  fi
+
+  [ "$RUN_STALE" -eq 1 ] || continue
+
+  # --- STALE (active/blocked/monitor) ---
+  # The boundary is hand-rolled, not `\b`: a journal almost always names a
+  # project by its FOLDER (`projects/ops/2026-08-17_new-onboarding-flow/`), and
+  # `_` is a word character, so `\bmannkind-ai-workshop` never matches there.
+  # That is why this scan reported `never` for projects written up the day
+  # before. Excluding `-` on both sides keeps a slug from matching a longer one
+  # that merely contains it.
+  latest_mention=$(grep -lE "(^|[^A-Za-z0-9-])${slug}([^A-Za-z0-9-]|$)" journal/*.md 2>/dev/null \
     | sed 's|journal/||; s|\.md$||' \
     | sort -r \
     | head -1)
@@ -50,8 +146,9 @@ for project_dir in projects/*/*/; do
 
   # Compare date strings (YYYY-MM-DD sorts lexicographically)
   if [[ "$latest_mention" < "$CUTOFF_DATE" ]]; then
-    days_diff=$(( ( $(date -d "$(date +%Y-%m-%d)" +%s 2>/dev/null || date +%s) - $(date -d "$latest_mention" +%s 2>/dev/null || date -j -f "%Y-%m-%d" "$latest_mention" +%s) ) / 86400 ))
+    days_diff=$(( ( TODAY_EPOCH - $(date -d "$latest_mention" +%s 2>/dev/null || date -j -f "%Y-%m-%d" "$latest_mention" +%s) ) / 86400 ))
     echo "STALE:${domain}/${slug}:days-since-last-mention=${days_diff}"
   fi
-done
+done < <(scan_frontmatter)
+
 exit 0

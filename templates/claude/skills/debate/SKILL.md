@@ -1,56 +1,63 @@
 ---
 name: debate
-description: Adversarial debate — dispatch competing review agents to argue a question from independent sides, then synthesize the strongest conclusion. Use when the user says "debate this", "I'm torn between X and Y", "red-team this plan", or "council on this".
-disable-model-invocation: true
-argument-hint: "[question] [--format dialectic|redteam|council]"
+description: Adversarial debate — spawn competing AI agents to argue a question, then synthesize the strongest conclusion. Use when the user says "debate this", "I'm torn between X and Y", "red-team this plan", or "council on this".
+disable-model-invocation: false
+argument-hint: "[question] [--format dialectic|redteam|council] [--agents 2|3]"
 allowed-tools:
+  - Bash
   - Read
-  - Task
   - AskUserQuestion
 peers:
   - .claude/skills/implement-audit/SKILL.md
   - .claude/skills/explain/SKILL.md
 enforces:
+  - "@rule:no-guessing"
   - "@rule:mechanisms-not-prose"
-  - "@rule:depth-policy"
+  - "@rule:single-source-of-truth"
+  - "@rule:adversarial-recursion-cap"
 steps:
   - id: step-1-parse-input
     kind: gate
     gate:
       tool: AskUserQuestion
       on_fail: continue
-      condition: Fires only when the question is unclear or too vague to debate. Otherwise extract question + auto-detect format + assemble the shared context block.
-  - id: step-2-dispatch-agents
+      condition: Fires only when the question is unclear or too vague to debate. Otherwise extract the question, auto-detect the format, and default to 2 agents.
+  - id: step-2-build-prompts
     kind: action
-    action: Dispatch one fresh-context agent per role with the shared context + that role's argue-this-side brief. Collect each agent's structured position.
-  - id: step-3-synthesize
+    action: Run scripts/build-agent-prompts.sh to assemble role-specific prompt files per format and seat count.
+  - id: step-3-dispatch-agents
+    kind: gate
+    gate:
+      tool: shell
+      on_fail: halt
+      condition: Run scripts/dispatch-agents.sh; halt if all agents fail (script exits non-zero).
+  - id: step-4-synthesize
     kind: action
-    action: Read every agent's output and produce the structured synthesis — judgment, not summarization. Name failed agents in the Gaps section.
-  - id: step-4-optional-round-2
+    action: Read parse-agent-output.sh stdout and produce the structured synthesis — judgment, not summarization.
+  - id: step-5-optional-round-2
     kind: action
-    action: If the user asks for another round, re-dispatch agents with rebuttal briefs and re-synthesize. Capped at 3 rounds; round 3 fires AskUserQuestion (ship | redesign | defer).
+    action: If user requests another round (or --rounds 2), re-dispatch agents with rebuttal prompts and re-synthesize. Stop when a round produces no argument not already on the table (@rule:adversarial-recursion-cap ends loops on the work, not a count). Rounds here are user-requested, so never ask whether to continue.
 ---
 
 # Debate — Multi-Agent Adversarial Reasoning
 
-Dispatch 2-3 fresh-context agents with competing perspectives on a question, collect
-their arguments, and synthesize the strongest conclusion.
+Spawn 2-3 AI agents with competing perspectives on a question, collect their
+arguments, and synthesize the strongest conclusion.
 
-**Step graph** (mirrors frontmatter `steps:`): step-1-parse-input → step-2-dispatch-agents → step-3-synthesize → step-4-optional-round-2
+**Step graph** (mirrors frontmatter `steps:`): step-1-parse-input → step-2-build-prompts → step-3-dispatch-agents → step-4-synthesize → step-5-optional-round-2
 
 ## Critical
 
-- **Synthesis (step-3) is where the value is — don't just summarize.** Read every agent's output, identify genuine tensions, name what they agree on. The orchestrator's authorship of the synthesis IS the skill; if all you do is concatenate, you wasted the dispatch.
-- **Gaps MUST be named when an agent fails.** If an agent never returns (timeout, error), the Gaps section MUST say "The {role} agent failed. Synthesis reflects N of M positions — the {role} side may be underrepresented." Do not silently emit a 2-agent synthesis labeled 3-agent.
-- **Cap at 3 rounds per ship.** Round 3 MUST invoke `AskUserQuestion` (ship | redesign | defer) before proceeding. Round 4+ is forbidden — diminishing returns turn negative.
+- **Synthesis (step-4) is where the value is — don't just summarize.** Read every agent's output, identify genuine tensions, name what they agree on. The orchestrator's authorship of the synthesis IS the skill; if all you do is concatenate, you wasted the cost.
+- **Gaps MUST be named when an agent fails.** `.gap` files written by `dispatch-agents.sh` mean an agent never returned; the Gaps section MUST surface "Agent X failed (timeout/rate-limit). Synthesis reflects N of M — the {role} position may be underrepresented." Do not silently emit a 2-agent synthesis labeled 3-agent.
+- **Stop when a round adds nothing.** Per `@rule:adversarial-recursion-cap`, the loop ends on the work: a round that surfaces no argument already on the table is the last one. There is no round number to hit and no question to fire — rounds here are requested by the user in the first place.
 
 ## step-1-parse-input
 
-Extract the question from `$ARGUMENTS`. Parse the optional `--format` flag:
+Extract the question from `$ARGUMENTS`. Parse optional flags:
 
-- `dialectic` (default) — two roles, FOR and AGAINST a position.
-- `redteam` — two roles, advocate and critic of a plan/proposal.
-- `council` — three roles, each taking a distinct angle on an open-ended question.
+- `--format`: `dialectic` (default), `redteam`, `council`
+- `--agents`: `2` (default) or `3` — how many seats the debate has. WHO fills them is decided at dispatch by which model CLIs you have installed, not here.
 
 Auto-detect format if not specified:
 - Binary choice / "X or Y" / "X vs Y" → **dialectic**
@@ -61,9 +68,9 @@ If the question is unclear or too vague, ask ONE clarifying question first.
 
 ### Context Scaffold
 
-Before dispatching, assemble a context block every agent will share. If the user gave a
-bare question, check whether it references a known project/file/decision and pull key
-facts. Structure (keep under 200 words):
+Before building prompts, assemble a context block. If the user gave a bare
+question, check whether it references a known project/file/decision and pull
+key facts. Structure:
 
 ```
 CONTEXT FOR DEBATE:
@@ -73,49 +80,71 @@ CONTEXT FOR DEBATE:
 - Current leaning: [user's position, if any — agents should challenge this]
 ```
 
-The point of a single shared block is that every agent argues from the same facts, so
-divergence reflects reasoning, not different starting information.
+Save this block to a temp file and pass it as `--context-file` to the build
+script — every agent argues from the same facts. Keep under 200 words.
 
-## step-2-dispatch-agents
+## step-2-build-prompts
 
-Dispatch one fresh-context agent per role using the Agent tool. There is no dispatch
-script — you assemble each role's brief inline and call `Task` once per role. Run the
-dispatches in parallel (issue them in one batch). A general-purpose agent is the right
-subagent type here; the role comes from the brief, not the agent's identity.
+Invoke the build script — it owns the role-template SSOT for the three
+formats × seat-count × N-role matrix:
 
-Each role brief contains:
-
-1. The shared CONTEXT FOR DEBATE block from step-1.
-2. The role assignment and the side to argue. By format:
-   - **dialectic**: agent A argues FOR the position, agent B argues AGAINST.
-   - **redteam**: agent A is the advocate (defend the plan), agent B is the critic (find the fatal flaw).
-   - **council**: each of the three agents takes one named angle (e.g. cost, correctness, maintainability).
-3. A steel-man instruction: argue the strongest version of your side, and end with the
-   single best argument against your own position.
-4. The required output schema so synthesis can parse uniformly:
-
-```markdown
-## Position
-[the core argument, strongest form]
-## Key Points
-[3-5 numbered points]
-## Acknowledged Weaknesses
-[the best argument against this position]
+```bash
+bash "${CLAUDE_PROJECT_DIR}/.claude/skills/debate/scripts/build-agent-prompts.sh" \
+  --question "$QUESTION" \
+  --format "$FORMAT" \
+  --agents "$AGENTS" \
+  --context-file "$CTX_FILE"   # optional
+# stdout: prompts_dir=/tmp/debate-prompts-XXXXXX
 ```
 
-Collect each agent's returned block. If an agent errors or times out, record it as a gap
-for step-3; proceed with the rest (partial success is acceptable — a 2-of-3 synthesis is
-fine as long as the gap is named).
+The format auto-detection decision tree stays in `step-1-parse-input` above;
+the per-role role assignment + steel-man instruction + output schema all
+live inside the script's heredocs (SSOT per `@rule:single-source-of-truth`).
 
-## step-3-synthesize
+## step-3-dispatch-agents
 
-Read each agent's `## Position` ... `## Acknowledged Weaknesses` block. Then produce a
-structured synthesis. Do NOT just summarize — add analytical value:
+Run the dispatch script. It fills the seats from whatever model CLIs are on
+PATH, owns the per-CLI flag shapes, the 120s per-agent timeout, and the parallel
+orchestration.
+
+**Different models are the point.** Two seats filled by the same model agree with
+each other for reasons that have nothing to do with the question. The script uses
+different CLIs when you have them (`codex`, `gemini`, `grok` are recognised) and
+falls back to repeating the one you do have, warning as it goes. It never refuses
+to run for want of a second vendor — a single-model debate is weaker, not
+worthless, and it is what most installs will do:
+
+```bash
+bash "${CLAUDE_PROJECT_DIR}/.claude/skills/debate/scripts/dispatch-agents.sh" \
+  --prompts-dir "$PROMPTS_DIR" \
+  --agents "$AGENTS" \
+  --timeout-s 120
+# stdout: output_dir=/tmp/debate-outputs-XXXXXX
+# stderr: per-failed-agent summary lines
+```
+
+The script writes one `.output` file per successful agent and one `.gap` file
+per failed agent under the output dir. Exit non-zero only when ALL agents
+failed (gap-tolerant per `## Critical` — partial-success is the design).
+
+## step-4-synthesize
+
+Read the cleaned agent blocks from the parse script — it strips Codex header/footer
+noise and extracts the structured `## Position`...`## Acknowledged Weaknesses`
+block from each `.output` file:
+
+```bash
+bash "${CLAUDE_PROJECT_DIR}/.claude/skills/debate/scripts/parse-agent-output.sh" \
+  --output-dir "$OUTPUT_DIR"
+# stdout: cleaned blocks delimited by `=== <role> ===`
+```
+
+Then produce a structured synthesis. Do NOT just summarize — add analytical value:
 
 ```markdown
 ## Debate: {QUESTION}
 
-**Format**: {format} | **Agents**: {N roles}
+**Format**: {format} | **Seats**: {n} | **Filled by**: {which CLIs actually answered}
 
 ---
 
@@ -141,40 +170,53 @@ as a named tension with both sides. This is the core output.]
 other side]
 
 ### Gaps (if any)
-[Name each failed agent: "The critic agent failed (timeout). Synthesis reflects
-1 of 2 positions — the critic side may be underrepresented." Omit if all succeeded.]
+[Surface each `.gap` file from the output dir. Explicit: "Gemini failed
+in Round 2 (rate limit). Synthesis reflects 2 of 3 — the {role} position may
+be underrepresented." Omit entirely if all agents succeeded.]
 ```
 
-## step-4-optional-round-2
+## step-5-optional-round-2
 
-If the user says "another round", "go deeper", or "rebut":
+If the user says "another round", "go deeper", or included `--rounds 2`:
 
-Build a rebuttal brief for each agent — give it the OTHER agents' positions from round 1
-and ask it to rebut, then state what argument it now finds most underweighted, then give
-a revised position. Re-dispatch (one `Task` per role), collect, and re-synthesize.
+Build a rebuttal prompt for each agent (`--rounds 2` schema uses
+`## Rebuttal` / `## Underweighted Argument` / `## Revised Position` per
+`parse-agent-output.sh --round 2`). Save to a fresh prompts dir, then:
 
-After collecting rebuttals, update Key Tensions and "If Forced to Pick" if the rebuttals
-exposed genuine weaknesses, or reinforce them if they didn't land. Note what changed.
+```bash
+bash "${CLAUDE_PROJECT_DIR}/.claude/skills/debate/scripts/dispatch-agents.sh" \
+  --prompts-dir "$ROUND2_PROMPTS_DIR" \
+  --agents "$AGENTS"
+bash "${CLAUDE_PROJECT_DIR}/.claude/skills/debate/scripts/parse-agent-output.sh" \
+  --output-dir "$ROUND2_OUTPUT_DIR" \
+  --round 2
+```
 
-**Cap: 3 rounds total.** Round 3 MUST invoke `AskUserQuestion` (ship | redesign | defer)
-before proceeding. Round 4+ is forbidden.
+After collecting rebuttals, re-synthesize: update Key Tensions and "If Forced
+to Pick" if rebuttals exposed genuine weaknesses, or reinforce them if they
+didn't land. Note what changed.
+
+**Stop on a round that adds nothing.** Per `@rule:adversarial-recursion-cap`,
+the loop ends on the work rather than at a round number, and fires no
+question — the user asked for these rounds.
 
 ## Examples
 
 ### Example 1 — Dialectic on a binary choice
 
-User: `/debate Should we keep the rule set lean or add a rule for every recurring nit?` — binary; auto-detected as **dialectic**. step-2 dispatches two agents: one argues FOR a minimal rule set, one argues FOR comprehensive rules, each from the shared context block. Both return the `## Position` schema. step-3 synthesis emits Strongest Arguments + Points of Agreement (both agreed a rule with no mechanism is noise) + Key Tensions (coverage vs. attention cost) + "If Forced to Pick: lean set, moderate confidence, because every loaded rule costs attention per @rule:simplest-solution-default". Strongest Counter: "if corrections recur and aren't written down, the same mistake repeats."
+User: `/debate should we move off our current job runner onto a managed one?` — binary X-vs-Y, auto-detected as **dialectic**. The build script emits `thesis.prompt` (FOR moving) and `antithesis.prompt` (AGAINST). Dispatch runs them in parallel on whatever model CLIs are installed; with only Claude present, both seats are Claude and the run says so. Synthesis emits Strongest Arguments, Points of Agreement (both agents accepted that the current runner's known bug is real), Key Tensions (migration cost against correctness), and "If forced to pick: move, moderate confidence." Strongest counter: "if the team already knows how to operate the current one and the bug is fixable, moving is over-investment."
 
 ### Example 2 — Redteam on a proposal with fatal-flaw output
 
-User: `/debate red-team this plan: stand up a long-running daemon so other scripts can request a git commit`. Auto-detected as **redteam**. step-2 dispatches an advocate agent and a critic agent. step-3 synthesis shows the Critic's Fatal Flaw: "the need is shared commit logic — a small shared function does this; a daemon with auth, allowlists, and lifecycle management is far heavier than the requirement per @rule:simplest-solution-default." Advocate's strongest counter: "future callers might need a network boundary." Synthesis weighs it: the critic wins; recommendation is the shared function, not the daemon.
+User: `/debate red-team this plan: stand up an HTTP service with bearer auth so our other scripts can ask it to commit to the repo`. Auto-detected as **redteam**, which is structurally 2-role, so the build emits `advocate.prompt` + `critic.prompt`. With two different model CLIs installed they take one seat each, which is where this format earns its keep. Synthesis shows the critic's fatal flaw: "the actual need is shared command execution — a 30-line function does this; a service with TLS, auth, an allowlist and cleanup is over-engineered by two orders of magnitude." The advocate's strongest counter is "other scripts might need it later." The critic wins; the recommendation is the shared function.
 
 ## Troubleshooting
 
 | Error | Cause | Solution |
 |---|---|---|
-| An agent never returns | Timeout or dispatch error | Record it as a gap; synthesis names it in the Gaps section. To retry, re-invoke `/debate` with the same question. |
-| `council` requested but only two angles make sense | The question isn't actually 3-dimensional | Switch to `dialectic` — two perspectives suffice. Don't pad a third agent with a redundant angle. |
-| Round 3 attempted without `AskUserQuestion` gate | Recursion-cap violation | Hard stop. Fire AskUserQuestion (ship | redesign | defer). Do not auto-continue. |
-| All agents fail | Every dispatch errored | Halt the skill. Surface the failure to the user; do NOT emit a synthesis with zero inputs. |
-| Synthesis reads like a summary | Skipped the judgment work in step-3 | Re-do step-3: name the tensions, take a position in "If Forced to Pick", steel-man the counter. Concatenation is not synthesis. |
+| `dispatch-agents.sh` reports an agent timeout | Real CLI took >120s (rare but happens under load or slow model auto-routing) | The `.gap` file records the timeout; synthesis names it in the Gaps section. To retry, re-invoke `/debate` with the same question + a larger `--timeout-s`. |
+| A CLI's header/footer noise leaks into the synthesis input | `parse-agent-output.sh` strips it; the fixtures cover the shapes seen so far | Add a fixture under `scripts/fixtures/` with the new shape and extend the trim pattern in `parse-agent-output.sh`. |
+| A model CLI hits a rate limit | dispatch records a `.gap` for that seat | Synthesis names the gap. For a critical decision, re-invoke with `--config claude` (all 3 roles via different Claude models) to avoid the cross-provider failure mode. |
+| `council` + `--agents 2` rejected at build | a council is three positions by construction | Use `--agents 3` for a council, or switch format to `dialectic` if 2 perspectives suffice. |
+| A round re-runs the same arguments | The loop should have ended on the work per `@rule:adversarial-recursion-cap` | Stop and synthesize. Do not fire a question; the count was never the signal. |
+| All agents fail → `dispatch-agents.sh` exits non-zero | Network outage, all CLIs degraded, or invalid prompts | Halt the skill. Surface the failure to the user; do NOT emit a synthesis with zero inputs. |

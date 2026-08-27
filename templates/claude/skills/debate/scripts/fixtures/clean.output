@@ -1,0 +1,14 @@
+## Position
+We should choose option A.
+
+## Key Arguments
+1. Option A is faster to ship.
+2. Option A has fewer external dependencies.
+3. Option A aligns with the existing architecture.
+
+## Strongest Point
+Time-to-ship matters more than long-term ergonomics here.
+
+## Acknowledged Weaknesses
+1. Option A has higher long-term maintenance cost.
+2. The team is less familiar with Option A's library.

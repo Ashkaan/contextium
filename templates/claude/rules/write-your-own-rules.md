@@ -1,3 +1,7 @@
+---
+paths: null
+---
+
 # Write Your Own Rules
 
 A guide to growing this layer for your own work. Always loaded — it's the meta-rule that tells you how
@@ -33,4 +37,4 @@ domain-specific ones often shouldn't be.
 
 When a correction recurs and you want it enforced, that is the signal to write it down — once, in one
 file, with a mechanism if it matters. That loop, more than any single rule, is what makes the layer
-yours.
+yours. [2026-04-18]

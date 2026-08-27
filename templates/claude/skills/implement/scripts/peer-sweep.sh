@@ -50,7 +50,7 @@ done
 REPO_DIR="${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel 2>/dev/null || true)}"
 [[ -n "$REPO_DIR" ]] || { err "not inside a git repo, and CLAUDE_PROJECT_DIR is unset"; exit 1; }
 # `.git` is a DIRECTORY in a normal clone and a FILE (a gitdir pointer) in a
-# linked worktree, so `-d` would reject every worktree — including the one an
+# linked worktree, so `-d` would reject every worktree — including one an
 # implementation session may be running in.
 [[ -e "$REPO_DIR/.git" ]] || { err "not a git repo: $REPO_DIR"; exit 1; }
 

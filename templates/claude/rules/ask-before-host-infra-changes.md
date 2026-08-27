@@ -1,3 +1,7 @@
+---
+paths: null
+---
+
 # Ask Before Host Infra Changes
 
 Diagnose freely, propose freely, treat only with permission. Always loaded.
@@ -25,7 +29,7 @@ diagnosis. Propose anything in text. The line is at execution.
 
 Repo-local file edits, application code, container restarts through your orchestrator, and edits
 inside a container's own filesystem are all in scope for autonomous work — they are recoverable from
-the repo, and none of them outlive a redeploy.
+the repo, and none of them outlive a redeploy. [2026-05-16]
 
 ## never-restart-your-own-host
 When a `systemctl restart|stop|disable` (or any kill) would hit a service whose process tree contains
@@ -38,4 +42,4 @@ to over SSH from that host. Pre-flight: am I inside the thing I am about to rest
 you are not sure — ask.
 
 MUST NOT chain a service restart onto another command "to apply the config." That is the shape this
-fails in: the config edit succeeds, the restart kills the session, and nobody sees whether it worked.
+fails in: the config edit succeeds, the restart kills the session, and nobody sees whether it worked. [2026-05-15]

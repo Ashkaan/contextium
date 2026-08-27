@@ -1,7 +1,64 @@
 #!/usr/bin/env bash
-# Tool-agnostic git pre-commit hook. Scans the staged diff for secrets before
-# the commit lands, regardless of which agent staged it.
+# Tool-agnostic git pre-commit hook. Fires on every commit regardless of which
+# tool, agent, or human staged it.
 # Turn on with: git config core.hooksPath .githooks   (the installer does this).
 set -euo pipefail
 root="$(git rev-parse --show-toplevel)"
-exec bash "$root/.githooks/checks/check-secrets.sh"
+
+bash "$root/.githooks/checks/check-secrets.sh"
+
+# The AI-layer checks only apply if you have a .claude/ layer — a repo set up for
+# a tool that never gets one skips them silently, which is why they are guarded
+# rather than assumed. Each is skipped again if that file was trimmed away.
+# The layer lives at .claude/ in a project that INSTALLED it, and at
+# templates/claude/ in the repo that authors it. Both get checked.
+if [[ -d "$root/.claude" || -d "$root/templates/claude" ]]; then
+  # A rule cited as @rule:<id> that no longer exists is invisible until someone
+  # follows the citation and finds nothing. This is cheap and catches it at the
+  # commit that breaks it.
+  # `[[ -x x ]] && bash x` looks equivalent and is not: under `set -e` the whole
+  # line returns 1 when the test is false, which kills the hook silently — the
+  # commit is refused and nothing is printed to say why.
+  for refs in "$root/.claude/hooks/checks/check-rule-refs.sh" \
+              "$root/templates/claude/hooks/checks/check-rule-refs.sh"; do
+    if [[ -x "$refs" ]]; then
+      bash "$refs"
+    fi
+  done
+
+  # Malformed skill frontmatter loads fine and then never fires. Only check the
+  # SKILL.md files this commit actually touches.
+  #
+  # Both checks match on a REPO-RELATIVE path and silently skip anything else, so
+  # they are called from the repo root with the path git gave us. Passing an
+  # absolute path here makes every file skip, and the hook then reports success
+  # over files nobody checked.
+  cd "$root"
+  fmt_skill=".claude/hooks/checks/check-skill-format.sh"
+  [[ -x "$fmt_skill" ]] || fmt_skill="templates/claude/hooks/checks/check-skill-format.sh"
+  fmt_rule=".claude/hooks/checks/check-rule-format.sh"
+  [[ -x "$fmt_rule" ]] || fmt_rule="templates/claude/hooks/checks/check-rule-format.sh"
+
+  if [[ -x "$fmt_skill" ]]; then
+    while IFS= read -r f; do
+      [[ -n "$f" && -f "$f" ]] || continue
+      bash "$fmt_skill" "$f"
+    done < <(git diff --cached --name-only --diff-filter=ACMR | grep -E '(^|[./])claude/skills/.*/SKILL\.md$' || true)
+  fi
+
+  # A rule missing its frontmatter or its evidence date reads as a rule and
+  # enforces nothing.
+  # ONE invocation with every changed rule file. Called once per file, the
+  # duplicate-id check has nothing to compare against and a commit that
+  # introduces the same rule id in two files passes.
+  if [[ -x "$fmt_rule" ]]; then
+    rule_files=()
+    while IFS= read -r f; do
+      [[ -n "$f" && -f "$f" ]] || continue
+      rule_files+=("$f")
+    done < <(git diff --cached --name-only --diff-filter=ACMR | grep -E '(^|[./])claude/rules/.*\.md$' || true)
+    if [[ ${#rule_files[@]} -gt 0 ]]; then
+      bash "$fmt_rule" "${rule_files[@]}"
+    fi
+  fi
+fi

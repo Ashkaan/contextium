@@ -1,3 +1,7 @@
+---
+paths: null
+---
+
 # Depth Policy
 
 When to present options and wait, versus when to just execute. Always loaded.
@@ -18,4 +22,4 @@ The error in both directions is a mismatch: executing a decision without buy-in,
 execution that should already be moving. When unsure which class a task is, ask once, briefly.
 
 Pairs with @rule:simplest-solution-default (pick the lightest shape) and @rule:mechanisms-not-prose
-(once a behavior is decided, wire it so it actually fires).
+(once a behavior is decided, wire it so it actually fires). [2026-05-16]

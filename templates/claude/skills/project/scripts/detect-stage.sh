@@ -12,9 +12,11 @@
 #   blocked            → status:blocked
 #   completed          → status:completed
 #
-# Multiple SPECs: pick the most-recent that has no sibling *-report.md as the
-# active SPEC. If all are reported, stage is needs-planning again (for the next
-# chunk of work).
+# A project's implementation artifact is *.spec.md — the same shape
+# project-remaining-work.sh and next-implement-command.sh look for, so all three
+# agree on what "there is work here" means. Multiple SPECs: pick the most-recent that has no
+# sibling *-report.md as the active SPEC. If all are reported, stage is
+# needs-planning again (for the next chunk of work).
 #
 # Usage:
 #   detect-stage.sh <project-path>
@@ -58,7 +60,8 @@ ACTIVE_SPEC=""
 if [ "$SPEC_COUNT" -gt 0 ]; then
   while IFS= read -r spec_path; do
     [ -z "$spec_path" ] && continue
-    spec_stem=$(basename "$spec_path" | sed -E 's/\.spec\.md$//')
+    # Strip the .spec.md suffix to get the stem
+    spec_stem=$(basename "$spec_path" | sed -E 's/\.(spec|plan)\.md$//')
     report_path="${PROJECT_PATH}/${spec_stem}-report.md"
     if [ ! -f "$report_path" ]; then
       ACTIVE_SPEC="$spec_path"
@@ -79,10 +82,19 @@ case "$STATUS" in
     ;;
   active)
     if [ -z "$ACTIVE_SPEC" ]; then
-      # Either no SPECs at all, or all SPECs have reports
-      STAGE="needs-planning"
+      # No SPEC is waiting to be built. Two different situations look the same
+      # here, and calling both "needs-planning" sent finished projects back to
+      # the planning step: with NO specs at all there is nothing to build yet,
+      # but with every spec reported the work is done and the project just has
+      # not been closed.
+      if [ "$SPEC_COUNT" -gt 0 ] && [ "$REPORT_COUNT" -gt 0 ]; then
+        STAGE="ready-to-close"
+      else
+        STAGE="needs-planning"
+      fi
     else
-      # An active SPEC with no sibling report still needs implementing.
+      # A SPEC with no report beside it is work waiting to be built, whether or
+      # not other SPECs in the folder have already been reported.
       STAGE="ready-to-implement"
     fi
     ;;

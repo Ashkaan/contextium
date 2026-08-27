@@ -17,6 +17,7 @@ enforces:
   - "@rule:simplest-solution-default"
 handoffs_from:
   - .claude/skills/project/SKILL.md
+  - .claude/skills/explain/SKILL.md
 handoffs_to:
   - .claude/skills/implement-audit/SKILL.md
   - .claude/skills/close/SKILL.md
@@ -74,7 +75,7 @@ So before you run `/implement`: open a new tab (or clear the context), then relo
 Nothing enforces this. It is a discipline you follow because it is the whole point of separating the
 think and do verbs. Skip it and you lose that benefit.
 
-## Phase — Load the SPEC
+## load — read the SPEC
 
 The argument is either a project name/slug or a SPEC-file path.
 
@@ -100,7 +101,7 @@ Then read the SPEC. It follows the lean 4-section template (`.claude/templates/s
 - **§ 4 — Done** — the exact commands to run and the output that means success, including the
   end-to-end check.
 
-## Phase — Execute each task
+## execute — each task in turn
 
 Work through § 3 file by file. For each one:
 
@@ -132,7 +133,7 @@ still work, does data flow correctly across the boundary you touched?
 If it fails, read the error, fix at the source, re-run, and only proceed when green. Per
 `@rule:simplest-solution-default`, fix the actual cause — don't add the file to an exclude list.
 
-## Phase — Validate all
+## validate-all — tests, then the real thing
 
 **Write tests.** Every new function gets at least one test. Each boundary case you enumerated per
 `@rule:boundary-inputs` (0, 1, empty, max, error) becomes a test case. Update existing tests if
@@ -152,7 +153,7 @@ If § 4 has no explicit E2E step, run a basic smoke test of the new behavior. St
 tests alone are never sufficient — this gate catches what they miss. Do not report complete until it
 passes.
 
-## Phase — Mechanism-match
+## mechanism-match — did you build what was agreed?
 
 The E2E gate verifies the diff WORKS. This one verifies it is the RIGHT mechanism — the one the ask
 describes, not a shortcut that solves the surface symptom another way.
@@ -173,7 +174,7 @@ Drift patterns to watch for:
 - Ask said "make it persistent" → you added a one-shot fix instead of a scheduled job.
 - Ask said "a shared function" → you built a deployed service (see `@rule:simplest-solution-default`).
 
-## Phase — Code review (substantial changes)
+## implement-audit — the code review (substantial changes)
 
 The diff works and is the right mechanism. Now it gets its one machine review before it lands.
 
@@ -197,7 +198,7 @@ clean one.
 Minor edits — a README tweak, a typo, a config bump — skip this; the review is for changes big enough to
 hide a real bug.
 
-## Phase — Report
+## report — write it down
 
 Write `{spec-name}-report.md` next to the SPEC (its project folder, or `apps/<name>/` for an app SPEC):
 

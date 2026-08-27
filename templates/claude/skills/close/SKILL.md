@@ -4,12 +4,16 @@ description: The "wrap" verb of the loop — end the session by writing the jour
 disable-model-invocation: false
 allowed-tools: "Bash(.claude/skills/close/scripts/*:*) Bash(.claude/skills/implement-audit/scripts/*:*) Bash(git *:*) Bash(node *:*) Read Edit Write Task Skill AskUserQuestion"
 peers:
+  - .claude/skills/close/scripts/project-remaining-work.sh
+  - .claude/skills/close/scripts/next-implement-command.sh
+  - .claude/skills/close/scripts/safe-commit.sh
   - .claude/rules/journal-format.md
   - .claude/skills/implement-audit/SKILL.md
   - .claude/skills/close/references/auto-close-gate.md
 handoffs_to:
   - .claude/skills/implement-audit/SKILL.md
 handoffs_from:
+  - .claude/skills/project/SKILL.md
   - .claude/skills/spec/SKILL.md
   - .claude/skills/implement/SKILL.md
 enforces:
@@ -58,7 +62,7 @@ didn't run a producer verb.
 - **Land the full scope.** Fix the audit findings this session per `@rule:no-deferral`; don't stage
   them in a README as "follow-ups."
 
-## 1. Pre-Close Audit (substantial ad-hoc changes only)
+## code-review — pre-close audit (substantial ad-hoc changes only)
 
 `/implement-audit` is the loop's single code reviewer, normally fired by `/implement`. `/close` is the
 backstop for substantial work done OUTSIDE `/implement` — a quick fix that grew, a refactor you did by
@@ -96,7 +100,7 @@ sessions. A finding with a known fix ships now, per `@rule:no-deferral`. Defer t
 when the fix needs an unmade design decision (track it in a project folder) or is blocked on something
 external. The fix loop and its round cap live inside `/implement-audit`; don't re-implement them here.
 
-## 2. Journal Entry
+## journal — the entry
 
 Write today's session block to `journal/<today>.md` via Edit/Write. The format SSOT is
 `@rule:journal-format` — labeled markers, not narrative prose, so a future session can grep and skim it.
@@ -127,13 +131,32 @@ same markers. Conventions:
 - Not every marker is needed every time — include the ones that carry signal. `Decisions` matters most
   (recording a rejected path prevents re-exploring a dead end later).
 
-## 3. Project Updates
+## project-update — the project README
 
 If the session touched a project, update that project's README in the same commit: check off completed
 next-steps, add new ones, and move the status frontmatter if the stage changed (active / blocked /
 monitor / completed). This keeps the project index honest for the next `/project` invocation.
 
-## 4. Commit and Push
+Don't eyeball whether the project is finished — ask:
+
+```bash
+bash .claude/skills/close/scripts/project-remaining-work.sh projects/<domain>/<date>_<slug>
+```
+
+It reports the status in the frontmatter, and any SPEC in the folder with no matching report beside it
+— which is the deterministic form of "was this actually built?". The only judgment left to you is
+whether the remaining Next Steps describe real work.
+
+If work remains, print the exact command that resumes it rather than composing one:
+
+```bash
+bash .claude/skills/close/scripts/next-implement-command.sh projects/<domain>/<date>_<slug>
+```
+
+`/implement` resolves by PROJECT slug, and a hand-written pointer naming the SPEC file instead sends
+the next session to a slug that does not exist.
+
+## commit — stage, commit, push
 
 Stage only the files THIS session edited (recall them from your own Edit/Write/Bash history — do not
 blanket-add). Commit with a verb-led subject; the `commit-gate.sh` hook enforces the subject
@@ -144,6 +167,16 @@ git add <file1> <file2> ...        # the files you actually edited
 git commit -m "<verb-led subject>"
 git push origin "$(git rev-parse --abbrev-ref HEAD)"
 ```
+
+If another session or an automation might be staging files at the same time, commit through the guard
+instead — it takes a lock, unstages anything you did not name, and commits inside that lock:
+
+```bash
+bash .claude/skills/close/scripts/safe-commit.sh "<verb-led subject>" <file1> <file2>
+```
+
+Without the lock, a file another process stages between your check and your commit rides along in it,
+and the commit that carries it is yours.
 
 **Carry the audit trailers.** A commit that changes real code needs the `implement-audit:` line, and a
 commit that changes a SPEC needs the `spec-audit:` line — `.githooks/checks/check-audit-trailers.sh`

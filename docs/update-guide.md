@@ -16,6 +16,22 @@ keeps any folder you added your own files to, telling you which one and why. Not
 removed. If you kept an extended `quality/`, move your own checks somewhere that suits you (they run
 from wherever the hook points) and delete what's left.
 
+## Upgrading to v5.1.0
+
+v5.1.0 is additive: the skills gained the scripts they previously only described,
+and `/author` gained a fifth artifact type (response styles). Re-run the installer
+and nothing you wrote is touched.
+
+Two things worth knowing:
+
+- **`/debate` renamed a flag.** `--config claude|cross|duo` only ever set how many
+  agents there were, so it is now `--agents 2|3`. The old names still work and map
+  to a seat count.
+- **Two more commit checks fire** when you have a `.claude/` layer: one refuses a
+  commit that cites a rule which no longer exists, the other checks the frontmatter
+  of any skill the commit touches. Both skip silently if you trimmed those files
+  away.
+
 ## Upgrading to v5.0.0
 
 v5.0.0 adds a commit gate, so this upgrade changes what git lets you do. After you re-run the

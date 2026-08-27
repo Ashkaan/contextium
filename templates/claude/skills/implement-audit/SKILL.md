@@ -80,7 +80,7 @@ Establish `BASE_SHA` — the start of this session's commits, typically `HEAD~N`
 for the N commits you made. Everything after it, committed or not, is in scope.
 Everything before it belongs to another session.
 
-## 0. Have we already audited this session?
+## step-0-session-dedupe — have we already audited this session?
 
 ```bash
 bash .claude/skills/implement-audit/scripts/audit-dedupe.sh status
@@ -89,7 +89,7 @@ bash .claude/skills/implement-audit/scripts/audit-dedupe.sh status
 `done` → print the stored trailer, say the audit already ran this session, and
 exit. `fresh` → continue.
 
-## 1. The deterministic half
+## step-1-automated-checks — the deterministic half
 
 ```bash
 bash .claude/skills/implement-audit/scripts/run-automated-checks.sh --session-base "$BASE_SHA"
@@ -100,7 +100,7 @@ Missing tooling produces `SKIP`, not failure. Every `FAIL` line is a must-fix, a
 the whole output goes into the reviewer brief verbatim so the review does not
 spend its output cap re-deriving what a linter already proved.
 
-## 2. The judgment half
+## step-2-review — the judgment half
 
 ```bash
 SNAP=$(bash .claude/hooks/checks/code-review.sh --snapshot)   # BEFORE the round
@@ -126,7 +126,7 @@ external reviewer is installed; dispatch a fresh-context agent
 agent's body prepended if the type is not found) with the same brief, and label
 the result. Exit `1` and `124` mean no review happened at all.
 
-## 3. Merge
+## step-3-merge — one list
 
 One numbered list, most severe first, holding both halves:
 
@@ -142,7 +142,7 @@ N. **<title>**: `<file>:<line>` — <what is wrong> — **<must-fix | should-fix
 
 Found nothing? Say "Zero findings within reviewed scope." Do not pad.
 
-## 4. Fix
+## step-4-fix-round — fix, then re-review the fixes
 
 Fix every must-fix and should-fix finding whose fix is ready **this round**. Hold
 nits in a list and clear them in one pass at the end. The triage label orders
@@ -157,7 +157,7 @@ Stop the loop on convergence, at the ceiling, or when a round is mostly
 re-opening ground an earlier round already touched. Never ask the user whether to
 run another round — the cap decides that.
 
-## 5. The trailer
+## step-5-emit-trailer — the trailer
 
 ```bash
 TRAILER="implement-audit: codex, 2 rounds, 5 findings (5 fixed, 0 open) — APPROVE"

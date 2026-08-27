@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
-# Test harness for push-with-retry.sh.
+# Test harness for push-with-retry.sh — Fix B env-resolution boundary only.
 #
-# Boundaries: env-unset-but-in-repo resolves the root via git and pushes (1),
-# env-unset-outside-a-repo blocks loud (error case, 0/error), and the env-set
-# fast path still pushes (1).
+# Scope: the CLAUDE_PROJECT_DIR git-fallback guard (Fix B completion,
+# projects/ai/2026-05-29_close-commit-gate-robustness). Verifies the env guard
+# resolves the root via git when CLAUDE_PROJECT_DIR is unset (push then
+# succeeds against a local bare remote), and preserves the hard-error outside a
+# repo.
 #
 # peers: push-with-retry.sh
 
@@ -24,7 +26,7 @@ make_pushable_repo() {
   bare=$(mktemp -d)
   git -C "$bare" init --bare --quiet
   git -C "$work" init --quiet
-  git -C "$work" config user.email test@example.com
+  git -C "$work" config user.email t@t.test
   git -C "$work" config user.name tester
   git -C "$work" checkout -q -b main 2>/dev/null || git -C "$work" branch -q -M main
   : > "$work/f"
@@ -34,13 +36,18 @@ make_pushable_repo() {
   printf '%s\n%s\n' "$work" "$bare"
 }
 
-# ── Case 1: CLAUDE_PROJECT_DIR unset, cwd inside a git repo with a reachable
-# origin → resolve root via git, push succeeds (exit 0). ──
+# ── Case 1 (Fix B): CLAUDE_PROJECT_DIR unset, cwd inside a git repo with a
+# reachable origin → resolve root via git, push succeeds (exit 0). Pre-fix this
+# hard-blocks with "CLAUDE_PROJECT_DIR env var is required" (RED). ──
 case1() {
   local work bare out rc=0
   { read -r work; read -r bare; } < <(make_pushable_repo)
   out=$( cd "$work" && env -u CLAUDE_PROJECT_DIR "$SCRIPT" main 2>&1 ) || rc=$?
   rm -rf "$work" "$bare"
+  if echo "$out" | grep -q "CLAUDE_PROJECT_DIR env var is required"; then
+    echo "FAIL: case1 — still hard-blocking on unset env inside a repo (no git fallback)" >&2
+    fail=$((fail + 1)); return
+  fi
   if [[ "$rc" -ne 0 ]]; then
     echo "FAIL: case1 — expected exit 0 (push via git-resolved root), got $rc: $out" >&2
     fail=$((fail + 1)); return
@@ -53,7 +60,8 @@ case1() {
   pass=$((pass + 1))
 }
 
-# ── Case 2: CLAUDE_PROJECT_DIR unset AND outside a git repo → block loud. ──
+# ── Case 2 (preserved hard-error): CLAUDE_PROJECT_DIR unset AND outside a git
+# repo → block loud. ──
 case2() {
   local nongit rc=0
   nongit=$(mktemp -d)
@@ -67,8 +75,8 @@ case2() {
   pass=$((pass + 1))
 }
 
-# ── Case 3: CLAUDE_PROJECT_DIR set explicitly → push succeeds against the bare
-# origin (fast path unchanged). ──
+# ── Case 3 (fast path unchanged): CLAUDE_PROJECT_DIR set explicitly → push
+# succeeds against the bare origin. ──
 case3() {
   local work bare out rc=0
   { read -r work; read -r bare; } < <(make_pushable_repo)

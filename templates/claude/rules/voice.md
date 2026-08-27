@@ -1,3 +1,7 @@
+---
+paths: null
+---
+
 # Voice
 
 How anything written for a human reader (email, Slack, chat, posts, client notes) should sound.
@@ -28,4 +32,4 @@ Concretely:
 
 This rule governs outward-facing prose only. Internal artifacts the human reads themselves — journal
 entries, project notes, commit messages, rule and skill files — are exempt; structure and emphasis
-markers help there. See @rule:journal-format for the one place bold markers are required.
+markers help there. See @rule:journal-format for the one place bold markers are required. [2026-04-16]

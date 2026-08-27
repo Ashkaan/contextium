@@ -1,3 +1,7 @@
+---
+paths: null
+---
+
 # Boundary Inputs
 
 Enumerate the edges before writing the happy path. Always loaded.
@@ -13,4 +17,4 @@ handles the typical input is half-written; the bugs that reach production almost
 empty, max, or error.
 
 Pairs with @rule:mechanisms-not-prose — the enumerated edges should land as actual tests, not a
-comment promising they were considered.
+comment promising they were considered. [2026-04-17]

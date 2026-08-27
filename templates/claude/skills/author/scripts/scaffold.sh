@@ -1,189 +1,199 @@
 #!/usr/bin/env bash
-# scaffold.sh — write the conforming skeleton for a new .claude/ artifact.
+# scaffold.sh — Step 2 (`scaffold`) of /author. Deterministic skeleton
+# emitter: validates <type> + kebab <name>, computes the surface path,
+# refuses on collision, copies the type's template with `{{name}}`
+# substituted, and prints the written path.
 #
-# The shape of a skill, hook or agent file is mechanical: the same frontmatter
-# fields, the same section order, every time. /author used to describe that shape
-# in prose and ask the model to reproduce it, which is how two skills end up with
-# different frontmatter for no reason. This writes it instead.
+# The `rule` type is the one intentional exception: a rule is an inline
+# `## <slug>` section appended to an existing .claude/rules/*.md file, not
+# a standalone file. So `scaffold.sh rule <slug>` writes nothing — it
+# validates the slug + checks collision against existing rule IDs
+# (@rule:rule-stable-id) and prints insertion guidance.
 #
-# The rule branch deliberately writes NO file: a rule is an inline `## <slug>`
-# section appended to an existing .claude/rules/*.md, so this validates the slug,
-# checks it against every rule id already in the repo, and prints where to put it.
+# Names are rejected, never normalized — a silent rename would surprise
+# the author (SPEC § 2 name contract).
 #
-# USAGE
-#   scaffold.sh skill <name>
-#   scaffold.sh agent <name>
-#   scaffold.sh hook  <name>
-#   scaffold.sh rule  <slug>
+# peers: verify.sh, .claude/skills/author/SKILL.md,
+#        .claude/skills/author/references/templates/
 #
-# EXIT: 0 written (or, for rule, validated); 1 bad name, collision, or existing
-# target. It never overwrites — an existing artifact is a stop, not a merge.
+# Usage:
+#   scaffold.sh <type> <name> [placement]
+#     <type>      rule | skill | hook | agent | output-style
+#     <name>      kebab-case slug (^[a-z][a-z0-9-]*$)
+#     [placement] hook only: `checks` → .claude/hooks/checks/<name>.sh
+#                 (default → .claude/hooks/<name>.sh)
+#
+# Output (stdout): the written path (skill|hook|agent), or insertion
+#   guidance (rule).
+# Exit:
+#   0  scaffold written / rule validated
+#   1  reject (non-kebab name, collision, missing template)
+#   2  usage error (bad/missing type, empty name)
 
 set -euo pipefail
 
-err() { echo "author-scaffold: $*" >&2; }
+err() { echo "$@" >&2; }
 
-TYPE="${1:-}"
-NAME="${2:-}"
+VALID_TYPES="rule skill hook agent output-style"
+NAME_RE='^[a-z][a-z0-9-]*$'
 
-case "$TYPE" in
-  skill|agent|hook|rule) : ;;
-  *) err "usage: scaffold.sh skill|agent|hook|rule <name>"; exit 1 ;;
+# ── Where this writes ─────────────────────────────────────────────────────
+# The scaffold lands in the repo you are working in. TEMPLATE_DIR is
+# self-located because templates are READ, and reading them from the checkout
+# this script was invoked from is correct.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel 2>/dev/null || true)}"
+if [[ -z "$REPO_ROOT" ]]; then
+  err "not inside a git repo, and CLAUDE_PROJECT_DIR is unset"
+  exit 2
+fi
+TEMPLATE_DIR="$SCRIPT_DIR/../references/templates"
+
+# ── Arg parse ─────────────────────────────────────────────────────────────
+type="${1:-}"
+name="${2:-}"
+placement="${3:-}"
+
+if [[ -z "$type" ]]; then
+  err "usage: $(basename "$0") <type> <name> [placement]"
+  err "valid types: $VALID_TYPES"
+  exit 2
+fi
+
+# Exact-match the type via case — `grep -qw` would accept a multi-token arg
+# like "rule skill" (word-matches inside the whole-string pattern). Aligns with
+# verify.sh's case dispatch (code-reviewer finding).
+case "$type" in
+  rule|skill|hook|agent|output-style) ;;
+  *)
+    err "unknown type: $type"
+    err "valid types: $VALID_TYPES"
+    exit 2 ;;
 esac
 
-[[ -n "$NAME" ]] || { err "a name is required"; exit 1; }
+# Empty name is the "no name" boundary (SPEC § 4) → the skill prompts.
+if [[ -z "$name" ]]; then
+  err "name required (empty) — prompt the author for a $type name"
+  exit 2
+fi
 
-# Reject rather than normalize. Silently rewriting someone's name is how an
-# artifact ends up somewhere they don't look for it.
-if [[ ! "$NAME" =~ ^[a-z][a-z0-9-]*$ ]]; then
-  err "'$NAME' is not kebab-case (^[a-z][a-z0-9-]*\$). Rename it — this will not normalize it for you."
+# Non-kebab name → reject, never normalize.
+if ! [[ "$name" =~ $NAME_RE ]]; then
+  err "invalid name: '$name' — must match $NAME_RE (kebab-case)"
   exit 1
 fi
 
-ROOT="${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel 2>/dev/null || true)}"
-[[ -n "$ROOT" ]] || { err "not inside a git repo, and CLAUDE_PROJECT_DIR is unset"; exit 1; }
-cd "$ROOT"
-
-refuse_existing() {
-  if [[ -e "$1" ]]; then
-    err "$1 already exists. Pick another name — scaffolding never overwrites."
+substitute() {
+  # $1 template, $2 dest. Copy with {{name}} → name. name is kebab-validated
+  # so it is sed-safe.
+  local tmpl="$1" dest="$2"
+  if [[ ! -f "$tmpl" ]]; then
+    err "template missing: $tmpl"
     exit 1
   fi
+  sed "s/{{name}}/$name/g" "$tmpl" > "$dest"
 }
 
-case "$TYPE" in
-  skill)
-    target=".claude/skills/${NAME}/SKILL.md"
-    refuse_existing ".claude/skills/${NAME}"
-    mkdir -p ".claude/skills/${NAME}"
-    cat > "$target" <<EOF
----
-name: ${NAME}
-description: <WHAT it does + WHEN to use it. This is what the model routes on — a description that never says when it applies never fires.>
-disable-model-invocation: false
-allowed-tools: "Read Edit Write Bash"
-enforces: []
----
-
-# /${NAME} — <one-line purpose>
-
-<Two or three sentences: what this skill is for, and what it is not for.>
-
-## Critical
-
-- <The thing that goes wrong when someone skips a step here.>
-- <The failure this skill exists to prevent.>
-
-## <step-name>
-
-<What to do. If a step is a lookup, a computation, a format check, or a grep, it
-belongs in scripts/ as a script this body calls — not in prose here.>
-
-## Examples
-
-**<Ordinary case>.** <What happens, step by step.>
-
-**<Edge case>.** <What happens when the usual assumption doesn't hold.>
-
-## Troubleshooting
-
-| Failure | Cause | Fix |
-|---|---|---|
-| <symptom> | <why> | <what to do> |
-EOF
-    echo "$target"
+case "$type" in
+  rule)
+    # Collision check against every existing `## <slug>` in .claude/rules/.
+    # Both layouts: .claude/rules/ where the layer is installed, and
+    # templates/claude/rules/ where it is authored. Checking only the first lets
+    # a slug that already exists sail through in the repo that ships it.
+    rule_dirs=()
+    [[ -d "$REPO_ROOT/.claude/rules" ]] && rule_dirs+=("$REPO_ROOT/.claude/rules")
+    [[ -d "$REPO_ROOT/templates/claude/rules" ]] && rule_dirs+=("$REPO_ROOT/templates/claude/rules")
+    existing=""
+    if [[ ${#rule_dirs[@]} -gt 0 ]]; then
+      existing="$(
+        find "${rule_dirs[@]}" -type f -name '*.md' ! -name 'README.md' -print0 2>/dev/null \
+          | xargs -0 grep -hE '^## [a-z][a-z0-9-]*$' 2>/dev/null \
+          | sed 's/^## //' \
+          | sort -u || true
+      )"
+    fi
+    if grep -Fxq "$name" <<<"$existing"; then
+      err "rule slug collides with an existing rule: '## $name'"
+      err "rule IDs are immutable per @rule:rule-stable-id — pick a more specific slug"
+      exit 1
+    fi
+    echo "rule scaffolds inline; see references/rule.md"
+    echo "insert '## $name' in topic order into the chosen .claude/rules/*.md,"
+    echo "then run: scripts/verify.sh rule <path-to-that-rule-file>"
     ;;
 
-  agent)
-    target=".claude/agents/${NAME}.md"
-    refuse_existing "$target"
-    mkdir -p .claude/agents
-    cat > "$target" <<EOF
----
-name: ${NAME}
-description: <When the orchestrator should dispatch this agent. Agents are for work that benefits from FRESH context — review, investigation, a cold read.>
-model: inherit
-tools: Read, Grep, Glob
----
-
-You are the ${NAME} agent. You have NO session history — you see only the brief
-you are given. Do not assume context that is not in it.
-
-## Input contract
-
-<What the brief always contains: paths, a diff, a question, prior findings.>
-
-## What you do
-
-<The single job. One job per agent.>
-
-## MUST NOT
-
-- <The thing this agent must never do — write, commit, contact a third party.>
-
-## Output contract
-
-<The exact shape you return. The caller parses this, so it is a contract, not a
-suggestion.>
-
-# ${NAME}: <one-line summary>
-EOF
-    echo "$target"
+  skill)
+    dest_dir="$REPO_ROOT/.claude/skills/$name"
+    dest="$dest_dir/SKILL.md"
+    if [[ -e "$dest_dir" ]]; then
+      err "exists: .claude/skills/$name — never overwrites; rename"
+      exit 1
+    fi
+    mkdir -p "$dest_dir"
+    substitute "$TEMPLATE_DIR/skill.template.md" "$dest"
+    echo ".claude/skills/$name/SKILL.md"
     ;;
 
   hook)
-    target=".claude/hooks/${NAME}.sh"
-    refuse_existing "$target"
-    mkdir -p .claude/hooks
-    cat > "$target" <<'EOF'
-#!/usr/bin/env bash
-# HOOK_NAME.sh — <what this refuses, and why>.
-#
-# Fires on: <event> (wire it into .claude/settings.json — an unwired hook never
-# runs, and nothing will tell you).
-#
-# A blocking PreToolUse hook exits 2. Exit 1 is NOT blocking; it prints and lets
-# the call through, which is the single most common way a hook silently does
-# nothing.
-set -uo pipefail
-
-INPUT="$(cat 2>/dev/null || true)"
-# Read what you need out of $INPUT (tool name, file path, command) with jq.
-
-block() { echo "BLOCKED: $*" >&2; exit 2; }
-
-# Every refusal names the file and the fix. A hook that says "not allowed" and
-# nothing else gets worked around instead of obeyed.
-
-exit 0
-EOF
-    sed -i.bak "s/HOOK_NAME/${NAME}/" "$target" && rm -f "${target}.bak"
-    chmod +x "$target"
-    echo "$target"
-    echo "NOT WIRED YET: add it to .claude/settings.json under the right event." >&2
-    ;;
-
-  rule)
-    # No file is written. Check the id against every rule already in the repo:
-    # ids are cited as @rule:<id> across skills, hooks and docs, so a duplicate
-    # makes every citation ambiguous and a rename breaks all of them.
-    if [[ -d .claude/rules ]] && grep -rq "^## ${NAME}\$" .claude/rules/ 2>/dev/null; then
-      err "a rule with id '${NAME}' already exists:"
-      grep -rn "^## ${NAME}\$" .claude/rules/ >&2
-      err "Rule ids are effectively immutable — pick a more specific slug, or amend that rule instead."
+    # Placement decides BOTH the path AND which correct-by-construction template:
+    #   default → .claude/hooks/<name>.sh   : PreToolUse/PostToolUse, blocks with exit 2
+    #   checks  → .claude/hooks/checks/<name>.sh : pre-commit, fails with exit 1
+    # A typo like `check` used to fall through to the top-level branch, writing
+    # the wrong file from the wrong template and exiting 0.
+    case "$placement" in
+      ""|checks) ;;
+      *) err "unknown hook placement: '$placement' — use 'checks' or omit it"; exit 2 ;;
+    esac
+    if [[ "$placement" == "checks" ]]; then
+      rel=".claude/hooks/checks/$name.sh"
+      tmpl="$TEMPLATE_DIR/hook-precommit.template.sh"
+    else
+      rel=".claude/hooks/$name.sh"
+      tmpl="$TEMPLATE_DIR/hook-tooluse.template.sh"
+    fi
+    dest="$REPO_ROOT/$rel"
+    if [[ -e "$dest" ]]; then
+      err "exists: $rel — never overwrites; rename"
       exit 1
     fi
-    cat <<EOF
-Rule '${NAME}' is available. A rule is an inline section, not a new file —
-append this to the .claude/rules/*.md file whose topic it belongs to:
+    substitute "$tmpl" "$dest"
+    chmod +x "$dest"
+    echo "$rel"
+    ;;
 
-## ${NAME}
-[When X,] MUST <action>[; MUST NOT <anti-pattern>]. [$(date +%Y-%m-%d)]
-<One line: the failure this closes, or the principle behind it.>
+  output-style)
+    # Body is APPENDED TO THE SYSTEM PROMPT, so it is in force every turn of
+    # every session that selects it. Single file, no registration side effects:
+    # existing does NOT select it (settings.json `outputStyle`) and does NOT
+    # reach subagents. Both are register-step work per
+    # references/output-style.md.
+    rel=".claude/output-styles/$name.md"
+    dest="$REPO_ROOT/$rel"
+    if [[ -e "$dest" ]]; then
+      err "exists: $rel — never overwrites; rename"
+      exit 1
+    fi
+    mkdir -p "$(dirname "$dest")"
+    substitute "$TEMPLATE_DIR/output-style.template.md" "$dest"
+    echo "$rel"
+    err "note: keep-coding-instructions defaults to FALSE — omitting it strips"
+    err "      Claude Code's software-engineering instructions. Template sets it"
+    err "      true; change it deliberately, never by deletion."
+    ;;
 
-Before you append, read the sibling headings in that file:
-  grep -n '^## ' .claude/rules/<file>.md
-If this overlaps an existing rule, amend that rule instead of adding a near-twin.
-EOF
+  agent)
+    rel=".claude/agents/$name.md"
+    dest="$REPO_ROOT/$rel"
+    if [[ -e "$dest" ]]; then
+      err "exists: $rel — never overwrites; rename"
+      exit 1
+    fi
+    substitute "$TEMPLATE_DIR/agent.template.md" "$dest"
+    echo "$rel"
+    # verb-form reminder (non-blocking): agents are not slash-invocable.
+    if grep -qE '^(run|make|build|create|fix|update|do|get|set|check)(-|$)' <<<"$name"; then
+      err "note: '$name' reads like a verb — agents are NOT slash-invocable"
+      err "      (@rule:tiebreaker-skill-vs-agent). If you want a /command, author a skill."
+    fi
     ;;
 esac

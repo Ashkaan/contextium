@@ -91,7 +91,7 @@ Two reviewers run, and they have different jobs:
 - **Non-material edits skip.** A typo fix does not spend a reviewer call. Step 1
   decides that deterministically so the judgment is not re-litigated each time.
 
-## 1. Materiality
+## step-1-materiality — is this change worth a review?
 
 ```bash
 bash .claude/skills/spec-audit/scripts/check-materiality.sh <spec-path>
@@ -104,7 +104,7 @@ trailer and exits:
 bash .claude/skills/spec-audit/scripts/format-trailer.sh skipped-non-material wording-polish
 ```
 
-## 2. The skip clause
+## step-2-skip-clause — the skip clause
 
 `--skip-reason` exists for one case: the user, this session, told you to skip the
 audit. Quote their actual words — the trailer is the record that the skip was
@@ -114,13 +114,13 @@ authorized, and a paraphrase is not evidence.
 bash .claude/skills/spec-audit/scripts/format-trailer.sh skipped-user "just write it, I'll review it myself"
 ```
 
-## 3. Spirit-check
+## step-3-spirit-check — does it match the ask?
 
 Dispatch the `spirit-check` agent with the SPEC path. It returns `MATCH`,
 `DRIFT`, or `AMBIGUOUS`. On DRIFT, fix the SPEC to match the ask. If the
 divergence is a real choice only the user can make, surface it and halt.
 
-## 4. Round 1
+## step-4-review-round-1 — attack the design
 
 ```bash
 bash .claude/hooks/checks/spec-review.sh <spec-path> "<one-line brief of what this SPEC is for>"
@@ -142,7 +142,7 @@ you review your own SPEC with a fresh-context agent. Do it, and label it. Users
 who want a genuinely independent reviewer install the Codex CLI or point
 `CONTEXTIUM_REVIEWER_CMD` at another one; see `.claude/hooks/checks/reviewer-chain.sh`.
 
-## 5. Round 2 — only if you pushed back
+## step-5-review-round-2 — only if you pushed back
 
 Write your pushbacks to a scratch file outside the repo, **numbered, one per
 finding you disputed**:
@@ -174,7 +174,7 @@ finding still in dispute vanishes.
 Do not run a round 3 of argument. Two rounds either converge or produce a
 decision that belongs to the user.
 
-## 6. Present, and the trailer
+## step-6-present — present, and the trailer
 
 Print what changed in the SPEC, the spirit verdict, and the trailer:
 
@@ -187,6 +187,13 @@ The reviewer name is whoever actually answered — `spec-review.sh` prints
 `answered: <slot>` on stderr — or `claude-fallback` when no external reviewer was
 available. `/spec` carries this line into the close commit, where the git hook
 requires it on any commit touching a SPEC.
+
+## step-7-no-silent-revision — what you showed is what you commit
+
+The SPEC the user signs off on is the SPEC that gets committed, byte for byte. If
+something has to change after you present it, present it again. A revision
+between sign-off and commit means the thing they approved is not the thing that
+landed, and nobody can see the difference afterwards.
 
 ## Examples
 

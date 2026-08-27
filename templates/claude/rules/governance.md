@@ -4,7 +4,7 @@ paths: null
 
 # Governance
 
-Always-loaded governance rules — lint/format reasoning, session-end phrasing, ship-claim wording, commit-message authoring, publish-boundary decisions. Failure stories live in each correction's session journal per `@rule:rule-minimal-context`.
+Always-loaded governance rules — lint/format reasoning, session-end phrasing, ship-claim wording, commit-message authoring, publish-boundary decisions. Failure stories live in each correction's session journal with the body kept minimal.
 
 ## repo-hygiene-fix-at-source
 When a lint or format error occurs, MUST fix it at the source; MUST NOT add the file to an exclude list to avoid the fix. [2026-03-22]

@@ -1,7 +1,6 @@
 # Canonical Project README Scaffold
 
-Reference for [`/project`](../SKILL.md) create-mode. Loaded by Claude when scaffolding a new project
-README, not held in always-loaded context.
+Reference for [`/project`](../SKILL.md) create-mode. Anthropic progressive-disclosure tier 3 — loaded by Claude when scaffolding a new project README. Absorbed from the deleted `.claude/skills/project/references/readme-template.md` (2026-04-20).
 
 ## Template
 
@@ -13,7 +12,7 @@ priority: high|medium|low   # required on active/blocked/monitor
 created: YYYY-MM-DD
 tags: [category, technology, type]
 description: One-line summary for the project index
-next: One short sentence — the single immediate next action (shown verbatim in the project index; the full backlog + context live in the body sections below). Use blocked-on when status is blocked; monitoring-until when status is monitor.
+next: One short human-facing sentence — the single immediate next action (shown verbatim in the agenda email + index; the full backlog + context live in the body sections below, which is where AI reads). Use blocked-on when status is blocked; monitoring-until when status is monitor.
 ---
 
 # Project: [Descriptive Name]
@@ -48,15 +47,11 @@ Add as needed: `Research Findings`, `Technical Details`, `Notes`.
 
 ## Folder structure
 
-Only `README.md` in the project root. Use subfolders as the work needs them: `docs/` for markdown docs,
-`scripts/` for executables, `configs/` for configuration, the SPEC files (`*.spec.md`) alongside the
-README.
+Only `README.md` in the project root; use `docs/` for longer documents, `scripts/` for executables, `configs/` for configuration, `backups/` for backups.
 
-## Domains
+## Valid domains
 
-A domain is any short kebab folder directly under `projects/` — pick one that groups the work
-(e.g. `ai`, `finance`, `home`, `health`, `business`, `infra`). The set is yours to grow; a new domain
-just means a new folder. When unsure which domain a project belongs to, ask the user first.
+whatever domains your work actually falls into — e.g. `ai`, `infra`, `finance`, `product`, `personal`. Pick a small set and keep it stable; a new domain is a decision to make deliberately, not per-project.
 
 ## Naming convention
 
@@ -64,7 +59,6 @@ just means a new folder. When unsure which domain a project belongs to, ask the 
 
 ## Priority classifier
 
-- **high** = serves an explicit current goal you're actively pushing on
-- **medium** = meta-infrastructure (rules, hooks, skills, frameworks, support-apps that make the rest
-  of the repo work)
+- **high** = serves an explicit Q2 goal bullet in `knowledge/growth/goals/goals.md`
+- **medium** = meta-infrastructure (rules, hooks, skills, telemetry, frameworks, support-apps that make the rest of the repo work)
 - **low** = neither

@@ -9,9 +9,8 @@ peers:
   - .claude/skills/author/scripts/verify.sh
 enforces:
   - "@rule:adversarial-triaged-output"
-  - "@rule:adversarial-structured-output"
+  - "@rule:adversarial-triaged-output"
   - "@rule:adversarial-nothing-found-valid"
-  - "@rule:adversarial-scope-discipline"
   - "@rule:deterministic-over-ai"
   - "@rule:mechanisms-not-prose"
 ---
@@ -54,7 +53,7 @@ You MUST NOT:
 - Invent findings to look useful. Zero findings is a valid, expected result (`@rule:adversarial-nothing-found-valid`).
 - Report a finding you cannot anchor to a specific line or a named failure scenario. "Could be clearer" is not a finding.
 - Comment on repo state outside the artifact under review — except a security or data-loss defect you read in passing. Report that one in a single line BELOW the findings list, labelled as outside the reviewed artifact, so it reaches the caller without blocking this review.
-- Flag `.md` formatting (`@rule:no-md-autoquality`).
+- Flag markdown formatting. Prose is not linted here.
 - Dispatch other agents — you are single-round.
 
 ## Output Contract

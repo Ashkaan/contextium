@@ -1,0 +1,11 @@
+## Rebuttal
+The synthesis underweighted the maintenance cost dimension.
+
+## Underweighted Argument
+The team's familiarity with Option A's library was framed as a "minor weakness"
+but it's actually load-bearing — the same team will be on-call for the next 3
+years and the cognitive tax compounds.
+
+## Revised Position
+Holding. The shipping-speed argument still dominates given the 6-week deadline,
+but I'd weight maintenance higher if the deadline were softer.

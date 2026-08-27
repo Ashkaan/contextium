@@ -13,8 +13,11 @@ allowed-tools:
   - WebFetch
 peers:
   - .claude/agents/research-agent.md
+handoffs_to:
+  - .claude/skills/implement/SKILL.md
 enforces:
-  - "@rule:mechanisms-not-prose"
+  - "@rule:no-guessing"
+  - "@rule:class-fix-is-atomic"
 steps:
   - id: step-0-validate-input
     kind: action
@@ -27,10 +30,16 @@ steps:
     action: Write INVESTIGATION FRAME (question, type, scope, hypotheses, unknowns) before investigating.
   - id: step-3-research
     kind: action
-    action: Execute research — sequential for Standard, multiple research-agent dispatches for Deep — then verify with contradictions resolved.
+    action: Execute research — sequential for Standard, 2-3 parallel agents for Deep — then verify with contradictions resolved.
   - id: step-4-synthesize
     kind: action
     action: Emit Explain output with Executive Summary + Root Cause + Evidence + Implications sections.
+  - id: step-5-next-action-gate
+    kind: gate
+    gate:
+      tool: AskUserQuestion
+      on_fail: halt
+      condition: Fires when the explanation identifies a class-level design flaw. MUST ask Ship class fix now | Explain only | Defer with reason before ending the skill.
 ---
 
 # Explain — Deep Research & Root Cause Analysis
@@ -38,12 +47,12 @@ steps:
 Investigate a topic until confident in root cause or core understanding. Produce
 an actionable executive summary plus deeper analysis.
 
-**Step graph** (mirrors frontmatter `steps:`): step-0-validate-input → step-1-classify-complexity → step-2-frame → step-3-research → step-4-synthesize
+**Step graph** (mirrors frontmatter `steps:`): step-0-validate-input → step-1-classify-complexity → step-2-frame → step-3-research → step-4-synthesize → step-5-next-action-gate
 
 ## Critical
 
-- **Validate input first.** If `$ARGUMENTS` is empty or too vague, ask ONE clarifying question before launching research. Vague input wastes the research budget on the wrong target.
-- **Research until confident, then stop.** The output is understanding, not a fix. If the investigation surfaces a flaw the user will want fixed, say so in Implications and let them decide — don't silently start fixing.
+- **Validate input first.** If `$ARGUMENTS` is empty or too vague, ask ONE clarifying question before launching research. Vague input wastes parallel-agent budget on the wrong target.
+- **A class-level flaw becomes work, by default.** If the explanation identifies a flaw in a shared mechanism (one affecting several files), the Step 5 `AskUserQuestion` default option is "Ship class fix now" per `@rule:class-fix-is-atomic`. Do NOT silently end at explanation — surface the chain.
 
 ## step-0-validate-input
 
@@ -57,7 +66,7 @@ launch research on an ambiguous target.
 - **Standard** — requires tracing code/docs/external sources; single likely
   answer. Steps 2-4 sequentially.
 - **Deep** — cross-cutting, multiple possible causes, systems-level "why".
-  Steps 2-4 with multiple research agents, one per hypothesis.
+  Steps 2-4 with parallel research agents.
 
 State the classification and a one-sentence restatement before proceeding.
 
@@ -73,25 +82,40 @@ INVESTIGATION FRAME:
 ```
 
 If the question references files, a project, or recent work, pull context (read
-files, git log) before forming hypotheses.
+files, git log). If it references a production incident, gather the same context
+you would to explain it — logs, the recent diff, the alert itself — but do not
+start fixing: this skill's job is to say WHY, and the fix is a separate decision
+someone should make with the explanation in hand.
 
 ## step-3-research
 
 ### Standard complexity
 
-- **Codebase**: Dispatch the `research-agent` via `Task(subagent_type="research-agent", ...)` with the investigation question + scope hint + hypotheses from Step 2. If the agent-type isn't loaded (fresh-agent-file gap — the harness caches agent names at session start), fall back to `Task(subagent_type="general-purpose", ...)` with the full body of `.claude/agents/research-agent.md` (minus frontmatter) prepended to the prompt. The agent returns structured findings with exact file:line citations; the main conversation synthesizes without absorbing the search traffic.
-- **External concepts**: use `WebSearch` / `WebFetch` — external facts are out of the research-agent's scope (it operates on this repo).
-- **Runtime behavior**: logs, job history, deployment state — handle in the main conversation, which has the live-system access the agent doesn't.
+- **Codebase**: Dispatch the `research-agent` via `Task(subagent_type="research-agent", ...)` with the investigation question + scope hint + hypotheses from Step 2. If the agent-type isn't loaded (fresh-agent-file gap — Claude Code caches agent names at session start), fall back to `Task(subagent_type="general-purpose", ...)` with the full body of `.claude/agents/research-agent.md` (minus frontmatter) prepended to the prompt. The agent returns structured findings with exact file:line citations; main conversation synthesizes without absorbing the search traffic.
+- **External concepts**: use WebSearch/WebFetch. These are out of the `research-agent`'s scope — it reads this repo, not the internet. When you already know the URL, fetch it with `curl` and read the page yourself: WebFetch answers through a small summarizing model, and per `@rule:no-guessing` a model's summary of a page is a claim, not a reading.
+- **Runtime behavior**: logs, job history, deployment state — handled in the main conversation, which has the credentials and live-system access the agent does not.
 
 ### Deep complexity
 
-Dispatch 2-3 `research-agent` instances in parallel, each scoped to a different hypothesis/angle from Step 2. Each agent gets one hypothesis to confirm or reject, with a "be specific, cite evidence, stay under 500 words" instruction. Run your own local Grep/Read + git log in parallel so the main conversation isn't idle. When an agent times out or returns nothing, proceed with the remaining sources and name the gap in synthesis — the flow is gap-tolerant by design.
+Launch 2-3 parallel research sources, each on a different hypothesis. Different models are worth more than one model asked three times — a model asked the same question three ways tends to agree with itself. `scripts/parallel-research.sh` uses whichever model CLIs you have installed and warns when there is only one, so it still runs on a Claude-only machine, just with less independence between the three answers. You MAY replace one seat with the in-repo `research-agent` for focused code tracing.
+
+Invoke the parallel-research script — it owns the parallel CLI orchestration, per-source 120s timeout, partial-success collection, and 10KB output cap:
+
+```bash
+bash "${CLAUDE_PROJECT_DIR}/.claude/skills/explain/scripts/parallel-research.sh" \
+  --h1 "Investigate: {H1}. Specific, cite evidence, <500 words." \
+  --h2 "Investigate: {H2}. Specific, cite evidence, <500 words." \
+  --h3 "Investigate: {H3}. Specific, cite evidence, <500 words." \
+  --timeout 120
+```
+
+Read the SUMMARY line at the end to see how many sources returned cleanly; the script emits each result block prefixed by the CLI name, so synthesis can attribute claims. Proceed with remaining sources if one fails (gap-tolerant by design). Run local research (Grep/Read, git log) in parallel — or dispatch the `research-agent` if the investigation is deep enough in the repo that the caller shouldn't absorb the search traffic.
 
 ### Verify findings
 
-Check for contradictions across sources. If sources conflict, dispatch a targeted
-follow-up research-agent to resolve the specific disagreement — do not guess. If the
-topic touches this session's work, run `/implement-audit` to verify against actual state.
+Check for contradictions across sources. If sources conflict, launch targeted
+research agents to resolve — do not guess. If the topic touches this session's
+work, use `/implement-audit` to verify against actual state.
 
 ## step-4-synthesize
 
@@ -131,26 +155,50 @@ recurrence if this is a failure mode?]
 - **Deep**: Add `### Competing Explanations` between Evidence and Implications
   — hypotheses considered and rejected (and why).
 
+## step-5-next-action-gate
+
+If the explanation identified a **class-level design flaw** (a mechanism
+affecting multiple files/scripts — not just the presenting symptom), the
+default next action is to fix it in the same session and ship
+the full class fix now per `@rule:class-fix-is-atomic`. Do NOT recommend
+"minimum fix + defer class fix to a project" as a Claude-initiated path.
+That pattern is what produces the same bug three days running: the symptom gets
+patched, the mechanism does not, and the next sibling fails next.
+
+Before stopping at explanation, fire `AskUserQuestion`:
+
+- **Ship class fix now** (default) — fix every instance this session per `@rule:class-fix-is-atomic`, starting from the root
+  cause already identified; all peers ship this session
+- **Explain only, no fix** — user has other priorities; explanation is
+  the output
+- **Defer with reason** — user-initiated; captured as
+  `deferred-by-user-directive` in the journal; requires a reason
+
+If the explanation was for a concept, design rationale, or research question
+(not a class-level bug), Step 5 is "ready for next question" — no fix
+chaining needed.
+
 ## Examples
 
 ### Example 1 — Quick concept
 
-User: `/explain what is the difference between a hook and a skill in this repo?` — well-scoped factual, single concept. step-1 classifies as Quick; step-2 frame is one-line; step-3 skips agent dispatch (the answer is in one doc page); step-4 emits a 3-section synthesis (Executive Summary + Core Concept + Implications).
+User: `/explain what is the difference between a queue worker and a scheduled job in our runner?` — well-scoped factual, single concept. step-1 classifies as Quick; step-2 frame is one-line; step-3 skips the parallel-research script (the answer is in one doc page); step-4 emits a 3-section synthesis (Executive Summary + Core Concept + Implications). No /solve chain — concept question, not a flaw.
 
 ### Example 2 — Standard root-cause
 
-User: `/explain why does the commit gate reject my last three commits?` — requires tracing the gate script + recent commits + the rejected messages. step-1 classifies Standard; step-2 frames hypotheses (subject-format violation, banned token, a dangling `@rule:` ref); step-3 dispatches `research-agent` for the repo trace + reads recent journal entries; step-4 produces full synthesis identifying the proximate cause and the fix.
+User: `/explain why is the budget alert firing every hour for the last 3 days?` — requires tracing logs + recent commits + alert config. step-1 classifies Standard; step-2 frames hypotheses (cron drift, threshold change, data source change); step-3 dispatches `research-agent` for repo trace + reads recent journal entries; step-4 produces full synthesis identifying the proximate cause. If the cause is a class flaw (e.g., alert threshold logic shared by 4 other alerts), step-5 default = "Ship class fix now", and all five call sites are fixed this session.
 
 ### Example 3 — Deep cross-cutting
 
-User: `/explain why do new sessions keep missing context that earlier sessions had?` — cross-cutting, multiple plausible causes. step-1 classifies Deep; step-2 frames 3 hypotheses (rules not loaded, journal not written, project README stale); step-3 dispatches three `research-agent` instances (one per hypothesis) plus parallel local Read/Grep; step-4 reconciles and emits synthesis with a Competing Explanations section.
+User: `/explain why does our deploy keep failing on the step that copies files to the server?` — cross-cutting, multiple plausible causes. step-1 classifies Deep; step-2 frames 3 hypotheses (a network path that is not open, a rotated credential, a key format the server rejects); step-3 invokes `scripts/parallel-research.sh` with H1/H2/H3 prompts mapped to each hypothesis, plus parallel local Read/Grep; step-4 reconciles and emits synthesis with Competing Explanations section; step-5 offers to ship the class fix when one is identified.
 
 ## Troubleshooting
 
 | Error | Cause | Solution |
 |---|---|---|
-| `$ARGUMENTS` is empty or one ambiguous word | User invoked `/explain` without a target | Per step-0, ask ONE clarifying question first. Do NOT pick a target yourself — vague input wastes the research budget. |
-| Sources contradict each other in step-3 | Different doc versions, or one source is wrong | Do NOT guess. Dispatch a targeted follow-up `research-agent` scoped to the specific disagreement. Document it in the synthesis's Competing Explanations section. |
-| `research-agent` type not found | Session pre-dates the agent file or the harness hasn't auto-loaded it | Fall back to `Task(subagent_type="general-purpose", ...)` with the full agent body prepended to the prompt. |
-| A research agent times out or returns nothing | One angle was slow or hit a dead end | Proceed with the remaining sources (gap-tolerant) and name the gap in synthesis. |
-| Step classified Deep but the question has one obvious answer | Over-classified the symptom | Reclassify as Standard if one source answers it. Reserve Deep for cross-cutting questions where source diversity changes the answer. |
+| `$ARGUMENTS` is empty or one ambiguous word | User invoked `/explain` without a target | Per step-0, ask ONE clarifying question first. Do NOT pick a target yourself — vague input wastes parallel-research budget. |
+| Sources contradict each other in step-3 | Different model recall, different doc versions, or one source is wrong | Do NOT guess. Launch a targeted secondary research call (single-source) or dispatch `research-agent` to resolve. Document the contradiction in the synthesis's Competing Explanations section. |
+| `codex` or `gemini` CLI not installed on this host | parallel-research.sh pre-flight check fails loud | Either install the missing CLI per integrations docs, or pass `--skip-missing` to continue with the available ones (synthesis names the gap). |
+| Parallel-research script times out | One CLI is unusually slow (or model auto-routing is degraded) | Increase `--timeout` (max 600). For repeatedly slow sources, consider swapping that CLI for the in-repo `research-agent` per Step 3 Deep guidance. |
+| Step 5 defaulted to shipping a class fix when no class flaw exists | step-4 over-classified the symptom as class-level | Re-read the synthesis; if only a single file/script is affected, change the AskUserQuestion default to "Explain only, no fix" — don't synthesize a class fix where none exists. |
+| Parallel-agent cost is too high | Deep complexity is expensive (~$0.20-0.40 per invocation) | Reclassify as Standard if the question can be answered with one source. Reserve Deep for cross-cutting questions where source diversity changes the answer. |

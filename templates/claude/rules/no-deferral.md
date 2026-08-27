@@ -1,3 +1,7 @@
+---
+paths: null
+---
+
 # No Deferral
 
 Land the full scope this session. Always loaded.
@@ -23,4 +27,4 @@ Two narrow exceptions:
 2. **A genuine external block** — waiting on a vendor, a credential rotation, a third party. Something
    outside the session that no amount of work here resolves.
 
-Pairs with @rule:depth-policy: deferral is not one of the options you get to pick on execution work.
+Pairs with @rule:depth-policy: deferral is not one of the options you get to pick on execution work. [2026-05-16]

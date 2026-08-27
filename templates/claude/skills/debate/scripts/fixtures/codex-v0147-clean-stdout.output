@@ -1,0 +1,28 @@
+## Position
+
+Do **not** act on the email recommendation as scoped. This is a bad enforcement move disguised as hygiene. The proposed gate is not mature enough to block commits, the manifest model has already proven it rots, and the plan adds a second enforcement surface for a rule that already exists elsewhere.
+
+## Key Criticisms
+
+1. **You are about to promote a broken checker into policy.**  
+   The checker currently prints 9 `FAIL` lines and exits `0`. That is not a small bug; it proves nobody has been relying on this as an enforcement mechanism. Turning it into a blocking pre-commit gate after a quick manifest refresh means the first real use of the system is production enforcement, not observation. That is how you create noisy gates people bypass.
+
+2. **The manifest is already stale, so the design is suspect.**  
+   One failure points at `apps/ai/weekly-optimizer`, a directory deleted in the 2026-08-12 rename. That is only 9 days of drift. A manifest that goes stale that fast is not a reliable source of truth for caller coverage. Refreshing it now does not solve the failure mode; it resets the clock until the next rename, copy, split, or new caller. You will be institutionalizing manual bookkeeping as a commit blocker.
+
+3. **This violates the repo’s own enforcement philosophy.**  
+   `@rule:no-speculative-enforcement` says not to build enforcement for failure modes that have not occurred. Most of the current “failures” are not actual missing Kuma tokens: five of the seven unregistered apps already pass `kumaToken`, and one stale row points to a deleted app. Only `movie-ranker`, `geo-audit`, and `client-newsletter/src/lib/bin.ts` appear to be real token gaps. The right action is to fix proven gaps and improve the existing rule surface, not create a parallel pre-commit mechanism.
+
+## Fatal Flaw
+
+The fatal flaw is **making a manually maintained caller-coverage manifest a blocking gate**.
+
+That manifest has already demonstrated false failures. Once wired into pre-commit, every stale row becomes friction unrelated to runtime safety. Developers will learn that “router caller coverage” means “annoying manifest chore,” not “prevents silent AI-chain exhaustion.” The checker exiting non-zero will not make it trustworthy; it will only make the stale manifest more disruptive.
+
+This also creates a perverse outcome: the strongest safety signal, actual `kumaToken` presence at call sites, is weaker than the bookkeeping signal, manifest inclusion. That is backwards.
+
+## What Would Change My Mind
+
+1. Replace or minimize the manifest by deriving callers from source and checking actual `kumaToken` arguments directly, so renames and new imports cannot silently rot the coverage model.
+
+2. Run the checker in non-blocking/reporting mode first and prove it stays clean across normal repo churn before making it a blocking pre-commit gate.

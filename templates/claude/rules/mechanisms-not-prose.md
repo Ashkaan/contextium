@@ -1,3 +1,7 @@
+---
+paths: null
+---
+
 # Mechanisms, Not Prose
 
 A rule that only lives in a document doesn't fire. Always loaded.
@@ -22,4 +26,24 @@ Corollaries:
   the mechanism when the failure mode is real, and extend an existing surface before inventing a new
   one.
 
-See @rule:write-your-own-rules for how to add a rule that follows this discipline.
+See @rule:write-your-own-rules for how to add a rule that follows this discipline. [2026-04-13]
+
+## deterministic-over-ai
+When a task has an authoritative deterministic source — an API, a stable page to parse, a
+computation, a lookup table, a file in the repo — MUST use that source. MUST NOT ask a model to infer
+data that can be fetched, computed, or parsed.
+
+Models are for judgment: classification, summarization, synthesis, generation. They are not for data
+that already exists at a known address. When designing any pipeline step, the first question is "is
+this data, or is this judgment?" — data gets fetched, judgment gets prompted.
+
+The same split governs a skill's own steps. A step that is a lookup, a format check, a grep, or a
+fixed transform belongs in `scripts/` as something that runs the same way every time; describing it
+in prose and hoping the model reproduces it is how two runs of one skill diverge. [2026-04-24]
+
+## no-speculative-enforcement
+MUST NOT build a hook, check, or rule for a failure that has not happened yet. When a new pattern
+does need enforcing, MUST extend an existing mechanism rather than standing up a parallel one.
+
+A rule with no failure behind it costs the same attention as one that earned its place, and it
+crowds out the ones that did. [2026-04-17]

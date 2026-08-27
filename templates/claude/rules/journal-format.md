@@ -1,3 +1,7 @@
+---
+paths: null
+---
+
 # Journal Format
 
 How the daily session log is structured so it stays useful. Always loaded.
@@ -22,4 +26,4 @@ future session. Convert relative dates to absolute ("yesterday" → the actual d
 correctly out of context. Keep it terse; the journal is a memory aid, not an essay.
 
 Why two layers: the git log answers "when did X change and what was the commit," the journal answers
-"why did we do it that way and what did we learn." Reconstructing a past decision needs both.
+"why did we do it that way and what did we learn." Reconstructing a past decision needs both. [2026-03-30]
