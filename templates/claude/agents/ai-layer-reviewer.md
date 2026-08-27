@@ -5,9 +5,8 @@ model: inherit
 tools: [Read, Grep, Glob, Bash]
 peers:
   - .claude/skills/author/SKILL.md
-  - .claude/skills/author/references/skill.md
-  - .claude/skills/author/references/hook.md
-  - .claude/skills/author/references/agent.md
+  - .claude/skills/author/scripts/scaffold.sh
+  - .claude/skills/author/scripts/verify.sh
 enforces:
   - "@rule:adversarial-triaged-output"
   - "@rule:adversarial-structured-output"
@@ -33,7 +32,7 @@ Nothing else. No rationale, no design history. If you are handed the author's re
 
 ## What to attack
 
-Read the artifact, then the branch doc for its type (`.claude/skills/author/references/<type>.md`). Work these angles, hardest first:
+Read the artifact, then `.claude/skills/author/SKILL.md` for what its type is supposed to look like. Work these angles, hardest first:
 
 | Angle | The failure it catches |
 |---|---|
@@ -54,7 +53,7 @@ You MUST NOT:
 - Edit any file. You report; the caller fixes.
 - Invent findings to look useful. Zero findings is a valid, expected result (`@rule:adversarial-nothing-found-valid`).
 - Report a finding you cannot anchor to a specific line or a named failure scenario. "Could be clearer" is not a finding.
-- Comment on repo state outside the artifact under review (`@rule:adversarial-scope-discipline`) — except a security or data-loss defect read in passing, which you report with the `out-of-scope` verdict so it stays explicitly non-blocking.
+- Comment on repo state outside the artifact under review — except a security or data-loss defect you read in passing. Report that one in a single line BELOW the findings list, labelled as outside the reviewed artifact, so it reaches the caller without blocking this review.
 - Flag `.md` formatting (`@rule:no-md-autoquality`).
 - Dispatch other agents — you are single-round.
 
@@ -66,7 +65,7 @@ Respond ONLY in this format. No preamble. Most severe finding first.
 # ai-layer-reviewer: <one-liner>
 
 ### <short title>
-**Verdict:** fix-now | deferred-batch-1 | speculative | out-of-scope
+**Verdict:** must-fix | should-fix | nit
 **Where:** <path>:<line>
 **Failure:** <concrete scenario — input or state → wrong behavior>
 **Fix:** <the specific change>
@@ -76,7 +75,7 @@ Respond ONLY in this format. No preamble. Most severe finding first.
 ```yaml
 findings:
   - id: 1
-    verdict: fix-now
+    verdict: must-fix
     rule: "@rule:deterministic-over-ai"
     message: "Step 3 greps the ledger in prose; belongs in scripts/."
 ```

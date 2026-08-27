@@ -20,7 +20,7 @@ three things:
 
    | Verb | Skill | What it does |
    |---|---|---|
-   | Think | `/project` → `/spec` | Plan, then write a short SPEC of what success looks like — spirit-checked and committed automatically. |
+   | Think | `/project` → `/spec` | Plan, then write a short SPEC of what success looks like — reviewed against both the design and your original ask, then committed automatically. |
    | Do | `/implement` | Execute the SPEC with self-validation from a clean context — code-reviewed and committed automatically. |
    | Wrap | `/close` | Journal what happened and why, then commit. Auto-fired by the two verbs above; still runnable by hand. |
 
@@ -55,28 +55,39 @@ every tool's format, so the rules read the same no matter what is driving.
 | Cursor | `.cursor/rules/contextium.mdc` | `.cursor/commands/*.md` |
 | GitHub Copilot | `.github/copilot-instructions.md` | `.github/prompts/*.prompt.md` |
 
-Two things port to every tool: the methodology and rules, and the git-hook enforcement (a verb-led
-commit-subject check and a staged-secret scan, wired through `core.hooksPath`). Two things are a Claude
-Code bonus that other tools cannot run: the fresh-context review agents and the PreToolUse guards. So
-the discipline travels everywhere; the most automation lives in Claude Code.
+Two things port to every tool: the methodology and rules, and the git-hook enforcement — a verb-led
+commit-subject check, a staged-secret scan, and the review-trailer gate, all wired through
+`core.hooksPath`, so they fire on commits made by any tool, any agent, or by hand. Two things are a
+Claude Code bonus the others cannot run: the fresh-context review agents and the PreToolUse guards. The
+discipline travels everywhere; the most automation lives in Claude Code.
 
 ## What's in the box
 
-- Eight Claude Code skills: the Loop (`/project` → `/spec`, `/implement`, `/close`) plus
-  `/implement-audit` (adversarial code review), `/explain` (deep investigation), `/debate`, and
-  `/author` (scaffold a conforming rule, skill, hook, or agent). The four Loop verbs also ship as native
+- Nine Claude Code skills: the Loop (`/project` → `/spec`, `/implement`, `/close`) plus its two
+  reviewers — `/spec-audit` (attacks the design before code exists) and `/implement-audit` (attacks the
+  code before it lands) — and `/explain` (deep investigation), `/debate`, and `/author` (scaffold a
+  conforming rule, skill, hook, or agent). The Loop verbs and both reviewers also ship as native
   commands for every other supported tool.
-- Three fresh-context review agents the Claude skills dispatch when they need a second set of eyes.
-- Eight always-loaded principle rules, kept short on purpose, shared verbatim across all tools.
-- A handful of wired hooks, a lean 4-section SPEC template, and 14 docs-only integration starters you
-  pick from at install time.
+- **Reviews that aren't written by the author.** Claude writes most of the code and most of the SPECs,
+  so a Claude reviewer shares the blind spots that produced the work. Both reviewers run on a different
+  model when one is installed — the Codex CLI out of the box, or any CLI you point
+  `CONTEXTIUM_REVIEWER_CMD` at. With none installed they fall back to a fresh-context Claude agent and
+  say so, in the report and in the commit trailer. A weaker review is fine; a weaker review reported as
+  a strong one is not.
+- **Each review runs once and leaves a record.** `/implement-audit` writes a session marker, so `/close`
+  reads whether the code was already reviewed instead of guessing — and later rounds review only the
+  fixes, not the whole diff again. Both reviewers emit a commit trailer, and a git hook refuses a commit
+  that changes a SPEC or a meaningful amount of code without one.
+- Four fresh-context review agents the Claude skills dispatch when they need a second set of eyes.
+- Nine always-loaded principle rules, kept short on purpose, shared verbatim across all tools.
+- Two response styles (`decision-only` by default, `brevity` alongside it), a lean 4-section SPEC
+  template, wired hooks, and 14 docs-only integration starters you pick from at install time.
 
 ## What's not in the box (on purpose)
 
-This ships lean. The heavy enforcement machinery, orchestration platforms, large reconcilers,
-multi-model SPEC review, per-session git worktrees, runtime-pinning rules, is described in the docs as
-advanced patterns you can grow into. It is not wired in. You start with the methodology and add weight
-where your own work demands it.
+This ships lean. Orchestration platforms, large reconcilers, per-session git worktrees, and
+runtime-pinning rules are described in the docs as advanced patterns you can grow into. They are not
+wired in. You start with the methodology and add weight where your own work demands it.
 
 ## Install
 

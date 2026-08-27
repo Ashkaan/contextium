@@ -50,12 +50,12 @@ slogan is the boundary between thinking and doing.
 
 | Verb | Skill | What it does |
 |---|---|---|
-| Think | `/project` → `/spec` | Plan the work, then write a lean SPEC — spirit-checked and committed automatically |
+| Think | `/project` → `/spec` | Plan the work, then write a lean SPEC — reviewed by `/spec-audit` and committed automatically |
 | Do | `/implement` | Execute the SPEC, validating as it goes — code-reviewed and committed automatically |
 | Wrap | `/close` | Journal the session, then commit — auto-fired by the two verbs above, or run by hand |
 
-The third verb isn't one you usually type. Each producer verb runs its own review — `/spec`'s
-spirit-check, `/implement`'s code review — and then invokes `/close` itself on a clean finish, so the
+The third verb isn't one you usually type. Each producer verb runs its own review — `/spec-audit` on
+the design, `/implement-audit` on the code — and then invokes `/close` itself on a clean finish, so the
 loop wraps itself. It only stops for you when a real decision needs your call. You can still run
 `/close` by hand for an ad-hoc session that didn't go through a producer verb.
 
@@ -71,8 +71,7 @@ executed by that same tired context tends to drift, because the model is still a
 about choices it already made. Cut the context between the two and each step does one job well.
 
 The SPEC itself is short, and `/project` doesn't write it directly — it hands the agreed plan to
-`/spec`, which writes the file, sanity-checks its own interpretation against your ask, and commits it
-automatically. There's no pre-commit sign-off pause: the SPEC lands on the branch and you review it in
+`/spec`, which writes the file, sends it through `/spec-audit`, and commits it automatically. There's no pre-commit sign-off pause: the SPEC lands on the branch and you review it in
 the fresh `/implement` session, revising there if it drifted. The template has four sections: the ask in
 the human's own words, the behavior that counts as success, the files to touch, and how you'll know it
 works. That's enough for a fresh session to build
@@ -80,14 +79,53 @@ against and enough for a reviewer to check. Heavier projects grow their own sect
 bites, not before. Splitting `/spec` out of `/project` means a SPEC can also be written ad-hoc, any time
 work turns out to need one, without running the full think flow.
 
+### The two reviewers
+
+Both reviews exist for the same reason: the author is the worst reviewer of their own work, and in this
+methodology the author is almost always Claude. A Claude reviewer of Claude's output shares the blind
+spot that produced it.
+
+So both reviewers run through `.claude/hooks/checks/reviewer-chain.sh`, which looks for a model that is
+not the author. Out of the box it tries the Codex CLI; `CONTEXTIUM_REVIEWER_CMD` points it at any other
+CLI that reads a prompt on stdin. If nothing is installed — the common case on a Claude-only machine —
+the chain reports that, and the skill falls back to a fresh-context Claude agent and labels the result
+`claude-fallback` in its report and its commit trailer. That fallback is a weaker review, and the point
+of labelling it is that a weaker review reported as a strong one is worse than no review at all.
+
+`/spec-audit` runs before any code exists, which makes it the cheapest review in the loop: a missing
+edge case costs one line to add to a SPEC and a rewrite to add after the implementation. It runs two
+checks with different jobs — an independent reviewer attacking the design, and a `spirit-check` agent
+that reads only your verbatim ask and the behavior contract and asks whether the SPEC describes the
+thing you actually asked for. The second catches what the first structurally cannot: a SPEC that is
+internally excellent and solves the wrong problem. It skips non-material edits on its own, so fixing a
+typo in a SPEC doesn't spend a reviewer call.
+
+`/implement-audit` is the code reviewer, and it runs **once per session**. It writes a marker when it
+runs, and `/close` reads that marker rather than judging for itself whether a review already happened —
+which is what a prose instruction asks a closing session to do, and what it gets wrong often enough
+that people watch the same diff get reviewed twice. Its later rounds review only the fixes, not the
+whole diff again: re-reading everything each round makes the reviewer re-decide settled code and turns
+each round's own fixes into the next round's findings, which is how a fix loop reaches fifteen rounds.
+The loop stops when a round changes nothing, or at four rounds, whichever comes first.
+
+Both reviewers write a one-line trailer into the commit — `spec-audit:` or `implement-audit:` — naming
+who reviewed, how many rounds, and what is still open. `.githooks/checks/check-audit-trailers.sh`
+refuses a commit that changes a SPEC or a meaningful amount of code without one. The hook only checks
+that the line is there; it cannot tell a real trailer from an invented one. That is deliberate. The
+skills are the gate, and the hook is the backstop for commits made by hand, by another agent, or by a
+session that skipped the loop — its job is to make skipping the review a deliberate act rather than an
+oversight. `CONTEXTIUM_SKIP_AUDIT_GATE=1` is the documented way to do it deliberately.
+
 ### Supporting skills
 
 The loop is the spine. A few other skills hang off it.
 
+`/spec-audit` and `/implement-audit` are the loop's two reviewers, and they are described in their own
+section below.
+
 `/implement-audit` is an adversarial pass over code you just finished. It looks for what you missed,
 what's inconsistent, what breaks at the edges. `/implement` runs it automatically for substantial
-changes, so the review happens before the commit rather than after a bug ships. It's the loop's single
-code reviewer — one fix loop, one recursion cap, whether it fires inside `/implement` or standalone.
+changes, so the review happens before the commit rather than after a bug ships.
 
 `/explain` is for the times you need to understand why something is the way it is before you touch it.
 It investigates until it's confident, then gives you a root-cause summary instead of a guess.
@@ -171,7 +209,6 @@ A few of the patterns you can grow toward when the need is real:
   session, rather than scripts you trigger by hand.
 - A declarative reconciler that watches for drift across many checks and fixes it, instead of
   one-off scripts.
-- Multi-model SPEC review, where a second model adversarially attacks your SPEC before you build.
 - Per-session git worktrees, so concurrent sessions never step on each other's staged changes.
 - Runtime and dependency pinning rules, once you have enough code that version drift starts to bite.
 
@@ -183,8 +220,8 @@ lean version is the one that stays out of your way.
 
 The AI layer under `.claude/` is built on Claude Code primitives (skills, subagents, hooks). The
 enforcement that matters, though, is wired through git rather than through the tool, so it fires no
-matter who or what made the commit. The commit-subject and secret-scan checks live once in
-`.githooks/checks/`, called by the hooks in `.githooks/` (turn them on with `git config core.hooksPath
-.githooks`, which the installer offers to do). They sit beside the hooks rather than under `.claude/`
+matter who or what made the commit. The commit-subject check, the secret scan, and the
+review-trailer gate live once in `.githooks/checks/`, called by the hooks in `.githooks/` (turn them on
+with `git config core.hooksPath .githooks`, which the installer offers to do). They sit beside the hooks rather than under `.claude/`
 on purpose: a repo set up for a non-Claude tool never gets a `.claude/` directory, and the gate still
 has to fire. A commit made by hand or by Claude passes the same one.

@@ -12,6 +12,8 @@ allowed-tools:
   - Glob
   - AskUserQuestion
 peers:
+  - .claude/skills/author/scripts/scaffold.sh
+  - .claude/skills/author/scripts/verify.sh
   - .claude/rules/write-your-own-rules.md
   - .claude/rules/mechanisms-not-prose.md
 enforces:
@@ -75,7 +77,16 @@ Halt if the shape can't be pinned down — the artifact isn't well-scoped yet.
 
 ## scaffold
 
-Write the skeleton for the chosen type by mirroring a sibling. The structure is mechanical:
+The structure is mechanical, so a script writes it — the same frontmatter fields and section
+order every time, rather than reproduced from memory and drifting a little each pass:
+
+```bash
+bash .claude/skills/author/scripts/scaffold.sh <rule|skill|hook|agent> <name>
+```
+
+It refuses a non-kebab-case name rather than normalizing it, refuses to overwrite an existing
+artifact, and for the rule branch writes no file at all — it checks the id against every rule
+already in the repo and prints where the new section goes. What it lays down per type:
 
 - **rule** — this branch writes no new file; a rule is an inline `## <slug>` section appended to a chosen `.claude/rules/{topic}.md`. Confirm the slug doesn't collide with an existing `## <slug>` (IDs are effectively immutable — a rename breaks every `@rule:` citation), then draft:
   ```
@@ -100,7 +111,13 @@ If the new rule subsumes a sibling, fold them (delete-and-replace, update citati
 
 ## verify
 
-Run the cheap conformance check for the type before calling it done:
+Run the conformance check before calling it done:
+
+```bash
+bash .claude/skills/author/scripts/verify.sh <rule|skill|hook|agent> <name>
+```
+
+One line per check, and a non-zero exit if any failed. What it looks for:
 
 - **rule** — grep the repo for the new `@rule:<id>` and confirm every `@rule:` you touched still resolves to a real `## <slug>`; the commit gate catches dangling references at commit time.
 - **skill** — frontmatter has the required fields, the step graph (if present) is well-formed, and every `enforces:` `@rule:` resolves.

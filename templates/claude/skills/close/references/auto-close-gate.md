@@ -48,7 +48,8 @@ bash .claude/skills/close/scripts/close-fired.sh status
 |---|---|
 | Depth-policy **decision** pending | Verb halted at the `AskUserQuestion`; gate never reached. After the user answers, the verb resumes and then auto-closes (subject to (ii)). |
 | **Deferral** proposed (a major plan deviation) | Verb halts with the deferral `AskUserQuestion` per `@rule:no-deferral`; auto-close does not fire until the user approves or the work lands. |
-| `implement-audit` returned **fix-now** work | Findings are fixed in-flight by the audit's own fix loop; only a clean audit pass reaches this gate. A round-3 cap `AskUserQuestion` (`ship\|redesign\|defer`) is a decision → HALT, not close. |
+| `implement-audit` returned work to fix | Findings are fixed in-flight by the audit's own fix loop; only a clean audit pass reaches this gate. The loop stops on its own — when a round changes nothing, or at four rounds — and never asks the user whether to run another one. |
+| `implement-audit` could not run | The reviewer chain was exhausted or timed out, so no review happened. That is a FAILED audit, not a clean one → HALT and report it; do not close on an unreviewed diff. |
 | Mechanism-match **FAIL** (`/implement`) | HALT — the user must see the divergence; auto-close does not fire. |
 
 ## Peers / scripts

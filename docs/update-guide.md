@@ -16,6 +16,30 @@ keeps any folder you added your own files to, telling you which one and why. Not
 removed. If you kept an extended `quality/`, move your own checks somewhere that suits you (they run
 from wherever the hook points) and delete what's left.
 
+## Upgrading to v5.0.0
+
+v5.0.0 adds a commit gate, so this upgrade changes what git lets you do. After you re-run the
+installer, a commit that changes a SPEC, or more than about 50 lines of code, is refused unless the
+message carries a review trailer (`spec-audit:` or `implement-audit:`). The loop produces those lines
+for you — `/spec` and `/implement` each run their review and hand the trailer to `/close`. What the
+gate catches is a commit made outside the loop.
+
+Two things to know before you upgrade:
+
+- **A commit in flight will be refused.** If you were mid-change when you upgraded, either run the
+  matching review, or commit that one with `CONTEXTIUM_SKIP_AUDIT_GATE=1`.
+- **The threshold is tunable.** `CONTEXTIUM_AUDIT_LINE_THRESHOLD` (default 50) sets how many changed
+  lines of code make a commit substantial enough to need a review.
+
+v5.0.0 also changes the default response style from `brevity` to `decision-only`. Both ship; if you
+prefer the old one, set `"outputStyle": "brevity"` in `.claude/settings.json`. Note that
+`settings.json` is refreshed on every install, so a preference there needs re-applying after an
+upgrade — or move it to `.claude/settings.local.json`, which is yours and never touched.
+
+If you want the reviews to run on a model other than Claude, install the Codex CLI or set
+`CONTEXTIUM_REVIEWER_CMD` to any CLI that reads a prompt on stdin. Without one, reviews still run —
+they fall back to a fresh-context Claude agent and label themselves as such.
+
 ## What gets refreshed, what stays yours
 
 The installer treats two sets of paths differently.

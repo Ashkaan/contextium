@@ -2,7 +2,7 @@
 name: close
 description: The "wrap" verb of the loop — end the session by writing the journal entry, updating touched project READMEs, committing, and pushing. Auto-invoked as the tail of /spec and /implement (the producer verbs) on clean completion, so "wrap" is not a verb the user types; also runnable directly. Dispatches /implement-audit as a backstop for substantial ad-hoc changes not already reviewed by /implement. Use when the user says "close", "wrap up", "let's close", or when a producer verb's auto-close gate fires.
 disable-model-invocation: false
-allowed-tools: "Bash(.claude/skills/close/scripts/*:*) Bash(git *:*) Bash(node *:*) Read Edit Write Task Skill AskUserQuestion"
+allowed-tools: "Bash(.claude/skills/close/scripts/*:*) Bash(.claude/skills/implement-audit/scripts/*:*) Bash(git *:*) Bash(node *:*) Read Edit Write Task Skill AskUserQuestion"
 peers:
   - .claude/rules/journal-format.md
   - .claude/skills/implement-audit/SKILL.md
@@ -19,9 +19,9 @@ steps:
   - id: code-review
     kind: gate
     gate:
-      tool: skill
+      tool: shell
       on_fail: continue
-      condition: "If the session made substantial changes (new app/dir, or a large code diff) that were NOT already reviewed by /implement this session, dispatch /implement-audit with the session SHA range + a brief. Fix every ready finding before finishing. Trivial sessions (README/config/journal-only) and changes already audited by /implement skip."
+      condition: "Run .claude/skills/implement-audit/scripts/audit-dedupe.sh status. `done` → this session was already audited; capture the stored trailer (line 2+) for the commit message and do NOT dispatch a reviewer. `fresh` AND the session made substantial changes (a new directory under apps/, or roughly >50 changed lines of code) → dispatch /implement-audit and fix every ready finding before committing. `fresh` and trivial (README/config/journal-only) → skip."
   - id: journal
     kind: action
     action: "Write today's session block to journal/<today>.md with labeled markers per @rule:journal-format: Action / Changes / Decisions / Issues / Lessons / Next."
@@ -51,9 +51,10 @@ didn't run a producer verb.
 
 - **The journal is required.** Do not stop after `git commit`. The journal entry (§2) is what makes a
   past decision reconstructable later per `@rule:journal-format`; the commit alone is not "closed."
-- **Audit substantial ad-hoc changes.** §1 dispatches `/implement-audit` for new apps or large diffs
-  that didn't go through `/implement`, and fixes every ready finding before the commit. Do not skip it
-  to close faster. (Work built via `/implement` was already audited there — don't re-review it.)
+- **Audit substantial ad-hoc changes — and only those.** §1 asks a marker file whether this session
+  was already audited. If it was, the review does not run again and its trailer rides onto the commit
+  instead. If it wasn't, and the session changed real code, `/implement-audit` runs here and every
+  ready finding is fixed before the commit. Do not skip it to close faster.
 - **Land the full scope.** Fix the audit findings this session per `@rule:no-deferral`; don't stage
   them in a README as "follow-ups."
 
@@ -61,12 +62,25 @@ didn't run a producer verb.
 
 `/implement-audit` is the loop's single code reviewer, normally fired by `/implement`. `/close` is the
 backstop for substantial work done OUTSIDE `/implement` — a quick fix that grew, a refactor you did by
-hand. If such a change wasn't already reviewed this session, dispatch `/implement-audit` before
-committing. The trigger: the session introduced a new directory under `apps/` (at any nesting depth), or
-modified a large amount of code (roughly >50 lines across the code you touched). README/docs/config/
-journal-only sessions skip this step, and so does anything `/implement` already audited.
+hand.
 
-Detect the session's commit range and brief `/implement-audit` with it:
+**Ask the marker, don't judge it:**
+
+```bash
+bash .claude/skills/implement-audit/scripts/audit-dedupe.sh status
+```
+
+`done` means this session already ran the review. Line 2 onward is the `implement-audit:` trailer that
+run produced — capture it for §4's commit message and move on. **Do not dispatch a second review.**
+This used to be a judgment call written in prose ("skip it if `/implement` already did it"), which asks
+the closing session to decide a fact it cannot observe; it decided wrong often enough that people
+watched the same diff get reviewed twice in one session.
+
+`fresh` means nothing has reviewed this session's work. Now the size question matters: dispatch
+`/implement-audit` if the session introduced a new directory under `apps/` (at any depth) or changed
+roughly more than 50 lines of code. README/docs/config/journal-only sessions skip.
+
+Detect the session's commit range and brief the audit with it:
 
 ```bash
 # N = number of commits this session made (recall from your own git-commit calls)
@@ -76,13 +90,11 @@ git diff "$BASE_SHA" "$HEAD_SHA"
 ```
 
 Pass `/implement-audit`: the SHA range, the diff, the SPEC path if one exists for the touched code, and
-a one-paragraph brief of what was built. It returns triaged findings (`fix-now` / `nice-to-have` /
-`out-of-scope`). Fix EVERY finding whose fix is ready this session — both `fix-now` and `nice-to-have`.
-The triage label orders work within the round; it does not schedule across sessions. A finding with a
-known fix ships now, per `@rule:no-deferral`. Defer to a future session ONLY when the fix needs an
-unmade design decision (track it in a project folder) or is blocked on something external. After fixing,
-re-invoke `/implement-audit` if any `fix-now` items came back; the recursion cap lives inside
-`/implement-audit` itself.
+a one-paragraph brief of what was built. Fix EVERY finding whose fix is ready this session — both
+`must-fix` and `should-fix`. The triage label orders work within the round; it does not schedule across
+sessions. A finding with a known fix ships now, per `@rule:no-deferral`. Defer to a future session ONLY
+when the fix needs an unmade design decision (track it in a project folder) or is blocked on something
+external. The fix loop and its round cap live inside `/implement-audit`; don't re-implement them here.
 
 ## 2. Journal Entry
 
@@ -133,6 +145,20 @@ git commit -m "<verb-led subject>"
 git push origin "$(git rev-parse --abbrev-ref HEAD)"
 ```
 
+**Carry the audit trailers.** A commit that changes real code needs the `implement-audit:` line, and a
+commit that changes a SPEC needs the `spec-audit:` line — `.githooks/checks/check-audit-trailers.sh`
+rejects the commit otherwise. Both lines already exist: §1 either captured the stored one from the
+marker or the audit you just ran printed a fresh one. Put them at the end of the message, after a blank
+line:
+
+```bash
+git commit -m "add the digest scheduler" \
+           -m "implement-audit: codex, 2 rounds, 5 findings (5 fixed, 0 open) — APPROVE"
+```
+
+The gate only checks that the line is present, so it cannot tell a real trailer from an invented one.
+Writing one for a review that did not happen is the one thing that turns this gate into theatre.
+
 If the push is rejected (non-fast-forward, auth, network), `scripts/push-with-retry.sh` handles a
 bounded retry — invoke it rather than hand-rolling a loop:
 
@@ -154,17 +180,18 @@ touched). §4 stages the README, commits with a verb-led subject, pushes. Summar
 
 **Auto-close after /implement.** The user runs `/implement my-feature` and does NOT type `/close` —
 `/implement`'s terminal `auto-close` gate fires it (marks `close-fired.sh`, dispatches `/close`). §1
-skips the audit — `/implement` already ran `/implement-audit` on this diff, so re-reviewing would be
-redundant. §2 writes the journal entry. §3 updates the project README status to completed. §4 commits
-the implementation + report + journal + README and pushes.
+reads the marker, gets `done`, and takes the stored `implement-audit:` trailer for the commit — no
+second review. §2 writes the journal entry. §3 updates the project README status to completed. §4
+commits the implementation + report + journal + README with that trailer, and pushes.
 
 **Auto-close after /spec.** `/spec` writes the SPEC, spirit-check passes, and its `auto-close` gate
 dispatches `/close`. §1 skips (SPEC-only, no code). §2 journals the SPEC session. §4 commits the SPEC to
 main. The user reviews it in the fresh `/implement` tab — there was no sign-off halt.
 
 **Close after ad-hoc work.** The user fixed a bug by hand (no `/implement`), touching ~120 lines across
-`apps/parser/`. §1 detects the large unaudited diff, dispatches `/implement-audit`, gets 2 fix-now + 1
-nice-to-have findings — all ready — and fixes every one this session. §2–4 run as normal.
+`apps/parser/`. §1 reads the marker, gets `fresh`, sees a large unaudited diff, and dispatches
+`/implement-audit` — 2 must-fix + 1 should-fix findings, all ready, all fixed this session. §2–4 run as
+normal, with the trailer the audit printed.
 
 **Ops-only close.** The session was rule edits and journal cleanup, no code. §1 skips. §2–4 still run:
 journal entry, commit the rule edits, push.
@@ -173,7 +200,9 @@ journal entry, commit the rule edits, push.
 
 | Failure | Symptom | Fix |
 |---|---|---|
-| Audit returns fix-now items | `/implement-audit` triage lists ready fixes | Fix every ready finding this session per `@rule:no-deferral`; re-invoke `/implement-audit` if fix-now items recurred. |
+| Audit returns ready fixes | `/implement-audit` lists must-fix / should-fix items | Fix every ready finding this session per `@rule:no-deferral`. The re-review loop and its round cap live inside `/implement-audit`; let it run them. |
+| The audit ran twice | two reviewer calls on one diff | The marker was not written — `audit-dedupe.sh mark` only records when a session id is set. Check `CLAUDE_CODE_SESSION_ID`; without one the guard fails safe (always `fresh`) and you carry the trailer inline. |
+| Commit rejected: missing trailer | `check-audit-trailers.sh` fired | The commit changes code or a SPEC and carries no `implement-audit:` / `spec-audit:` line. Get the real one from §1's marker or by running the audit; do not invent one. |
 | Commit rejected by hook | `commit-gate.sh` exits non-zero | Read the hook's message; fix the named issue (subject shape, staged content) and re-commit. |
 | Push rejected | `git push` non-fast-forward / auth / network | Run `scripts/push-with-retry.sh`; if it exhausts retries, resolve out-of-band, then re-run. |
 | Journal format off | A future `/project` or review can't parse the entry | Format SSOT is `@rule:journal-format`: labeled markers (Action / Changes / Decisions / Issues / Lessons / Next). Fix the field in-place via Edit. |

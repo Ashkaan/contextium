@@ -89,9 +89,10 @@ runs an adversarial code review and then wraps the session itself — see below.
 
 You usually don't type this one. `/spec` and `/implement` each invoke `/close` themselves once they
 finish cleanly, so the loop closes without a manual step. `/close` writes the day's journal entry,
-updates any project it touched, and commits (and for substantial ad-hoc work it wasn't already reviewing,
-it runs an adversarial pass first, so blind spots surface before the commit rather than after a bug
-ships). The journal records why you did things the way you did, which the git log can't capture. Together
+updates any project it touched, and commits. If the session changed real code that nothing reviewed —
+a quick fix you made by hand that grew — it runs the code review first. It checks a marker rather than
+guessing: if `/implement` already reviewed this session's work, `/close` reuses that result instead of
+paying for a second review of the same diff. The journal records why you did things the way you did, which the git log can't capture. Together
 they're your memory: the log for what changed, the journal for why.
 
 You can still run `/close` by hand:
@@ -103,11 +104,33 @@ You can still run `/close` by hand:
 for an ad-hoc session that didn't go through `/spec` or `/implement` — a quick fix, some notes, a
 config change you want journaled and committed.
 
-## Two more skills worth knowing early
+## The two reviewers
 
-`/implement-audit` is a standalone adversarial pass over code you just finished. `/implement` runs it
-for you on substantial changes, but you can call it directly any time you want a second look before you
-trust something.
+`/spec-audit` attacks the SPEC before any code exists — the cheapest review you get, because a missing
+edge case costs one line to add here and a rewrite to add later. `/spec` runs it for you. It also
+checks the SPEC against your own words, which catches the failure a design review can't: a SPEC that is
+excellent and solves the wrong problem.
+
+`/implement-audit` attacks the finished code. `/implement` runs it for you on substantial changes, and
+you can call it directly any time you want a second look before you trust something.
+
+Both try not to be Claude. Claude wrote the work, so a Claude reviewer shares whatever blind spot
+produced it — they run on a different model when one is installed. Install the Codex CLI, or point
+`CONTEXTIUM_REVIEWER_CMD` at any CLI that reads a prompt on stdin:
+
+```bash
+export CONTEXTIUM_REVIEWER_CMD='your-cli --some-flag'
+```
+
+With nothing installed, both fall back to a fresh-context Claude agent and say so in their report and
+in the commit trailer. That is still worth running. What it is not is independent, and the label is
+there so you never mistake one for the other.
+
+Both write a trailer into the commit, and a git hook refuses a commit that changes a SPEC or a real
+amount of code without one. If you genuinely need to skip it, `CONTEXTIUM_SKIP_AUDIT_GATE=1` on the one
+commit does it — deliberately, and visibly.
+
+## One more skill worth knowing early
 
 `/explain` is for understanding before touching. When you inherit a tangle and need to know why it's
 shaped that way, `/explain` investigates until it's confident and hands you the root cause instead of a

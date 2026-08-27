@@ -3,7 +3,7 @@ name: rule-efficacy-reviewer
 description: "Fresh-context reviewer that checks whether compressing a rule dropped any behavior. Dispatched by /author's efficacy-gate step during rule compression. Receives the original rule text, the compressed rewrite, and the list of dropped clauses — blind to the author's rationale — and returns a per-clause verdict of non-behavioral or load-bearing, so load-bearing clauses get restored before the edit lands."
 model: inherit
 tools: [Read]
-peers: [.claude/skills/author/SKILL.md, .claude/skills/author/references/rule.md]
+peers: [.claude/skills/author/SKILL.md, .claude/skills/author/scripts/verify.sh]
 enforces: [rule-minimal-context, evidence-required-for-new-rules]
 ---
 

@@ -1,139 +1,205 @@
 ---
 name: implement-audit
-description: Adversarial review of freshly-built code — find what was missed, what's inconsistent, what breaks. The single code reviewer for the loop. Standalone-callable, and auto-fired by /implement after a substantial change. Use after completing work to catch blind spots before closing out.
+description: Adversarial review of freshly-built code — find what was missed, what's inconsistent, what breaks. The single code reviewer for the loop, and it runs exactly once per session. Auto-fired by /implement; standalone-callable after any substantial ad-hoc change. Emits the `implement-audit:` commit trailer the git hook requires.
 disable-model-invocation: false
-allowed-tools:
-  - Bash
-  - Read
-  - Grep
-  - Glob
-  - Task
+allowed-tools: "Bash(.claude/skills/implement-audit/scripts/*:*) Bash(.claude/hooks/checks/code-review.sh:*) Bash(git *:*) Bash(npm *:*) Read Grep Glob Task"
 peers:
+  - .claude/hooks/checks/code-review.sh
+  - .claude/hooks/checks/reviewer-chain.sh
   - .claude/agents/implement-audit-reviewer.md
   - .claude/skills/implement/SKILL.md
   - .claude/skills/close/SKILL.md
+  - .githooks/checks/check-audit-trailers.sh
 enforces:
+  - "@rule:no-deferral"
+  - "@rule:simplest-solution-default"
   - "@rule:mechanisms-not-prose"
 handoffs_from:
   - .claude/skills/implement/SKILL.md
   - .claude/skills/close/SKILL.md
 steps:
-  - id: step-0-run-checks
+  - id: step-0-session-dedupe
     kind: gate
     gate:
       tool: shell
       on_fail: continue
-      condition: Run the project's own checks (tests, the commit gate) against the session diff and review the diff yourself. Capture results; failures become fix-now items in Step 2's merged list.
-  - id: step-1-dispatch-reviewer
-    kind: action
-    action: Dispatch the implement-audit-reviewer agent (or general-purpose fallback) with scope + changed files + brief + Step 0 results. The agent returns triaged findings (fix-now / nice-to-have / out-of-scope).
-  - id: step-2-merge-present
-    kind: action
-    action: Merge Step 0 failures (fix-now by default) with Step 1's adversarial findings into one numbered list, severity-ordered, preserving triage verdicts.
-  - id: step-3-fix-round
+      condition: "Run scripts/audit-dedupe.sh status. Line 1 `done` means this session already audited — re-emit the stored trailer (line 2+) and EXIT the skill without a second review. Line 1 `fresh` proceeds to step 1."
+  - id: step-1-automated-checks
     kind: gate
     gate:
-      tool: AskUserQuestion
+      tool: shell
+      on_fail: continue
+      condition: "Run scripts/run-automated-checks.sh --session-base <BASE_SHA>. Pass its output verbatim into the reviewer brief. Any FAIL line is a must-fix in step 3's merged list."
+  - id: step-2-review
+    kind: gate
+    gate:
+      tool: shell
       on_fail: halt
-      condition: Fix every fix-now AND nice-to-have finding with a ready fix THIS round. Round 2 caps the loop without override; round 3 fires AskUserQuestion (ship | redesign | defer).
+      condition: "Snapshot first (SNAP=$(.claude/hooks/checks/code-review.sh --snapshot)), then review. ROUND 1 reviews everything: code-review.sh <BASE_SHA> <HEAD_SHA>. ROUNDS 2+ review ONLY the fixes: code-review.sh --since <the snapshot taken before the previous round>. Exit 0 = reviewed (findings on stdout; empty = clean). Exit 4 = converged, stop and approve — not a failure. Exit 5 = the round-4 ceiling, stop and report what's open — not a failure. Exit 3 = no external reviewer: fall back to a fresh-context agent and label the reduced independence. Exit 1 or 124 = the review did NOT happen; halt and report it unavailable. Exit 2 = bad args; fix the range."
+  - id: step-3-merge
+    kind: action
+    action: "Merge step 1's FAIL lines (must-fix by default) with step 2's findings into one numbered list, most-severe first, preserving each triage verdict."
+  - id: step-4-fix-round
+    kind: action
+    action: "Fix every must-fix AND should-fix finding with a ready fix THIS round; hold nits in a running list. Re-review with --since. Stop on convergence (exit 4), on the round-4 ceiling (exit 5), or when a round mostly re-opens ground an earlier round already touched. Then fix the held nits in one pass. Never ask the user whether to run another round."
+  - id: step-5-emit-trailer
+    kind: action
+    action: "Compose the one-line `implement-audit:` trailer (rounds + findings + verdict), run scripts/audit-dedupe.sh mark \"<trailer>\" to record it for the session, and print it. /implement writes it into its report; /close reads it onto the commit; a standalone run hands it to the user for the commit message."
 ---
 
-# implement-audit — the loop's code reviewer
+# /implement-audit — the loop's code reviewer
 
-Review code just built in this conversation. Be adversarial — assume things were missed and find them. Do not confirm the work is good; find what's wrong.
+Review code just built in this conversation. Be adversarial — assume things were
+missed and find them. Do not confirm the work is good; find what is wrong.
 
-`implement-audit` is the **single code reviewer** for the loop: `/implement` fires it after a substantial change, and it is standalone-callable as `/implement-audit` after any ad-hoc work. One reviewer, one fix loop, one recursion cap — everywhere.
+This is the **single code reviewer** for the loop. `/implement` fires it after
+building; `/close` fires it as a backstop for work that never went through
+`/implement`. Both callers hit step 0 first, so it runs **once per session** no
+matter how many verbs ask for it.
 
-## Critical — Scope
+## Critical
 
-**Only review work from this conversation.** Do NOT flag unrelated uncommitted changes, review the full `git status`, comment on other sessions' work, or pad findings with non-issues.
+- **Once per session, enforced by a file, not by judgment.** Step 0 reads a
+  marker keyed on the session id. Without it, `/close` would re-review a diff
+  `/implement` already cleared — a full reviewer call and a fix loop spent
+  re-deciding settled code. The marker also stores the first run's trailer, so
+  the second caller re-emits it rather than re-earning it.
+- **The reviewer should not be the author.** `code-review.sh` runs the review on
+  a different model when one is installed. When none is (`exit 3`), fall back to
+  a fresh-context agent and **say so** — reduced independence reported as full
+  independence is worse than no review, because it is trusted more.
+- **A reviewer that could not run is a FAILED review.** Exit 1 and 124 mean the
+  review did not happen. Halt and report it; do not emit a passing trailer.
+- **Only review work from this conversation.** Do not flag unrelated uncommitted
+  changes, review the whole `git status`, or pad findings to avoid an empty
+  result.
 
-The skill has two halves. Step 0 runs the project's own checks in the main conversation (they need Bash + the session's tool access). Step 1 dispatches a fresh-context review agent for the adversarial-reasoning half — an agent that has no prior commitment to "this is fine because I wrote it." The two halves merge into a single numbered list of findings with triage verdicts.
+## Scope
 
-## Expected State
+Establish `BASE_SHA` — the start of this session's commits, typically `HEAD~N`
+for the N commits you made. Everything after it, committed or not, is in scope.
+Everything before it belongs to another session.
 
-The quality gate (peer-consistency, edge cases, downstream consumers, doc surface) should have already run during implementation. If implement-audit consistently finds 3+ issues, flag this as a process failure — the upstream gate isn't working, and the root cause should be addressed rather than just fixing symptoms.
+## 0. Have we already audited this session?
 
-## step-0-run-checks
-
-Establish the session diff first: `BASE_SHA` is the start of this session's commits (typically `HEAD~N` for N commits this session). Then run the project's own checks against `BASE_SHA..HEAD` and review the diff yourself. There is no separate check-runner script — run the checks inline with the Bash tool:
-
-- Run the test suite if one exists.
-- Run the commit gate (`.claude/hooks/commit-gate.sh`) or whatever linter/formatter the project wires into it, scoped to the changed files.
-- Read the diff (`git diff BASE_SHA..HEAD`) and look for the obvious: dangling `@rule:` references, leftover debug code, secrets, half-applied edits, missing peer files.
-
-Capture the results. Any failure here is a fix-now item by default — these are deterministic violations that block ship. Pass the captured results into Step 1's agent brief as ground truth so the agent doesn't duplicate the work.
-
-## step-1-dispatch-reviewer
-
-Dispatch a fresh-context review agent with the Agent tool: `Task(subagent_type="implement-audit-reviewer", ...)`. **If the agent type returns "not found"**, the harness has not auto-loaded the agent file for this session (it caches agent names at session start; fixed on next restart). Fall back to `Task(subagent_type="general-purpose", ...)` with the full body of `.claude/agents/implement-audit-reviewer.md` (minus frontmatter) prepended to the prompt. Either dispatch path produces the same triaged-findings output.
-
-Brief the agent with:
-
-- **Scope**: `BASE_SHA..HEAD` where `BASE_SHA` is the start of this session's commits.
-- **Changed files**: the list of files touched.
-- **Brief**: one paragraph summarizing what the main orchestrator intended to accomplish.
-- **Project context**: if applicable, the path to the project README.
-- **Check results**: the captured output from Step 0 — the agent treats these as ground truth and doesn't re-run them.
-
-The agent returns triaged findings (fix-now / nice-to-have / out-of-scope). Recursion is capped at 2 rounds; on round 3 this skill fires `AskUserQuestion` asking `ship | redesign | defer`.
-
-## step-2-merge-present
-
-Combine Step 0's check failures (fix-now by default — deterministic violations that block ship) with the agent's adversarial findings. Re-order into a single numbered list, most-to-least severe. Preserve each finding's triage verdict. Emit the user-facing list using the Output Format below.
-
-## step-3-fix-round
-
-Fix EVERY finding whose fix is **ready in this session** — both `fix-now` AND `nice-to-have`. The triage label orders work within the round; it does NOT schedule across rounds. A `nice-to-have` finding with a known fix path ships in the same round as `fix-now`, just lower priority. Defer to a future session ONLY when:
-
-- The fix needs an unmade design decision (architecture, vendor, scope) — track via a `projects/<domain>/<date>_<slug>/` README.
-- The fix is blocked on an external dependency (vendor response, third-party fix) — `status: blocked` project with `blocked-on:`.
-- The verdict is `out-of-scope` (wrong reviewer, different domain) — surface to the user, do not act.
-
-Then re-run Step 0 + Step 1 for round 2 against the new HEAD. Round 2 is the absolute cap without user override — on round 3, halt and `AskUserQuestion` (ship | redesign | defer).
-
-This "fix everything ready in the same round" discipline is @rule:no-deferral applied to audit findings: ready fixes ship now, not in a later session.
-
-**Anti-pattern this step closes:** an orchestrator receives 1 fix-now + 4 nice-to-have findings, all with concrete suggested fixes ready to land, fixes only the fix-now item, and asks the user permission to address the rest. The triage label is for ordering within the round, not for scheduling work to a later session.
-
-## Output Format
-
-```markdown
-## implement-audit Findings
-
-<numbered list, most-to-least severe. Each line:>
-
-N. **<title>**: `<file>:<line>` — <nature> — verdict: **<fix-now | nice-to-have | out-of-scope>** — rule: `@rule:<id>` (or "none") — <suggested fix>
-
-## Summary
-
-- Total findings: N
-- Breakdown: M fix-now, P nice-to-have, Q out-of-scope
-- Ship assessment: **BLOCK** | **APPROVE**
+```bash
+bash .claude/skills/implement-audit/scripts/audit-dedupe.sh status
 ```
 
-If nothing found: say so explicitly ("Zero findings within reviewed scope"). Do not pad with marginal items just to avoid the empty case.
+`done` → print the stored trailer, say the audit already ran this session, and
+exit. `fresh` → continue.
+
+## 1. The deterministic half
+
+```bash
+bash .claude/skills/implement-audit/scripts/run-automated-checks.sh --session-base "$BASE_SHA"
+```
+
+Tests, linter, shellcheck on changed shell files, and the repo's own secret scan.
+Missing tooling produces `SKIP`, not failure. Every `FAIL` line is a must-fix, and
+the whole output goes into the reviewer brief verbatim so the review does not
+spend its output cap re-deriving what a linter already proved.
+
+## 2. The judgment half
+
+```bash
+SNAP=$(bash .claude/hooks/checks/code-review.sh --snapshot)   # BEFORE the round
+bash .claude/hooks/checks/code-review.sh "$BASE_SHA" HEAD      # round 1
+```
+
+Later rounds review **only the fixes**:
+
+```bash
+NEXT=$(bash .claude/hooks/checks/code-review.sh --snapshot)    # before round N+1
+bash .claude/hooks/checks/code-review.sh --since "$SNAP"
+```
+
+Take the snapshot *before* each round, and pass the *previous* round's snapshot
+to `--since`. Re-reading the whole diff every round is what produces fix loops of
+fifteen and twenty rounds: the reviewer re-decides settled code, and each round's
+own fixes become the next round's findings.
+
+Exit codes that are **not** failures: `4` (nothing changed — converged, approve)
+and `5` (round-4 ceiling — stop and report what is still open). Exit `3` means no
+external reviewer is installed; dispatch a fresh-context agent
+(`Task(subagent_type="implement-audit-reviewer")`, or `general-purpose` with that
+agent's body prepended if the type is not found) with the same brief, and label
+the result. Exit `1` and `124` mean no review happened at all.
+
+## 3. Merge
+
+One numbered list, most severe first, holding both halves:
+
+```markdown
+## implement-audit findings
+
+N. **<title>**: `<file>:<line>` — <what is wrong> — **<must-fix | should-fix | nit>** — <suggested fix>
+
+## Summary
+- Findings: N (M must-fix, P should-fix, Q nit)
+- Assessment: **BLOCK** | **APPROVE**
+```
+
+Found nothing? Say "Zero findings within reviewed scope." Do not pad.
+
+## 4. Fix
+
+Fix every must-fix and should-fix finding whose fix is ready **this round**. Hold
+nits in a list and clear them in one pass at the end. The triage label orders
+work inside the round; it does not schedule work to a later session per
+`@rule:no-deferral`.
+
+Defer only when the fix needs a design decision nobody has made, or is blocked on
+something outside the repo. Both cases get surfaced to the user, not filed
+quietly in a README.
+
+Stop the loop on convergence, at the ceiling, or when a round is mostly
+re-opening ground an earlier round already touched. Never ask the user whether to
+run another round — the cap decides that.
+
+## 5. The trailer
+
+```bash
+TRAILER="implement-audit: codex, 2 rounds, 5 findings (5 fixed, 0 open) — APPROVE"
+bash .claude/skills/implement-audit/scripts/audit-dedupe.sh mark "$TRAILER"
+echo "$TRAILER"
+```
+
+Name the reviewer that actually answered (`code-review.sh` prints
+`answered: <slot>` on stderr), or `claude-fallback`. The git hook requires this
+line on any commit carrying substantial code; it never parses the fields, so they
+are for the human reading `git log` later.
 
 ## Examples
 
-### Example 1 — /implement-fired audit (substantial change)
+**Fired by /implement.** Step 0 says `fresh`. Checks pass except shellcheck on a
+new script. Round 1 returns 3 must-fix + 1 should-fix; all four are fixed plus the
+shellcheck failure. Round 2 (`--since`) returns nothing changed → exit 4,
+converged, APPROVE. Trailer marked and printed; `/implement` writes it into the
+report.
 
-`/implement` finishes a substantial change and dispatches `/implement-audit` automatically. Step 0 runs the test suite (pass) and the commit gate, and the diff read surfaces a dangling `@rule:` reference in a changed file (fix-now). Step 1 dispatches implement-audit-reviewer with the Step 0 summary; the agent returns 3 fix-now + 1 nice-to-have. Step 2 merges the dangling-ref finding + the agent's 4 findings = 5 numbered findings. Step 3 fixes all of them (5 of 5 ready) in one pass, re-runs Step 0 + Step 1 for round 2; round 2 returns zero findings → APPROVE; the caller resumes.
+**/close after /implement.** Step 0 says `done` and prints the stored trailer.
+The skill exits immediately — no second reviewer call. This is the case the
+marker exists for.
 
-### Example 2 — standalone audit (manual invocation)
+**Ad-hoc fix that grew.** The user hand-edited ~120 lines and typed
+`/implement-audit`. Step 0 `fresh`, full flow, findings fixed, trailer handed back
+for the commit message.
 
-The user types `/implement-audit` after a small change to ask for a second look. Same flow. Round 1 returns 1 fix-now + 2 out-of-scope; the orchestrator fixes the fix-now, surfaces the out-of-scope items to the user (does not act on them), and exits without round 2.
+**Fix that broke something.** Round 2 reviews only the fixes and finds one
+inverted a condition at the opposite boundary. Fixed; round 3 converges.
 
-### Example 3 — zero findings
-
-Round 1 Step 0 returns all green; Step 1's agent returns no findings. Step 2 emits the explicit `Zero findings within reviewed scope` message — NOT padded with marginal items to avoid the empty result. Ship assessment: APPROVE. No round 2.
+**Claude-only machine.** Round 1 exits 3. A fresh-context agent reviews instead
+and the report says: same model as the author, so independence is reduced.
+Trailer reviewer: `claude-fallback`.
 
 ## Troubleshooting
 
-| Error | Cause | Solution |
+| Failure | Cause | Fix |
 |---|---|---|
-| `Agent type 'implement-audit-reviewer' not found` | Session pre-dates the `.claude/agents/implement-audit-reviewer.md` file or the harness hasn't auto-loaded it | Fall back to `Task(subagent_type="general-purpose", ...)` with the full agent body prepended to the prompt; both paths produce identical triaged output |
-| Round 3 cap hit | Two fix rounds did not converge; new audit surface kept the finding count flat | Fire `AskUserQuestion` with options `ship | redesign | defer`; do NOT proceed to round 3 fix-round without the user decision |
-| A check tool isn't installed on this box | Tooling diff, not an audit finding | Continue — install the tool locally if you want full coverage; do not block on it |
-| Can't resolve `BASE_SHA` | The env var was empty or referred to a commit not in this clone | Re-derive `BASE_SHA = HEAD~N` from `git log --oneline -n N` showing this session's commits |
-| Round 1 produces only marginal findings | The agent is padding | Re-emit as `Zero findings within reviewed scope` rather than passing padding off as real findings |
+| Review did not happen | exit 1 or 124 | The reviewer chain was exhausted or timed out. Halt and report unavailable — do NOT emit a passing trailer. |
+| No reviewer configured | exit 3 | Expected on a Claude-only machine. Fall back to a fresh-context agent and label reduced independence. |
+| Empty diff | exit 2 with "the diff is empty" | The sha range is wrong, or the work is in a different checkout. Re-derive `BASE_SHA` from `git log --oneline`. |
+| `--since` rejected | "a ref this session's --snapshot never issued" | You passed a commit sha. Every commit resolves to a tree, so it would silently pull in other sessions' work. Pass the tree printed by `--snapshot`. |
+| Round-4 ceiling | exit 5 | Not a failure. Stop, clear held nits, and report what is still open in the trailer and the summary. |
+| Agent type not found | the harness cached agent names at session start | Use `general-purpose` with the body of `.claude/agents/implement-audit-reviewer.md` prepended. |

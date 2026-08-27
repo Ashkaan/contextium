@@ -1,4 +1,5 @@
 {
+  "outputStyle": "decision-only",
   "permissions": {
     "allow": [
       "Bash",

@@ -3,7 +3,7 @@ name: implement
 description: The "do" verb of the loop — execute a lean SPEC with rigorous self-validation. Use ONLY in a fresh context, after a prior session wrote the SPEC via /project.
 argument-hint: "<project-name-or-slug> (or a spec-file path)"
 disable-model-invocation: false
-allowed-tools: "Bash(git *:*) Bash(npm *:*) Bash(node *:*) Bash(npx *:*) Bash(.claude/skills/close/scripts/*:*) Read Edit Write Task Skill AskUserQuestion"
+allowed-tools: "Bash(git *:*) Bash(npm *:*) Bash(node *:*) Bash(npx *:*) Bash(.claude/skills/close/scripts/*:*) Bash(.claude/skills/implement/scripts/*:*) Read Edit Write Task Skill AskUserQuestion"
 peers:
   - .claude/skills/project/SKILL.md
   - .claude/skills/implement-audit/SKILL.md
@@ -46,10 +46,10 @@ steps:
     gate:
       tool: skill
       on_fail: halt
-      condition: "For a substantial change (a new app, or a large diff across code files), dispatch /implement-audit on the session diff. It runs the project checks + a fresh-context reviewer, then fixes every ready finding this round (2-round cap; round 3 fires AskUserQuestion ship|redesign|defer). Proceed to the report only on a clean pass. Minor edits skip this."
+      condition: "For a substantial change (a new app, or a large diff across code files), dispatch /implement-audit on the session diff. It runs the project's checks plus an independent reviewer, fixes every ready finding in flight, and owns its own round cap — later rounds review only the fixes. It also writes the once-per-session marker, so /close will not re-review this diff. Proceed to the report only on a clean pass, and carry its `implement-audit:` trailer forward. Minor edits skip this."
   - id: report
     kind: action
-    action: "Write a short {name}-report.md next to the SPEC: tasks, validation results (incl. the implement-audit result), deviations."
+    action: "Write a short {name}-report.md next to the SPEC: tasks, validation results, deviations. Write the `implement-audit:` trailer line verbatim into the validation section — /close reads it from the report onto the commit message, where the git hook requires it."
   - id: auto-close
     kind: gate
     gate:
@@ -109,6 +109,18 @@ you're about to create or modify, read its adjacent files (what it imports, what
 confirm the functions, paths, and patterns the SPEC names actually exist and match. If an assumption
 is wrong, adapt before implementing and record what differed in the report's Deviations section.
 
+**Sweep for peers, before you edit.** If the change touches a shared pattern — a helper everything
+calls, a config key read in several places, a convention repeated across sibling files — find every
+instance first:
+
+    bash .claude/skills/implement/scripts/peer-sweep.sh --pattern '<extended-regex>' --scope 'apps/**/*.ts'
+
+Read the whole output, not the first few lines. Then fix every match in this session. One call site
+updated and three siblings left on the old behavior is the expensive version of this mistake: the
+reviewer catches some of them afterwards, and the ones it misses fail later in a way that looks
+unrelated to this change. Landing them together is not "more scope" — it is the scope, per
+`@rule:no-deferral`.
+
 **Implement.** Read the pattern file § 3 told you to mirror; understand its shape before copying.
 Make the change as specified. Then check integration — do imports resolve, do callers and callees
 still work, does data flow correctly across the boundary you touched?
@@ -167,10 +179,20 @@ The diff works and is the right mechanism. Now it gets its one machine review be
 
 For a **substantial change** — a new app, or a large diff across code files — dispatch `/implement-audit`
 via the Skill tool, scoped to this session's diff. It is the loop's single code reviewer: it runs the
-project's own checks, dispatches a fresh-context reviewer that has no attachment to the code, merges the
-triaged findings, and fixes every ready finding in this session (per `@rule:no-deferral`), re-reviewing
-up to a 2-round cap. On round 3 it fires `AskUserQuestion` (`ship | redesign | defer`). Proceed to the
-report only on a clean pass.
+project's own checks, puts the judgment half on a model that did not write the code (falling back to a
+fresh-context agent, loudly, when no other model is installed), merges the triaged findings, and fixes
+every ready finding in this session per `@rule:no-deferral`. Later rounds review only the fixes, and the
+round cap lives inside that skill — don't re-implement it here, and don't ask the user whether to run
+another round.
+
+Two things it produces that you need afterwards:
+
+- the **`implement-audit:` trailer**, which goes verbatim into the report's validation section and from
+  there onto the commit message;
+- the **once-per-session marker**, which is why `/close` will not review this same diff a second time.
+
+Proceed to the report only on a clean pass. A reviewer that could not run is a failed review, not a
+clean one.
 
 Minor edits — a README tweak, a typo, a config bump — skip this; the review is for changes big enough to
 hide a real bug.
@@ -184,6 +206,7 @@ Write `{spec-name}-report.md` next to the SPEC (its project folder, or `apps/<na
     ## Summary — {what was implemented}
     ## Tasks Completed — table of # / task / file / status
     ## Validation Results — table of check / result (type-check, lint, tests, implement-audit, E2E § 4, mechanism-match)
+    <the implement-audit: trailer line, verbatim — /close reads it from here onto the commit>
     ## Deviations from SPEC — list with rationale, or "None — implementation matched the SPEC."
 
 The SPEC stays in place; the report sits beside it. On a clean run — mechanism-match clean,
