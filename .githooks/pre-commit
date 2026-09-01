@@ -7,24 +7,22 @@ root="$(git rev-parse --show-toplevel)"
 
 bash "$root/.githooks/checks/check-secrets.sh"
 
-# The AI-layer checks only apply if you have a .claude/ layer — a repo set up for
-# a tool that never gets one skips them silently, which is why they are guarded
-# rather than assumed. Each is skipped again if that file was trimmed away.
-# The layer lives at .claude/ in a project that INSTALLED it, and at
-# templates/claude/ in the repo that authors it. Both get checked.
-if [[ -d "$root/.claude" || -d "$root/templates/claude" ]]; then
+# The AI-layer checks only apply if you have the layer — a repo set up without
+# one skips them silently, which is why they are guarded rather than assumed.
+# Each is skipped again if that file was trimmed away. The layer lives at
+# .agents/ in a project that INSTALLED it, and at templates/agents/ in the repo
+# that authors it. Both get checked.
+if [[ -d "$root/.agents" || -d "$root/templates/agents" ]]; then
   # A rule cited as @rule:<id> that no longer exists is invisible until someone
   # follows the citation and finds nothing. This is cheap and catches it at the
   # commit that breaks it.
   # `[[ -x x ]] && bash x` looks equivalent and is not: under `set -e` the whole
   # line returns 1 when the test is false, which kills the hook silently — the
   # commit is refused and nothing is printed to say why.
-  for refs in "$root/.claude/hooks/checks/check-rule-refs.sh" \
-              "$root/templates/claude/hooks/checks/check-rule-refs.sh"; do
-    if [[ -x "$refs" ]]; then
-      bash "$refs"
-    fi
-  done
+  refs="$root/.githooks/checks/check-rule-refs.sh"
+  if [[ -x "$refs" ]]; then
+    bash "$refs"
+  fi
 
   # Malformed skill frontmatter loads fine and then never fires. Only check the
   # SKILL.md files this commit actually touches.
@@ -34,16 +32,14 @@ if [[ -d "$root/.claude" || -d "$root/templates/claude" ]]; then
   # absolute path here makes every file skip, and the hook then reports success
   # over files nobody checked.
   cd "$root"
-  fmt_skill=".claude/hooks/checks/check-skill-format.sh"
-  [[ -x "$fmt_skill" ]] || fmt_skill="templates/claude/hooks/checks/check-skill-format.sh"
-  fmt_rule=".claude/hooks/checks/check-rule-format.sh"
-  [[ -x "$fmt_rule" ]] || fmt_rule="templates/claude/hooks/checks/check-rule-format.sh"
+  fmt_skill=".githooks/checks/check-skill-format.sh"
+  fmt_rule=".githooks/checks/check-rule-format.sh"
 
   if [[ -x "$fmt_skill" ]]; then
     while IFS= read -r f; do
       [[ -n "$f" && -f "$f" ]] || continue
       bash "$fmt_skill" "$f"
-    done < <(git diff --cached --name-only --diff-filter=ACMR | grep -E '(^|[./])claude/skills/.*/SKILL\.md$' || true)
+    done < <(git diff --cached --name-only --diff-filter=ACMR | grep -E '(^|[./])agents/skills/[^/]+/SKILL\.md$' || true)
   fi
 
   # A rule missing its frontmatter or its evidence date reads as a rule and
@@ -56,7 +52,7 @@ if [[ -d "$root/.claude" || -d "$root/templates/claude" ]]; then
     while IFS= read -r f; do
       [[ -n "$f" && -f "$f" ]] || continue
       rule_files+=("$f")
-    done < <(git diff --cached --name-only --diff-filter=ACMR | grep -E '(^|[./])claude/rules/.*\.md$' || true)
+    done < <(git diff --cached --name-only --diff-filter=ACMR | grep -E '(^|[./])agents/rules/.*\.md$' || true)
     if [[ ${#rule_files[@]} -gt 0 ]]; then
       bash "$fmt_rule" "${rule_files[@]}"
     fi

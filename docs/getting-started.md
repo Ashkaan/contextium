@@ -13,7 +13,13 @@ That's the list. There's no service to stand up and nothing to deploy.
 
 ## Install
 
-Clone the template, then run the installer pointed at the project you want to set up.
+From inside the project you want to set up:
+
+```bash
+curl -sSL contextium.ai/install | bash
+```
+
+Or clone the template and keep it around as the thing you update from later:
 
 ```bash
 git clone https://github.com/Ashkaan/contextium.git
@@ -22,10 +28,10 @@ bash install.sh ~/code/my-project
 ```
 
 The installer asks which AI tools you use (default Claude Code), your name, and whether the agent should
-ask before changing infrastructure or act and report on its own. Then it writes each tool's native
-config into the target, creates the empty data directories, and wires the git hooks. It's safe to
-re-run. On a second run it refreshes the config and leaves your data and your customized `CLAUDE.md`
-alone.
+ask before changing infrastructure or act and report on its own. Then it writes `.agents/` — the working agreement, the
+rules, the skills, the review scripts — wires each tool you picked to that one copy, creates the empty
+data directories, and turns on the git hooks. It's safe to re-run. On a second run it refreshes the
+layer and leaves your data and your customized `AGENTS.md` alone.
 
 To skip the prompt, pass `--tools "claude gemini codex cursor copilot"` (or `--all-tools`). If you'd
 rather install into the current directory, run `bash install.sh .` from inside it.
@@ -37,11 +43,13 @@ cd ~/code/my-project
 claude          # or: gemini, codex, cursor, or open the repo in VS Code with Copilot
 ```
 
-The first thing a session does is read the instructions file for your tool: `CLAUDE.md` for Claude Code,
-`GEMINI.md` for Gemini, `AGENTS.md` for Codex, the `.cursor/` rules for Cursor, or
-`.github/copilot-instructions.md` for Copilot. They all carry the same methodology and rules, projected
-from one source. The Loop verbs below are slash-command skills in Claude Code and native commands in the
-other tools, so `/project`, `/implement`, and `/close` work the same everywhere.
+The first thing a session reads is the working agreement in `.agents/AGENTS.md`, reachable as
+`AGENTS.md` at the repo root. Claude Code reaches it through a one-line `CLAUDE.md` that imports it;
+Codex and Cursor read it directly; Gemini and Copilot get `GEMINI.md` and
+`.github/copilot-instructions.md` generated from it. One copy, so there is nothing to keep in sync.
+The Loop verbs below are slash-command skills in Claude Code, Codex and Cursor — all three reading the
+same files in `.agents/skills/` — and generated command files in Gemini and Copilot, so `/project`,
+`/implement`, and `/close` work the same everywhere.
 
 ## Your first loop
 

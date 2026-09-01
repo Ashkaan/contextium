@@ -6,11 +6,12 @@ directories where your work and your knowledge accumulate over time. The whole t
 small shell scripts in a git repo. You can read every file, change any of it, and move to a different
 tool tomorrow without asking anyone's permission.
 
-The richest layer is for Claude Code, described below, under `.claude/`. For other tools (Gemini, Codex,
-Cursor, Copilot) the same methodology and rules are projected into that tool's native config from a
-single source by `scripts/projector/project-rules.sh`, so what reads below as `.claude/rules/` arrives in a
-Gemini install as `GEMINI.md`, in a Codex install as `AGENTS.md`, and so on. The git-hook enforcement
-travels to every tool; the fresh-context review agents and PreToolUse guards are Claude Code only.
+Everything shared lives once, in `.agents/`. Claude Code, Codex and Cursor read it through symlinks —
+same files, different names — so there is exactly one copy of every rule and skill on disk. Gemini and
+Copilot need a different file format, so `scripts/projector/project-rules.sh` generates theirs from the
+same source at install time and regenerates it on every re-run. `.claude/` holds only what has no
+counterpart elsewhere. The git-hook enforcement travels to every tool; the fresh-context review agents
+and the guards that stop a bad command before it runs are Claude Code only.
 
 The point is to make working with an AI agent feel less like chatting and more like running a small
 shop with a routine. There's a way you start work, a way you do it, and a way you wrap up. Each of
@@ -23,21 +24,26 @@ empty and fills in as you use it.
 
 | Path | What it holds |
 |---|---|
-| `.claude/rules/` | Behavioral rules the agent loads every session |
-| `.claude/skills/` | The loop verbs and supporting skills, as slash commands |
-| `.claude/agents/` | Fresh-context sub-reviewers the skills dispatch |
-| `.claude/hooks/` | Scripts the harness runs at edit, commit, and prompt time |
-| `.claude/templates/` | The SPEC template and other starting points |
-| `.claude/settings.json` | Wires the hooks to harness events |
-| `.claude/CLAUDE.md` | The router, read first every session |
+| `.agents/AGENTS.md` | The working agreement, read first every session, shared by every tool |
+| `.agents/rules/` | Behavioral rules the agent loads every session |
+| `.agents/skills/` | The loop verbs and supporting skills, as slash commands |
+| `.agents/scripts/` | The review machinery any tool can run |
+| `.agents/templates/` | The SPEC template and other starting points |
+| `.agents/generators/` | The index generators for `apps/`, `integrations/`, `projects/` |
+| `.agents/reviewers/` | Fresh-context reviewer prompts the skills dispatch; Claude Code reaches them as subagents via `.claude/agents` |
+| `.claude/hooks/` | Scripts the harness runs at edit, commit, and prompt time (Claude Code only) |
+| `.claude/settings.json` | Wires the hooks to harness events (Claude Code only) |
+| `.claude/CLAUDE.md` | Imports `.agents/AGENTS.md`, then adds the Claude-only notes |
 | `apps/` | Code you write |
 | `integrations/` | External services you connect to |
 | `knowledge/` | Reference data, organized by domain |
 | `projects/` | Multi-session work, one dated folder each |
 | `journal/` | Daily session logs |
 
-`.claude/CLAUDE.md` is the working surface. It's short on purpose. It tells a fresh session where
-things live, names the loop, and points at the rules. Everything else loads on demand.
+`.agents/AGENTS.md` is the working surface, reachable as `AGENTS.md` at the repo root. It's short on
+purpose: it tells a fresh session where things live, names the loop, and points at the rules.
+Everything else loads on demand. `.claude/CLAUDE.md` imports it rather than restating it, so there is
+no second copy to drift.
 
 The data directories ship as empty skeletons with a README each. They aren't part of the methodology,
 they're where the methodology puts things. The installer never touches them once they exist, which is
@@ -85,7 +91,7 @@ Both reviews exist for the same reason: the author is the worst reviewer of thei
 methodology the author is almost always Claude. A Claude reviewer of Claude's output shares the blind
 spot that produced it.
 
-So both reviewers run through `.claude/hooks/checks/reviewer-chain.sh`, which looks for a model that is
+So both reviewers run through `.agents/scripts/reviewer-chain.sh`, which looks for a model that is
 not the author. Out of the box it tries the Codex CLI; `CONTEXTIUM_REVIEWER_CMD` points it at any other
 CLI that reads a prompt on stdin. If nothing is installed — the common case on a Claude-only machine —
 the chain reports that, and the skill falls back to a fresh-context Claude agent and labels the result
@@ -218,10 +224,10 @@ lean version is the one that stays out of your way.
 
 ## Enforcement travels through git
 
-The AI layer under `.claude/` is built on Claude Code primitives (skills, subagents, hooks). The
+The Claude-only half under `.claude/` is built on Claude Code primitives (subagents, in-session hooks). The
 enforcement that matters, though, is wired through git rather than through the tool, so it fires no
 matter who or what made the commit. The commit-subject check, the secret scan, and the
 review-trailer gate live once in `.githooks/checks/`, called by the hooks in `.githooks/` (turn them on
-with `git config core.hooksPath .githooks`, which the installer offers to do). They sit beside the hooks rather than under `.claude/`
+with `git config core.hooksPath .githooks`, which the installer offers to do). They sit outside both `.agents/` and `.claude/`
 on purpose: a repo set up for a non-Claude tool never gets a `.claude/` directory, and the gate still
 has to fire. A commit made by hand or by Claude passes the same one.

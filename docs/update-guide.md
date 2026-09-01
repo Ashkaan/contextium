@@ -4,11 +4,35 @@ A newer version of the template will ship better skills, refined rules, new hook
 those in should never put your own work at risk. The installer is built around exactly that split: it
 refreshes the methodology layer and leaves your data alone.
 
+## Upgrading to v6.0.0
+
+Everything shared now lives once, in `.agents/` — the working agreement, the rules, the skills, the
+review scripts, the SPEC template, the index generators. Claude Code, Codex and Cursor read it through
+symlinks; Gemini and Copilot get files generated from it. `.claude/` keeps only what has no
+counterpart in another tool: subagents, in-session guards, output styles, `settings.json`, and a
+`CLAUDE.md` that now imports `.agents/AGENTS.md` instead of restating it.
+
+Re-running the installer migrates you. Where a real `.claude/skills/`, `.claude/rules/`,
+`.claude/templates/` or `.claude/agents/` sits in the way of the new symlink, it is moved aside as
+`<name>.pre-agents` rather than deleted — move anything you wrote yourself into `.agents/` and
+delete the leftover. A root `AGENTS.md` we did not generate is moved aside the same way, and the
+installer says so: `AGENTS.md` becomes the Contextium working agreement, and merging your own
+content back into it is your call, not the installer's.
+
+Two fixes come with it:
+
+- **The piped install actually asks its questions.** `curl -sSL contextium.ai/install | bash` leaves
+  the installer's stdin pointing at the pipe carrying the script, so every prompt used to take its
+  default without ever appearing. Prompts now read from the terminal directly.
+- **Selecting more than one tool installs all of them.** The check for whether Claude Code was among
+  your choices compared against a newline-separated list as though it were space-separated, so any
+  multi-tool install silently skipped the `.claude/` half.
+
 ## Upgrading from v3.x or earlier
 
 Through v3.4.0 the template put its own machinery inside your `apps/`: three index generators, a
 `quality/` folder, and a `shared/` folder of helpers. That was wrong — `apps/` is for code you write.
-In v4.0.0 the generators moved to `.claude/hooks/generators/` and the commit checks to
+In v4.0.0 the generators moved to `.agents/generators/` and the commit checks to
 `.githooks/checks/`, beside the hooks that call them.
 
 Re-running the installer migrates you. It deletes those five folders if you never touched them, and
@@ -27,7 +51,7 @@ Two things worth knowing:
 - **`/debate` renamed a flag.** `--config claude|cross|duo` only ever set how many
   agents there were, so it is now `--agents 2|3`. The old names still work and map
   to a seat count.
-- **Two more commit checks fire** when you have a `.claude/` layer: one refuses a
+- **Two more commit checks fire** when you have the layer installed: one refuses a
   commit that cites a rule which no longer exists, the other checks the frontmatter
   of any skill the commit touches. Both skip silently if you trimmed those files
   away.
@@ -62,16 +86,20 @@ The installer treats two sets of paths differently.
 
 Refreshed on every run (the methodology, replaced wholesale with the newer version):
 
-- `.claude/rules/`
-- `.claude/skills/`
-- `.claude/agents/`
+- `.agents/rules/`
+- `.agents/skills/`
+- `.agents/scripts/`
+- `.githooks/checks/` (where the commit-time checks live)
+- `.agents/templates/`
+- `.agents/generators/`
+- `.agents/reviewers/`
 - `.claude/hooks/`
-- `.claude/templates/`
 - `.claude/settings.json`
 - `.githooks/` (including the checks it calls, under `.githooks/checks/`)
 
 Protected, never clobbered once they exist:
 
+- `.agents/AGENTS.md`
 - `.claude/CLAUDE.md`
 - `apps/` — all of it, including the generated `apps/README.md` index
 - `integrations/`
@@ -80,7 +108,7 @@ Protected, never clobbered once they exist:
 - `projects/`
 
 So your code, your connectors, your knowledge, your journal, your projects, and your customized
-`CLAUDE.md` all survive. The AI layer that drives them gets the upgrade.
+`AGENTS.md` all survive. The AI layer that drives them gets the upgrade.
 
 ## How to update
 
@@ -93,35 +121,39 @@ git pull
 bash install.sh ~/code/my-project
 ```
 
-It detects the existing `.claude/` and switches to refresh mode. You'll see it refresh each methodology
-path and report that it kept your data directories and your `CLAUDE.md` untouched. That's the whole
-update.
+It detects the existing layer and switches to refresh mode. You'll see it refresh each methodology
+path, re-point each tool's symlinks at `.agents/`, and report that it kept your data directories and
+your `AGENTS.md` untouched. That's the whole update.
+
+Upgrading from a version before `.agents/` existed, your old `.claude/skills/` is a real directory
+where a symlink now belongs. It is moved aside as `.claude/skills.pre-agents` rather than deleted, so
+any skill you wrote yourself is still there to move into `.agents/skills/`.
 
 If you've never cloned the template separately, clone it once and keep it around as your update source.
 It's the thing you pull and re-run; your project is the thing it installs into.
 
-## Your CLAUDE.md is protected
+## Your AGENTS.md is protected
 
-Your `.claude/CLAUDE.md` is yours to customize, and the installer won't overwrite it. That's
-deliberate. It holds your preferences, your tech-stack notes, whatever you've added to the router. The
-cost is that genuinely new router content from a template release won't appear there automatically.
+Your `.agents/AGENTS.md` is yours to customize, and the installer won't overwrite it. That's
+deliberate. It holds your preferences, your tech-stack notes, whatever you've added to the working
+agreement. The cost is that genuinely new content from a template release won't appear there
+automatically. `.claude/CLAUDE.md` is protected the same way, though it holds far less now — it
+imports `AGENTS.md` rather than repeating it.
 
-If you want to fold in the newer starter router, look at the freshly refreshed copy the template ships
-and merge in by hand what you want. Or, if your `.claude/CLAUDE.md` hasn't drifted much from the
-starter, back it up and take the new one:
+If you want to fold in the newer starter, look at the copy the template ships and merge in by hand
+what you want. Or, if yours hasn't drifted much, take the new one:
 
 ```bash
-cp ~/code/my-project/.claude/CLAUDE.md ~/code/my-project/.claude/CLAUDE.md.bak
 bash install.sh ~/code/my-project --force
 ```
 
-The `--force` flag replaces `.claude/CLAUDE.md` and writes a `.bak` first, so you can diff the two and
-lift back any customizations you'd added. Without `--force`, your `.claude/CLAUDE.md` is left exactly as
-it is.
+The `--force` flag replaces `AGENTS.md` and `CLAUDE.md`, writing a `.bak` of each first, so you can
+diff the two and lift back any customizations you'd added. Without `--force`, both are left exactly as
+they are.
 
 ## Keeping your own rules and skills across updates
 
-This is the one place to be careful, because `.claude/rules/` and `.claude/skills/` are refreshed
+This is the one place to be careful, because `.agents/rules/` and `.agents/skills/` are refreshed
 wholesale. A refresh replaces the directory with the template's version.
 
 The rules and skills you write yourself live in those same directories. So if you only drop a new file

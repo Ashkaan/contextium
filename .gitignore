@@ -22,19 +22,9 @@ dist/
 .next/
 *.lock
 
-# Claude Code AI layer — this IS the template's product, so track it.
-# Ignore everything inside .claude/ by default, then whitelist the layer the
-# installer (install.sh REFRESH_PATHS) lays down. Transient session artifacts
-# (worktrees, plans, locks) stay ignored by falling through the default.
-.claude/**
-!.claude/hooks/
-!.claude/hooks/**
-!.claude/settings.json
-!.claude/skills/
-!.claude/skills/**
-!.claude/rules/
-!.claude/rules/**
-!.claude/agents/
-!.claude/agents/**
-!.claude/templates/
-!.claude/templates/**
+# The AI layer is this repo's PRODUCT, and its source is tracked under
+# templates/agents/ (canonical) + templates/claude/ (the Claude-only half).
+# A .claude/ or .agents/ directory at the root of THIS repo is only ever an
+# installed copy or a test artifact, so ignore both outright.
+.claude/
+.agents/

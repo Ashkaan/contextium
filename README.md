@@ -2,12 +2,12 @@
 
 > Give your AI an operating system.
 
-Contextium is a starting methodology for working with AI coding tools. Pick your tools at install time
-and it lays down each one's native config: a full `.claude/` layer for Claude Code, `GEMINI.md` and
-commands for Gemini, `AGENTS.md` and skills for Codex, `.cursor/` rules for Cursor, `.github/` files for
-Copilot. Underneath it is one methodology, projected into each tool's format from a single source, plus
-empty data directories that grow as you work. The point is not a pile of features. The point is a way of
-working that holds up over months, in whatever tool you reach for.
+Contextium is a starting methodology for working with AI coding tools. Everything shared lives once,
+in `.agents/` — the working agreement, the rules, the skills, the review scripts. Pick your tools at
+install time and each one is wired to that single copy: Claude Code, Codex and Cursor by symlink,
+Gemini and Copilot by generated config in the format they need. Plus empty data directories that grow
+as you work. The point is not a pile of features. The point is a way of working that holds up over
+months, in whatever tool you reach for.
 
 ## The idea
 
@@ -43,16 +43,17 @@ three things:
 
 ## Works in your tool
 
-Contextium is model-agnostic. The installer asks which tools you use and writes each one's native
-config. One portable source (the methodology, the principle rules, the Loop commands) is projected into
-every tool's format, so the rules read the same no matter what is driving.
+Contextium is model-agnostic. The installer asks which tools you use and wires each one to `.agents/`.
+There is exactly one copy of every rule and skill on disk — the tools that read the same file format
+are symlinked into it, and only the two whose format differs get a generated file, regenerated on
+every run. So the rules read the same no matter what is driving, and editing one path edits them all.
 
 | Tool | Instructions file | Loop commands |
 |---|---|---|
-| Claude Code | `.claude/` + `CLAUDE.md` | `.claude/skills/` (real slash commands) |
+| Claude Code | `AGENTS.md` + a thin `CLAUDE.md` | `.claude/skills` → `.agents/skills` (real slash commands) |
 | Gemini CLI | `GEMINI.md` | `.gemini/commands/*.toml` |
-| Codex | `AGENTS.md` | `.codex/skills/*/SKILL.md` |
-| Cursor | `.cursor/rules/contextium.mdc` | `.cursor/commands/*.md` |
+| Codex | `AGENTS.md` → `.agents/AGENTS.md` | `.codex/skills` → `.agents/skills` |
+| Cursor | `.cursor/rules/contextium.mdc` | `.cursor/commands/*.md` → each `SKILL.md` |
 | GitHub Copilot | `.github/copilot-instructions.md` | `.github/prompts/*.prompt.md` |
 
 Two things port to every tool: the methodology and rules, and the git-hook enforcement — a verb-led
@@ -63,11 +64,11 @@ discipline travels everywhere; the most automation lives in Claude Code.
 
 ## What's in the box
 
-- Nine Claude Code skills: the Loop (`/project` → `/spec`, `/implement`, `/close`) plus its two
+- Nine skills, shared by every tool: the Loop (`/project` → `/spec`, `/implement`, `/close`) plus its two
   reviewers — `/spec-audit` (attacks the design before code exists) and `/implement-audit` (attacks the
   code before it lands) — and `/explain` (deep investigation), `/debate`, and `/author` (scaffold and verify a
-  conforming rule, skill, hook, agent, or response style). The Loop verbs and both reviewers also ship as native
-  commands for every other supported tool.
+  conforming rule, skill, hook, agent, or response style). Every tool gets all nine — as real slash
+  commands where the harness supports them, as its native command files where it does not.
 - **Reviews that aren't written by the author.** Claude writes most of the code and most of the SPECs,
   so a Claude reviewer shares the blind spots that produced the work. Both reviewers run on a different
   model when one is installed — the Codex CLI out of the box, or any CLI you point
@@ -99,15 +100,26 @@ wired in. You start with the methodology and add weight where your own work dema
 
 ## Install
 
+From inside the project you want it in:
+
+```bash
+curl -sSL contextium.ai/install | bash
+```
+
+That fetches the template into a temp directory, runs the interview, and cleans up after itself. If
+you would rather keep the template around to update from, clone it instead and run the installer from
+there:
+
 ```bash
 git clone https://github.com/Ashkaan/contextium.git
 cd contextium
-bash install.sh
+bash install.sh ~/code/my-project
 ```
 
 The installer asks which AI tools you use, your name, how autonomous you want the AI to be, and which
-integration starters to include, then lays down each tool's native config and leaves your data
-directories alone on re-runs. Default is Claude Code; add others interactively or with
+integration starters to include, then writes `.agents/`, wires each tool to it, and leaves your data
+directories alone on re-runs. The questions work through the pipe — they read the terminal directly
+rather than stdin, which the pipe has already taken. Default is Claude Code; add others interactively or with
 `--tools "claude gemini codex cursor copilot"` (or `--all-tools`). Then open the project in your tool
 and run the Think verb (`/project` in Claude Code, the same command in the others).
 

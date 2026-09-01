@@ -24,7 +24,7 @@
 #   are exempt — the loop's review is for behavior, and gating a README typo on a
 #   reviewer call is how a gate teaches people to bypass it.
 #
-#   The AI layer (.claude/ and .githooks/) is exempt for a different reason: it
+#   The AI layer (.agents/, .claude/ and .githooks/) is exempt for a different reason: it
 #   is code you installed rather than code you wrote. Without that exemption the
 #   first commit after installing — the one that commits the layer — is refused
 #   by the gate the layer just installed, and so is every template upgrade after
@@ -53,7 +53,13 @@ fi
 CODE_LINE_THRESHOLD="${CONTEXTIUM_AUDIT_LINE_THRESHOLD:-50}"
 
 CODE_EXT_RE='\.(ts|tsx|js|jsx|mjs|cjs|py|go|rs|rb|java|kt|swift|c|h|cc|cpp|sh|bash)$'
-LAYER_PATH_RE='^(\.claude/|\.githooks/)'
+LAYER_PATH_RE='^(\.agents/|\.claude/|\.githooks/)'
+# An install or upgrade rewrites the layer WHOLE — rules, skills, scripts,
+# templates, generators, reviewers, hooks — so it touches many of the layer's
+# top-level directories at once. A person hand-editing one installed script
+# touches one. Below this count the layer exemption does not apply, so
+# customizing .agents/scripts/code-review.sh is reviewed like any other code.
+LAYER_BULK_MIN_DIRS="${CONTEXTIUM_LAYER_BULK_MIN_DIRS:-3}"
 SPEC_PATH_RE='(SPEC\.md$|\.spec\.md$|/specs/.*\.md$)'
 
 staged="$(git diff --cached --name-only --diff-filter=ACMR 2>/dev/null || true)"
@@ -63,7 +69,19 @@ msg="$(cat "$MSG_FILE")"
 fail=0
 
 # ── Code ─────────────────────────────────────────────────────────────
-code_files="$(grep -E "$CODE_EXT_RE" <<<"$staged" | grep -vE "$LAYER_PATH_RE" || true)"
+# Is this commit an install or an upgrade, rather than someone editing the layer
+# by hand? An install rewrites the layer whole, so it spans many of the layer's
+# top-level directories at once; a hand edit to one installed script spans one.
+# Only the bulk case gets the exemption — otherwise customizing, say,
+# .agents/scripts/code-review.sh would skip the review gate forever.
+layer_dirs="$(grep -E "$LAYER_PATH_RE" <<<"$staged" \
+  | awk -F/ '{ if (NF >= 2) print $1 "/" $2; else print $1 }' \
+  | sort -u | grep -c . || true)"
+if [[ "${layer_dirs:-0}" -ge "$LAYER_BULK_MIN_DIRS" ]]; then
+  code_files="$(grep -E "$CODE_EXT_RE" <<<"$staged" | grep -vE "$LAYER_PATH_RE" || true)"
+else
+  code_files="$(grep -E "$CODE_EXT_RE" <<<"$staged" || true)"
+fi
 if [[ -n "$code_files" ]]; then
   changed_lines=0
   while IFS= read -r f; do

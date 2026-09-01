@@ -14,7 +14,7 @@
 #      knowledge/ (knowledge/<name>/<slug>.md).
 #      Triggers on filename like "person-<name>", "people-<name>", "<name>-bio".
 #   2. Filename or content describes a behavioral rule / feedback / correction →
-#      a rule file under .claude/rules/.
+#      a rule file under .agents/rules/.
 #      Triggers on: "MUST", "MUST NOT", "user pushback", "user corrected",
 #                   "@rule:", "feedback:", "directive"
 #   3. Filename or content is project status / blocker / progress →
@@ -53,7 +53,7 @@ fi
 
 # 2. Rules / feedback classification
 if [ -z "$DEST" ] && echo "$LOWER" | grep -qE '\b(must not|must|user pushback|user corrected|@rule:|feedback:|directive)\b'; then
-  DEST=".claude/rules/<id>.md"
+  DEST=".agents/rules/<id>.md"
   WHY="content describes a behavioral rule or user correction — add it as a new rule file (see @rule:write-your-own-rules)"
 fi
 
