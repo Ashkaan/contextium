@@ -1,58 +1,63 @@
-# Auto-close gate (SSOT)
+# Auto-close gate
 
-The single definition of the **auto-close** behavior shared by `/spec` and `/implement`. Both skills reference this file from their step graphs (a terminal `kind: gate` step, `tool: skill`) and list it in `peers:`. Per the single-source principle, the gate's logic lives here once — the two skills point at it rather than restating it.
+The one definition of **auto-close**: a skill that produces work hands the
+session to `/close` itself on clean completion, instead of printing "now run
+/close". The loop halts for the user only when something needs them. Each
+caller points here rather than restating the rule.
 
-## What it does
+## Who auto-closes
 
-"Wrap" stops being a verb the user types. On a producer verb's **clean completion**, the verb auto-invokes `/close` itself (journal + commit + push) instead of printing "now run /close". The loop HALTS for the user ONLY when something genuinely needs them.
+| Skill | Fires after |
+|---|---|
+| `/spec` | the spec folder is written and `/spec-audit` passed clean |
+| `/implement` | the code is built and validated, mechanism-match passed, `/implement-audit` passed clean, `report.md` written |
+| `/implement-audit` | **standalone runs only**, with an APPROVE or SHIP-with-deferred verdict. When `/implement` dispatched it (`/implement-audit --from-implement <spec-folder>`), `/implement` owns the close and the audit does nothing here |
 
-- `/spec` auto-closes after the SPEC is written + `spirit-check` passes clean.
-- `/implement` auto-closes (the terminal `close` step) after the code is built + `implement-audit` passes clean.
+`/spec`'s close ENDS the session. The next `/implement` runs in a fresh one,
+because a session that wrote the plan defends it; auto-close never rolls
+`/spec` into `/implement`.
 
-The think→do fresh-context boundary is preserved: `/spec`'s auto-close ENDS the session; the next `/implement` runs in a fresh tab. Auto-close does not roll `/spec` into `/implement`.
+## Preconditions — proceed only when both hold
 
-## Precondition — proceed to `/close` IFF BOTH hold
+**(i) Nothing is waiting on the user.** The gate is the caller's last step, so
+control reaches it only on clean completion. A caller that needed a decision,
+or wanted to propose a deferral, halted at that question earlier and never got
+here. When the user answers, the caller resumes and reaches the gate then.
 
-**(i) No depth-policy decision or deferral question is outstanding for this verb's run.**
-
-By construction, the auto-close gate is the verb's terminal step — control only reaches it on clean completion. If the verb needed a `@rule:depth-policy` **decision** or wanted to propose a **deferral** (`@rule:no-deferral`), it already halted at that question EARLIER and never reached this gate. So an outstanding question means the gate is not evaluated at all — the verb is parked at the question.
-
-When the user answers, the verb RESUMES from where it halted and continues toward this gate. At that point precondition (i) is satisfied (the question is answered) and the gate is evaluated — subject to (ii).
-
-The goal-alignment FRONT gate (intent approved up front, in `/project`'s think flow) is unchanged and orthogonal — it fires before any work, not here. The old SPEC user-review **sign-off** halt is REMOVED: a spirit-checked SPEC is committed + revisable on the main branch, reviewed by the user in the fresh `/implement` tab.
-
-**(ii) No `close-fired` marker exists for this session.**
+**(ii) This caller has not already fired in this session.**
 
 ```bash
-bash .agents/skills/close/scripts/close-fired.sh status
+bash .agents/skills/close/scripts/close-fired.sh status <caller>   # spec | implement | implement-audit
 ```
 
-`not-fired` → proceed. `fired` → `/close` already ran this session; do NOT re-invoke it. This is the double-fire guard for the resume path: if the user answered a held question and the verb resumes after `/close` had already partially run, the marker stops a second dispatch.
+`not-fired` → proceed. `fired` → `/close` already ran for this caller; do not
+dispatch it again. This guards the resume path, where a caller continues after
+an answered question and would otherwise close twice.
 
-## Action — when both preconditions hold
+## Action
 
-1. Mark the session so a later resume can't double-fire:
+1. Mark, so a later resume cannot double-fire:
    ```bash
-   bash .agents/skills/close/scripts/close-fired.sh mark
+   bash .agents/skills/close/scripts/close-fired.sh mark <caller>
    ```
-2. Dispatch `/close` via the Skill tool.
+2. Dispatch the real `/close` (in Claude Code, the Skill tool). Never perform
+   its steps yourself — a hand-rolled close commits while skipping the verify,
+   the roadmap flip, or the journal check.
 
-`/close` runs its OWN internal steps unchanged — auto-close only removes the *user-typed `/close` step* and the *SPEC sign-off halt*, it does NOT skip:
+`/close` runs all of its own steps. Auto-close removes only the user-typed
+`/close`; it does not skip `/implement`'s mechanism-match or any check inside
+`/close`.
 
-- `/implement`'s **mechanism-match** gate ("Agreed to X. Diff does X.") — a FAIL halts BEFORE the close step (a divergence the user must see); it does not auto-commit.
-- `/close`'s own journal + project-update steps.
-
-## Halt cases (auto-close does NOT fire)
+## Halt cases — auto-close does not fire
 
 | Situation | Behavior |
 |---|---|
-| Depth-policy **decision** pending | Verb halted at the question; gate never reached. After the user answers, the verb resumes and then auto-closes (subject to (ii)). |
-| **Deferral** proposed (a major plan deviation) | Verb halts with the deferral question per `@rule:no-deferral`; auto-close does not fire until the user approves or the work lands. |
-| `implement-audit` returned work to fix | Findings are fixed in-flight by the audit's own fix loop; only a clean audit pass reaches this gate. The loop stops on its own — when a round changes nothing, or at four rounds — and never asks the user whether to run another one. |
-| `implement-audit` could not run | The reviewer chain was exhausted or timed out, so no review happened. That is a FAILED audit, not a clean one → HALT and report it; do not close on an unreviewed diff. |
-| Mechanism-match **FAIL** (`/implement`) | HALT — the user must see the divergence; auto-close does not fire. |
+| A decision or deferral question is open | The caller is parked at the question; after the answer it resumes and then auto-closes, subject to (ii). |
+| The audit returned findings | They are fixed in the audit's own loop; only a clean pass reaches the gate. The loop ends itself (converged, or four rounds) and never asks whether to continue. |
+| The reviewer could not run | A failed audit, not a clean one. Halt and report it; never close an unreviewed diff. |
+| Mechanism-match FAIL (`/implement`) | Halt: the user must see the divergence. |
 
-## Peers / scripts
+## Not suppressed
 
-- `scripts/close-fired.sh` — the session-scoped double-fire guard (status/mark).
-- Referenced by: `.agents/skills/spec/SKILL.md`, `.agents/skills/implement/SKILL.md` (both list this file in `peers:` and dispatch `/close` from their terminal auto-close gate).
+A close the user asks for — typing `/close`, or saying "close the session" — is
+an instruction, not a double-dispatch. Only an auto-close gate reads the marker.

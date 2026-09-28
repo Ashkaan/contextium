@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # {{name}}.sh — TODO one-line: a PreToolUse/PostToolUse Claude hook. <what it guards>.
 #
-# Category (the list of things a hook is allowed to do — pick ONE, delete the rest):
+# Category (pick ONE, delete the rest; all nine are in /author's hook.md):
 #   (6) memory-write redirect  (7) tool-sandbox block
 #   (8) session-discipline gate (9) context injection on tool call
 #

@@ -1,135 +1,96 @@
 ---
 name: implement-audit
-description: Adversarial review of freshly-built code — find what was missed, what's inconsistent, what breaks. The single code reviewer for the loop, and it runs exactly once per session. Auto-fired by /implement; standalone-callable after any substantial ad-hoc change. Emits the `implement-audit:` commit trailer the git hook requires.
-disable-model-invocation: false
-allowed-tools: "Bash(.agents/skills/implement-audit/scripts/*:*) Bash(.agents/scripts/code-review.sh:*) Bash(git *:*) Bash(npm *:*) Read Grep Glob Task"
-peers:
-  - .agents/scripts/code-review.sh
-  - .agents/scripts/reviewer-chain.sh
-  - .agents/reviewers/implement-audit-reviewer.md
-  - .agents/skills/implement/SKILL.md
-  - .agents/skills/close/SKILL.md
-  - .githooks/checks/check-audit-trailers.sh
-enforces:
-  - "@rule:no-deferral"
-  - "@rule:simplest-solution-default"
-  - "@rule:mechanisms-not-prose"
-handoffs_from:
-  - .agents/skills/implement/SKILL.md
-  - .agents/skills/close/SKILL.md
-steps:
-  - id: step-0-session-dedupe
-    kind: gate
-    gate:
-      tool: shell
-      on_fail: continue
-      condition: "Run scripts/audit-dedupe.sh status. Line 1 `done` means this session already audited — re-emit the stored trailer (line 2+) and EXIT the skill without a second review. Line 1 `fresh` proceeds to step 1."
-  - id: step-1-automated-checks
-    kind: gate
-    gate:
-      tool: shell
-      on_fail: continue
-      condition: "Run scripts/run-automated-checks.sh --session-base <BASE_SHA>. Pass its output verbatim into the reviewer brief. Any FAIL line is a must-fix in step 3's merged list."
-  - id: step-2-review
-    kind: gate
-    gate:
-      tool: shell
-      on_fail: halt
-      condition: "Snapshot first (SNAP=$(.agents/scripts/code-review.sh --snapshot)), then review. ROUND 1 reviews everything: code-review.sh <BASE_SHA> <HEAD_SHA>. ROUNDS 2+ review ONLY the fixes: code-review.sh --since <the snapshot taken before the previous round>. Exit 0 = reviewed (findings on stdout; empty = clean). Exit 4 = converged, stop and approve — not a failure. Exit 5 = the round-4 ceiling, stop and report what's open — not a failure. Exit 3 = no external reviewer: fall back to a fresh-context agent and label the reduced independence. Exit 1 or 124 = the review did NOT happen; halt and report it unavailable. Exit 2 = bad args; fix the range."
-  - id: step-3-merge
-    kind: action
-    action: "Merge step 1's FAIL lines (must-fix by default) with step 2's findings into one numbered list, most-severe first, preserving each triage verdict."
-  - id: step-4-fix-round
-    kind: action
-    action: "Fix every must-fix AND should-fix finding with a ready fix THIS round; hold nits in a running list. Re-review with --since. Stop on convergence (exit 4), on the round-4 ceiling (exit 5), or when a round mostly re-opens ground an earlier round already touched. Then fix the held nits in one pass. Never ask the user whether to run another round."
-  - id: step-5-emit-trailer
-    kind: action
-    action: "Compose the one-line `implement-audit:` trailer (rounds + findings + verdict), run scripts/audit-dedupe.sh mark \"<trailer>\" to record it for the session, and print it. /implement writes it into its report; /close reads it onto the commit; a standalone run hands it to the user for the commit message."
+description: Adversarial review of freshly built code — find what was missed, what is inconsistent, what breaks — with automated checks first and an independent reviewer for the judgment half, fixing every ready finding in a bounded loop. The loop's single code reviewer, once per session. Fired by /implement; run it standalone after any substantial ad-hoc change. Writes an `implement-audit:` line into the spec's report.md.
+allowed-tools: "Bash Read Grep Glob Edit Write Task Skill"
+metadata:
+  peers: ".agents/skills/implement-audit/scripts/audit-dedupe.sh .agents/skills/implement-audit/scripts/run-automated-checks.sh .agents/scripts/code-review.sh .agents/scripts/reviewer-chain.sh .agents/reviewers/implement-audit-reviewer.md .agents/skills/implement/SKILL.md .agents/skills/close/SKILL.md .agents/skills/close/references/auto-close-gate.md"
 ---
 
 # /implement-audit — the loop's code reviewer
 
-Review code just built in this conversation. Be adversarial — assume things were
-missed and find them. Do not confirm the work is good; find what is wrong.
+Review code built in this session. Be adversarial: assume things were missed
+and find them. Do not confirm the work is good; find what is wrong.
 
 This is the **single code reviewer** for the loop. `/implement` fires it after
-building; `/close` fires it as a backstop for work that never went through
-`/implement`. Both callers hit step 0 first, so it runs **once per session** no
-matter how many verbs ask for it.
+building; `/close` fires it as a backstop for work that skipped `/implement`;
+the user can run it by hand. Step 0 makes it run **once per session** whoever
+asks. `/implement` invokes it as `/implement-audit --from-implement <spec-folder>`
+and `/close` as `/implement-audit --from-close`; without either the run is
+standalone.
 
-## Critical
+## Rules
 
-- **Once per session, enforced by a file, not by judgment.** Step 0 reads a
-  marker keyed on the session id. Without it, `/close` would re-review a diff
-  `/implement` already cleared — a full reviewer call and a fix loop spent
-  re-deciding settled code. The marker also stores the first run's trailer, so
-  the second caller re-emits it rather than re-earning it.
-- **The reviewer should not be the author.** `code-review.sh` runs the review on
-  a different model when one is installed. When none is (`exit 3`), fall back to
-  a fresh-context agent and **say so** — reduced independence reported as full
-  independence is worse than no review, because it is trusted more.
-- **A reviewer that could not run is a FAILED review.** Exit 1 and 124 mean the
-  review did not happen. Halt and report it; do not emit a passing trailer.
-- **Only review work from this conversation.** Do not flag unrelated uncommitted
-  changes, review the whole `git status`, or pad findings to avoid an empty
-  result.
+- **Once per session, by a file, not by judgment.** Step 0 reads a marker keyed
+  on the session id, which also stores the first run's line so a second caller
+  re-emits it instead of re-reviewing settled code.
+- **The reviewer is not the author.** `code-review.sh` runs the review on a
+  different model when one is installed. When none is (exit 3), a fresh-context
+  agent reviews instead, and the line **says so** — reduced independence
+  reported as full independence is trusted more than it deserves.
+- **A reviewer that could not run is a FAILED review** (exit 1 or 124). Halt and
+  report it; never emit an approving line.
+- **Only this session's work.** Do not review unrelated uncommitted changes or
+  pad the list. One exception: a security or data-loss defect read in passing
+  is still reported, marked out of scope, so it never holds the patch.
 
 ## Scope
 
-Establish `BASE_SHA` — the start of this session's commits, typically `HEAD~N`
-for the N commits you made. Everything after it, committed or not, is in scope.
-Everything before it belongs to another session.
+`BASE_SHA` is the last commit before this session's work (`git log --oneline`
+shows where it starts). Everything after it, committed or not, is in scope.
 
-## step-0-session-dedupe — have we already audited this session?
+## step-0 — already audited?
 
 ```bash
 bash .agents/skills/implement-audit/scripts/audit-dedupe.sh status
 ```
 
-`done` → print the stored trailer, say the audit already ran this session, and
-exit. `fresh` → continue.
+`done` → print the stored line (line 2 onward), say the audit already ran this
+session, and stop. `fresh` → continue.
 
-## step-1-automated-checks — the deterministic half
+## step-1 — automated checks
 
 ```bash
 bash .agents/skills/implement-audit/scripts/run-automated-checks.sh --session-base "$BASE_SHA"
 ```
 
-Tests, linter, shellcheck on changed shell files, and the repo's own secret scan.
-Missing tooling produces `SKIP`, not failure. Every `FAIL` line is a must-fix, and
-the whole output goes into the reviewer brief verbatim so the review does not
-spend its output cap re-deriving what a linter already proved.
+Tests, linter, shellcheck on changed shell files, the repo's secret scan.
+Missing tooling is `SKIP`, not failure. Every `FAIL` is a must-fix, and the
+whole output goes into the reviewer brief verbatim so the review does not spend
+itself re-deriving what a linter proved.
 
-## step-2-review — the judgment half
+## step-2 — the review
 
-```bash
-SNAP=$(bash .agents/scripts/code-review.sh --snapshot)   # BEFORE the round
-bash .agents/scripts/code-review.sh "$BASE_SHA" HEAD      # round 1
-```
-
-Later rounds review **only the fixes**:
+Snapshot BEFORE each round; round 1 reviews everything, later rounds only the
+fixes since the previous round's snapshot:
 
 ```bash
-NEXT=$(bash .agents/scripts/code-review.sh --snapshot)    # before round N+1
-bash .agents/scripts/code-review.sh --since "$SNAP"
+SNAP=$(bash .agents/scripts/code-review.sh --snapshot)     # before round 1
+bash .agents/scripts/code-review.sh "$BASE_SHA" HEAD        # round 1
+
+NEXT=$(bash .agents/scripts/code-review.sh --snapshot)     # before round N+1
+bash .agents/scripts/code-review.sh --since "$SNAP"         # rounds 2+
+SNAP="$NEXT"
 ```
 
-Take the snapshot *before* each round, and pass the *previous* round's snapshot
-to `--since`. Re-reading the whole diff every round is what produces fix loops of
-fifteen and twenty rounds: the reviewer re-decides settled code, and each round's
-own fixes become the next round's findings.
+Re-reading the whole diff every round makes the reviewer re-decide settled code
+and turns each round's fixes into the next round's findings.
 
-Exit codes that are **not** failures: `4` (nothing changed — converged, approve)
-and `5` (round-4 ceiling — stop and report what is still open). Exit `3` means no
-external reviewer is installed; dispatch a fresh-context agent with the same
-brief and label the result. In Claude Code that is
-`Task(subagent_type="implement-audit-reviewer")`, falling back to a
-general-purpose agent with that agent file's body prepended; in a tool without
-subagents, run the same brief in a clean context. Exit `1` and `124` mean no review happened at all.
+| Exit | Meaning | Action |
+|---|---|---|
+| 0 | reviewed; findings on stdout, empty = clean | step 3 |
+| 4 | `--since`: nothing changed — converged | stop; approve |
+| 5 | `--since`: the round-4 ceiling | stop; report what is still open |
+| 3 | no external reviewer installed | review with a fresh-context agent (in Claude Code, `Task` with `subagent_type: implement-audit-reviewer`; elsewhere, the same brief in a clean context with `.agents/reviewers/implement-audit-reviewer.md` prepended), and label the line `fresh-context` |
+| 1, 124 | the review did not happen (chain exhausted, or timed out) | FAILED audit — halt and report |
+| 2 | bad arguments or an empty range | re-derive `BASE_SHA` and re-run |
 
-## step-3-merge — one list
+`code-review.sh` prints `answered: <reviewer>` on stderr; that name goes in the
+line.
 
-One numbered list, most severe first, holding both halves:
+## step-3 — one list
+
+Merge step 1's `FAIL` lines with the review's findings, most severe first,
+keeping each triage label:
 
 ```markdown
 ## implement-audit findings
@@ -141,66 +102,72 @@ N. **<title>**: `<file>:<line>` — <what is wrong> — **<must-fix | should-fix
 - Assessment: **BLOCK** | **APPROVE**
 ```
 
-Found nothing? Say "Zero findings within reviewed scope." Do not pad.
+Nothing found → "Zero findings within reviewed scope." Do not pad.
 
-## step-4-fix-round — fix, then re-review the fixes
+## step-4 — fix, then re-review the fixes
 
-Fix every must-fix and should-fix finding whose fix is ready **this round**. Hold
-nits in a list and clear them in one pass at the end. The triage label orders
-work inside the round; it does not schedule work to a later session per
-`@rule:no-deferral`.
+Fix every must-fix and should-fix whose fix is ready, this round. The label
+orders work inside the round; it does not schedule work for later
+(`@rule:no-deferral`). Defer only a fix that needs a decision nobody has made or
+is blocked outside the repo, and surface it to the user.
 
-Defer only when the fix needs a design decision nobody has made, or is blocked on
-something outside the repo. Both cases get surfaced to the user, not filed
-quietly in a README.
+Hold nits in a running list; do not fix them mid-loop, and never let one justify
+another round. Clear the whole list in one pass when the loop stops.
 
-Stop the loop on convergence, at the ceiling, or when a round is mostly
-re-opening ground an earlier round already touched. Never ask the user whether to
-run another round — the cap decides that.
+Stop on whichever comes first: converged (exit 4); a clean round; a round whose
+findings mostly re-open ground an earlier round touched (the loop is reviewing
+its own fixes); or round 4 (exit 5). The finding count is not a signal — later
+rounds find about as much as early ones, just in their own fixes. Never ask the
+user whether to run another round.
 
-## step-5-emit-trailer — the trailer
+## step-5 — the line
 
 ```bash
-TRAILER="implement-audit: codex, 2 rounds, 5 findings (5 fixed, 0 open) — APPROVE"
-bash .agents/skills/implement-audit/scripts/audit-dedupe.sh mark "$TRAILER"
-echo "$TRAILER"
+LINE="implement-audit: <reviewer>, round-<N>, <M> findings (<K> fixed, <R> open) — <APPROVE | SHIP-with-deferred>"
+bash .agents/skills/implement-audit/scripts/audit-dedupe.sh mark "$LINE"
+echo "$LINE"
 ```
 
-Name the reviewer that actually answered (`code-review.sh` prints
-`answered: <slot>` on stderr), or `claude-fallback`. The git hook requires this
-line on any commit carrying substantial code; it never parses the fields, so they
-are for the human reading `git log` later.
+`SHIP-with-deferred` only when the ceiling stopped the loop with findings open;
+name them in the summary. The line is a record, not a gate
+(`@rule:audit-lines-are-records`):
+
+- with `--from-implement`, `/implement` writes it verbatim into the named
+  spec folder's `report.md` under Validation Results;
+- standalone, `/close` quotes it in the journal entry's `**Changes:**`.
+
+## step-6 — auto-close (standalone runs only)
+
+Invoked with `--from-implement` or `--from-close`, do nothing: the caller owns
+the close, and a second `/close` from here would fire inside the first. The caller is named, never inferred — `/implement` runs this
+audit before its `report.md` exists. Otherwise, on `APPROVE` or
+`SHIP-with-deferred`, hand the session to
+`/close` per
+[../close/references/auto-close-gate.md](../close/references/auto-close-gate.md)
+with caller `implement-audit`. A FAILED review halts instead: closing would land
+an unreviewed diff.
 
 ## Examples
 
-**Fired by /implement.** Step 0 says `fresh`. Checks pass except shellcheck on a
-new script. Round 1 returns 3 must-fix + 1 should-fix; all four are fixed plus the
-shellcheck failure. Round 2 (`--since`) returns nothing changed → exit 4,
-converged, APPROVE. Trailer marked and printed; `/implement` writes it into the
-report.
+**Fired by /implement.** Step 0 `fresh`. Checks pass except shellcheck on a new
+script. Round 1 returns 2 must-fix, 1 should-fix, 1 nit; all fixed plus the
+shellcheck finding, the nit held. Round 2 (`--since`) exits 4. The nit is fixed.
+`implement-audit: codex, round-2, 5 findings (5 fixed, 0 open) — APPROVE` goes
+into the report.
 
-**/close after /implement.** Step 0 says `done` and prints the stored trailer.
-The skill exits immediately — no second reviewer call. This is the case the
-marker exists for.
+**/close after /implement.** Step 0 `done`; the stored line is printed and the
+skill stops.
 
-**Ad-hoc fix that grew.** The user hand-edited ~120 lines and typed
-`/implement-audit`. Step 0 `fresh`, full flow, findings fixed, trailer handed back
-for the commit message.
-
-**Fix that broke something.** Round 2 reviews only the fixes and finds one
-inverted a condition at the opposite boundary. Fixed; round 3 converges.
-
-**Single-model machine.** Round 1 exits 3. A fresh-context agent reviews instead
-and the report says: same model as the author, so independence is reduced.
-Trailer reviewer: `claude-fallback`.
+**Single-model machine.** Round 1 exits 3. A fresh-context agent reviews, and
+the line reads `implement-audit: fresh-context, round-1, …` so no one mistakes
+it for an independent review.
 
 ## Troubleshooting
 
-| Failure | Cause | Fix |
-|---|---|---|
-| Review did not happen | exit 1 or 124 | The reviewer chain was exhausted or timed out. Halt and report unavailable — do NOT emit a passing trailer. |
-| No reviewer configured | exit 3 | Expected on a single-model machine. Fall back to a fresh-context agent and label reduced independence. |
-| Empty diff | exit 2 with "the diff is empty" | The sha range is wrong, or the work is in a different checkout. Re-derive `BASE_SHA` from `git log --oneline`. |
-| `--since` rejected | "a ref this session's --snapshot never issued" | You passed a commit sha. Every commit resolves to a tree, so it would silently pull in other sessions' work. Pass the tree printed by `--snapshot`. |
-| Round-4 ceiling | exit 5 | Not a failure. Stop, clear held nits, and report what is still open in the trailer and the summary. |
-| Agent type not found | the harness cached agent names at session start, or the tool has no subagents | Run the brief in a clean context with the body of `.agents/reviewers/implement-audit-reviewer.md` prepended. |
+| Failure | Fix |
+|---|---|
+| Exit 1 or 124 | The reviewer chain is down or timed out. Halt; no approving line. Restore a reviewer and re-run. |
+| Exit 2, "the diff is empty" | Wrong range, or the work is in another checkout. Re-derive `BASE_SHA`. |
+| `--since` rejected | You passed a commit SHA; pass the tree `--snapshot` printed. |
+| Findings about code the session never touched | Round 2+ ran as a full review; use `--since`. |
+| The audit ran twice in one session | No session id was exported, so the marker could not be written. Carry the first line forward by hand. |

@@ -1,6 +1,6 @@
 # /author rule — branch flow
 
-Absorbed from the retired `/propose-rule` skill (2026-06-08). A rule is the one
+A rule is the one
 type that scaffolds nothing: it is an inline `## <slug>` section appended to an
 existing `.agents/rules/*.md` file, not a standalone file. So `scaffold.sh rule
 <slug>` writes no file — it validates the slug, checks collision against every
@@ -8,9 +8,8 @@ existing rule ID (`@rule:rule-stable-id`), and prints insertion guidance. The
 5 steps below are the rule branch's `scaffold`/`fill`/`verify` shape.
 
 Governing rules: `@rule:evidence-required-for-new-rules`, `@rule:rule-stable-id`,
-`@rule:evidence-required-for-new-rules`, `@rule:mechanisms-not-prose`,
-`@rule:class-fix-is-atomic`, the question of where guidance belongs,
-`@rule:no-speculative-enforcement`.
+`@rule:mechanisms-not-prose`, `@rule:one-behavior-one-surface`,
+`@rule:class-fix-is-atomic`, `@rule:no-speculative-enforcement`.
 
 ## Critical
 
@@ -22,26 +21,25 @@ Governing rules: `@rule:evidence-required-for-new-rules`, `@rule:rule-stable-id`
 
 Write a one-sentence evidence citation naming the originating failure. Accept any of:
 
-- Journal entry path: `journal/2026-04-20.md § <session-id>`
+- Journal entry path: `journal/2026-04-20/1432-<slug>.md`
 - Commit SHA: `abc12345` with subject line
 - Direct user correction: quote the user's message + session id
 - Monitoring alert: alert name + date
-- Weekly aggregator: report date + section
 
 Reject intuition, "this seems useful", hypothetical future failures. Per `@rule:no-speculative-enforcement` and `@rule:evidence-required-for-new-rules`, a rule without a cited failure does not ship. Halt here if there is no evidence.
 
 ## Step 2 — pick-surface (declare the deterministic trigger)
 
-Ask the user to pick where the rule lives AND its deterministic trigger. Per the preference for a deterministic trigger + the rule against leaving loading to the model, a new rule DEFAULTS to a deterministic trigger; always-loaded placement is the justified exception, never the default:
+Ask the user to pick where the rule lives AND its deterministic trigger. A rule the model must remember to load fails exactly when it is needed (`@rule:mechanisms-not-prose`), so a new rule DEFAULTS to a deterministic trigger; always-loaded placement is the justified exception, never the default:
 
 - **hook / linter** (commit/edit/tool-time mechanism) → `.agents/rules/{topic}.md`, body trims to a pointer (`@rule:one-behavior-one-surface`)
 - **path-scoped** (`paths:` glob — only matters editing certain files) → `.agents/rules/{topic}.md` with `paths:` frontmatter
 - **judgment-core always-loaded** (`paths: null`) → ONLY when the rule applies every session AND cannot be checked or path-scoped. The section should carry a `<!-- judgment-core: <reason> -->` marker saying why neither a check nor a path scope can do the job.
 - Persistent fact about a person → that person's file under `knowledge/`; domain-specific → that domain's README; multi-step named operation → `.agents/skills/{name}/SKILL.md`
 
-User-level preferences live inlined in `.agents/AGENTS.md § Working preferences`, the working agreement every tool reads. Halt if the user cannot name a deterministic trigger AND the rule isn't genuinely judgment-core — an un-triggered, non-judgment-core rule is not yet well-scoped (the rule against leaving loading to the model bans "load it when relevant").
+User-level preferences live inlined in `.agents/AGENTS.md § Working preferences`, the working agreement every tool reads. Halt if the user cannot name a deterministic trigger AND the rule isn't genuinely judgment-core — an un-triggered, non-judgment-core rule is not yet well-scoped ("load it when relevant" is not a trigger).
 
-**Minimal-context body (the keep-the-body-minimal convention):** whichever surface, the rule body is imperative + `[YYYY-MM-DD]` + ≤1-line why + an evidence pointer. The failure story, verbatim quotes, how-to-apply, and amendment narrative are quoted in the session journal (structured bullets) + git history, not inline and NOT in a `knowledge/ai` appendix (retired 2026-07-16; `knowledge/` is user-facing). For always-loaded sections this is enforced (400-char inline-evidence cap).
+**Minimal-context body:** whichever surface, the rule body is imperative + `[YYYY-MM-DD]` + ≤1-line why + an evidence pointer. The failure story, verbatim quotes, how-to-apply, and amendment narrative are quoted in the session journal (structured bullets) + git history, not inline and NOT in a `knowledge/` appendix (`knowledge/` is user-facing). Every always-loaded character is paid on every turn, so keep those sections shortest.
 
 ## Step 3 — scaffold (validate slug, no file write)
 
@@ -51,7 +49,7 @@ Run the collision + kebab check; the rule type prints guidance instead of writin
 bash .agents/skills/author/scripts/scaffold.sh rule <slug>
 ```
 
-A collision exits non-zero citing `@rule:rule-stable-id` (IDs are immutable — pick a more specific slug). A clean slug prints the insertion guidance. Then emit the draft in v8 format per `@rule:evidence-required-for-new-rules` + `@rule:rule-stable-id`:
+A collision exits non-zero citing `@rule:rule-stable-id` (IDs are immutable — pick a more specific slug). A clean slug prints the insertion guidance. Then emit the draft in the rule format per `@rule:evidence-required-for-new-rules` + `@rule:rule-stable-id`:
 
 ```
 ## <stable-id-kebab-case>
@@ -79,7 +77,7 @@ The script discovers the headings; reviewing each sibling for overlap is the jud
    bash .agents/skills/author/scripts/verify.sh rule .agents/rules/<file>.md
    ```
    It short-circuits on the first failing linter. Fix at the source (`@rule:repo-hygiene-fix-at-source`); do not override.
-3. Update any skill `enforces:` lists that should reference the new rule (the requirement that every enforces: entry resolves).
+3. Cite the new rule as `@rule:<id>` from the skill step or hook that mechanizes it; `check-rule-refs.sh` fails a citation that does not resolve.
 4. Commit with `rule(<topic>): <short>` and the evidence citation in the body.
 
 ## Step 4.5 — efficacy-gate (compression safety)
@@ -89,12 +87,11 @@ in the compress flow). It is the numberless answer to "as compact as possible
 without losing efficacy": you cut freely, and a blind fresh-context reviewer
 forces back only what proves load-bearing.
 
-1. Decompose original vs. rewrite into clauses (method.md § Output contract:
-   `directives_original` / `directives_kept`). `dropped_clauses` = original minus
-   kept.
+1. Decompose original vs. rewrite into clauses (`directives_original` /
+   `directives_kept`). `dropped_clauses` = original minus kept.
 2. Dispatch `.agents/reviewers/rule-efficacy-reviewer.md` with `{original,
    compressed, dropped_clauses}` — and NOT your per-clause rationale (blind
-   review; the value-test principle in `value-test/RESULTS.md`).
+   review: a reviewer shown the rationale defends the cut).
 3. Reviewer returns `verdicts: [{clause, verdict, reasoning}]`. Any
    `load-bearing` → restore into the rewrite, re-dispatch. Converged = zero
    load-bearing drops. Then and only then edit the rule text.
@@ -108,17 +105,18 @@ Compression sheds narrative, never normative scope.
 Compacts EXISTING rules instead of authoring new ones. Skips Step 1 (evidence
 citation) and Step 3 scaffold (no new slug). Per rule:
 
-1. **Decompose** into clauses (method.md Test 1 — clause necessity: "if this
-   clause were deleted, what would someone do differently?").
+1. **Decompose** into clauses (clause necessity: "if this clause were deleted,
+   what would someone do differently?").
 2. **Draft the rewrite** — imperative + `[date]` + ≤1-line why + pointer. Route
-   each cut clause by method.md waste category (failure narrative, justification,
+   each cut clause by waste category (failure narrative, justification,
    mechanism citation, amendment history, sibling restatement).
 3. **Relocate evidence** — for cuts that are failure narrative or justification,
-   move the prose to the journal the `[date]` names:
+   move the prose into the journal day folder the `[date]` names:
    ```bash
    bash .agents/skills/author/scripts/relocate-evidence.sh <slug> <date> <evidence-file>
    ```
-   (idempotent; creates a back-dated stub if that journal is absent). The `[date]`
+   (idempotent; writes `journal/<date>/0000-<slug>-evidence.md`, a valid journal
+   entry, creating the day folder if needed). The `[date]`
    IS the link id — no new scheme.
 4. **efficacy-gate** (Step 4.5) — restore any load-bearing drop.
 5. **Replace in place** and run `verify.sh rule <file>`.

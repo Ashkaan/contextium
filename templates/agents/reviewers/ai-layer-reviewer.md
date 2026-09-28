@@ -36,7 +36,7 @@ Read the artifact, then `.agents/skills/author/SKILL.md` for what its type is su
 |---|---|
 | Trigger | Will `description` actually fire when intended, and NOT fire otherwise? Vague or overlapping descriptions are why skills sit unused. Check for collisions against existing artifacts. |
 | Determinism | Any step described in prose that is a lookup, computation, format check, grep, or fixed transform? That belongs in `scripts/` (`@rule:deterministic-over-ai`). Prose-as-mechanism is the top failure. |
-| Gates | Does every gate have a real `tool` + `on_fail`? Is `halt` used where continuing would corrupt state? Is `warn` used where halting would be brittle? A gate with the wrong `on_fail` is worse than none. |
+| Gates | Does every gate's body section (`@rule:skill-step-graph`) say what it checks and what happens when it fails? Does it halt where continuing would corrupt state, and warn where halting would be brittle? A gate with the wrong failure response is worse than none. |
 | Step graph | Does the declared order actually work? Missing step, unreachable step, step depending on state an earlier one never produced, loop with no exit. |
 | Failure modes | What happens on empty input, missing file, dead sub-agent, cap reached, partial completion? Named and handled, or silently assumed away? |
 | Scope creep | Does it do more than `intent`? Speculative surface violates `@rule:no-speculative-enforcement`. |

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # verify.sh — Step "verify" of /author, AND the deterministic enforcement
-# surface for the four principles the artifact must satisfy (SPEC § 5a):
+# surface for the four principles the artifact must satisfy (see SKILL.md):
 #   (1) Anthropic best practices  (2) low token usage
 #   (3) high determinism          (4) low context usage
 #
@@ -10,8 +10,8 @@
 # hooks}).
 #
 #   rule  → run-rule-linters.sh (format + refs)
-#   skill → check-skill-format.sh
-#         + description ≤1536 chars & not first-person   [P1 Anthropic, P2 token]
+#   skill → check-skill-format.sh (the Agent Skills spec shape)
+#         + description ≤1024 chars & not first-person   [P1 spec, P2 token]
 #         + SKILL.md body ≤500 lines                     [P2 token, P4 context]
 #         + references one level deep (leaf refs)        [P4 context]
 #   hook  → shellcheck + `set -euo pipefail`
@@ -29,8 +29,9 @@ set -euo pipefail
 
 err() { echo "$@" >&2; }
 
-# Anthropic limits (code.claude.com/docs/en/skills).
-DESC_MAX_CHARS=1536
+# Limits: description from the Agent Skills spec (agentskills.io/specification),
+# body length from Anthropic's skill guidance.
+DESC_MAX_CHARS=1024
 SKILL_BODY_MAX_LINES=500
 # Agent SSOT field list (mirrors references/agent.md § Frontmatter contract).
 # NB: the agent tool-allowlist field is `tools` (Anthropic), NOT `allowed-tools`
@@ -72,7 +73,7 @@ frontmatter_end_line() {
 # and block sequences (`- item`) into one space-joined string. Reading only the
 # key's own line let a `description: >` folded scalar bypass the length +
 # first-person gates and made a block-style `tools:` list read as empty
-# (probe findings 1/4/6). Surrounding quotes are stripped so the char count is
+# Surrounding quotes are stripped so the char count is
 # exact.
 frontmatter_value() {
   local file="$1" field="$2"
@@ -103,8 +104,8 @@ frontmatter_value() {
 }
 # Fail if a description is written in first person (Anthropic: third person).
 # `\bI\b` is case-sensitive so "AI"/"API" are spared; the possessive/plural
-# markers are case-insensitive (probe finding 2 — `my`/`we`/`our`/`me` slipped
-# the old `\bI\b`-only check).
+# markers are case-insensitive, because an `\bI\b`-only check misses
+# `my`/`we`/`our`/`me`.
 description_is_first_person() {
   grep -qE '\bI\b' <<<"$1" && return 0
   grep -qiE "\b(my|me|we|our|us|i'm|i'll|i've)\b" <<<"$1"
@@ -153,8 +154,7 @@ case "$type" in
     if [[ -d "$refs_dir" ]]; then
       while IFS= read -r ref; do
         # A LOCAL `](...md)` link is a second hop; external https doc URLs
-        # ending `.md` are allowed (the SPEC encourages citing Anthropic doc
-        # URLs) — probe finding 5.
+        # ending `.md` are allowed, so a reference can cite Anthropic's docs.
         if grep -oE '\]\([^)]+\.md\)' "$ref" | grep -qvE '\]\(https?://'; then
           flag "reference doc links to another local .md — keep references one level deep from SKILL.md [P4]: $ref"
         fi
@@ -175,10 +175,7 @@ case "$type" in
     # decision hook that must NEVER block on its own internal error MAY drop
     # `-e`, PROVIDED the `set` line carries an inline rationale comment. Under
     # `-e` an unguarded failure aborts non-zero, which for a Stop hook BLOCKS
-    # the stop — the exact trap fail-open exists to prevent. Without this
-    # branch the check failed BOTH sanctioned instances
-    # (check-deferral-language-stop.sh, check-no-access-claim-stop.sh), i.e.
-    # it enforced the rule's first paragraph and not its carve-out.
+    # the stop — the exact trap fail-open exists to prevent.
     if ! grep -qE '^set -euo pipefail' "$path" \
       && ! grep -qE '^set -uo pipefail[[:space:]]+#.*fail-open' "$path"; then
       flag "hook missing \`set -euo pipefail\` — a
@@ -251,8 +248,7 @@ case "$type" in
     ;;
 
   output-style)
-    # Field list read first-hand from code.claude.com/docs/en/output-styles
-    # (2026-08-19). All four are OPTIONAL to the parser — which is the problem
+    # Field list from code.claude.com/docs/en/output-styles. All four are OPTIONAL to the parser — which is the problem
     # this branch exists to fix: every failure below is silent at runtime.
     OS_KNOWN_FIELDS="name description keep-coding-instructions force-for-plugin"
 
@@ -280,7 +276,7 @@ case "$type" in
       # Exact token match, NOT `grep -w`: hyphen is a non-word character, so
       # `-w` matched `keep`, `coding`, `instructions`, `force` and `plugin`
       # INSIDE the two hyphenated field names and waved all five through as
-      # known (verified 2026-08-19).
+      # known.
       case "$key" in
         name|description|keep-coding-instructions|force-for-plugin) ;;
         *)

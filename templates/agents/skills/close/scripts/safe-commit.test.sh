@@ -32,8 +32,7 @@ assert() {
 REPO="$TMP/repo"
 export CLAUDE_PROJECT_DIR="$REPO"
 
-# Never take the real host-wide lock from a test — a 120s hold would block live
-# automation writers and worktree merges.
+# Never take the real lock from a test — a 120s hold would block a real close.
 export SAFE_COMMIT_LOCK="$TMP/test-repo-git.lock"
 
 setup_repo() {
@@ -130,6 +129,7 @@ setup_repo
 rc=$?
 assert "nonexistent file fails loudly" "$([[ "$rc" -ne 0 ]] && echo 1)"
 
+if command -v flock >/dev/null 2>&1; then
 # --- lock held by another process: wait for it, then proceed ---
 # The lock closes the check-then-commit race, so the contended path has to be
 # a WAIT, not a failure — a /close that gave up whenever an automation held the
@@ -159,8 +159,7 @@ assert "lock timeout staged nothing" "$([[ -z "$(git -C "$REPO" diff --cached --
 kill "$holder" 2>/dev/null; wait "$holder" 2>/dev/null
 
 # --- foreign staged work is read INSIDE the lock, not before it ---
-# Regression guard for the 2026-07-24 failure: the unstage decision and the
-# commit must be one critical section. If the index read happened outside the
+# The unstage decision and the commit must be one critical section. If the index read happened outside the
 # lock, a file staged while we were waiting would still ride along.
 setup_repo
 echo "mine" >"$REPO/mine.txt"
@@ -176,6 +175,36 @@ SAFE_COMMIT_LOCK_WAIT=30 "$SCRIPT" "add mine" mine.txt >/dev/null 2>&1
 check "commits after waiting through a concurrent stage" 0 $?
 assert "file staged during the wait did NOT ride along" "$([[ "$(committed_files)" == "mine.txt " ]] && echo 1)"
 wait "$holder" "$stager" 2>/dev/null
+else
+  echo "SKIP: flock not installed — flock contention cases"
+fi
+
+# --- no flock (stock macOS): the lock.sh symlink lock ---
+setup_repo
+echo "mine" >"$REPO/mine.txt"
+SAFE_COMMIT_NO_FLOCK=1 "$SCRIPT" "add mine" mine.txt >/dev/null 2>&1
+check "fallback lock: commit succeeds" 0 $?
+assert "fallback lock: released after the commit" "$([[ ! -L "$SAFE_COMMIT_LOCK.d" ]] && echo 1)"
+
+setup_repo
+echo "mine" >"$REPO/mine.txt"
+sleep 30 &
+live=$!
+ln -s "$live" "$SAFE_COMMIT_LOCK.d"
+out=$(SAFE_COMMIT_NO_FLOCK=1 SAFE_COMMIT_LOCK_WAIT=1 "$SCRIPT" "add mine" mine.txt 2>&1); rc=$?
+check "fallback lock: a live holder times out with exit 3" 3 $rc
+assert "fallback lock: timeout says nothing was committed" "$(grep -qi 'NOTHING was staged or committed' <<<"$out" && echo 1)"
+assert "fallback lock: the live holder's lock is left alone" "$([[ "$(readlink "$SAFE_COMMIT_LOCK.d")" == "$live" ]] && echo 1)"
+kill "$live" 2>/dev/null; wait "$live" 2>/dev/null
+rm -f "$SAFE_COMMIT_LOCK.d"
+
+setup_repo
+echo "mine" >"$REPO/mine.txt"
+sh -c 'exit 0' & dead=$!; wait "$dead"
+ln -s "$dead" "$SAFE_COMMIT_LOCK.d"
+SAFE_COMMIT_NO_FLOCK=1 SAFE_COMMIT_LOCK_WAIT=5 "$SCRIPT" "add mine" mine.txt >/dev/null 2>&1
+check "fallback lock: a dead holder's lock is taken over" 0 $?
+assert "fallback lock: taken-over commit holds only mine.txt" "$([[ "$(committed_files)" == "mine.txt " ]] && echo 1)"
 
 echo "safe-commit: $pass passed, $fail failed"
 [[ "$fail" -eq 0 ]]

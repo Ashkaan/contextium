@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Test harness for parse-agent-output.sh — boundary cases mirror SPEC § 4
-# of debate-rebuild.spec.md. Uses fixture files under scripts/fixtures/.
+# Test harness for parse-agent-output.sh — clean, noisy, malformed and empty
+# outputs. Uses fixture files under scripts/fixtures/.
 #
 # peers: parse-agent-output.sh
 
@@ -43,11 +43,9 @@ case1() {
 }
 
 # ── Case 2: codex header/footer noise → stripped ──
-# LEGACY SHAPE. Codex v0.147.0 (2026-08-21) writes its banner and token count to
-# STDERR, so live stdout now looks like case7's fixture. This case stays as the
-# regression guard for the stripper — an older codex on another host, or a
-# vendor that reverts to stdout noise, must still parse. Case 7 covers the
-# shape the CLI actually produces today; neither alone is the real contract.
+# Legacy shape: current Codex CLIs write the banner and token count to stderr
+# (case 7), but an older CLI or another vendor may still print them to stdout,
+# so the stripper keeps a regression guard.
 case2() {
   local dir out rc=0
   dir=$(make_output_dir antithesis codex-noise.output)
@@ -102,8 +100,8 @@ case6() {
 }
 
 # ── Case 7: real codex v0.147.0 stdout (banner on stderr) → parses intact ──
-# Captured live from a `codex exec --sandbox=read-only --skip-git-repo-check
-# --color never` run on 2026-08-21, the invocation dispatch-agents.sh now uses.
+# The shape `codex exec --sandbox=read-only --skip-git-repo-check --color never`
+# (the invocation dispatch-agents.sh uses) prints on stdout.
 case7() {
   local dir out rc=0
   dir=$(make_output_dir critic codex-v0147-clean-stdout.output)

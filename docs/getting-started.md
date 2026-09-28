@@ -66,42 +66,59 @@ To start something, describe it:
 /project set up a morning briefing that emails me my calendar and todos
 ```
 
-The think flow does what its name says: it thinks. It asks the questions it needs, pushes back if the
-idea is half-baked, and lands on a plan. Then it hands the plan to `/spec`, which writes the SPEC with
-the lean template. Four sections: what you actually asked for in your own words, what success looks like
-including the edge cases, the files to touch, and the exact check that proves it works. `/spec`
-sanity-checks its own interpretation against your ask, then commits the SPEC automatically — there's no
-pause to sign off. You review it in the next `/implement` session and revise on the branch if it drifted.
-(You can also call `/spec` directly when a change turns out to need a SPEC mid-session.)
+The think flow does what its name says: it thinks. First it states the goal and the simplest way it
+sees to reach it, and waits for you to say that is what you meant. Then it reads the code, and asks
+about the choices still open — each question with its recommended answer first, so most replies are
+"yes". It splits the work into roadmap rows, and hands the design to `/spec`.
 
-Resist the urge to make the SPEC long. Four sections is enough to build against and enough to review.
-The template even says so. Heavier sections come later, when a real project demands them.
+`/spec` writes the project folder the way [spec-kit](https://github.com/github/spec-kit) lays one out:
+
+```
+projects/personal/2026-01-12_morning-briefing/
+  README.md                  goal, outcome, and a next: derived from the roadmap
+  ROADMAP.md                 R1, R2, … with what each depends on and its status
+  specs/001-calendar-digest/
+    spec.md                  your words verbatim, the clarifications, the behavior contract
+    plan.md                  the simplest shape, the data sources, the validation commands
+    tasks.md                 what /implement will do, tests included
+    research.md              what was looked up, with sources
+```
+
+Each spec goes through `/spec-audit` and is committed automatically — there's no pause to sign off.
+You review it in the next `/implement` session and revise it if it drifted. Anything the spec couldn't
+settle is marked `[NEEDS CLARIFICATION: …]` in place, and `/implement` won't start on that row until
+you settle it with `/project`. (You can also call `/spec` directly when a change turns out to need a
+spec mid-session.)
 
 ### Do: `/implement`
 
 Here's the move that makes the methodology work. Start a fresh session before you implement.
 
-`/implement` refuses to run in a long context. That's not a quirk, it's the design. The thinking
-session is full of dead ends and revisions, and feeding all of that into the build step makes the work
-worse. The SPEC is the clean handoff. So you close the thinking session, open a new one, and run:
+The thinking session is full of dead ends and revisions, and feeding all of that into the build step
+makes the work worse. The spec is the clean handoff. So you close the thinking session, open a new one,
+and run the command the close printed:
 
 ```
-/implement my-project
+/implement morning-briefing r1
 ```
 
-It reads the SPEC back, builds against it, and validates as it goes. Because it starts cold, it builds
-what the SPEC says rather than re-litigating the choices you already made. When it finishes cleanly it
-runs an adversarial code review and then wraps the session itself — see below.
+It reads the row's spec back, builds against it, and validates as it goes, then writes `report.md`
+beside the spec. Because it starts cold, it builds what the spec says rather than re-litigating the
+choices you already made. When it finishes cleanly it runs an adversarial code review and then wraps
+the session itself — see below. When two rows don't depend on each other, the close prints a command
+for each. To run them at the same time, give each session its own checkout
+(`git worktree add ../my-project-r2`) so their edits and commits stay apart.
 
 ### Wrap: `/close`
 
 You usually don't type this one. `/spec` and `/implement` each invoke `/close` themselves once they
-finish cleanly, so the loop closes without a manual step. `/close` writes the day's journal entry,
-updates any project it touched, and commits. If the session changed real code that nothing reviewed —
+finish cleanly, so the loop closes without a manual step. `/close` runs the tests of what changed,
+marks each finished row `done` and re-derives the project's `next:`, writes this session's journal
+file (`journal/YYYY-MM-DD/HHMM-<slug>.md`), commits, and prints the next `/implement` command for every
+row that is now ready. If the session changed real code that nothing reviewed —
 a quick fix you made by hand that grew — it runs the code review first. It checks a marker rather than
 guessing: if `/implement` already reviewed this session's work, `/close` reuses that result instead of
-paying for a second review of the same diff. The journal records why you did things the way you did, which the git log can't capture. Together
-they're your memory: the log for what changed, the journal for why.
+paying for a second review of the same diff. The journal records why the session went the way it did, which the git log can't capture.
 
 You can still run `/close` by hand:
 
@@ -114,9 +131,9 @@ config change you want journaled and committed.
 
 ## The two reviewers
 
-`/spec-audit` attacks the SPEC before any code exists — the cheapest review you get, because a missing
+`/spec-audit` attacks the spec before any code exists — the cheapest review you get, because a missing
 edge case costs one line to add here and a rewrite to add later. `/spec` runs it for you. It also
-checks the SPEC against your own words, which catches the failure a design review can't: a SPEC that is
+checks the spec against your own words, which catches the failure a design review can't: a spec that is
 excellent and solves the wrong problem.
 
 `/implement-audit` attacks the finished code. `/implement` runs it for you on substantial changes, and
@@ -130,13 +147,21 @@ produced it — they run on a different model when one is installed. Install the
 export CONTEXTIUM_REVIEWER_CMD='your-cli --some-flag'
 ```
 
-With nothing installed, both fall back to a fresh-context Claude agent and say so in their report and
-in the commit trailer. That is still worth running. What it is not is independent, and the label is
-there so you never mistake one for the other.
+With nothing installed, both fall back to a fresh-context Claude agent and say so in the line they
+record. That is still worth running. What it is not is independent, and the label is there so you
+never mistake one for the other.
 
-Both write a trailer into the commit, and a git hook refuses a commit that changes a SPEC or a real
-amount of code without one. If you genuinely need to skip it, `CONTEXTIUM_SKIP_AUDIT_GATE=1` on the one
-commit does it — deliberately, and visibly.
+Each writes its verdict where the work lives — `spec-audit:` into the spec's `plan.md`,
+`implement-audit:` into the row's `report.md` — and the journal entry quotes it.
+
+## Decisions worth keeping
+
+When a choice would be expensive to reverse — a database, a data format, a boundary between two
+systems — write it down as a decision record in `decisions/`. The format is
+[MADR](https://adr.github.io/madr/)'s minimal one, described in `decisions/README.md`: the problem,
+the options, the one chosen and why. A record only says `accepted` when it quotes the words that
+accepted it; otherwise it is `proposed`. A pre-commit check enforces that, so a conversation can't
+quietly turn into a decision nobody made.
 
 ## One more skill worth knowing early
 

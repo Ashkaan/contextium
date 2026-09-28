@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # {{name}}.sh — TODO one-line: a pre-commit check. <what it validates>.
 #
-# Category (the list of things a hook is allowed to do — pick ONE, delete the rest):
+# Category (pick ONE, delete the rest; all nine are in /author's hook.md):
 #   (1) syntactic check  (2) peer-file co-commit  (3) progress-doc co-commit
 #   (4) checklist gate    (5) journal frontmatter
 #

@@ -32,7 +32,7 @@ cli: Web UI / REST API
 ## API Access
 
 ```bash
-# Credentials in your secrets vault → Komodo - <your-vault>
+# Credentials in your secrets vault → item "Komodo - <consumer>" (<komodo-item-id>)
 KOMODO_KEY=$(op item get "<komodo-item-id>" --vault "<your-vault>" --fields label=api_key --reveal)
 KOMODO_SECRET=$(op item get "<komodo-item-id>" --vault "<your-vault>" --fields label=api_secret --reveal)
 KOMODO="https://<komodo-host>"
@@ -52,23 +52,23 @@ AUTH_HEADERS="-H 'x-api-key: $KOMODO_KEY' -H 'x-api-secret: $KOMODO_SECRET'"
 
 ```bash
 # List all stacks
-curl -s -H "x-api-key: $KOMODO_KEY" -H "x-api-secret: $KOMODO_SECRET" \
+curl -fsS -H "x-api-key: $KOMODO_KEY" -H "x-api-secret: $KOMODO_SECRET" \
   -H "Content-Type: application/json" "$KOMODO/read/ListStacks" -d '{}'
 
 # Get stack details (by ID)
-curl -s ... "$KOMODO/read/GetStack" -d '{"stack": "<stack_id>"}'
+curl -fsS ... "$KOMODO/read/GetStack" -d '{"stack": "<stack_id>"}'
 
 # List services and their container state
-curl -s ... "$KOMODO/read/ListStackServices" -d '{"stack": "<stack_id>"}'
+curl -fsS ... "$KOMODO/read/ListStackServices" -d '{"stack": "<stack_id>"}'
 
 # Deploy a stack (pulls latest from linked git repo)
-curl -s ... "$KOMODO/execute/DeployStack" -d '{"stack": "<stack_id>"}'
+curl -fsS ... "$KOMODO/execute/DeployStack" -d '{"stack": "<stack_id>"}'
 
 # Check host resource usage
-curl -s ... "$KOMODO/read/GetSystemStats" -d '{"server": "<server_id>"}'
+curl -fsS ... "$KOMODO/read/GetSystemStats" -d '{"server": "<server_id>"}'
 
 # View deploy history
-curl -s ... "$KOMODO/read/ListUpdates" -d '{"query": {"target": {"type": "Stack", "id": "<stack_id>"}}}'
+curl -fsS ... "$KOMODO/read/ListUpdates" -d '{"query": {"target": {"type": "Stack", "id": "<stack_id>"}}}'
 ```
 
 Stack IDs and server IDs are workspace-specific; list them with `read/ListStacks` and `read/ListServers`.
@@ -77,19 +77,7 @@ Stack IDs and server IDs are workspace-specific; list them with `read/ListStacks
 
 Stacks with `files_on_host: false` (most stacks) deploy from a **linked git repo** — not the local filesystem.
 
-### Automated (recommended)
-
-```bash
-# Deploy a compose change (syncs to docker repo, pushes, triggers Komodo)
-integrations/komodo/deploy-stack.sh <service-name>
-
-# Dry-run: show diff without deploying
-integrations/komodo/deploy-stack.sh <service-name> --check
-```
-
-The script handles the full flow: copy to `~/docker/{service}/`, commit, push, call `execute/DeployStack`, and verify container state.
-
-### Manual steps (for reference)
+### Steps
 
 1. Edit compose in your repo (`integrations/{service}/compose.yaml`)
 2. Copy to your docker repo (`~/docker/{service}/compose.yaml`)
@@ -97,13 +85,15 @@ The script handles the full flow: copy to `~/docker/{service}/`, commit, push, c
 4. Trigger `execute/DeployStack` via the Komodo API
 5. Komodo pulls from git and runs `docker compose up -d`
 
+If you script this, have the script do all five steps and then read `read/ListStackServices` to confirm the containers came up, with a `--check` mode that shows the diff and stops before step 3.
+
 **Do not** `scp` the compose file to the host and expect Komodo to pick it up — it reads from git, not the filesystem.
 
 ## Common invocations
 
 ### Smoke / auth check
 ```bash
-KOMODO_KEY=$(op read 'op://<your-vault>/<komodo-item-id>/api_key') && KOMODO_SECRET=$(op read 'op://<your-vault>/<komodo-item-id>/api_secret') && curl -s -H "x-api-key: $KOMODO_KEY" -H "x-api-secret: $KOMODO_SECRET" -H "Content-Type: application/json" "https://<komodo-host>/read/ListStacks" -d '{}' | jq 'length'
+KOMODO_KEY=$(op read 'op://<your-vault>/<komodo-item-id>/api_key') && KOMODO_SECRET=$(op read 'op://<your-vault>/<komodo-item-id>/api_secret') && curl -fsS -H "x-api-key: $KOMODO_KEY" -H "x-api-secret: $KOMODO_SECRET" -H "Content-Type: application/json" "https://<komodo-host>/read/ListStacks" -d '{}' | jq 'length'
 ```
 
 ### Refresh / re-auth
@@ -113,12 +103,11 @@ op item edit '<komodo-item-id>' --vault '<your-vault>' api_key='NEW_KEY' api_sec
 ```
 
 ### Common queries / actions
-- List all stacks: `curl -s -H "x-api-key: $KOMODO_KEY" -H "x-api-secret: $KOMODO_SECRET" -H "Content-Type: application/json" "https://<komodo-host>/read/ListStacks" -d '{}'`
-- Get stack detail: `curl -s -H "x-api-key: $KOMODO_KEY" -H "x-api-secret: $KOMODO_SECRET" -H "Content-Type: application/json" "https://<komodo-host>/read/GetStack" -d '{"stack": "<stack_id>"}'`
-- Restart a stack: `curl -s -H "x-api-key: $KOMODO_KEY" -H "x-api-secret: $KOMODO_SECRET" -H "Content-Type: application/json" "https://<komodo-host>/execute/RestartStack" -d '{"stack": "<stack_id>"}'`
-- Deploy a stack (pulls latest from git): `bash ./integrations/komodo/deploy-stack.sh <service-name>`
-- Dry-run a deploy (diff only): `bash ./integrations/komodo/deploy-stack.sh <service-name> --check`
-- Host stats: `curl -s -H "x-api-key: $KOMODO_KEY" -H "x-api-secret: $KOMODO_SECRET" -H "Content-Type: application/json" "https://<komodo-host>/read/GetSystemStats" -d '{"server": "<server_id>"}'`
+- List all stacks: `curl -fsS -H "x-api-key: $KOMODO_KEY" -H "x-api-secret: $KOMODO_SECRET" -H "Content-Type: application/json" "https://<komodo-host>/read/ListStacks" -d '{}'`
+- Get stack detail: `curl -fsS -H "x-api-key: $KOMODO_KEY" -H "x-api-secret: $KOMODO_SECRET" -H "Content-Type: application/json" "https://<komodo-host>/read/GetStack" -d '{"stack": "<stack_id>"}'`
+- Restart a stack: `curl -fsS -H "x-api-key: $KOMODO_KEY" -H "x-api-secret: $KOMODO_SECRET" -H "Content-Type: application/json" "https://<komodo-host>/execute/RestartStack" -d '{"stack": "<stack_id>"}'`
+- Deploy a stack (pulls latest from its linked git repo): `curl -fsS -H "x-api-key: $KOMODO_KEY" -H "x-api-secret: $KOMODO_SECRET" -H "Content-Type: application/json" "https://<komodo-host>/execute/DeployStack" -d '{"stack": "<stack_id>"}'`
+- Host stats: `curl -fsS -H "x-api-key: $KOMODO_KEY" -H "x-api-secret: $KOMODO_SECRET" -H "Content-Type: application/json" "https://<komodo-host>/read/GetSystemStats" -d '{"server": "<server_id>"}'`
 
 ### Common failures
 - `403 Forbidden` from API → both `x-api-key` AND `x-api-secret` headers are required; missing one returns 403.

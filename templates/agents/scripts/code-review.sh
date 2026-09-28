@@ -230,7 +230,7 @@ else
     if [[ "$round" -gt 4 ]]; then
       err "Error: the fix loop has reached the round-4 ceiling. Refusing round ${round}."
       err "Stop the loop: fix any held nits, then report what is still open in the"
-      err "implement-audit: trailer and in your summary. Past round 4 most findings"
+      err "implement-audit: line and in your summary. Past round 4 most findings"
       err "re-open ground an earlier round already touched, so another call buys churn."
       exit 5
     fi

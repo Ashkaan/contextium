@@ -2,7 +2,6 @@
 name: Google
 description: Drive, Sheets, Docs, Gmail, Calendar access + OAuth2 authorization flow
 cli: API / scripts
-typed_client: integrations/google/google_workspace.ts
 hosts:
   - sheets.googleapis.com
   - www.googleapis.com
@@ -11,6 +10,7 @@ hosts:
   - mail.google.com
   - calendar.google.com
   - gmail.googleapis.com
+  - people.googleapis.com
   - oauth2.googleapis.com
   - accounts.google.com
 aliases:
@@ -32,66 +32,27 @@ aliases:
 
 Access Google Workspace APIs (Drive, Sheets, Gmail, Calendar, Contacts, Docs,
 Slides) and the OAuth2 authorization flow used to mint and refresh the tokens
-those APIs need.
+those APIs need. Every call below is plain REST with a Bearer access token;
+tokens live in your secrets vault, never in local files.
 
-## TypeScript Clients
+## Credentials and scopes
 
-All token resolution reads from your secrets vault — no local token files.
+You may register more than one OAuth client with different scope sets. Pick the
+right one for the job — `gmail.send` alone is NOT enough to read inboxes.
 
-### Runtime-neutral typed clients — [`gmail.ts`](gmail.ts) + [`google_sheets.ts`](google_sheets.ts)
-
-| Reference | Exports | Purpose |
+| Vault item | Scopes | Use for |
 | --- | --- | --- |
-| [`gmail.ts`](gmail.ts) | `createGmailSession`, `gmailSendRaw`, `gmailSend`, `GmailSession` | Canonical Gmail send (RFC 822 raw + structured). Returns the Gmail message id (throws on 200-OK-but-empty-id). Reads `access_token` from your vault. `gmailSend(session, to, subject, html, from?)` takes an optional `from` send-as alias; omit for the account default. |
-| [`google_sheets.ts`](google_sheets.ts) | `createSheetsSession`, `sheetsGet`, `sheetsUpdate`, `sheetsAppend`, `sheetsClear`, `sheetsCreate`, `sheetsBatchUpdate`, `sheetsGetMetadata`, `SheetsSession`, `SheetValues` | Full Sheets v4 surface |
-| [`google_calendar.ts`](google_calendar.ts) | `createCalendarSession`, `listEvents`, `CalendarSession`, `CalendarEvent`, `CalendarEventList`, `CalendarEventSchema` | Calendar v3 list-events (Zod-validated; per-event invalidErrors) |
-| [`google_workspace.ts`](google_workspace.ts) | `getToken`, `gmailApi`, `sheetsApi`, `calendarApi`, `contactsApi` | Legacy multi-API helper (see section below) |
-| [`google_auth.ts`](google_auth.ts) | `main` (interactive bootstrap) | OAuth2 authorization flow — opens a browser, captures the code, writes refresh+access tokens to your vault. See "OAuth Flow" below |
-| [`google_oauth.ts`](google_oauth.ts) | `getGoogleToken` | Runtime entry that maps a credential key → vault item, then reads `access_token` |
+| `Google OAuth (<account>) - <consumer>` | drive, spreadsheets, gmail.readonly, gmail.send, calendar.readonly, contacts, documents, presentations | The full grant for one account (`<account>` = `personal`, `work`, …) — inboxes, Drive, Sheets, Calendar |
+| `Google OAuth (send-only) - <consumer>` | `gmail.send` only (a separate OAuth client) | Flows that only send mail |
 
-```ts
-import { createGmailSession, gmailSend } from "../../integrations/google/gmail.ts";
-import { createSheetsSession, sheetsGet, sheetsUpdate } from "../../integrations/google/google_sheets.ts";
-```
+Each item carries `client_id`, `client_secret`, `refresh_token` (rotated),
+`access_token`, `expires_at`, `token_url`. The titles contain parentheses, so
+reference them by UUID in `op://` paths (`<google-item-id>` below).
 
-OAuth refresh is owned by a small refresher job (see "OAuth Flow" below); consumer call sites read `access_token` directly via `getRawField(cred, "access_token", { ttlMs: 0 })`. The `ttlMs: 0` bypasses the in-process credential cache so consumers pick up the refresher's rotation on the next call.
+When a call gets `403 insufficientPermissions`, the fix is usually "use the
+full grant", not "re-auth with a broader scope". Check the existing items first.
 
-## Path → CREDS scope map
-
-You may register multiple OAuth clients with different scope sets. Pick the
-right one for what you need to do — `gmail.send` alone is NOT enough to read
-inboxes.
-
-| Credential key | Vault item | Scopes | Use for |
-| --- | --- | --- | --- |
-| `googlePersonal` | `Google OAuth (Personal)` | drive, spreadsheets, gmail.readonly, gmail.send, calendar.readonly, contacts, documents, presentations | Comprehensive personal-account grant — reading inboxes, Drive, Sheets, Calendar |
-| `googleGmailSend` | `Gmail Send OAuth` | `gmail.send` only (separate OAuth client) | Send-only flows |
-| `googleWork` | `Google OAuth (Work)` | same scope set as personal | A second (work) account |
-
-When a script gets `403 insufficientPermissions`, the fix is usually "use the
-comprehensive grant" — not "re-auth with broader scope." Check the existing
-credential entries first.
-
-## Accounts
-
-| Account | Email | Vault Item | Use For |
-| --- | --- | --- | --- |
-| personal | `<your-email>` | `Google OAuth (Personal)` | Personal files |
-| work | `<your-work-email>` | `Google OAuth (Work)` | Work files |
-
-Each item carries `client_id`, `client_secret`, `refresh_token` (rotated), `access_token`, `expires_at`, `token_url`.
-
-## Initial Setup (One-Time per Account)
-
-```bash
-# Authorize an account (writes tokens to your vault)
-node integrations/google/google_auth.ts --account personal
-node integrations/google/google_auth.ts --account work
-```
-
-This opens a browser, you authorize, and tokens are written directly to your vault.
-
-## OAuth Scopes
+### OAuth scopes
 
 | API | Scope | Access |
 | --- | --- | --- |
@@ -103,6 +64,65 @@ This opens a browser, you authorize, and tokens are written directly to your vau
 | Docs | `documents` | Read/write |
 | Slides | `presentations` | Read/write |
 
+Each is prefixed `https://www.googleapis.com/auth/` in the authorize URL.
+
+## OAuth flow
+
+### Authorize an account (one time per account)
+
+Create a **Desktop app** OAuth client in Google Cloud Console → APIs & Services
+→ Credentials, so a loopback redirect (`http://localhost:<port>`) is allowed.
+
+1. Open the authorize URL. `access_type=offline` and `prompt=consent` are both
+   required to get a refresh token back; without `prompt=consent` Google omits
+   it on every authorization after the first.
+   ```
+   https://accounts.google.com/o/oauth2/v2/auth?client_id=<client-id>&redirect_uri=http%3A%2F%2Flocalhost%3A<port>&response_type=code&access_type=offline&prompt=consent&scope=<space-separated-scopes, url-encoded>
+   ```
+2. After you approve, the browser lands on `http://localhost:<port>/?code=...`
+   (nothing needs to be listening; copy `code` from the URL bar).
+3. Exchange the code (single-use — do it in one shell):
+   ```bash
+   CODE='...paste here...'
+   curl -fsS -X POST https://oauth2.googleapis.com/token \
+     --data-urlencode "grant_type=authorization_code" \
+     --data-urlencode "code=${CODE}" \
+     --data-urlencode "client_id=$(op read 'op://<your-vault>/<google-item-id>/client_id')" \
+     --data-urlencode "client_secret=$(op read 'op://<your-vault>/<google-item-id>/client_secret')" \
+     --data-urlencode "redirect_uri=http://localhost:<port>"
+   # → { "access_token": "...", "refresh_token": "...", "expires_in": 3599, ... }
+   ```
+4. Write `refresh_token`, `access_token` and `expires_at` into the vault item
+   with `op item edit`.
+
+### Keeping the access token fresh
+
+Access tokens last an hour. A small refresher job on a short cron (e.g.
+`*/15 * * * *`) posts `grant_type=refresh_token` to
+`https://oauth2.googleapis.com/token` and writes the new `access_token` +
+`expires_at` back to the vault. Consumers read `access_token` straight from the
+vault on every call (no in-process cache), so they pick up each rotation and
+never call Google's token endpoint themselves. Run only one refresher: two
+concurrent writers to the same item collide (see failures below).
+
+## If you write a client
+
+Nothing here ships one; the REST calls below cover it. If you do, these are the
+pieces worth having:
+
+- **Token reader** — maps an account name to its vault item and reads
+  `access_token` uncached.
+- **Gmail send** — base64url-encode an RFC 822 message and `POST` it as `raw` to
+  `https://gmail.googleapis.com/gmail/v1/users/me/messages/send`. Return the
+  message id and treat a 200 with no `id` as a failure. Accept an optional
+  `From:` send-as alias; omit it for the account default. Prefer routing sends
+  through one scheduled or deployed job rather than ad-hoc shells, so every
+  send is logged and rate-controlled.
+- **Sheets v4** — values get / update / append / clear, `batchUpdate`, and
+  spreadsheet metadata.
+- **Calendar v3** — list events, validating each event and collecting the ones
+  that fail rather than dropping the whole page.
+
 ---
 
 ## Drive API
@@ -112,9 +132,8 @@ This opens a browser, you authorize, and tokens are written directly to your vau
 For files on shared drives, add
 `supportsAllDrives=true&includeItemsFromAllDrives=true` to the query:
 
-```ts
-const url =
-  `https://www.googleapis.com/drive/v3/files?q='${folderId}'+in+parents&supportsAllDrives=true&includeItemsFromAllDrives=true&fields=files(id,name,mimeType,size)`;
+```
+https://www.googleapis.com/drive/v3/files?q='<folder-id>'+in+parents&supportsAllDrives=true&includeItemsFromAllDrives=true&fields=files(id,name,mimeType,size)
 ```
 
 Without these params, shared drive files return empty results.
@@ -129,149 +148,51 @@ Without these params, shared drive files return empty results.
 
 ---
 
-## Sheets API
+## API reference
 
-### Read Sheet
+All calls send `Authorization: Bearer $GOOGLE_TOKEN`.
 
-```ts
-import { createSheetsSession, sheetsGet } from "../integrations/google/google_sheets.ts";
-
-const s = await createSheetsSession();
-const rows = await sheetsGet(s, "<SHEET_ID>", "SheetName");
-```
-
-### Write to Sheet
-
-```ts
-import { createSheetsSession, sheetsClear, sheetsUpdate } from "../integrations/google/google_sheets.ts";
-
-const s = await createSheetsSession();
-await sheetsClear(s, "<SHEET_ID>", "SheetName");
-await sheetsUpdate(s, "<SHEET_ID>", "SheetName!A1", [["Header1", "Header2"], ["Row1", "Row2"]]);
-```
-
----
-
-## Gmail API
-
-```ts
-import { gmailApi } from "../integrations/google/google_workspace.ts";
-
-// List recent messages
-const messages = await gmailApi("messages?maxResults=10", "personal");
-
-// Get a specific message
-const msg = await gmailApi(`messages/${messageId}`, "personal");
-```
-
----
-
-## Calendar API
-
-```ts
-import { calendarApi } from "../integrations/google/google_workspace.ts";
-
-// List calendars
-const calendars = await calendarApi("users/me/calendarList", "personal");
-
-// Get events from primary calendar
-const events = await calendarApi(
-  "calendars/primary/events?maxResults=10",
-  "personal",
-);
-```
-
----
-
-## Contacts (People) API
-
-```ts
-import { contactsApi } from "../integrations/google/google_workspace.ts";
-
-// Get user profile
-const profile = await contactsApi(
-  "people/me?personFields=names,emailAddresses",
-  "personal",
-);
-```
-
----
-
-## Token Management
-
-A small refresher job keeps `access_token` fresh in your vault on a short cron (e.g. every 15 min). To re-authorize (if a refresh token expires):
-
-```bash
-node integrations/google/google_auth.ts --account personal
-```
+| API | Call |
+| --- | --- |
+| Sheets — read | `GET https://sheets.googleapis.com/v4/spreadsheets/<sheet-id>/values/<SheetName>` |
+| Sheets — write | `PUT https://sheets.googleapis.com/v4/spreadsheets/<sheet-id>/values/<SheetName>!A1?valueInputOption=RAW` with body `{"values": [["Header1","Header2"],["Row1","Row2"]]}` |
+| Sheets — clear | `POST https://sheets.googleapis.com/v4/spreadsheets/<sheet-id>/values/<SheetName>:clear` |
+| Gmail — list | `GET https://gmail.googleapis.com/gmail/v1/users/me/messages?maxResults=10` |
+| Gmail — one message | `GET https://gmail.googleapis.com/gmail/v1/users/me/messages/<message-id>` |
+| Calendar — calendars | `GET https://www.googleapis.com/calendar/v3/users/me/calendarList` |
+| Calendar — events | `GET https://www.googleapis.com/calendar/v3/calendars/primary/events?maxResults=10` |
+| People — profile | `GET https://people.googleapis.com/v1/people/me?personFields=names,emailAddresses` |
 
 ## Troubleshooting
 
 | Error | Fix |
 | --- | --- |
-| 401 Unauthorized | Token expired - will auto-refresh on next call |
-| 403 Forbidden | Scope not authorized - re-run `google_auth.ts` |
-| 404 Not Found | File/resource ID incorrect or no access |
-| Token refresh failed | Refresh token expired - re-run `google_auth.ts` |
+| 401 Unauthorized | Access token expired — check the refresher job ran, then re-read from the vault |
+| 403 Forbidden | Scope not authorized — use the full-grant item, or re-authorize with the scope |
+| 404 Not Found | File/resource ID incorrect or not shared with this account |
+| Token refresh failed | Refresh token expired or revoked — re-run [Authorize an account](#authorize-an-account-one-time-per-account) |
 
 ## Common invocations
 
+Every snippet assumes the token is loaded:
+
+```bash
+GOOGLE_TOKEN="$(op read 'op://<your-vault>/<google-item-id>/access_token')"
+```
+
 ### Smoke / auth check
 ```bash
-op read 'op://<your-vault>/<google-personal-item-id>/refresh_token' >/dev/null && node --input-type=module -e 'import { getToken } from "./integrations/google/google_workspace.ts"; const token = await getToken("personal"); console.log("personal token ok: " + token.slice(0, 12));'
+curl -fsS "https://oauth2.googleapis.com/tokeninfo?access_token=$GOOGLE_TOKEN" | jq '{email, scope, expires_in}'
 ```
 
 ### Common queries / actions
-- Sending email: prefer routing mail through a deployed workflow rather than ad-hoc sends from a shell, so sends are audited and rate-controlled. The send helpers (`gmailSend`, `gmailSendRaw` in `gmail.ts`) are for workflow code.
-- Query inbox with read-scope credential: `node --input-type=module -e 'import { createGmailSession, gmailListMessages } from "./integrations/google/gmail.ts"; import { CREDS } from "./integrations/1password/op_helper.ts"; const s = await createGmailSession(CREDS.googlePersonal); const r = await gmailListMessages(s, { q: "newer_than:7d", maxResults: 5 }); console.log(r.resultSizeEstimate ?? 0);'`
-- Inspect sheet tabs for a spreadsheet: `node --input-type=module -e 'import { createSheetsSession, sheetsGetMetadata } from "./integrations/google/google_sheets.ts"; const s = await createSheetsSession(); const m = await sheetsGetMetadata(s, process.env.SHEET_ID); console.log((m.sheets ?? []).map((x) => x.properties?.title));' SHEET_ID=<sheet-id>`
-- Read a column from a spreadsheet: `node --input-type=module -e 'import { createSheetsSession, sheetsGet } from "./integrations/google/google_sheets.ts"; const s = await createSheetsSession(); const rows = await sheetsGet(s, process.env.SHEET_ID, "Summary!B:B"); console.log(rows.length);' SHEET_ID=<sheet-id>`
+- Query the inbox (needs the full-grant token): `curl -fsS -H "Authorization: Bearer $GOOGLE_TOKEN" 'https://gmail.googleapis.com/gmail/v1/users/me/messages?q=newer_than:7d&maxResults=5' | jq '.resultSizeEstimate // 0'`
+- List a spreadsheet's tabs: `curl -fsS -H "Authorization: Bearer $GOOGLE_TOKEN" 'https://sheets.googleapis.com/v4/spreadsheets/<sheet-id>?fields=sheets.properties.title' | jq -r '.sheets[].properties.title'`
+- Read a column: `curl -fsS -H "Authorization: Bearer $GOOGLE_TOKEN" 'https://sheets.googleapis.com/v4/spreadsheets/<sheet-id>/values/Summary!B:B' | jq '.values | length'`
 
 ### Common failures
-- `Gmail messages.list failed: HTTP 403 ... insufficientPermissions` → default `createGmailSession()` uses send-only creds; for reads use `createGmailSession(CREDS.googlePersonal)`.
-- `getGoogleToken: no CREDS mapping for "..."` → add the missing key in `PATH_TO_CRED` (`google_oauth.ts`).
-- `Sheets ... failed: 404 ... Requested entity was not found` → spreadsheet ID is wrong or not shared to the credential behind `createSheetsSession`.
-- `OAuth refresh failed ... invalid_grant` → refresh token is expired/revoked; re-run `integrations/google/google_auth.ts` for the affected account to mint a new refresh token.
-
----
-
-## OAuth Flow
-
-Google OAuth2 authorization for Workspace APIs. All tokens persist directly to your secrets vault — no local files.
-
-Two TS surfaces:
-
-- [`google_auth.ts`](google_auth.ts) — interactive bootstrap (opens a browser, captures the OAuth code, writes refresh + access + expires_at + token_url directly to your vault).
-- [`google_oauth.ts`](google_oauth.ts) — runtime entry that maps a credential key → vault item via a static `PATH_TO_CRED` map and reads `access_token` (kept fresh by the refresher job).
-
-### Interactive bootstrap
-
-```bash
-# Writes refresh + access tokens directly to your vault
-node integrations/google/google_auth.ts --account personal
-node integrations/google/google_auth.ts --account work
-```
-
-### Runtime token resolution
-
-```ts
-import { getGoogleToken } from "../../integrations/google/google_oauth.ts";
-const token = await getGoogleToken("googlePersonal");
-```
-
-### Vault-canonical map
-
-| Vault Item | CREDS key | Account / Scope |
-|---|---|---|
-| `Google OAuth (Personal)` | `googlePersonal` | `<your-email>` — Drive/Sheets/Calendar/Gmail.read/People |
-| `Google OAuth (Work)` | `googleWork` | `<your-work-email>` — same scope set as personal |
-| `Gmail Send OAuth` | `googleGmailSend` | Gmail send (separate OAuth app, gmail.compose scope) |
-
-Each item carries `client_id`, `client_secret`, `refresh_token` (rotated), `access_token`, `expires_at`, `token_url`. **Access tokens are kept fresh by a refresher job on a `*/15 * * * *` cron.** Consumers read `access_token` directly via `getRawField(cred, "access_token", { ttlMs: 0 })` — no at-use refresh, no provider call per consumer request.
-
-### Common failures (OAuth-flow specific)
-
-- `getGoogleToken: no CREDS mapping for "..."` → add the missing key in `PATH_TO_CRED` (`google_oauth.ts`).
-- `Google OAuth refresh failed: 400 {"error":"invalid_grant"...}` → refresh token is dead/revoked; run the interactive bootstrap script and rewrite `refresh_token` in your vault (`google_auth.ts`).
+- `messages.list` → HTTP 403 `insufficientPermissions` → the token came from the send-only client; read with the full-grant item.
+- Sheets → HTTP 404 `Requested entity was not found` → spreadsheet ID is wrong, or the sheet is not shared with the account behind the token.
+- Refresh → HTTP 400 `{"error":"invalid_grant"}` → refresh token is expired or revoked; re-run [Authorize an account](#authorize-an-account-one-time-per-account) and rewrite `refresh_token` in the vault.
 - `op error: ... invalid character in secret reference: '('` → titles with parentheses do not parse in `op://` refs; use the item UUID path instead.
-- `op error: (409) Conflict: Internal server conflict` during refresh → two concurrent token writers collided; rerun a single refresh command (avoid parallel refreshes).
+- `op error: (409) Conflict: Internal server conflict` during refresh → two concurrent token writers collided; rerun a single refresh (avoid parallel refreshes).

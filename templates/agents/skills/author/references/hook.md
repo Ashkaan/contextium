@@ -1,14 +1,15 @@
 # /author hook — branch flow
 
 Scaffolds `.claude/hooks/<name>.sh` (or `.githooks/checks/<name>.sh`) from
-`references/templates/hook.template.sh`, then fills + WIRES it. The hook is the
+`references/templates/hook-tooluse.template.sh` (tool-call hook) or
+`references/templates/hook-precommit.template.sh` (pre-commit check), then fills + WIRES it. The hook is the
 one type with a meaningful register step: a hook fires from nothing until it is
 wired into a settings matcher or a pre-commit body.
 
-Governing rules: the list of things a hook is allowed to do, `@rule:hook-blocking-exit-code`,
-`@rule:hook-errors-actionable`, the shellcheck-clean requirement,
-the no-markdown-linting rule, the question of where automation belongs,
-`@rule:surface-visible-signal`, `@rule:no-speculative-enforcement`.
+Governing rules: `@rule:hook-blocking-exit-code`, `@rule:hook-errors-actionable`,
+`@rule:tiebreaker-commit-hook-placement`, `@rule:surface-visible-signal`,
+`@rule:no-speculative-enforcement`. A hook must also be shellcheck-clean and
+must not lint Markdown (Step 3).
 
 ## Step 1 — resolve shape (ask the user)
 
@@ -16,7 +17,7 @@ Two structure-determining questions:
 
 | Question | Options |
 |---|---|
-| Which of the 9 allowed categories? | (1) syntactic check, (2) peer-file co-commit, (3) progress-doc co-commit, (4) checklist gate, (5) journal frontmatter, (6) memory-write redirect, (7) tool-sandbox block, (8) session-discipline gate, (9) context injection. A hook MUST fall into exactly one (the list of things a hook is allowed to do). Semantic code review, feature-completeness judgment, and markdown-content quality are NOT hook territory. Do NOT author a hook for a failure mode that hasn't occurred (`@rule:no-speculative-enforcement`). |
+| Which of the 9 allowed categories? | (1) syntactic check, (2) peer-file co-commit, (3) progress-doc co-commit, (4) checklist gate, (5) journal frontmatter, (6) memory-write redirect, (7) tool-sandbox block, (8) session-discipline gate, (9) context injection. A hook MUST fall into exactly one. Semantic code review, feature-completeness judgment, and markdown-content quality are NOT hook territory. Do NOT author a hook for a failure mode that hasn't occurred (`@rule:no-speculative-enforcement`). |
 | Which firing surface (placement)? | (a) PreToolUse/PostToolUse on a tool call → top-level `.claude/hooks/<name>.sh`. (b) pre-commit check → `.githooks/checks/<name>.sh` (pass `checks` as the 3rd scaffold arg). |
 
 ## Step 2 — scaffold
@@ -28,7 +29,7 @@ bash .agents/skills/author/scripts/scaffold.sh hook <name>
 bash .agents/skills/author/scripts/scaffold.sh hook <name> checks
 ```
 
-Writes the skeleton (shebang + `set -euo pipefail` + self-locating telemetry source + actionable-error `fail()` helper) and `chmod +x`. Refuses if the file exists.
+Writes the skeleton (shebang + `set -euo pipefail` + a category header, plus an actionable-error `fail()` helper in the pre-commit template) and `chmod +x`. Refuses if the file exists.
 
 ## Step 3 — fill
 
@@ -40,7 +41,7 @@ Writes the skeleton (shebang + `set -euo pipefail` + self-locating telemetry sou
   - A **pre-commit check** invoked by `.githooks/pre-commit` follows the body convention (`exit 1` on violation) — the aggregating body turns a non-zero check into the commit block. The `fail()` helper's `exit 1` in the template is correct for THIS placement; change it to `exit 2` if you wired the hook as a PreToolUse blocker.
 - Hooks run with **no controlling terminal** — never `read -p`, prompt, or touch `/dev/tty`; emit a JSON `terminalSequence`/`additionalContext` instead.
 - Keep `set -euo pipefail` (`@rule:hook-blocking-exit-code`). Exception: a fail-open Stop/decision hook MAY drop `-e` per the carve-out — only with an inline rationale comment + per-command guards.
-- MUST NOT subject `.md` files to syntactic checks (the no-markdown-linting rule).
+- MUST NOT subject `.md` files to syntactic checks: Markdown is prose, and a formatter or linter on it churns diffs without catching real faults.
 
 ## Step 4 — verify
 
@@ -48,7 +49,7 @@ Writes the skeleton (shebang + `set -euo pipefail` + self-locating telemetry sou
 bash .agents/skills/author/scripts/verify.sh hook .claude/hooks/<name>.sh
 ```
 
-Runs `shellcheck` + asserts `set -euo pipefail` is present. It also emits a non-blocking WARN if the hook is not yet wired (see Step 5). MUST exit 0 (shellcheck-clean + safe-mode present) before the branch completes. Disable a shellcheck warning only with an inline `# shellcheck disable=SCXXXX` naming the issue (the shellcheck-clean requirement).
+Runs `shellcheck` + asserts `set -euo pipefail` is present. It also emits a non-blocking WARN if the hook is not yet wired (see Step 5). MUST exit 0 (shellcheck-clean + safe-mode present) before the branch completes. Disable a shellcheck warning only with an inline `# shellcheck disable=SCXXXX` naming the issue.
 
 ## Step 5 — register (REQUIRED — the hook fires from nothing until wired)
 

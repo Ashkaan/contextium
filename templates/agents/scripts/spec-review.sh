@@ -11,9 +11,14 @@
 # restate each one.
 #
 # USAGE
-#   spec-review.sh <spec-file> <brief> [<pushback-file>]
+#   spec-review.sh <spec-folder | spec-file> <brief> [<pushback-file>]
 #
-#   <spec-file>      path to the SPEC under review
+#   <spec-folder>    a spec folder, `specs/NNN-name/`, which MUST hold spec.md,
+#                    plan.md and tasks.md (exit 2 otherwise). Those three, then
+#                    research.md when present, go to the reviewer together, each
+#                    under a `=== <file> ===` header, because the design is split
+#                    across them. report.md is not design and is never sent.
+#   <spec-file>      or one SPEC file (the older lean spec, or an app's SPEC.md)
 #   <brief>          one line on what the SPEC is for
 #   <pushback-file>  (round 2 only) the author's rebuttals to round-1 findings
 #
@@ -30,7 +35,8 @@
 #   0    review completed
 #   1    the review did NOT happen — the chain was exhausted, or the reviewer
 #        answered with output holding neither a finding nor NO_FINDINGS
-#   2    caller error (bad arity, missing file)
+#   2    caller error (bad arity, missing file, a folder without spec.md,
+#        plan.md or tasks.md, a design file that cannot be read)
 #   3    no external reviewer configured — caller MUST fall back to a
 #        fresh-context agent and report the reduced independence
 #   124  the chain was exhausted and the last failure was a timeout
@@ -55,21 +61,52 @@ else
 fi
 
 if [[ $# -lt 2 ]]; then
-  err "Usage: $0 <spec-file> <brief> [<pushback-file>]"
+  err "Usage: $0 <spec-folder | spec-file> <brief> [<pushback-file>]"
   exit 2
 fi
 
-SPEC_FILE="$1"
+SPEC_FILE="${1%/}"
 BRIEF="$2"
 PUSHBACK_FILE="${3:-}"
 
-[[ -f "$SPEC_FILE" ]] || { err "Error: SPEC file not found: $SPEC_FILE"; exit 2; }
+[[ -f "$SPEC_FILE" || -d "$SPEC_FILE" ]] || { err "Error: SPEC not found: $SPEC_FILE"; exit 2; }
 if [[ -n "$PUSHBACK_FILE" && ! -f "$PUSHBACK_FILE" ]]; then
   err "Error: pushback file not found: $PUSHBACK_FILE"
   exit 2
 fi
 
-SPEC_CONTENTS="$(cat "$SPEC_FILE")"
+if [[ -d "$SPEC_FILE" ]]; then
+  # spec.md holds the behavior contract, plan.md the shape and tasks.md the
+  # work; a folder missing one would be "reviewed" without part of the design.
+  for _f in spec.md plan.md tasks.md; do
+    [[ -f "$SPEC_FILE/$_f" ]] || { err "Error: spec folder has no $_f: $SPEC_FILE"; exit 2; }
+  done
+  SPEC_CONTENTS=""
+  for _f in spec.md plan.md tasks.md research.md; do
+    [[ -e "$SPEC_FILE/$_f" ]] || continue
+    if ! _body="$(cat "$SPEC_FILE/$_f")"; then
+      err "Error: cannot read $SPEC_FILE/$_f — refusing to review a partial design"
+      exit 2
+    fi
+    SPEC_CONTENTS+="=== ${_f} ==="$'\n'"${_body}"$'\n\n'
+  done
+  SPEC_SHAPE="The SPEC is a spec-kit folder, split across the files below, each under a
+\`=== <file> ===\` header. spec.md: **Input** (the human's words, verbatim),
+## Clarifications (how they were read, and the decisions settled), the user
+stories and Edge Cases, Requirements, Success Criteria and Acceptance (the
+behavior contract). plan.md: Simplest shape, Technical Context, Inputs /
+Outputs and Data sourcing, Constitution Check, Patterns to follow, Failure
+modes, Validation Commands. tasks.md: the task lines, tests included.
+research.md: what was looked up, with sources. A \`[NEEDS CLARIFICATION: …]\`
+marker is an open question the author left on purpose — do not report the
+marker itself, but do report a question that should be one and is not."
+else
+  SPEC_CONTENTS="$(cat "$SPEC_FILE")"
+  SPEC_SHAPE="The SPEC follows a four-section shape: 1 Ask (what the human asked for, in
+their words), 2 Behavior (the contract, including boundary cases), 3 Files
+(what changes, and the patterns being mirrored), 4 Done (the exact commands and
+expected output that prove it works)."
+fi
 
 if [[ -n "$PUSHBACK_FILE" ]]; then
   PUSHBACK_CONTENTS="$(cat "$PUSHBACK_FILE")"
@@ -129,8 +166,8 @@ Attack across these dimensions:
 8. Shape proportionality — is the proposed shape (function / module / daemon /
    service) proportionate to what was actually asked for? A SPEC proposing a
    deployed service where a function satisfies the ask is a [must-fix].
-9. Verifiability — is the "done" section an actual command with an actual
-   expected output, or an aspiration like "tests pass"?
+9. Verifiability — are the Done / Acceptance and Validation Commands actual
+   commands with actual expected output, or an aspiration like "tests pass"?
 
 Required: every [must-fix] finding MUST cite the rule it enforces or the concrete
 failure it prevents. A finding that is neither cannot be must-fix.
@@ -167,11 +204,8 @@ fi
 PROMPT="$(cat <<EOF
 You are an adversarial reviewer of a SPEC. You are reviewing a SPEC, not code.
 
-The SPEC follows a four-section shape: 1 Ask (what the human asked for, in their
-words), 2 Behavior (the contract, including boundary cases), 3 Files (what
-changes, and the patterns being mirrored), 4 Done (the exact commands and
-expected output that prove it works). Hold it to that shape and to the project's
-own rules in ${RULES_DIR}.
+${SPEC_SHAPE} Hold it to that shape and to the project's own rules in
+${RULES_DIR}.
 
 BRIEF: $BRIEF
 $ROUND_INSTRUCTIONS

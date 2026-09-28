@@ -1,28 +1,28 @@
 ## Position
 
-Do **not** act on the email recommendation as scoped. This is a bad enforcement move disguised as hygiene. The proposed gate is not mature enough to block commits, the manifest model has already proven it rots, and the plan adds a second enforcement surface for a rule that already exists elsewhere.
+Do **not** adopt the proposal as scoped. Turning the new lint check into a blocking pre-commit gate now is premature: the check is not yet reliable, its allow-list goes stale quickly, and the rule it enforces is already covered elsewhere.
 
 ## Key Criticisms
 
-1. **You are about to promote a broken checker into policy.**  
-   The checker currently prints 9 `FAIL` lines and exits `0`. That is not a small bug; it proves nobody has been relying on this as an enforcement mechanism. Turning it into a blocking pre-commit gate after a quick manifest refresh means the first real use of the system is production enforcement, not observation. That is how you create noisy gates people bypass.
+1. **The check is not ready to be policy.**  
+   It currently prints several `FAIL` lines and still exits `0`. That shows nobody has relied on it yet. Making it blocking means its first real use is enforcement rather than observation, which is how teams end up with noisy gates they learn to bypass.
 
-2. **The manifest is already stale, so the design is suspect.**  
-   One failure points at `apps/ai/weekly-optimizer`, a directory deleted in the 2026-08-12 rename. That is only 9 days of drift. A manifest that goes stale that fast is not a reliable source of truth for caller coverage. Refreshing it now does not solve the failure mode; it resets the clock until the next rename, copy, split, or new caller. You will be institutionalizing manual bookkeeping as a commit blocker.
+2. **The allow-list is already stale.**  
+   One failure points at `src/legacy/importer`, a directory removed in a recent refactor. A hand-maintained list that drifts this fast is not a trustworthy source of truth. Refreshing it resets the clock until the next rename, and every stale row becomes a commit blocker.
 
-3. **This violates the repo’s own enforcement philosophy.**  
-   `@rule:no-speculative-enforcement` says not to build enforcement for failure modes that have not occurred. Most of the current “failures” are not actual missing Kuma tokens: five of the seven unregistered apps already pass `kumaToken`, and one stale row points to a deleted app. Only `movie-ranker`, `geo-audit`, and `client-newsletter/src/lib/bin.ts` appear to be real token gaps. The right action is to fix proven gaps and improve the existing rule surface, not create a parallel pre-commit mechanism.
+3. **It duplicates an existing rule.**  
+   The project already enforces the same requirement in CI. Most current failures are not real violations: several flagged modules already comply, and one row names a deleted path. Only `src/export/csv.ts` and `src/export/pdf.ts` look like genuine gaps. Fix those directly instead of adding a second enforcement surface.
 
 ## Fatal Flaw
 
-The fatal flaw is **making a manually maintained caller-coverage manifest a blocking gate**.
+The fatal flaw is **making a manually maintained allow-list a blocking gate**.
 
-That manifest has already demonstrated false failures. Once wired into pre-commit, every stale row becomes friction unrelated to runtime safety. Developers will learn that “router caller coverage” means “annoying manifest chore,” not “prevents silent AI-chain exhaustion.” The checker exiting non-zero will not make it trustworthy; it will only make the stale manifest more disruptive.
+The list has already produced false failures. Once it runs on every commit, each stale row becomes friction unrelated to correctness, and developers will treat the check as a chore rather than a safeguard.
 
-This also creates a perverse outcome: the strongest safety signal, actual `kumaToken` presence at call sites, is weaker than the bookkeeping signal, manifest inclusion. That is backwards.
+It also inverts the signal: whether a module actually complies becomes less important than whether someone remembered to list it.
 
 ## What Would Change My Mind
 
-1. Replace or minimize the manifest by deriving callers from source and checking actual `kumaToken` arguments directly, so renames and new imports cannot silently rot the coverage model.
+1. Derive the checked modules from the source tree instead of a hand-kept list, so renames and new files cannot silently rot the coverage.
 
-2. Run the checker in non-blocking/reporting mode first and prove it stays clean across normal repo churn before making it a blocking pre-commit gate.
+2. Run the check in report-only mode first and show it stays clean through normal churn before making it blocking.

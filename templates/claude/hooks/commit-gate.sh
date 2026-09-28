@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # commit-gate.sh — Claude Code PreToolUse(Bash) adapter for the commit checks.
 # It is the Claude-Code-specific front end; the actual checks live ONCE under
-# .githooks/checks/ — check-commit-subject.sh, check-audit-trailers.sh and
-# check-secrets.sh — which the tool-agnostic git hooks (.githooks/) also call.
+# .githooks/checks/ — check-commit-subject.sh and check-secrets.sh — which the
+# tool-agnostic git hooks (.githooks/) also call.
 # Single source of truth per @rule:mechanisms-not-prose + the no-duplication
 # principle.
 #
@@ -17,7 +17,6 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 SUBJECT_CHECK="$REPO_ROOT/.githooks/checks/check-commit-subject.sh"
 SECRET_CHECK="$REPO_ROOT/.githooks/checks/check-secrets.sh"
-TRAILER_CHECK="$REPO_ROOT/.githooks/checks/check-audit-trailers.sh"
 
 INPUT="$(cat 2>/dev/null || true)"
 CMD="$(printf '%s' "$INPUT" | jq -r '.tool_input.command // empty' 2>/dev/null || true)"
@@ -41,16 +40,6 @@ if [[ -n "$msg" ]] && [[ -x "$SUBJECT_CHECK" || -f "$SUBJECT_CHECK" ]]; then
   out="$(bash "$SUBJECT_CHECK" "$tmp" 2>&1)"; rc=$?
   rm -f "$tmp"
   [[ $rc -eq 0 ]] || block "${out#commit-msg: }"
-fi
-
-# ── Audit trailers (delegate to the shared check) ──────────────────────────
-# Refusing here rather than at commit-msg time means Claude gets the message as
-# a tool refusal it can act on, instead of a failed commit it has to unpick.
-if [[ -n "$msg" ]] && [[ -x "$TRAILER_CHECK" || -f "$TRAILER_CHECK" ]]; then
-  tmp="$(mktemp)"; printf '%s\n' "$msg" > "$tmp"
-  out="$(bash "$TRAILER_CHECK" "$tmp" 2>&1)"; rc=$?
-  rm -f "$tmp"
-  [[ $rc -eq 0 ]] || block "$out"
 fi
 
 # ── Secret scan (delegate to the shared check) ─────────────────────────────

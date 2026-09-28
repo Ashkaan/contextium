@@ -30,13 +30,13 @@ installing.
 | gemini | `GEMINI.md` (generated) | `.gemini/commands/<name>.toml` (generated) |
 | copilot | `.github/copilot-instructions.md` (generated) | `.github/prompts/<name>.prompt.md` (generated) |
 
-Claude Code additionally gets `.claude/rules` and `.claude/templates` symlinked
-into `.agents/`, so every path a skill cites resolves under either name.
+Claude Code additionally gets `.claude/rules` and `.claude/agents` symlinked into
+`.agents/`, so every path a skill cites resolves under either name.
 
 The generated command files carry the whole `SKILL.md`, its frontmatter fenced as
-a YAML block rather than dropped — the step graph lives in that frontmatter, and
-losing it would hand Gemini and Copilot a weaker procedure than the symlinked
-tools run.
+a YAML block rather than dropped, so Gemini and Copilot run the same procedure
+the symlinked tools do. The command's own description is the skill's
+`description:`, read from the Agent Skills frontmatter.
 
 ## Usage
 

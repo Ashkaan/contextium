@@ -2,7 +2,6 @@
 name: Todoist
 description: Task management via Unified API
 cli: curl (direct API)
-typed_client: integrations/todoist/todoist.ts
 hosts:
   - api.todoist.com
 aliases:
@@ -13,18 +12,12 @@ aliases:
 # Todoist Integration
 
 **Access via:** Unified API v1 (REST v2 and Sync v9 are deprecated/410)
-**API Token:** stored in your secrets vault (e.g. `op item get "<todoist-item-id>" --vault "<your-vault>" --reveal --fields api_key`)
+**API Token:** stored in your secrets vault as `Todoist - <consumer>`, field `api_key` (`op item get "<todoist-item-id>" --vault "<your-vault>" --reveal --fields api_key`)
 **Base URL:** `https://api.todoist.com/api/v1`
 
-## TypeScript Client
+## If you write a client
 
-Canonical typed reference: [`todoist.ts`](todoist.ts).
-
-```ts
-import { createTodoistSession, todoistGet, todoistPost } from "../../integrations/todoist/todoist.ts";
-```
-
-Auth: Bearer token. Callers without a configured credential source pass the token explicitly.
+Nothing here ships one; the `curl` reference below covers it. If your code files tasks, keep it thin: a session holding the Bearer token (read from the vault, or passed explicitly by callers that have no vault access), GET / POST helpers against `https://api.todoist.com/api/v1/`, and a retry on 429/5xx with backoff. Page through list endpoints with `next_cursor`.
 
 ## Usage (raw curl reference)
 
@@ -33,30 +26,30 @@ Auth: Bearer token. Callers without a configured credential source pass the toke
 TODOIST_TOKEN=$(op item get "<todoist-item-id>" --vault "<your-vault>" --reveal --fields api_key)
 
 # List tasks due today (use /tasks/filter, NOT /tasks?filter= which ignores filters)
-curl -s -H "Authorization: Bearer $TODOIST_TOKEN" "https://api.todoist.com/api/v1/tasks/filter?query=today"
+curl -fsS -H "Authorization: Bearer $TODOIST_TOKEN" "https://api.todoist.com/api/v1/tasks/filter?query=today"
 # Response: {"results": [...], "next_cursor": null}
 
 # Get all tasks (paginated, 200 per page)
-curl -s -H "Authorization: Bearer $TODOIST_TOKEN" "https://api.todoist.com/api/v1/tasks"
+curl -fsS -H "Authorization: Bearer $TODOIST_TOKEN" "https://api.todoist.com/api/v1/tasks"
 
 # Create a task
-curl -s -X POST -H "Authorization: Bearer $TODOIST_TOKEN" -H "Content-Type: application/json" \
+curl -fsS -X POST -H "Authorization: Bearer $TODOIST_TOKEN" -H "Content-Type: application/json" \
   -d '{"content": "Review PR", "due_string": "tomorrow", "priority": 3}' \
   "https://api.todoist.com/api/v1/tasks"
 
 # Complete a task
-curl -s -X POST -H "Authorization: Bearer $TODOIST_TOKEN" \
+curl -fsS -X POST -H "Authorization: Bearer $TODOIST_TOKEN" \
   "https://api.todoist.com/api/v1/tasks/TASK_ID/close"
 
 # Delete a task (for test cleanup — does NOT count as completion)
-curl -s -X DELETE -H "Authorization: Bearer $TODOIST_TOKEN" \
+curl -fsS -X DELETE -H "Authorization: Bearer $TODOIST_TOKEN" \
   "https://api.todoist.com/api/v1/tasks/TASK_ID"
 
 # Get all labels
-curl -s -H "Authorization: Bearer $TODOIST_TOKEN" "https://api.todoist.com/api/v1/labels"
+curl -fsS -H "Authorization: Bearer $TODOIST_TOKEN" "https://api.todoist.com/api/v1/labels"
 
 # Get all projects
-curl -s -H "Authorization: Bearer $TODOIST_TOKEN" "https://api.todoist.com/api/v1/projects"
+curl -fsS -H "Authorization: Bearer $TODOIST_TOKEN" "https://api.todoist.com/api/v1/projects"
 ```
 
 **Priority mapping:** p1 (urgent/highest) = `priority: 4`, p2 = `3`, p3 = `2`, p4 (default) = `1` (API values are inverted from UI labels)
@@ -92,11 +85,16 @@ curl -s -H "Authorization: Bearer $TODOIST_TOKEN" "https://api.todoist.com/api/v
 
 ## Common invocations
 
-Token resolves via `process.env.TODOIST_API_KEY`; set it inline from your vault (the `api_key` field).
+Every snippet assumes the token is loaded:
+
+```bash
+TODOIST_TOKEN=$(op item get "<todoist-item-id>" --vault "<your-vault>" --reveal --fields api_key)
+T=https://api.todoist.com/api/v1
+```
 
 ### Smoke / auth check
 ```bash
-TODOIST_API_KEY=$(op item get <todoist-item-id> --vault '<your-vault>' --reveal --fields api_key) node --input-type=module -e "import { createTodoistSession, todoistGet } from './integrations/todoist/todoist.ts'; const s = await createTodoistSession(); const r = await todoistGet(s, 'api/v1/projects'); console.log(JSON.stringify({ baseUrl: s.baseUrl, projects: (r.results || []).length }));"
+curl -fsS -H "Authorization: Bearer $TODOIST_TOKEN" "$T/projects" | jq '{projects: (.results | length)}'
 ```
 
 ### Refresh / re-auth
@@ -104,37 +102,18 @@ The Todoist API uses a long-lived personal API token (no OAuth refresh). If the 
 ```bash
 op item edit <todoist-item-id> --vault '<your-vault>' api_key='NEW_TOKEN_HERE'
 ```
-If a scheduled job consumes `TODOIST_API_KEY` via its environment, restart it after rotation.
+If a scheduled job holds the token in its environment, restart it after rotation.
 
 ### Common queries / actions
-- Tasks due today (use `/tasks/filter`, NOT `/tasks?filter=`):
-  ```bash
-  TODOIST_API_KEY=$(op item get <todoist-item-id> --vault '<your-vault>' --reveal --fields api_key) node --input-type=module -e "import { createTodoistSession, todoistGet } from './integrations/todoist/todoist.ts'; const s = await createTodoistSession(); const r = await todoistGet(s, 'api/v1/tasks/filter', { query: 'today' }); console.log(JSON.stringify({ today: (r.results || []).length, sample: (r.results || []).slice(0,3).map((t) => ({ id: t.id, content: t.content, due: t.due })) }, null, 2));"
-  ```
-- Overdue tasks:
-  ```bash
-  TODOIST_API_KEY=$(op item get <todoist-item-id> --vault '<your-vault>' --reveal --fields api_key) node --input-type=module -e "import { createTodoistSession, todoistGet } from './integrations/todoist/todoist.ts'; const s = await createTodoistSession(); const r = await todoistGet(s, 'api/v1/tasks/filter', { query: 'overdue' }); console.log(JSON.stringify({ overdue: (r.results || []).length }));"
-  ```
-- All projects (id + name listing):
-  ```bash
-  TODOIST_API_KEY=$(op item get <todoist-item-id> --vault '<your-vault>' --reveal --fields api_key) node --input-type=module -e "import { createTodoistSession, todoistGet } from './integrations/todoist/todoist.ts'; const s = await createTodoistSession(); const r = await todoistGet(s, 'api/v1/projects'); console.log(JSON.stringify((r.results || []).map((p) => ({ id: p.id, name: p.name })), null, 2));"
-  ```
-- Create a task (priority `4` = urgent, `1` = default; due via natural language):
-  ```bash
-  TODOIST_API_KEY=$(op item get <todoist-item-id> --vault '<your-vault>' --reveal --fields api_key) node --input-type=module -e "import { createTodoistSession, todoistPost } from './integrations/todoist/todoist.ts'; const s = await createTodoistSession(); const t = await todoistPost(s, 'api/v1/tasks', { content: 'Smoke probe — DELETE ME', due_string: 'tomorrow', priority: 1 }); console.log(JSON.stringify({ id: t.id, content: t.content }));"
-  ```
-- Delete a test task (NEVER complete test tasks — inflates productivity stats per § Critical Rules):
-  ```bash
-  TODOIST_API_KEY=$(op item get <todoist-item-id> --vault '<your-vault>' --reveal --fields api_key) curl -s -X DELETE -H "Authorization: Bearer $TODOIST_API_KEY" "https://api.todoist.com/api/v1/tasks/$TASK_ID" -w 'HTTP %{http_code}\n'
-  ```
-- All tasks (paginated, 200/page — first page only here):
-  ```bash
-  TODOIST_API_KEY=$(op item get <todoist-item-id> --vault '<your-vault>' --reveal --fields api_key) node --input-type=module -e "import { createTodoistSession, todoistGet } from './integrations/todoist/todoist.ts'; const s = await createTodoistSession(); const r = await todoistGet(s, 'api/v1/tasks'); console.log(JSON.stringify({ count: (r.results || []).length, next_cursor: r.next_cursor }));"
-  ```
+- Tasks due today (use `/tasks/filter`, NOT `/tasks?filter=`): `curl -fsS -G -H "Authorization: Bearer $TODOIST_TOKEN" "$T/tasks/filter" --data-urlencode 'query=today' | jq '{today: (.results | length), sample: [.results[:3][] | {id, content, due}]}'`
+- Overdue tasks: `curl -fsS -G -H "Authorization: Bearer $TODOIST_TOKEN" "$T/tasks/filter" --data-urlencode 'query=overdue' | jq '.results | length'`
+- All projects (id + name): `curl -fsS -H "Authorization: Bearer $TODOIST_TOKEN" "$T/projects" | jq '[.results[] | {id, name}]'`
+- Create a task (priority `4` = urgent, `1` = default; due via natural language): `curl -fsS -X POST -H "Authorization: Bearer $TODOIST_TOKEN" -H 'Content-Type: application/json' -d '{"content": "Smoke probe — DELETE ME", "due_string": "tomorrow", "priority": 1}' "$T/tasks" | jq -e 'select(.id) | {id, content}'` (`-f` makes an HTTP error exit non-zero; `jq -e` exits non-zero when no task id came back)
+- Delete a test task (NEVER complete test tasks — it inflates completion stats, see [Critical Rules](#critical-rules)): `curl -sS -X DELETE -H "Authorization: Bearer $TODOIST_TOKEN" "$T/tasks/$TASK_ID" -w 'HTTP %{http_code}\n'`
+- All tasks (200 per page; first page here, pass `cursor=<next_cursor>` for the next): `curl -fsS -H "Authorization: Bearer $TODOIST_TOKEN" "$T/tasks" | jq '{count: (.results | length), next_cursor}'`
 
 ### Common failures
-- `Todoist token not available: pass to createTodoistSession() ...` → `TODOIST_API_KEY` not set; prefix the command with the `op item get ... --fields api_key` inline assignment shown above.
-- `Todoist GET ... failed: 401 ...` → Token revoked or rotated in the Todoist UI. Rotate per § Refresh / re-auth, update your vault, retry.
-- `Todoist GET api/v1/tasks failed: 410 ...` or REST v2 / Sync v9 410 responses → Old endpoint surface; switch to `api/v1/...` (Unified API).
-- Filter returns full task list instead of filtered subset → Used `api/v1/tasks?filter=...` (silently ignored). Use `api/v1/tasks/filter?query=...` instead.
-- `Todoist <url>: max retries exceeded` → 429/5xx exhausted 3 retries with backoff; wait, then retry with a narrower filter.
+- HTTP 401 → token revoked or rotated in the Todoist UI, or `TODOIST_TOKEN` is empty; rotate per [Refresh / re-auth](#refresh--re-auth), update your vault, retry.
+- HTTP 410 from REST v2 or Sync v9 paths → old endpoint surface; switch to `api/v1/...` (Unified API).
+- Filter returns the full task list instead of a subset → used `api/v1/tasks?filter=...` (silently ignored). Use `api/v1/tasks/filter?query=...` instead.
+- HTTP 429 or 5xx → back off and retry with a narrower filter.

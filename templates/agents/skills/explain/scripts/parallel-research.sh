@@ -3,17 +3,13 @@
 # parallel against three hypothesis prompts; captures each result with per-CLI
 # isolation (one failure doesn't tank the others) + a configurable timeout.
 #
-# Owns the parallel-orchestration logic previously inlined as 3 sequential
-# bash lines in .agents/skills/explain/SKILL.md (lines 87-91 of the pre-rebuild
-# body).
-#
 # WHICH MODELS ANSWER is whatever model CLIs you have installed (see
 # ../../../scripts/voices.sh). Three different models chasing three
 # hypotheses is the point — one model asked three times tends to agree with
 # itself — but a thin lineup degrades instead of failing: with one model CLI
 # installed, it takes all three hypotheses and the run says so.
 #
-# peers: parallel-research.test.sh, ../SKILL.md, ../../../scripts/voices.sh
+# peers: ../SKILL.md, ../../../scripts/voices.sh
 #
 # Usage:
 #   parallel-research.sh --h1 "<prompt>" --h2 "<prompt>" --h3 "<prompt>"

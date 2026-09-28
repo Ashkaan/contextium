@@ -1,18 +1,15 @@
 #!/usr/bin/env bash
-# Test harness for scaffold.sh — boundary cases mirror SPEC § 4 / § 6 of
-# projects/ai/2026-06-08_author-skill/author.spec.md.
+# Test harness for scaffold.sh — the boundary cases of each type: a valid
+# name, a non-kebab name, an unknown type, a collision.
 #
-# scaffold.sh writes into THIS SESSION's write root (session-write-root.sh), not
-# a self-located repo root, so this harness pins CLAUDE_PROJECT_DIR to the
-# checkout it is asserting against. Without the pin the test was asserting in one
-# tree while the scaffold wrote in another: run from one checkout with a live
-# session it wrote into the MAIN checkout, and four cases failed with "file not
-# written" while the files sat, uncleaned, one directory over.
+# scaffold.sh writes into CLAUDE_PROJECT_DIR when it is set, so this harness
+# pins it to the checkout it asserts against; otherwise a live session could
+# have the scaffold write into a different tree than the one being checked.
 #
-# Destructive cases (skill/hook/agent writes) still use throwaway kebab names
-# under a `zz-` prefix and clean up after themselves.
+# Destructive cases (skill/hook/agent writes) use throwaway kebab names under a
+# `zz-` prefix and clean up after themselves.
 #
-# peers: scaffold.sh, verify.sh, ../../implement/scripts/session-write-root.sh
+# peers: scaffold.sh, verify.sh
 
 set -euo pipefail
 

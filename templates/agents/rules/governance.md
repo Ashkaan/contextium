@@ -4,16 +4,16 @@ paths: null
 
 # Governance
 
-Always-loaded governance rules — lint/format reasoning, session-end phrasing, ship-claim wording, commit-message authoring, publish-boundary decisions. Failure stories live in each correction's session journal with the body kept minimal.
+Always-loaded governance rules — lint/format reasoning, session-end phrasing, ship-claim wording, commit-message authoring, publish-boundary decisions. Bodies stay minimal; when you add or amend one, its failure story goes in that day's journal, not the rule.
 
 ## repo-hygiene-fix-at-source
 When a lint or format error occurs, MUST fix it at the source; MUST NOT add the file to an exclude list to avoid the fix. [2026-03-22]
 
 ## session-end
-When the user says "close", "wrap up", "let's close", MUST invoke `/close` (journal entry + commit + push). `/close` also auto-fires as the tail of `/spec` and `/implement` on clean completion. If the session touched a project, MUST update that project's README next-steps in the same commit. [2026-03-30] [2026-06-28]
+When the user says "close", "wrap up", "let's close", MUST invoke `/close` (journal entry + commit + push). `/close` also auto-fires as the tail of `/spec` and `/implement` on clean completion. If the session touched a project, MUST update that project's `ROADMAP.md` row status in the same commit; the README's `next:` is derived from the roadmap by `roadmap.sh --sync-next`, never hand-written. [2026-03-30] [2026-06-28] [2026-09-28]
 
 ## no-co-authored-by-claude
-Git commit messages MUST NOT include `Co-Authored-By: Claude ... <noreply@anthropic.com>` trailer lines, or equivalent trailers for any other AI agent. MUST NOT use `git commit --author` to credit an AI agent. The `attribution: {"commit": "", "pr": ""}` setting in `.claude/settings.json` removes AI attribution from the tool description; the rule stays as the backstop for every committer. [2026-04-23] [2026-08-06]
+Git commit messages MUST NOT include `Co-Authored-By: Claude ... <noreply@anthropic.com>` trailer lines, or equivalent trailers for any other AI agent. MUST NOT use `git commit --author` to credit an AI agent. The `attribution: {"commit": "", "pr": ""}` setting in `.claude/settings.json` stops Claude Code adding attribution to commits and PRs; the rule stays as the backstop for every committer. [2026-04-23] [2026-08-06]
 
 ## deploy-target-known-before-deploy-claim
 Before writing "shipped", "deployed", "live", or any deploy-command instruction in session output, MUST consult the relevant documentation for the repo's actual deploy model and verify the claim against it. MUST NOT treat repo-local convenience scripts as authoritative when official documentation documents a different model. [2026-04-22]

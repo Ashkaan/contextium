@@ -19,7 +19,7 @@ aliases:
 
 **Instance:** `https://<kuma-host>` (optionally behind a reverse proxy / tunnel)
 **Internal:** `<lan-ip>` (port 3001 default)
-**Docker network DNS:** `uptime-kuma:3001` (for container-to-container traffic where the kuma container is named `uptime-kuma`; this is what `KUMA_BASE_URL` should be set to inside a runner on the same docker network — NOT the public hostname).
+**Docker network DNS:** `uptime-kuma:3001` (for container-to-container traffic where the kuma container is named `uptime-kuma`; use this as the base URL from a runner on the same docker network — NOT the public hostname).
 **Image:** `louislam/uptime-kuma:2`
 **Data:** SQLite DB at `kuma.db` under the container's data volume.
 
@@ -48,8 +48,9 @@ Missing pings within the monitor's interval window auto-trigger Kuma's email not
 
 Kuma's push API only accepts `up` and `down`. To get a warning signal that
 flags the dashboard without firing an email alert (the practical equivalent
-of a "yellow" state), create the monitor with **`notifications=[]`** via
-[`addPushMonitor`](kuma_client.ts) and treat `down` as the warning state.
+of a "yellow" state), create the monitor with **no notifications attached** (untick them in the
+UI, or pass an empty notification list through the Socket.IO API) and treat
+`down` as the warning state.
 Scripts push `up` on clean runs, `down` on data-quality issues; the
 dashboard shows red but no email goes out.
 
@@ -82,7 +83,7 @@ This is the cleanest way to enumerate existing monitors without admin UI access.
 
 **Direct-DB write gotcha:** if you INSERT into `monitor` without setting `user_id`, Kuma will **probe the monitor and write heartbeats**, but the UI **will not display it** — the dashboard filters by `user_id`. Always set `user_id = 1` (or whichever your user id is from `SELECT id, username FROM user`). Also link to notifications via `INSERT INTO monitor_notification (monitor_id, notification_id)` — Kuma does not auto-link new monitors to default notifications. Restart the container after writes (`docker restart uptime-kuma`) so it reloads from disk.
 
-**Preferred API path:** for non-trivial monitor changes, use the `uptime-kuma-api` Python lib (Socket.IO) or the TypeScript client below. It enforces all the invariants direct DB writes can miss (user_id, notification linkage, runtime cache invalidation). Direct SQLite is OK for read-only queries and bulk reversible operations (toggling `active`, renaming) where the gotchas are documented.
+**Preferred API path:** for non-trivial monitor changes, use the Socket.IO API — the `uptime-kuma-api` Python lib, or a client of your own (below). It enforces all the invariants direct DB writes can miss (user_id, notification linkage, runtime cache invalidation). Direct SQLite is OK for read-only queries and bulk reversible operations (toggling `active`, renaming) where the gotchas are documented.
 
 **Restart after delete or rename — protocol:** When you call `deleteMonitor` or rename a monitor (via the Socket.IO API or direct DB UPDATE), Kuma 2.x removes the row from the `monitor` table but does **not** invalidate the in-memory beat scheduler. The deleted monitor IDs keep ticking every ~20s, log `Monitor #N 'null': Failing: No heartbeat in the time window`, fail the next `INSERT INTO stat_daily` on a FK constraint, **and fire DOWN email notifications using the cached monitor name** — sometimes for hours after the deletion, until something else triggers a scheduler reload. The fix is mechanical: after any batch of deletions or renames, run `ssh <container-host> 'docker restart uptime-kuma'`. The container reloads from disk in ~25s, the in-memory scheduler rebuilds from the current DB, and the orphans go silent. Diagnostic — to confirm orphan firing: `ssh <container-host> 'docker logs --since 1m uptime-kuma 2>&1 | grep -E "Monitor #[0-9]+ \x27null\x27"'`.
 
@@ -91,37 +92,18 @@ This is the cleanest way to enumerate existing monitors without admin UI access.
 Kuma has no first-class REST API for monitor CRUD. Two paths:
 
 1. **UI:** click through `https://<kuma-host>`. Manual but reliable.
-2. **TypeScript client (preferred for automation):** [`kuma_client.ts`](kuma_client.ts) — `socket.io-client` wrapper. Handles three Kuma 2.x quirks:
+2. **Socket.IO API (preferred for automation):** the `uptime-kuma-api` Python lib, or a `socket.io-client` wrapper of your own. A client you write has to handle three Kuma 2.x quirks:
 
-   - **2FA, if enabled** (`twofa_status=1` on your user). `connect()` reads the current TOTP from your secrets vault via `op --otp` and retries once on `authInvalidToken` (TOTP race on the 30s window boundary).
-   - **Request-then-broadcast pattern.** `getMonitorList` ack returns `{ok:true}`; the actual monitor data fires later as a `monitorList` broadcast event. `getMonitors()` registers a one-shot listener for the broadcast before triggering the request.
-   - **Internal URL default.** `kuma_client.ts` uses `http://<lan-ip>:3001` for Socket.IO (lower latency, no proxy in the path). The public `https://<kuma-host>` polling handshake (`/socket.io/?EIO=4&transport=polling`) returns 200, so the public URL is a viable fallback if the LAN IP isn't reachable from the caller.
+   - **2FA, if enabled** (`twofa_status=1` on your user). Read the current TOTP from your vault (`op item get <kuma-item-id> --otp`) at login, and retry once on `authInvalidToken` — the code can roll over on the 30s boundary between reading and sending it.
+   - **Request-then-broadcast.** The `getMonitorList` ack returns only `{ok:true}`; the monitor data arrives later as a `monitorList` broadcast. Register a one-shot listener for the broadcast before sending the request.
+   - **Internal URL.** Connect to `http://<lan-ip>:3001` (lower latency, no proxy in the path). The public `https://<kuma-host>` polling handshake (`/socket.io/?EIO=4&transport=polling`) also returns 200, so it is a viable fallback when the LAN IP is not reachable from the caller.
 
-```ts
-import { connect, getMonitors, addPushMonitor, generatePushToken }
-  from "../../integrations/uptime-kuma/kuma_client.ts";
+   Worth exposing: connect, list monitors, add a push monitor (name, interval, push token, notification ids), generate a push token, read a status page config.
 
-const client = await connect();
-try {
-  const monitors = await getMonitors(client);
-  console.log(`${monitors.length} monitors`);
-
-  const token = generatePushToken();
-  await addPushMonitor(client, {
-    name: "backup-example",
-    intervalSeconds: 691200, // 8d
-    pushToken: token,
-    notificationIds: [1],
-  });
-} finally {
-  client.disconnect();
-}
-```
-
-Credentials in your secrets vault → `Uptime Kuma - <your-vault>`:
+Credentials in your secrets vault → `Uptime Kuma - <consumer>`:
 - `username`
 - `credential` — password
-- `one-time password` (OTP field) — otpauth URI; `op --otp` returns the current 6-digit code
+- `one-time password` (OTP field) — otpauth URI; `op item get --otp` returns the current 6-digit code
 
 No SSH or DB lookup needed at auth time.
 
@@ -174,37 +156,28 @@ Public status pages can be configured in the Kuma UI for grouped views (e.g. ser
 
 ## Common invocations
 
-> **Prerequisite:** `kuma_client.ts` imports `socket.io-client`. Since it's library code (no owning app), install the dep once into a shared off-repo location and run snippets from that directory so Node's ESM resolver can find it:
->
-> ```bash
-> mkdir -p ~/.local/lib/kuma-client && cd ~/.local/lib/kuma-client
-> npm install --no-save socket.io-client@^4
-> cp <repo>/integrations/uptime-kuma/kuma_client.ts .
-> ```
->
-> Then run the `node --input-type=module -e ...` snippets below from `~/.local/lib/kuma-client/` using the local `./kuma_client.ts` copy.
-
 ### Smoke / auth check
 ```bash
 curl -fsS -o /dev/null -w "%{http_code}\n" "http://<lan-ip>:3001/" && op item get '<kuma-item-id>' --vault '<your-vault>' --fields label=username --reveal >/dev/null && echo "kuma reachable + vault creds present"
 ```
 
 ### Refresh / re-auth
+Kuma logs in per Socket.IO connection, so there is nothing to refresh. To prove the vault credentials still log in (needs `pip install uptime-kuma-api`):
 ```bash
-node --input-type=module -e "import { connect } from './kuma_client.ts'; const c = await connect(); console.log('login ok'); c.disconnect();"
+KUMA_USER="$(op read 'op://<your-vault>/<kuma-item-id>/username')" KUMA_PASS="$(op read 'op://<your-vault>/<kuma-item-id>/credential')" KUMA_OTP="$(op item get '<kuma-item-id>' --vault '<your-vault>' --otp)" \
+  python3 -c 'import os; from uptime_kuma_api import UptimeKumaApi; api = UptimeKumaApi("http://<lan-ip>:3001"); api.login(os.environ["KUMA_USER"], os.environ["KUMA_PASS"], os.environ["KUMA_OTP"]); print("login ok,", len(api.get_monitors()), "monitors"); api.disconnect()'
 ```
+Drop `KUMA_OTP` and the third `login` argument if 2FA is off.
 
 ### Common queries / actions
-- Push a heartbeat (use the monitor's push token from Kuma UI): `node --input-type=module -e "import { kumaPush } from './uptime-kuma.ts'; const ok = await kumaPush(process.env.TOKEN, { status: 'up', msg: 'manual smoke' }); console.log(JSON.stringify({ ok }));"` # set TOKEN=<push_token> first
-- List all monitors (Socket.IO): `node --input-type=module -e "import { connect, getMonitors } from './kuma_client.ts'; const c = await connect(); try { const ms = await getMonitors(c); console.log(JSON.stringify({ count: ms.length, types: [...new Set(ms.map(m => m.type))] })); } finally { c.disconnect(); }"`
-- Read monitor list via SQLite (no auth, no Socket.IO): `ssh <container-host> "sqlite3 -readonly /path/to/uptime-kuma/kuma.db 'SELECT id, name, type, active FROM monitor WHERE active=1 ORDER BY name;'"`
-- Add a push monitor with generated token: `node --input-type=module -e "import { connect, addPushMonitor, generatePushToken } from './kuma_client.ts'; const c = await connect(); try { const token = generatePushToken(); const r = await addPushMonitor(c, { name: process.env.NAME, intervalSeconds: 86400, pushToken: token, notificationIds: [1] }); console.log(JSON.stringify({ monitorID: r.monitorID, token })); } finally { c.disconnect(); }"` # set NAME=<monitor_name>
-- Restart Kuma after monitor delete/rename (clears in-memory orphan beats): `ssh <container-host> 'docker restart uptime-kuma'`
-- Read status page config (read-only): `node --input-type=module -e "import { connect, getStatusPageConfig } from './kuma_client.ts'; const c = await connect(); try { const cfg = await getStatusPageConfig(c, process.env.SLUG); console.log(JSON.stringify({ id: cfg.id, slug: cfg.slug, title: cfg.title })); } finally { c.disconnect(); }"` # set SLUG=<page_slug>
+- Push a heartbeat (push token from the Kuma UI): `curl -fsS "https://<kuma-host>/api/push/<push_token>?status=up&msg=manual%20smoke"`
+- Read the monitor list via SQLite (no auth, no Socket.IO): `ssh <container-host> "sqlite3 -readonly /path/to/uptime-kuma/kuma.db 'SELECT id, name, type, active FROM monitor WHERE active=1 ORDER BY name;'"`
+- Add a push monitor: Kuma UI → Add New Monitor → type "Push" → save → copy the push URL (or the Socket.IO API, for automation).
+- Restart Kuma after a monitor delete/rename (clears in-memory orphan beats): `ssh <container-host> 'docker restart uptime-kuma'`
 
 ### Common failures
 - `connect timeout` / `connect_error` against `http://<lan-ip>:3001` → Kuma container down or host unreachable; restart via `ssh <container-host> 'docker restart uptime-kuma'`.
-- `login failed: {"msg":"authInvalidToken"}` after retry → vault OTP field is stale or `op --otp` returned empty; re-verify the OTP secret in your vault item.
-- `404 Not Found` against the public host → wrong hostname. Verify the URL with `curl -I https://<kuma-host>/` before claiming the service or a push token is broken.
-- New monitor probes but doesn't appear in UI → direct DB INSERT missing `user_id=1`; use `addPushMonitor()` (Socket.IO) instead, or UPDATE the row to set `user_id=1` and restart Kuma.
-- Deleted/renamed monitor still firing `[Down]` emails → in-memory beat scheduler stale; run `ssh <container-host> 'docker restart uptime-kuma'` after any delete/rename batch (per § "Restart after delete or rename").
+- Login fails with `authInvalidToken` after a retry → the vault OTP field is stale or `op item get --otp` returned empty; re-verify the OTP secret in your vault item.
+- `404 Not Found` against the public host → wrong hostname. Verify the URL with `curl -I https://<kuma-host>/` before concluding the service or a push token is broken.
+- New monitor probes but doesn't appear in the UI → direct DB INSERT missing `user_id=1`; create it through the UI or Socket.IO API instead, or UPDATE the row to set `user_id=1` and restart Kuma.
+- Deleted/renamed monitor still firing `[Down]` emails → in-memory beat scheduler is stale; run `ssh <container-host> 'docker restart uptime-kuma'` after any delete/rename batch (per § "Restart after delete or rename").

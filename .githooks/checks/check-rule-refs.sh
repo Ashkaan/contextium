@@ -9,9 +9,7 @@
 #       in an ACTIVE file. Dangling references in HISTORICAL files (journal/
 #       and projects/) are reported as an informational count and do NOT fail
 #       the check — those are immutable records that correctly cited rules
-#       that existed at the time (e.g. node-runtime-is-node-26 before the
-#       26→22 rename). [active/historical split added 2026-05-28 per
-#       projects/ai/2026-05-16_ai-layer-shape row 14 Tier C.]
+#       that existed at the time, before a later rename.
 #
 # A dangling reference is any `@rule:<id>` whose `<id>` does NOT match a
 # `## <id>` section header in a `.agents/rules/**/*.md` file.
@@ -105,7 +103,7 @@ for file in "${files[@]}"; do
     # `grep -P` is GNU-only: BSD grep on macOS rejects it, and with the `|| true`
     # that made every scan return "no matches" — a gate reporting success over
     # citations nobody checked. So: match with portable -E, then drop the family
-    # forms (`@rule:linkedin-*`, `@rule:anti-ai-`) in awk, which is where the
+    # forms (`@rule:style-*`, `@rule:adversarial-`) in awk, which is where the
     # lookahead used to do it. A trailing `-` or `*` means the text is naming a
     # FAMILY of rules in prose rather than citing one.
     grep -noE '@rule:[a-z][a-z0-9-]*[-*]?' "$file" 2>/dev/null \

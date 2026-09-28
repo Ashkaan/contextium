@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
-# format-trailer.sh — emit the one-line `spec-audit:` trailer for a commit message.
+# format-trailer.sh — build the one-line `spec-audit:` record.
 #
-# The commit trailer is the only durable record that a SPEC was reviewed and by
-# whom. The git-hook gate (.githooks/checks/check-audit-trailers.sh) requires the
-# trailer to EXIST on a commit that touches a SPEC; it never parses the fields,
-# so the content here is for the human reading `git log` later.
+# /spec-audit writes this line into the spec folder's plan.md, under
+# Constitution Check, with write-audit-line.sh (a single-file spec with no
+# plan.md prints it instead). It is the durable record
+# of whether the spec was reviewed and by whom; the close's journal entry quotes
+# it. It is a record, not a gate: nothing refuses a commit without it.
 #
 # USAGE
 #   format-trailer.sh round-1 <reviewer> <spirit-verdict>
@@ -14,15 +15,19 @@
 #
 # <reviewer>        who ACTUALLY answered — read it off the `answered: <slot>`
 #                   line spec-review.sh writes to stderr, or `claude-fallback`
-#                   when no external reviewer was available. A trailer naming the
+#                   when no external reviewer was available. A line naming the
 #                   wrong reviewer is worse than one naming none.
 # <spirit-verdict>  MATCH | DRIFT | AMBIGUOUS
 #
-# OUTPUT (one line on stdout):
+# OUTPUT (one line on stdout, carrying its own `spec-audit:` prefix):
 #   spec-audit: <reviewer> <result>; spirit <verdict>
 #   spec-audit: skipped — <reason>
 #
-# EXIT: 0 on a valid mode; 1 on an invalid mode, reviewer, or verdict.
+# EXIT: 0 on a valid mode; 1 on an invalid mode, reviewer, verdict or reason.
+#
+# peers:
+#   .agents/skills/spec-audit/scripts/format-trailer.test.sh
+#   .agents/skills/spec/references/templates/plan.md  (the placeholder it replaces)
 
 set -euo pipefail
 
@@ -38,7 +43,7 @@ validate_spirit() {
 validate_reviewer() {
   # ANCHORED regex, not a `case` glob. A glob like `[a-z]*)` matches anything
   # after the first character, so `co dex; rm -rf` would pass — and this value
-  # lands verbatim in a commit message.
+  # lands verbatim in plan.md.
   if [[ "$1" =~ ^[a-z][a-z0-9-]*$ ]]; then
     return 0
   fi
@@ -65,6 +70,8 @@ case "$MODE" in
     ;;
   skipped-user)
     QUOTE="${2:?verbatim user authorization quote required}"
+    # One line: a quote spanning lines would split the record in plan.md.
+    QUOTE="$(printf '%s' "$QUOTE" | tr '\n' ' ')"
     echo "spec-audit: skipped — user authorized \"${QUOTE}\""
     ;;
   skipped-non-material)

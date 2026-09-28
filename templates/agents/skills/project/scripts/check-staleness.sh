@@ -14,12 +14,8 @@
 # monitor window can lapse while the project is still being mentioned daily,
 # and a stale project can sit well inside its window.
 #
-# WHY EXPIRED EXISTS (@rule:evidence-required-for-new-rules — the failure
-# already happened): projects/homelab/2026-07-24_alert-triage carried
-# `monitoring-until: 2026-08-01` and the 2026-08-16 session found post-ship
-# defects the lapsed window was supposed to have caught. Nothing surfaced the
-# lapse for 15 days. At the time this was written 11 of 24 monitor projects
-# were past their date, so the silence was the norm, not one slip.
+# EXPIRED exists because a monitor window that lapses silently is a decision
+# nobody made: the project stops being watched and nothing says so.
 #
 # Deterministic — filesystem + frontmatter + journal grep, no AI.
 #
@@ -36,25 +32,25 @@
 # Output is empty if nothing is flagged. Exit code: 0 always.
 #
 # PERFORMANCE — why frontmatter is read by ONE awk, not per-project subshells.
-# `--expired-only` runs on every blank-mode /project, in front of the user, so it
-# is on the interactive path. The first version shelled out per project
-# (basename x2, awk, sed, grep, date) and measured 6.3s across 314 projects —
-# five times SLOWER than the full journal-grep scan it was supposed to be a fast
-# subset of. One awk pass + bash string ops brought it to ~0.1s. Keep it that
-# way: no subshell inside the per-project loop except `date` on an already-known
-# expired row (at most a handful).
+# `--expired-only` runs on every blank-mode /project, so it is on the
+# interactive path. Shelling out per project costs seconds across a few hundred
+# projects; one awk pass plus bash string ops costs a tenth of one. Keep it that
+# way: no subshell inside the per-project loop except `date` on an
+# already-expired row.
 #
-# Dates are compared in the machine's local timezone so a
-# window does not read as lapsed for the last 8 hours of its final day. A window
-# whose date IS today is NOT overdue — the day is still being watched.
+# Dates are compared in the machine's local timezone, and a window whose date IS
+# today is NOT overdue — the day is still being watched. Day counts round to the
+# nearest day, so a daylight-saving hour does not turn 10 days into 9.
+#
+# Journal days are folders, `journal/<date>/<HHMM>-<slug>.md`; a day written as
+# one file, `journal/<date>.md` (the older shape), is read too. The date comes
+# from the path, not the file's contents.
 #
 # peers:
 #   .agents/skills/project/scripts/check-staleness.test.sh
 #   .agents/skills/project/SKILL.md  (step-0.5-render-index + scripts table)
 
 set -uo pipefail
-
-export TZ="America/Los_Angeles"
 
 RUN_STALE=1
 DAYS=14
@@ -69,8 +65,8 @@ TODAY=$(date +%Y-%m-%d)
 TODAY_EPOCH=$(date -d "$TODAY" +%s 2>/dev/null || date -j -f "%Y-%m-%d" "$TODAY" +%s)
 
 # One pass over every project README: emit `path <TAB> status <TAB> until-value`.
-# Frontmatter ONLY — the body quotes `monitoring-until:` when narrating a lapse
-# (alert-triage's § Next Steps does), and a prose mention is not a field.
+# Frontmatter ONLY — a body may quote `monitoring-until:` in prose, and a prose
+# mention is not a field.
 # The flush-on-next-file shape avoids gawk's ENDFILE, which mawk lacks.
 scan_frontmatter() {
   awk '
@@ -104,9 +100,8 @@ while IFS=$'\t' read -r readme status until_raw; do
 
   # --- EXPIRED (monitor only) ---
   if [ "$status" = "monitor" ]; then
-    # Value shapes in the wild: a bare date; `2026-08-05 — trailing prose`; and
-    # `"2026-08-27 — prose containing colons and quotes"`. Take the leading ISO
-    # date and ignore the rest.
+    # The value may be a bare date, a date followed by prose, or a quoted date
+    # followed by prose. Take the leading ISO date and ignore the rest.
     until_date="${until_raw#\"}"
     until_date="${until_date#\'}"
     until_date="${until_date:0:10}"
@@ -121,22 +116,21 @@ while IFS=$'\t' read -r readme status until_raw; do
     if [ -z "$until_epoch" ]; then
       echo "NOWINDOW:${domain}/${slug}"
     elif [[ "$until_date" < "$TODAY" ]]; then
-      echo "EXPIRED:${domain}/${slug}:monitoring-until=${until_date}:days-overdue=$(( (TODAY_EPOCH - until_epoch) / 86400 ))"
+      echo "EXPIRED:${domain}/${slug}:monitoring-until=${until_date}:days-overdue=$(( (TODAY_EPOCH - until_epoch + 43200) / 86400 ))"
     fi
   fi
 
   [ "$RUN_STALE" -eq 1 ] || continue
 
   # --- STALE (active/blocked/monitor) ---
-  # The boundary is hand-rolled, not `\b`: a journal almost always names a
-  # project by its FOLDER (`projects/ops/2026-08-17_new-onboarding-flow/`), and
-  # `_` is a word character, so `\bmannkind-ai-workshop` never matches there.
-  # That is why this scan reported `never` for projects written up the day
-  # before. Excluding `-` on both sides keeps a slug from matching a longer one
-  # that merely contains it.
-  latest_mention=$(grep -lE "(^|[^A-Za-z0-9-])${slug}([^A-Za-z0-9-]|$)" journal/*.md 2>/dev/null \
-    | sed 's|journal/||; s|\.md$||' \
-    | sort -r \
+  # The boundary is hand-rolled, not `\b`: a journal usually names a project by
+  # its FOLDER (`projects/web/2026-01-10_checkout-flow/`), and `_` is a word
+  # character, so `\bcheckout-flow` never matches there. Excluding `-` on both
+  # sides keeps a slug from matching a longer one that merely contains it.
+  latest_mention=$(grep -rlE "(^|[^A-Za-z0-9-])${slug}([^A-Za-z0-9-]|$)" journal 2>/dev/null \
+    | sed -n -e 's|^journal/\([0-9]\{4\}-[0-9][0-9]-[0-9][0-9]\)/.*|\1|p' \
+             -e 's|^journal/\([0-9]\{4\}-[0-9][0-9]-[0-9][0-9]\)\.md$|\1|p' \
+    | sort -ru \
     | head -1)
 
   if [ -z "$latest_mention" ]; then
@@ -146,7 +140,7 @@ while IFS=$'\t' read -r readme status until_raw; do
 
   # Compare date strings (YYYY-MM-DD sorts lexicographically)
   if [[ "$latest_mention" < "$CUTOFF_DATE" ]]; then
-    days_diff=$(( ( TODAY_EPOCH - $(date -d "$latest_mention" +%s 2>/dev/null || date -j -f "%Y-%m-%d" "$latest_mention" +%s) ) / 86400 ))
+    days_diff=$(( ( TODAY_EPOCH - $(date -d "$latest_mention" +%s 2>/dev/null || date -j -f "%Y-%m-%d" "$latest_mention" +%s) + 43200 ) / 86400 ))
     echo "STALE:${domain}/${slug}:days-since-last-mention=${days_diff}"
   fi
 done < <(scan_frontmatter)

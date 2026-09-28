@@ -1,46 +1,49 @@
 #!/usr/bin/env bash
 # project-remaining-work.sh — emit the HARD signals of unfinished work in a
-# project, so /close step-2.1 can decide whether the project just finished.
-# Counting files and table rows is DATA, not judgment (@rule:deterministic-over-ai);
-# the judgment left to the model is only "does the remaining Next Steps prose
-# describe real work, and does the shipped thing need a watch window?".
+# project, so /close can decide whether the project just finished. Counting
+# files and table rows is data, not judgment; the judgment left to the model is
+# only whether the goal is met and whether the shipped thing needs a watch.
 #
 # Usage: project-remaining-work.sh <project-folder>
-#   <project-folder> — repo-relative or absolute path to projects/<domain>/<date>_<slug>/
+#   <project-folder> — path to projects/<domain>/<date>_<slug>/
 #
 # Output (stdout), key: value lines:
 #   status: active|blocked|monitor|completed|         (frontmatter, empty if absent)
-#   unreported_specs: N                               (*.spec.md with no sibling *-report.md)
-#   spec: <name>                                      (one line per un-reported SPEC)
-#   shard_table: yes|no                               (## Shard Status present)
-#   shard_open: N                                     (rows whose State cell is not closed)
-#   shard: <name> <state>                             (one line per open shard row)
-#   next_steps_section: yes|no
-#   next_steps_unchecked: N                           (`- [ ]` under ## Next Steps)
-#   todo: <text>                                      (one line per unchecked box)
-#   next_steps_unparsed: N                            (list items that are NOT checkboxes)
-#   unparsed: <text>                                  (one line per such item)
+#   spec: <name> none|partial (<evidence>)            (one line per spec still owed
+#                                                      work, per spec-state.sh)
+#   unreported_specs: N                               (how many such specs)
+#   next_steps_section: yes|no                        (NO ROADMAP.md only: the README
+#   next_steps_unchecked: N                            ## Next Steps of the layout
+#   todo: <text>                                       before ROADMAP.md; `- [ ]` boxes
+#   next_steps_unparsed: N                             are todos, any other top-level
+#   unparsed: <text>                                   list item is unparsed backlog)
+#   roadmap_table: yes                                (ROADMAP.md present — these
+#   roadmap_open: N                                    lines appear ONLY then; one
+#   roadmap: <ID> <status>                             `roadmap:` per row not done
+#                                                      or absorbed)
+#   roadmap-error: <message>                          (ROADMAP.md malformed)
 #   verdict: work-remains|no-hard-signal
 #
-# `verdict: no-hard-signal` does NOT mean "the project is done" — it means
-# nothing countable is outstanding, so the completion call is now the model's to
-# make by reading the README goal against whatever prose sits in Next Steps
-# (numbered backlogs carry no done-state and cannot be counted). `work-remains`
-# is the deterministic veto: never flip a project holding one.
+# `no-hard-signal` does NOT mean "the project is done" — it means nothing
+# countable is outstanding, so the completion call is now the model's.
+# `work-remains` is the deterministic veto: never flip a project holding one.
+# Anything this script cannot read resolves toward work-remains, because a veto
+# that resolves ambiguity toward "nothing left" closes projects with work in them.
 #
 # peers:
 #   .agents/skills/close/scripts/project-remaining-work.test.sh
-#   .agents/skills/close/scripts/next-implement-command.sh
-#   .agents/skills/close/SKILL.md (step-2.1-project-completion)
+#   .agents/skills/close/scripts/spec-state.sh
+#   .agents/skills/close/scripts/roadmap.sh
+#   .agents/skills/close/SKILL.md
 
 set -euo pipefail
 
 err() { echo "Error: $*" >&2; }
-trim() { printf '%s' "$1" | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//'; }
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 [[ $# -eq 1 ]] || { err "usage: project-remaining-work.sh <project-folder>"; exit 2; }
 
-project_dir="$1"
+project_dir="${1%/}"
 [[ -d "$project_dir" ]] || { err "not a directory: $project_dir"; exit 2; }
 
 readme="$project_dir/README.md"
@@ -52,162 +55,95 @@ remains=0
 status="$(sed -nE 's/^status:[[:space:]]*([a-z]+).*/\1/p' "$readme" | head -n1)"
 printf 'status: %s\n' "$status"
 
-# ── Un-reported SPECs ──────────────────────────────────────────────────
-specs=()
-shopt -s nullglob
-for spec in "$project_dir"/*.spec.md; do
-  name="$(basename "$spec" .spec.md)"
-  [[ -f "$project_dir/${name}-report.md" ]] || specs+=("$name")
-done
-shopt -u nullglob
+# ── Specs still owed work (spec-state.sh owns what "reported" means) ────
+spec_count=0
+while IFS="$(printf '\t')" read -r _name _state _evidence; do
+  [[ -n "$_name" ]] || continue
+  case "$_state" in
+    none)    spec_count=$((spec_count + 1)); printf 'spec: %s none\n' "$_name" ;;
+    partial) spec_count=$((spec_count + 1)); printf 'spec: %s partial (%s)\n' "$_name" "$_evidence" ;;
+  esac
+done < <(bash "$SCRIPT_DIR/spec-state.sh" "$project_dir")
 
-printf 'unreported_specs: %d\n' "${#specs[@]}"
-for name in ${specs[@]+"${specs[@]}"}; do
-  printf 'spec: %s\n' "$name"
-done
-[[ ${#specs[@]} -gt 0 ]] && remains=1
+printf 'unreported_specs: %d\n' "$spec_count"
+[[ "$spec_count" -gt 0 ]] && remains=1
 
-# ── Shard table rows not yet closed ────────────────────────────────────
-# The State cell is the LAST non-empty column of each `| ... |` row under
-# ## Shard Status. A shard counts as done only when that cell reads closed/
-# done/complete(d)/shipped/dropped; anything else (in-flight, pending,
-# blocked, —) is open.
-shard_rows=""
-if grep -qE '^## +Shard Status' "$readme"; then
-  printf 'shard_table: yes\n'
-  shard_rows="$(awk '
-    /^## +Shard Status/ { in_section = 1; next }
-    in_section && /^## / { in_section = 0 }
-    in_section && /^\|/  { print }
-  ' "$readme")"
-else
-  printf 'shard_table: no\n'
-fi
-
-open_shards=()
-if [[ -n "$shard_rows" ]]; then
-  while IFS= read -r row; do
-    [[ -z "$row" ]] && continue
-    # Skip the |---|---| separator and the header row.
-    [[ "$row" =~ ^\|[[:space:]]*:?-+ ]] && continue
-    [[ "$row" =~ ^\|[[:space:]]*Shard[[:space:]]*\| ]] && continue
-    # Split on |, trim; first cell = shard name, last non-empty = state.
-    IFS='|' read -r -a cells <<<"${row#|}"
-    [[ ${#cells[@]} -ge 2 ]] || continue
-    name="$(trim "${cells[0]}")"
-    name="${name#\`}"
-    name="${name%\`}"
-    state=""
-    for ((i = ${#cells[@]} - 1; i >= 0; i--)); do
-      candidate="$(trim "${cells[i]}")"
-      [[ -n "$candidate" ]] && {
-        state="$candidate"
-        break
-      }
-    done
-    [[ -n "$name" ]] || continue
-    case "$(printf '%s' "$state" | tr '[:upper:]' '[:lower:]')" in
-      # `state` is the header row's own last cell — matched case-insensitively
-      # so a lowercase `| shard | ... | state |` header is not read as an open
-      # shard named "shard".
-      state | closed | done | complete | completed | shipped | dropped) ;;
-      *) open_shards+=("$name $state") ;;
-    esac
-  done <<<"$shard_rows"
-fi
-
-printf 'shard_open: %d\n' "${#open_shards[@]}"
-for row in ${open_shards[@]+"${open_shards[@]}"}; do
-  printf 'shard: %s\n' "$row"
-done
-[[ ${#open_shards[@]} -gt 0 ]] && remains=1
-
-# ── Remaining work under ## Next Steps ─────────────────────────────────
-#
-# TWO counts, not one, and the second exists because the first silently missed real
-# work. Measured 2026-08-10 across the 21 active projects: FIVE cleared this gate with
-# a written backlog of 3 to 9 items each, because their lists were numbered or bulleted
-# rather than checkbox-shaped, and a sixth (linkedin-triager-handles-more) used the
-# heading "## Next steps" with a lowercase s, which the old pattern did not match at all.
-# In every one of those cases the script reported `next_steps_section: no` and
-# `verdict: no-hard-signal` — indistinguishable, to a caller, from a project with an
-# empty backlog.
-#
-# The heading match is now case-insensitive, and a list item that is not an unchecked box
-# is counted as UNPARSED rather than ignored. Unparsed items still set `work-remains`:
-# this script is the deterministic VETO, and a veto that resolves ambiguity toward
-# "nothing left" is the wrong direction for a gate whose whole job is refusing to close
-# a project with work in it. A checked box (`- [x]`) is done and counts as neither.
-if grep -qiE '^## +next steps' "$readme"; then
+# ── Remaining work under ## Next Steps (the README layout before ROADMAP.md) ──
+# Two counts. An unchecked box at any depth is a todo. Any other TOP-LEVEL list
+# item — numbered, lettered, a plain bullet — is backlog whose done-state cannot
+# be read, so it is counted as unparsed rather than ignored. An indented item is
+# a child (usually detail under a `- [x]`), and counting it would pin a finished
+# checklist open forever. The heading match ignores case. A project with
+# ROADMAP.md is read from its rows alone — the roadmap is its one list of
+# outstanding work, and a stale README list must not hold it open.
+todo_count=0
+unparsed_count=0
+if [[ -f "$project_dir/ROADMAP.md" ]]; then
+  :
+elif grep -qiE '^## +next steps' "$readme"; then
   printf 'next_steps_section: yes\n'
   scan="$(awk '
     tolower($0) ~ /^## +next steps/ { in_section = 1; next }
     in_section && /^## / { in_section = 0 }
     !in_section { next }
-    /^[[:space:]]*[-*+] \[ \]/ {
+    /^[ \t]*[-*+] \[ \]/ {
       line = $0
-      sub(/^[[:space:]]*[-*+] \[ \][[:space:]]*/, "", line)
-      print "TODO\t" line
+      sub(/^[ \t]*[-*+] \[ \][ \t]*/, "", line)
+      print "TODO:" line
       next
     }
-    # A completed box is done: neither a todo nor unparsed.
-    #
-    # All three bullet markers, here and in the unchecked rule above. Markdown allows
-    # `-`, `*` and `+` interchangeably, and recognizing only two of them means a `+ [ ]`
-    # is not a checkbox to this scanner. That was survivable while the unparsed rule
-    # scanned every indent (it caught the item as backlog either way), but narrowing
-    # unparsed to column zero re-opened it for NESTED `+` boxes, which would then be
-    # counted as nothing at all.
-    /^[[:space:]]*[-*+] \[[xX]\]/ { next }
-    # Any other TOP-LEVEL list item — numbered, lettered in either case, or a plain
-    # bullet — is real backlog the counters cannot read a done-state from. Named, not
-    # dropped. `[A-Za-z]`, not `[a-z]`: an "A. …" list is the same backlog as an "a. …"
-    # one, and matching only one case is how the checkbox-only version missed work.
-    #
-    # UNINDENTED only, and that is the guard against the opposite failure. An indented
-    # item is a CHILD — most often explanatory sub-bullets under a `- [x]` that is
-    # already done — and counting those would pin a finished checklist `work-remains`
-    # forever, which is the same defect as under-counting pointed the other way. An
-    # unchecked `- [ ]` still counts at ANY depth, because a box is an explicit
-    # done-state and a nested one is still open work.
-    /^([0-9]+[.)]|[A-Za-z][.)]|[-*+])[[:space:]]+/ {
+    /^[ \t]*[-*+] \[[xX]\]/ { next }
+    /^([0-9]+[.)]|[A-Za-z][.)]|[-*+])[ \t]+/ {
       line = $0
-      sub(/^([0-9]+[.)]|[A-Za-z][.)]|[-*+])[[:space:]]+/, "", line)
-      if (line != "") print "UNPARSED\t" line
+      sub(/^([0-9]+[.)]|[A-Za-z][.)]|[-*+])[ \t]+/, "", line)
+      if (line != "") print "UNPARSED:" line
     }
   ' "$readme")"
-  todos="$(printf '%s\n' "$scan" | sed -n 's/^TODO\t//p')"
-  unparsed="$(printf '%s\n' "$scan" | sed -n 's/^UNPARSED\t//p')"
+  todos="$(printf '%s\n' "$scan" | sed -n 's/^TODO://p')"
+  unparsed="$(printf '%s\n' "$scan" | sed -n 's/^UNPARSED://p')"
+  [[ -n "$todos" ]] && todo_count="$(printf '%s\n' "$todos" | grep -c . || true)"
+  [[ -n "$unparsed" ]] && unparsed_count="$(printf '%s\n' "$unparsed" | grep -c . || true)"
+  printf 'next_steps_unchecked: %d\n' "$todo_count"
+  [[ -n "$todos" ]] && printf '%s\n' "$todos" | sed 's/^/todo: /'
+  printf 'next_steps_unparsed: %d\n' "$unparsed_count"
+  [[ -n "$unparsed" ]] && printf '%s\n' "$unparsed" | sed 's/^/unparsed: /'
 else
   printf 'next_steps_section: no\n'
-  todos=""
-  unparsed=""
+  printf 'next_steps_unchecked: 0\n'
+  printf 'next_steps_unparsed: 0\n'
 fi
+[[ "$todo_count" -gt 0 || "$unparsed_count" -gt 0 ]] && remains=1
 
-todo_count=0
-if [[ -n "$todos" ]]; then
-  todo_count="$(printf '%s\n' "$todos" | grep -c . || true)"
+# ── ROADMAP.md rows not done ───────────────────────────────────────────
+# The roadmap is the ONE list of outstanding work on a project that has one,
+# read through roadmap.sh so this cannot disagree with detect-stage.sh or
+# next-implement-command.sh. Every row that is not `done` or `absorbed by …` is
+# open — a `blocked:` watch included, since a watch is exactly what must keep a
+# project from closing. A table roadmap.sh cannot read is also work-remains.
+if [[ -f "$project_dir/ROADMAP.md" ]]; then
+  printf 'roadmap_table: yes\n'
+  rm_err="$(mktemp)"; rm_rc=0
+  rm_rows="$(bash "$SCRIPT_DIR/roadmap.sh" "$project_dir" 2>"$rm_err")" || rm_rc=$?
+  if [[ "$rm_rc" -ne 0 ]]; then
+    msg="$(sed -n 's/^roadmap: //p' "$rm_err" | tail -n1)"
+    printf 'roadmap_open: 0\n'
+    printf 'roadmap-error: %s\n' "${msg:-roadmap.sh exited $rm_rc}"
+    remains=1
+  else
+    cat "$rm_err" >&2
+    open_rows="$(printf '%s\n' "$rm_rows" | awk -F'\t' '
+      $1 == "" { next }
+      { s = tolower($2) }
+      s == "done" || s ~ /^absorbed by / { next }
+      { print $1 " " $2 }')"
+    open_count=0
+    [[ -n "$open_rows" ]] && open_count="$(printf '%s\n' "$open_rows" | grep -c .)"
+    printf 'roadmap_open: %d\n' "$open_count"
+    [[ -n "$open_rows" ]] && printf '%s\n' "$open_rows" | sed 's/^/roadmap: /'
+    [[ "$open_count" -gt 0 ]] && remains=1
+  fi
+  rm -f "$rm_err"
 fi
-printf 'next_steps_unchecked: %d\n' "$todo_count"
-if [[ -n "$todos" ]]; then
-  while IFS= read -r line; do
-    [[ -n "$line" ]] && printf 'todo: %s\n' "$line"
-  done <<<"$todos"
-fi
-
-unparsed_count=0
-if [[ -n "$unparsed" ]]; then
-  unparsed_count="$(printf '%s\n' "$unparsed" | grep -c . || true)"
-fi
-printf 'next_steps_unparsed: %d\n' "$unparsed_count"
-if [[ -n "$unparsed" ]]; then
-  while IFS= read -r line; do
-    [[ -n "$line" ]] && printf 'unparsed: %s\n' "$line"
-  done <<<"$unparsed"
-fi
-[[ "$unparsed_count" -gt 0 ]] && remains=1
-
-[[ "$todo_count" -gt 0 ]] && remains=1
 
 if [[ "$remains" -eq 1 ]]; then
   printf 'verdict: work-remains\n'

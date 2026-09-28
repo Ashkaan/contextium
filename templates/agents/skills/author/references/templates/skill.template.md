@@ -1,9 +1,9 @@
 ---
 name: {{name}}
-description: TODO WHAT this skill does + WHEN to use it. Third person ("Scaffolds…", not first-person); under 1536 chars — the model's invocation trigger, not a label.
-argument-hint: "[TODO args or remove if none]"
-disable-model-invocation: false
-enforces: []
+description: TODO WHAT this skill does + WHEN to use it, and the arguments it takes if any ("Takes [x]"). Third person ("Scaffolds…", not first-person); at most 1024 characters — the model's invocation trigger, not a label.
+allowed-tools: TODO space-separated tools, e.g. Bash Read Edit — or delete this line
+metadata:
+  peers: "TODO space-separated paths this skill loads or dispatches — or delete metadata"
 ---
 
 # {{name}}
@@ -21,10 +21,10 @@ Keep this SKILL.md body ≤500 lines; push any longer detail into `references/`
 1. TODO first step.
 2. TODO second step.
 
-If this skill has gates (user questions, halt, shell checks, agent/skill dispatch),
-declare a `steps:` graph in frontmatter and give each step id a matching body
-section (per @rule:skill-step-graph + @rule:skill-step-graph). Simple
-single-body skills without gates may omit `steps:`.
+If this skill has gates (user questions, halts, shell checks, agent/skill
+dispatch), give each step its own `## <step-id>` section saying what it does and,
+for a gate, what happens when it fails (per @rule:skill-step-graph). A skill
+without gates is one body.
 
 ## Examples
 

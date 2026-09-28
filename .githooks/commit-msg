@@ -4,5 +4,4 @@
 # Turn on with: git config core.hooksPath .githooks   (the installer does this).
 set -euo pipefail
 root="$(git rev-parse --show-toplevel)"
-bash "$root/.githooks/checks/check-commit-subject.sh" "$1"
-exec bash "$root/.githooks/checks/check-audit-trailers.sh" "$1"
+exec bash "$root/.githooks/checks/check-commit-subject.sh" "$1"

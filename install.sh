@@ -4,8 +4,9 @@
 # Lays the Contextium AI layer into a target project so any AI coding tool can
 # drive the Think / Do / Wrap loop from the first session.
 #
-# ONE canonical copy, in .agents/. The working agreement, the rules, the skills,
-# the review scripts and the SPEC template all live there and nowhere else. Each
+# ONE canonical copy, in .agents/. The working agreement, the rules, the skills
+# (with the templates each one writes) and the review scripts all live there and
+# nowhere else. Each
 # tool that reads the same file format is SYMLINKED into it (Claude Code, Codex,
 # Cursor); the two whose format differs (Gemini's TOML, Copilot's prompt files)
 # get generated config regenerated from .agents/ on every run. Only what is
@@ -35,7 +36,7 @@ set -euo pipefail
 
 # --- Constants ---
 
-VERSION="v6.0.0"
+VERSION="v7.0.0"
 
 # Tools the installer can lay down. Every one of them is wired by the projector
 # (scripts/projector/project-rules.sh) from the canonical .agents/ copy — by
@@ -49,7 +50,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 
 # The canonical layer: templates/agents/<item> -> TARGET/.agents/<item>, refreshed
 # whole on every run. AGENTS.md is handled separately (protected unless --force).
-AGENTS_ITEMS="rules skills scripts templates generators reviewers"
+# An item missing from the clone is skipped, not an error. There is no
+# `templates` item since v7: each skill carries the templates it writes.
+AGENTS_ITEMS="rules skills scripts generators reviewers"
 
 # The Claude-Code-only half: templates/claude/<item> -> TARGET/.claude/<item>.
 # Nothing here has a counterpart in another tool. CLAUDE.md is handled separately,
@@ -65,15 +68,18 @@ REFRESH_PATHS_COMMON="
 .githooks
 "
 
-# Skeleton dirs laid down on a fresh install and never clobbered after. apps/ is
+# Skeleton dirs laid down when absent and never clobbered after. apps/ is
 # yours from the first commit: the template seeds a README and nothing else, and
 # the index generator (.agents/generators/) rewrites that README in place
-# as you add apps. integrations/ is handled by the picker, not here.
+# as you add apps. decisions/ gets only its README, which states the record
+# format; it is seeded on an upgrade too, because the rules point at it.
+# integrations/ is handled by the picker, not here.
 PROTECTED_DIRS="
 apps
 knowledge
 journal
 projects
+decisions
 "
 
 # --- Colors (disabled when not a TTY) ---
@@ -209,6 +215,14 @@ copy_into() {
 seed_dir() {
   local rel="$1" dst="$TARGET/$1" skel="$SCRIPT_DIR/$1/README.md"
   if [ -e "$dst" ]; then
+    # decisions/README.md is the one README the layer depends on: it states the
+    # record format the rules and the pre-commit check point at. Seed it into
+    # an existing folder when missing; never overwrite one that is there.
+    if [ "$rel" = "decisions" ] && [ -d "$dst" ] && [ ! -e "$dst/README.md" ] && [ -f "$skel" ]; then
+      cp "$skel" "$dst/README.md"
+      ok "added decisions/README.md (the record format; your records untouched)"
+      return 0
+    fi
     ok "kept ${rel}/ (your data, untouched)"
     return 0
   fi
@@ -224,6 +238,10 @@ EOF
   fi
   ok "created ${rel}/"
 }
+
+# `cksum` of the SPEC template v5.0.0 through v6.0.0 shipped, unchanged
+# between them. migrate_v6_layout deletes that file only when it still matches.
+V6_SPEC_LEAN_CKSUM="4214426014 1851"
 
 # Up to v3.4.0 the template shipped its own machinery INTO the user's apps/:
 # three index generators, a quality/ folder, and a shared/ folder of helpers.
@@ -283,6 +301,54 @@ migrate_legacy_layout() {
         err "  Regenerate it with: node .agents/generators/app-index.generate.ts"
       fi
     fi
+  fi
+  return 0
+}
+
+# v6 -> v7. The layer's refresh replaces what it still ships, but a path it
+# stopped shipping stays behind unless something removes it:
+#   - .agents/templates/spec-lean.md, the four-section SPEC template. Specs are
+#     spec folders now, and their templates live beside /spec.
+#   - .claude/templates, our symlink to that folder.
+# Only our own files go. A .agents/templates/ holding anything else is the
+# user's, and so is a .claude/templates that is not our link.
+migrate_v6_layout() {
+  local dir="$TARGET/.agents/templates" link="$TARGET/.claude/templates"
+  if [ -f "$dir/spec-lean.md" ]; then
+    # `cksum` (CRC and byte count) is POSIX, so it reads the same on macOS and
+    # Linux. The value is the file every v5 and v6 release shipped; anything
+    # else was edited, and an edit is the user's work.
+    if [ "$(cksum < "$dir/spec-lean.md" | awk '{print $1, $2}')" = "$V6_SPEC_LEAN_CKSUM" ]; then
+      rm -f "$dir/spec-lean.md"
+      ok "removed .agents/templates/spec-lean.md (specs are spec folders now; /spec carries their templates)"
+    else
+      # Never over an earlier rescue: take the first free name.
+      local kept="spec-lean.md.pre-v7" n=2
+      while [ -e "$dir/$kept" ] || [ -L "$dir/$kept" ]; do
+        kept="spec-lean.md.pre-v7.$n"
+        n=$((n + 1))
+      done
+      mv "$dir/spec-lean.md" "$dir/$kept"
+      err "You had edited .agents/templates/spec-lean.md, so it was kept as"
+      err "  .agents/templates/$kept. Nothing reads it any more: specs are spec"
+      err "  folders now, with their templates beside /spec. Move what you need, then delete it."
+    fi
+  fi
+  if [ -d "$dir" ] && [ ! -L "$dir" ] && [ -z "$(ls -A "$dir" 2>/dev/null)" ]; then
+    rmdir "$dir"
+  fi
+  if [ -L "$link" ] && [ "$(readlink "$link")" = "../.agents/templates" ]; then
+    rm -f "$link"
+    ok "removed .claude/templates (it linked to the old template folder)"
+  fi
+  # The working agreement is yours and is kept on upgrade, so a v6 one still
+  # describes the four-section SPEC, the trailer gate and one journal file per
+  # day. Say so rather than leave it contradicting the skills.
+  if [ -f "$TARGET/.agents/AGENTS.md" ] && [ "$FORCE" != "1" ] &&
+     grep -qE 'The SPEC stays lean|check-audit-trailers|journal/YYYY-MM-DD\.md' "$TARGET/.agents/AGENTS.md" 2>/dev/null; then
+    err "Your .agents/AGENTS.md predates v7: it still describes the old SPEC, review and journal shape."
+    err "  Re-run with --force to install the v7 one (yours is kept as AGENTS.md.bak), then move"
+    err "  your own preferences and tech stack back into it."
   fi
   return 0
 }
@@ -560,7 +626,7 @@ install_integrations() {
 # integrations
 
 External service connectors. Add one folder per product you wrap (README with
-\`hosts:\` + the typed client). Starter examples ship in the Contextium repo under
+\`hosts:\`, auth path and common calls). Starter examples ship in the Contextium repo under
 \`templates/integrations/\` — re-run install.sh to pull any in.
 EOF
     ok "created integrations/ (empty starter)"
@@ -576,7 +642,7 @@ wire_git_hooks() {
   if [ -d "$TARGET/.githooks" ]; then
     chmod +x "$TARGET/.githooks/"* 2>/dev/null || true
     git -C "$TARGET" config core.hooksPath .githooks
-    ok "wired git hooks (core.hooksPath=.githooks): commit-subject, secret scan, review trailers"
+    ok "wired git hooks (core.hooksPath=.githooks): commit subject, secret scan, decision records, journal entries, skill + rule format"
   fi
 }
 
@@ -772,6 +838,9 @@ done
 
 # Upgrades from <= v3.4.0: take our machinery back out of the user's apps/.
 migrate_legacy_layout
+
+# Upgrades from v6: remove what the layer stopped shipping.
+migrate_v6_layout
 
 # Integration starters: pick, then copy the selected ones.
 SELECTED_INTEGRATIONS="$(choose_integrations)"

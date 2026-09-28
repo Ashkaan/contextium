@@ -13,13 +13,12 @@ named in the sentence that needs it rather than left for you to discover.
 |---|---|
 | `.agents/AGENTS.md` | this file — the working agreement |
 | `.agents/rules/` | the principle rules, always in effect |
-| `.agents/skills/` | the Loop and its reviewers, as runnable procedures |
+| `.agents/skills/` | the Loop and its reviewers, as runnable procedures; each skill carries the templates it writes |
 | `.agents/scripts/` | the review machinery every tool can run (`code-review.sh`, `spec-review.sh`, `reviewer-chain.sh`) |
-| `.agents/templates/` | the lean SPEC template |
 | `.agents/generators/` | the index generators for `apps/`, `integrations/`, `projects/` |
 | `.claude/` | the Claude Code half only: subagents, in-session guards, output styles, settings |
 | `.githooks/` | native git hooks, firing on every commit whoever made it |
-| `apps/`, `integrations/`, `projects/`, `journal/`, `knowledge/` | your work — the layer never overwrites these |
+| `apps/`, `integrations/`, `projects/`, `journal/`, `knowledge/`, `decisions/` | your work — the layer never overwrites these |
 
 Claude Code, Codex and Cursor read `.agents/skills/` through symlinks, so there is exactly one copy of
 every skill on disk. Gemini and Copilot need a different file format, so their command files are
@@ -49,47 +48,62 @@ a hard blocker or a decision that is genuinely yours.
 
 | Move | Command | Runs automatically | Stops for you only on |
 |---|---|---|---|
-| Think | `/project` → `/spec` | `/spec-audit`, then `/close` | a decision or a proposed deferral |
+| Think | `/project` → `/spec` | `/spec-audit`, then `/close` | a decision the grill needs from you |
 | Do | `/implement` | `/implement-audit`, then `/close` | a failed end-to-end check or mechanism mismatch; a decision |
 | Wrap | `/close` | — | invoked by the two moves above (`.agents/skills/close/references/auto-close-gate.md`) |
 
-`/project` does the thinking and hands SPEC-writing to `/spec`. `/spec` writes the SPEC, audits it, and
-closes. `/implement` builds, audits, and closes. In a tool without slash commands, run the same
-procedure by reading the matching file under `.agents/skills/`.
+`/project` does the thinking. Before any design it grills you: every decision the work depends on,
+one at a time, its recommendation first, until nothing is left to guess. Then it cuts the work into
+roadmap rows and hands one row at a time to `/spec`, which writes that row's spec folder, audits it,
+and closes. `/implement` builds one spec folder, audits it, and closes. In a tool without slash
+commands, run the same procedure by reading the matching file under `.agents/skills/`.
 
 The break between Think and Do is the point. A chat that wrote the plan and grew attached to its
-choices is the wrong one to judge the implementation. Open a new conversation for the Do move and
-reload the SPEC.
+choices is the wrong one to judge the implementation. Open a new conversation for the Do move; the
+spec folder holds everything it needs.
 
-### The SPEC stays lean
+### A project, on disk
 
-Four sections: what was asked, what success looks like (including the 0 / 1 / empty / max / error
-edges), the files to touch, and the exact commands that prove it works. A heavy project grows its own
-sections when a real gap bites. Do not pad it with boilerplate that degrades to "N/A".
+The layout is [spec-kit](https://github.com/github/spec-kit)'s; the templates for each file live
+beside the skill that writes it, with a `SOURCE.md` naming the spec-kit commit they came from.
+
+| Path, under `projects/<domain>/<YYYY-MM-DD>_<slug>/` | Holds | Written by |
+|---|---|---|
+| `README.md` | status frontmatter, `## Goal`, `## Outcome` | `/project`, `/close` |
+| `ROADMAP.md` | rows R1, R2… with Depends on, Status and Sub-spec — the project's only list of outstanding work | `/project`, `/close` |
+| `specs/NNN-name/` | one per row: `spec.md`, `plan.md`, `tasks.md`, `research.md`, then `report.md` | `/spec`, then `/implement` |
+| `decisions/NNNN-title.md` | the project's decision records | whoever made the decision |
+
+The README's `next:` is never typed: `/close` derives it from the first ready roadmap row, by the
+rule written once in `.agents/skills/project/references/templates/README.md`. A question nobody has
+answered is written into the spec where it applies as `[NEEDS CLARIFICATION: <question>]`, and
+`/implement` refuses to start while one is open — building past it is guessing.
 
 ### One review per artifact, and not by its author
 
-Each artifact gets exactly one review, fired by whatever produced it. Both reviews put their result in
-a commit trailer (`spec-audit:` / `implement-audit:`), and `.githooks/checks/check-audit-trailers.sh`
-refuses a commit that changes a SPEC or a meaningful amount of code without one — the backstop for
-commits made by hand, by another agent, or by anything that skipped the Loop.
+Each artifact gets exactly one review, fired by whatever produced it. The verdict is a record, not a
+gate: `/spec-audit` writes its `spec-audit:` line into the spec's `plan.md`, `/implement` writes
+`implement-audit:` into its `report.md`, and the close's journal entry quotes both. Nothing refuses a
+commit for a missing line; the skills dispatch the review every time instead.
 
-One model writes nearly all the code and nearly all the SPECs here, so that same model reviewing its
+One model writes nearly all the code and nearly all the specs here, so that same model reviewing its
 own work shares the blind spots that produced it. `.agents/scripts/reviewer-chain.sh` puts the review
 on a different model when one is installed — the Codex CLI out of the box, or any CLI you point
 `CONTEXTIUM_REVIEWER_CMD` at. With none installed, the review falls back to a fresh context on the
-authoring model and says so, in the report and in the trailer. That is a weaker review, not a failed
-one; what would make it a failure is reporting it as though it were independent.
+authoring model and says so, in the report and in the audit line. That is a weaker review, not a
+failed one; what would make it a failure is reporting it as though it were independent.
 
-## Memory: two layers
+## Memory: three layers
 
 - **Git log** records WHAT changed. Keep commit subjects verb-led so the log reads as memory.
-- **Journal** (`journal/YYYY-MM-DD.md`) records WHY, one file per day, written when you wrap. Use the
-  labeled markers (Action / Changes / Decisions / Issues / Lessons / Next) so a future session can skim
-  it.
+- **Journal** records WHY. A day is a folder, `journal/YYYY-MM-DD/`, holding one file per session
+  that `/close` writes; its shape is defined once, in `.agents/skills/close/references/journal-entry.md`.
+- **Decision records** hold choices that would be expensive to reverse, in a `decisions/` folder — at
+  the repo root, or in the project or subsystem the choice binds. Format and placement:
+  `decisions/README.md`.
 
-Reconstructing a past decision needs both: the log says when and what, the journal says why and what
-you learned.
+Reconstructing a past decision needs all three: the log says when and what, the journal says why and
+what you learned, the record says what was chosen over what and who agreed.
 
 ## Enforcement travels with the repo
 
@@ -98,7 +112,8 @@ hooks, so they hold no matter which tool drove the change:
 
 - **commit-msg** checks the subject is verb-led and a reasonable length, and blocks AI co-author
   trailers.
-- **pre-commit** scans the staged diff for obvious secrets (private keys, cloud credentials).
+- **pre-commit** scans the staged diff for obvious secrets, holds staged decision records and
+  journal entries to their formats, and checks the skills and rules a commit touches.
 
 Turn them on with `git config core.hooksPath .githooks` if you skipped that step at install. One
 guard — refusing destructive git commands before they run — exists only for Claude Code, because git

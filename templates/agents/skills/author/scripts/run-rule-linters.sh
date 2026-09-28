@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# run-rule-linters.sh — Step `co-commit` of /author rule branch. Runs the three
+# run-rule-linters.sh — Step `co-commit` of /author rule branch. Runs the two
 # rule-file linters against the rule file passed as $1; aggregates exit
 # codes — fails loud on the first non-zero, naming which linter failed.
 #
 # Owns the SSOT for the linter set; SKILL.md cites this script, never lists
-# the three linters by name (per @rule:single-source-of-truth).
+# the linters by name (per @rule:single-source-of-truth).
 #
 # peers: grep-rule-peers.sh, .agents/skills/author/SKILL.md
 #

@@ -25,14 +25,18 @@
 #   [disagree] ...
 #
 # The caller uses:
-#   verdict: consensus  → every pushback conceded; emit the round-2 trailer
+#   verdict: consensus  → every pushback conceded; write the round-2 line
 #   verdict: escalate   → ask the user about each [disagree] line
 #   verdict: incomplete → fewer verdicts than pushbacks. Do NOT treat as
 #                         agreement; re-run the round, and escalate what is still
 #                         unadjudicated if it fails again.
 #
-# EXIT: 0 if the input parsed; 1 if the input was empty (a crashed reviewer round
-# must not read as agreement).
+# EXIT: 0 if the input parsed; 1 if the input was empty or held no verdicts (a
+# crashed reviewer round must not read as agreement); 2 on a usage error.
+#
+# peers:
+#   .agents/skills/spec-audit/scripts/parse-review-output.test.sh
+#   .agents/scripts/spec-review.sh  (the round-2 output format)
 
 set -euo pipefail
 

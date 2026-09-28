@@ -13,16 +13,16 @@ months, in whatever tool you reach for.
 
 Most AI coding sessions start from zero. You re-explain your preferences, the AI makes a plausible
 guess, drifts halfway through a long thread, and you start over tomorrow. Contextium fixes that with
-three things:
+four things:
 
 1. **The Loop.** Three verbs with fresh context between thinking and doing. Each producer verb runs
    its own review and then wraps itself — you don't type the third verb.
 
    | Verb | Skill | What it does |
    |---|---|---|
-   | Think | `/project` → `/spec` | Plan, then write a short SPEC of what success looks like — reviewed against both the design and your original ask, then committed automatically. |
-   | Do | `/implement` | Execute the SPEC with self-validation from a clean context — code-reviewed and committed automatically. |
-   | Wrap | `/close` | Journal what happened and why, then commit. Auto-fired by the two verbs above; still runnable by hand. |
+   | Think | `/project` → `/spec` | Agree the goal, settle the open decisions (each question with its recommended answer), split the work into roadmap rows, and write one spec per row — reviewed against both the design and your original ask, then committed automatically. |
+   | Do | `/implement` | Build one row's spec with self-validation from a clean context — code-reviewed and committed automatically. Rows that don't depend on each other can run in parallel, each session in its own `git worktree`. |
+   | Wrap | `/close` | Mark finished rows done, journal the session, then commit. Auto-fired by the two verbs above; still runnable by hand. |
 
    In Claude Code each verb is a real slash-command skill. In every other tool the same three verbs
    ship as that tool's native commands (Gemini commands, Codex skills, Cursor commands, Copilot
@@ -34,12 +34,22 @@ three things:
    the plan and grew attached to its choices is the wrong session to also judge the implementation. A
    new one catches what the invested one defends.
 
-2. **Rules as mechanisms.** A rule that lives only in a document gets forgotten in the moment it was
+2. **Specs and decisions in published formats.** A project is laid out the way
+   [spec-kit](https://github.com/github/spec-kit) lays out a feature: a `ROADMAP.md` of rows with
+   dependencies, and one `specs/NNN-name/` folder per row holding `spec.md`, `plan.md`, `tasks.md`,
+   `research.md` and the build's `report.md`. The project's `next:` step is derived from the roadmap
+   by a script, never typed. Anything unsettled is marked `[NEEDS CLARIFICATION]` and blocks the build
+   until you settle it. Choices that would be expensive to reverse become
+   [MADR](https://adr.github.io/madr/) decision records, and an `accepted` one has to quote the words
+   that accepted it — a pre-commit check makes sure a discussion can't pass as a decision.
+
+3. **Rules as mechanisms.** A rule that lives only in a document gets forgotten in the moment it was
    written to cover. The rules that matter here are backed by hooks that actually fire: a commit gate,
    a destructive-git guard, a memory-write guard. Advisory prose is honest about being advisory.
 
-3. **Memory in two layers.** The git log records what changed. The journal records why, one file per
-   day, written by `/close`. Reconstructing an old decision needs both, so the system keeps both.
+4. **Memory in three layers.** The git log records what changed. The journal records why each session
+   went the way it did — one file per session, in a folder per day, written by `/close` in a fixed
+   shape a checker enforces. Decision records hold why the system is the way it is.
 
 ## Works in your tool
 
@@ -57,7 +67,7 @@ every run. So the rules read the same no matter what is driving, and editing one
 | GitHub Copilot | `.github/copilot-instructions.md` | `.github/prompts/*.prompt.md` |
 
 Two things port to every tool: the methodology and rules, and the git-hook enforcement — a verb-led
-commit-subject check, a staged-secret scan, and the review-trailer gate, all wired through
+commit-subject check, a staged-secret scan, and the decision-record, journal and skill-format checks, all wired through
 `core.hooksPath`, so they fire on commits made by any tool, any agent, or by hand. Two things are a
 Claude Code bonus the others cannot run: the fresh-context review agents and the PreToolUse guards. The
 discipline travels everywhere; the most automation lives in Claude Code.
@@ -69,28 +79,30 @@ discipline travels everywhere; the most automation lives in Claude Code.
   code before it lands) — and `/explain` (deep investigation), `/debate`, and `/author` (scaffold and verify a
   conforming rule, skill, hook, agent, or response style). Every tool gets all nine — as real slash
   commands where the harness supports them, as its native command files where it does not.
-- **Reviews that aren't written by the author.** Claude writes most of the code and most of the SPECs,
+- **Reviews that aren't written by the author.** Claude writes most of the code and most of the specs,
   so a Claude reviewer shares the blind spots that produced the work. Both reviewers run on a different
   model when one is installed — the Codex CLI out of the box, or any CLI you point
   `CONTEXTIUM_REVIEWER_CMD` at. With none installed they fall back to a fresh-context Claude agent and
-  say so, in the report and in the commit trailer. A weaker review is fine; a weaker review reported as
+  say so, in the line they record. A weaker review is fine; a weaker review reported as
   a strong one is not.
 - **Each review runs once and leaves a record.** `/implement-audit` writes a session marker, so `/close`
   reads whether the code was already reviewed instead of guessing — and later rounds review only the
-  fixes, not the whole diff again. Both reviewers emit a commit trailer, and a git hook refuses a commit
-  that changes a SPEC or a meaningful amount of code without one.
+  fixes, not the whole diff again. Each reviewer writes its verdict where the work lives — `spec-audit:`
+  into the spec's `plan.md`, `implement-audit:` into the row's `report.md` — and the journal quotes it.
 - **The skills ship with their machinery, not a description of it.** `/debate` builds its role prompts,
   dispatches the agents and parses their output with scripts; `/explain` runs its hypotheses in
   parallel; `/author` scaffolds from templates and verifies what it wrote; `/project` and `/close`
-  detect stage, staleness, and remaining work rather than guessing. 14 test suites ship with them.
+  detect stage, staleness, and remaining work rather than guessing; `roadmap.sh` is the one writer of
+  a roadmap row's status and of the `next:` it derives. 37 test suites ship with them.
 - **A panel of models where one would do.** `/debate` and `/explain` use different model CLIs when you
   have them, because one model asked three times agrees with itself. With only Claude installed they
   fill every seat with Claude, warn once, and run.
-- Four fresh-context review agents the Claude skills dispatch when they need a second set of eyes.
-- Principle rules, kept short on purpose, shared verbatim across all tools — and a commit check that
+- Five fresh-context review agents the Claude skills dispatch when they need a second set of eyes.
+- 19 principle rules, kept short on purpose, shared verbatim across all tools — and a commit check that
   refuses a commit citing a rule that no longer exists.
-- Two response styles (`decision-only` by default, `brevity` alongside it), a lean 4-section SPEC
-  template, wired hooks, and 14 docs-only integration starters you pick from at install time.
+- spec-kit's spec, plan, tasks and research templates (pinned to v1.0.10, with our additions fenced
+  so a re-vendor is a clean diff), a MADR `decisions/README.md`, two response styles
+  (`decision-only` by default, `brevity` alongside it), wired hooks, and 14 docs-only integration starters you pick from at install time.
 
 ## What's not in the box (on purpose)
 

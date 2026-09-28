@@ -21,7 +21,16 @@ node .agents/generators/app-index.generate.ts
 how `/project` renders the live project table without touching disk.
 
 The contract is one-way: frontmatter is the source of truth, the index is derived. Edit the per-item
-README and regenerate. Hand-editing an index file only means your edit gets overwritten.
+README and regenerate. Hand-editing an index only means your edit gets overwritten — except the text
+above the marker line in `projects/README.md`, which the project index keeps. A project's `next:` is
+itself derived, from its `ROADMAP.md`, by `/close`; the index shows it as written.
 
-`parse_frontmatter.ts` and `validate_outcome.ts` are the shared helpers all three import. An empty
-`apps/` is valid — the generator still writes the header, it just has no rows.
+`parse_frontmatter.ts`, `repo_root.ts` and `validate_outcome.ts` are the shared helpers all three
+import; `generators.test.ts` holds their boundary rows:
+
+```bash
+node --test .agents/generators/generators.test.ts
+```
+
+The summary line each prints goes to stderr, so `--out -` is the index alone. An empty `apps/` is
+valid — the generator still writes the header, it just has no rows.

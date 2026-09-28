@@ -7,7 +7,8 @@ then fills it. Agents are auto-discovered by file presence — no register step.
 contract** (`@rule:single-source-of-truth`). No meta-rule for agent shape
 exists; this doc owns it. `templates/agent.template.md` instantiates the field
 list below and `verify.sh`'s agent branch checks it — both derive from here. The
-three existing agents (`research-agent.md`, `implement-audit-reviewer.md`,
+five agents in `.agents/reviewers/` (`ai-layer-reviewer.md`,
+`implement-audit-reviewer.md`, `research-agent.md`, `rule-efficacy-reviewer.md`,
 `spirit-check.md`) are the EXAMPLES that informed this contract, not a parallel
 authority; `verify.sh` does not read them at runtime.
 
@@ -60,8 +61,8 @@ Fill the frontmatter per the contract above (scope `tools` (NOT `allowed-tools`)
 bash .agents/skills/author/scripts/verify.sh agent .agents/reviewers/<name>.md
 ```
 
-Gates (deterministic, per SPEC § 5a): the six required frontmatter fields present; `description` in **third person** (Anthropic — it drives delegation); `tools` a **non-empty scoped list** (an unscoped agent inherits every tool — higher permission + token surface). MUST exit 0 before the branch completes.
+Gates (deterministic): the six required frontmatter fields present; `description` in **third person** (Anthropic — it drives delegation); `tools` a **non-empty scoped list** (an unscoped agent inherits every tool — higher permission + token surface). MUST exit 0 before the branch completes.
 
 ## Step 5 — register
 
-None. Agents are auto-discovered from `.agents/reviewers/<name>.md`. The dispatching skill references the agent by name in its own `steps:` (`tool: agent`) and `peers:`.
+None. Agents are auto-discovered from `.agents/reviewers/<name>.md`. The dispatching skill names the agent in the body step that dispatches it and in its `metadata.peers`.

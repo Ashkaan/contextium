@@ -12,20 +12,21 @@
 # Prose cannot close this. "Skip if /implement already audited" is a judgment the
 # second caller has to make about a fact it cannot observe, and it will sometimes
 # decide wrong. This marker turns it into a file test, and stores the first run's
-# trailer so the second caller can re-emit it instead of re-earning it.
+# `implement-audit:` line so the second caller can re-emit it instead of
+# re-earning it.
 #
 # MARKER KEY: the Claude session id. Claude Code exports CLAUDE_CODE_SESSION_ID;
 # older contexts set CLAUDE_SESSION_ID, kept in the fallback chain. When NEITHER
 # is set the key is empty and the guard fails SAFE — status is always `fresh` and
 # `mark` is a no-op — rather than colliding on a shared constant. A shared
 # constant would make every id-less session write the SAME marker, so one
-# session's trailer could certify the next session's unreviewed code.
+# session's line could certify the next session's unreviewed code.
 #
 # USAGE
 #   audit-dedupe.sh status   → line 1 `fresh` or `done`; on `done`, line 2+ is
-#                              the stored trailer. Always exits 0.
-#   audit-dedupe.sh mark "<trailer>"
-#                            → record that the audit ran, and its trailer.
+#                              the stored `implement-audit:` line. Always exits 0.
+#   audit-dedupe.sh mark "<line>"
+#                            → record that the audit ran, and its line.
 #
 # EXIT: 0 ok; 2 usage error.
 
@@ -45,15 +46,15 @@ case "${1:-}" in
     fi
     ;;
   mark)
-    trailer="${2:-}"
-    [[ -n "$trailer" ]] || { echo "usage: audit-dedupe.sh mark \"<trailer>\"" >&2; exit 2; }
+    line="${2:-}"
+    [[ -n "$line" ]] || { echo "usage: audit-dedupe.sh mark \"<implement-audit: line>\"" >&2; exit 2; }
     if [[ -z "$MARKER" ]]; then
       echo "audit-dedupe: no session id (CLAUDE_CODE_SESSION_ID unset) — dedupe skipped;" >&2
-      echo "              carry the trailer inline to the commit yourself." >&2
+      echo "              carry the line to the report or journal yourself." >&2
       exit 0
     fi
     mkdir -p "$DONE_DIR"
-    printf '%s\n' "$trailer" > "$MARKER"
+    printf '%s\n' "$line" > "$MARKER"
     echo "audit-dedupe: session marked audited ($MARKER)"
     ;;
   *)

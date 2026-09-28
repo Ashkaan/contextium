@@ -1,54 +1,46 @@
 #!/usr/bin/env bash
-# check-skill-format.sh — Validate skill frontmatter format in .agents/skills/*/SKILL.md
+# check-skill-format.sh — hold every skill to the Agent Skills specification
+# (https://agentskills.io/specification) plus two local rules.
 #
 # Usage:
-#   check-skill-format.sh                  # check all SKILL.md files
-#   check-skill-format.sh file1 file2 ...  # check only the given files
+#   check-skill-format.sh                 # every skill under .agents/skills/ and templates/agents/skills/
+#   check-skill-format.sh <path>...       # those skills — a SKILL.md or its folder
 #
-# Exit: 0 if all checks pass, 1 on format violations (stderr lists issues).
+# Exit: 0 clean · 1 one or more violations (stderr lists each, file first) ·
+#       2 a path that is neither a skill folder nor a SKILL.md in one.
 #
-# Skill format requirements (see @rule:skill-required-frontmatter and
-# @rule:skill-step-graph in .agents/rules/meta/ai-layer-authoring.md):
-#   - File has `---` frontmatter block
-#   - Frontmatter has: name, description, disable-model-invocation, enforces
-#   - enforces: is a list (may be empty []) of `@rule:<slug>` references
-#   - Every @rule:<slug> in enforces: resolves to a section in .agents/rules/
-#   - When steps: is present, each step has id, kind (action|gate),
-#     and either action: (for action) or gate: with tool+on_fail (for gate)
-#   - When handoffs_to: is present, every entry matches a handoffs_from:
-#     in the consumer skill
+# WHAT IT CHECKS, per skill:
+#   - SKILL.md exists and opens with a closed `---` frontmatter block
+#   - top-level keys are only: name, description, license, compatibility,
+#     allowed-tools, metadata — each at most once
+#   - name: present, equals the folder name, 1-64 chars of a-z 0-9 and
+#     hyphens, no leading, trailing or doubled hyphen
+#   - description: present, non-empty, at most 1024 characters
+#   - compatibility: at most 500 characters when present
+#   - allowed-tools: one space-separated string, never a YAML list
+#   - metadata: a block map whose only key is `peers`, a non-empty string of
+#     space-separated paths (the local rule: peers is the one custom key)
+#   - a `state/` folder holds `_doc.md` saying what it holds and which script
+#     writes and reads it (the local rule: state is described, never implicit)
 #
-# Runs on: pre-commit (changed SKILL.md files only)
-
+# WHY. A key the harness does not know is ignored without a word, so a skill
+# carrying one looks configured and is not. And a frontmatter that stops
+# parsing makes the whole skill disappear from the listing, which nothing
+# reports either.
+#
+# NOT A YAML PARSER. It reads the flat shape the spec allows — `key: value`,
+# quoted values, `>`/`|` block scalars, and metadata's one level of nesting —
+# and flags what falls outside it. That keeps it pure bash + awk, with no
+# validator to install. Flow syntax (`[a, b]`, `{k: v}`) is refused.
+#
+# Runs on: pre-commit (the skills a commit touches), /author's verify step.
+#
 # bash 3.2 compatible on purpose: macOS still ships bash 3.2, where `mapfile`,
-# `readarray` and `declare -A` do not exist. A check that dies with
-# "mapfile: command not found" takes every commit on that machine down with it.
+# `readarray` and `declare -A` do not exist.
 set -euo pipefail
 
-REPO_ROOT="$(git rev-parse --show-toplevel)"
-cd "$REPO_ROOT"
-
-# Collect files to check
-if [[ $# -gt 0 ]]; then
-  files=("$@")
-else
-  # Both layouts: installed (.agents/skills) and authored (templates/agents/
-  # skills). Searching only the first means running this with no arguments in the
-  # repo that ships the skills checks none of them and exits 0.
-  skill_dirs=()
-  [[ -d .agents/skills ]] && skill_dirs+=(.agents/skills)
-  [[ -d templates/agents/skills ]] && skill_dirs+=(templates/agents/skills)
-  files=()
-  if [[ ${#skill_dirs[@]} -gt 0 ]]; then
-    while IFS= read -r _f; do
-      [ -n "$_f" ] && files+=("$_f")
-    done < <(find "${skill_dirs[@]}" -type f -name 'SKILL.md' 2>/dev/null)
-  fi
-fi
-
-if [[ ${#files[@]} -eq 0 ]]; then
-  exit 0
-fi
+# shellcheck source=SCRIPTDIR/yaml-scalar.sh
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/yaml-scalar.sh"
 
 issues=0
 report() {
@@ -56,269 +48,198 @@ report() {
   issues=$((issues + 1))
 }
 
-# Build the set of defined rule IDs for enforces: validation
-# Both layouts: .agents/rules/ where the layer is installed, templates/agents/
-# rules/ where it is authored. Without the second, the repo that ships this check
-# resolves zero rule ids and flags every `enforces:` entry as dangling.
-RULE_DIRS=()
-[[ -d .agents/rules ]] && RULE_DIRS+=(.agents/rules)
-[[ -d templates/agents/rules ]] && RULE_DIRS+=(templates/agents/rules)
-[[ ${#RULE_DIRS[@]} -gt 0 ]] || RULE_DIRS=(.agents/rules)
-
-defined_ids=$(
-  find "${RULE_DIRS[@]}" -type f -name '*.md' ! -name 'README.md' -print0 2>/dev/null \
-    | xargs -0 grep -h -E '^## [a-z][a-z0-9-]*$' 2>/dev/null \
-    | sed 's/^## //' \
-    | sort -u || true
-)
-
-rule_id_set=$(mktemp)
-trap 'rm -f "$rule_id_set"' EXIT
-printf '%s\n' "$defined_ids" > "$rule_id_set"
-
-# Collect handoffs_to and handoffs_from across all skills for symmetry check
-handoffs_to_tmp=$(mktemp)
-handoffs_from_tmp=$(mktemp)
-trap 'rm -f "$rule_id_set" "$handoffs_to_tmp" "$handoffs_from_tmp"' EXIT
-
-# Strip the repo root off an absolute path so the scope patterns below can match.
-# /author's verify.sh hands these checks an ABSOLUTE path, which matched no arm at
-# all — so the file was skipped and the check reported success over a file nobody
-# validated. Anything already relative, or outside the repo, is returned as-is.
-# Args: $1=path
-to_repo_relative() {
-  local p="$1" root
-  root="$(git rev-parse --show-toplevel 2>/dev/null || true)"
-  if [[ -n "$root" && "$p" == "$root"/* ]]; then
-    printf '%s' "${p#"$root"/}"
-  else
-    printf '%s' "$p"
-  fi
+# Characters, not bytes: drop UTF-8 continuation bytes before counting, so an
+# em dash counts once whatever the locale.
+char_count() {
+  printf '%s' "$1" | LC_ALL=C tr -d '\200-\277' | wc -c | tr -d ' '
 }
 
-for file in "${files[@]}"; do
-  # The second form is for a repo that AUTHORS the layer instead of installing it
-  # (contextium keeps it under templates/agents/). Without it, the repo shipping
-  # this check is the one repo it never checks.
-  file="$(to_repo_relative "$file")"
-  case "$file" in
-    .agents/skills/*/SKILL.md|*/agents/skills/*/SKILL.md) ;;
-    *) continue ;;
-  esac
-  [[ -f "$file" ]] || continue
-
-  # Check frontmatter exists
-  first_line=$(head -n 1 "$file")
-  if [[ "$first_line" != "---" ]]; then
-    report "$file: missing YAML frontmatter (file must start with \`---\`)"
-    continue
-  fi
-
-  # Extract frontmatter block
-  frontmatter_end=$(awk '/^---$/{c++; if(c==2){print NR; exit}}' "$file")
-  if [[ -z "$frontmatter_end" ]]; then
-    report "$file: unterminated frontmatter (no closing \`---\`)"
-    continue
-  fi
-  frontmatter=$(sed -n "2,$((frontmatter_end - 1))p" "$file")
-
-  # Required fields per @rule:skill-required-frontmatter
-  for field in name description disable-model-invocation; do
-    if ! echo "$frontmatter" | grep -qE "^${field}:"; then
-      report "$file: frontmatter missing required field \`${field}:\`"
+# Collect the SKILL.md files to check.
+files=()
+if [[ $# -gt 0 ]]; then
+  # A path that names no skill is the caller's mistake (exit 2), not a clean
+  # result: a typo'd folder would otherwise be "checked" and pass.
+  for p in "$@"; do
+    if [[ -d "$p" ]]; then
+      files+=("${p%/}/SKILL.md")
+    elif [[ "$(basename "$p")" == "SKILL.md" && -d "$(dirname "$p")" ]]; then
+      files+=("$p")
+    else
+      echo "check-skill-format: not a skill folder or SKILL.md: $p" >&2
+      exit 2
     fi
   done
+else
+  root="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+  cd "$root"
+  for d in .agents/skills templates/agents/skills; do
+    [[ -d "$d" ]] || continue
+    for s in "$d"/*/; do
+      [[ -d "$s" ]] || continue
+      files+=("${s%/}/SKILL.md")
+    done
+  done
+fi
 
-  # enforces: MUST be declared (may be empty list)
-  if ! echo "$frontmatter" | grep -qE '^enforces:'; then
-    report "$file: frontmatter missing required field \`enforces:\` (use \`enforces: []\` if none)"
-  fi
+[[ ${#files[@]} -gt 0 ]] || exit 0
 
-  # Validate every rule-reference in enforces: resolves to a known rule.
-  # Captures entries like: `- "@rule:<id>"` or `- @rule:<id>`.
-  while IFS= read -r rule_ref; do
-    id="${rule_ref#@rule:}"
-    if ! grep -Fxq "$id" "$rule_id_set"; then
-      report "$file: enforces reference \`@rule:${id}\` does not resolve (no such rule in .agents/rules/)"
-    fi
-  done < <(
-    echo "$frontmatter" | awk '/^enforces:/{in_list=1; next} in_list && /^[a-zA-Z]/{in_list=0} in_list' \
-      | grep -oE '@rule:[a-z][a-z0-9-]*' || true
-  )
-
-  # If steps: is present, validate structure (@rule:skill-step-graph +
-  # @rule:skill-step-graph)
-  if echo "$frontmatter" | grep -qE '^steps:'; then
-    step_block=$(echo "$frontmatter" | awk '/^steps:/{in_block=1; next} in_block && /^[a-zA-Z]/{in_block=0} in_block')
-    if [[ -n "$step_block" ]]; then
-      # Every step entry MUST have id + kind (skill-step-graph)
-      step_count=$(echo "$step_block" | grep -cE '^\s+- id:' || true)
-      kind_count=$(echo "$step_block" | grep -cE '^\s+kind:' || true)
-      if [[ "$step_count" -ne "$kind_count" ]]; then
-        report "$file: steps: block has $step_count id(s) but $kind_count kind(s) — every step MUST have kind (action|gate)"
-      fi
-
-      # Every kind: action step MUST carry an `action:` saying what it does.
-      # Without it the step graph declares a step and specifies nothing, which is
-      # the same as not having declared it.
-      action_issues=$(echo "$step_block" | awk '
-        /^[[:space:]]+- id:/ {
-          if (in_action && !seen_action) print "step `" last_id "` kind: action missing action:"
-          in_action = 0; seen_action = 0
-          last_id = $0; sub(/^[[:space:]]+- id:[[:space:]]*/, "", last_id)
-          next
-        }
-        /^[[:space:]]+kind:[[:space:]]*action/ { in_action = 1; next }
-        /^[[:space:]]+kind:/ { in_action = 0; next }
-        in_action && /^[[:space:]]+action:/ { seen_action = 1 }
-        END {
-          if (in_action && !seen_action) print "step `" last_id "` kind: action missing action:"
-        }
-      ')
-      if [[ -n "$action_issues" ]]; then
-        while IFS= read -r line; do
-          [[ -n "$line" ]] && report "$file: $line"
-        done <<< "$action_issues"
-      fi
-
-      # Every kind: gate step MUST have tool + on_fail (skill-gate-specification).
-      # Walk the step block; when we see a step whose kind is `gate`, verify
-      # its child lines (before the next `- id:`) include both tool: and on_fail:.
-      gate_issues=$(echo "$step_block" | awk '
-        /^\s+- id:/ {
-          if (in_gate && (!seen_tool || !seen_on_fail)) {
-            missing = ""
-            if (!seen_tool) missing = missing "tool "
-            if (!seen_on_fail) missing = missing "on_fail"
-            print "step `" last_id "` kind: gate missing " missing
+# Reads one frontmatter and prints one line per finding:
+#   V<TAB>message        a violation
+#   NAME<TAB>value       the name, unquoted
+#   DESC<TAB>value       the description, block scalars folded onto one line
+#   COMPAT<TAB>value     the compatibility string
+parse_frontmatter() {
+  awk -v sq="'" "$YAML_SCALAR_AWK"'
+    function trim(s) { gsub(/^[ \t]+|[ \t]+$/, "", s); return s }
+    function is_block(v) { return v ~ /^[>|][+-]?[0-9]?$/ }
+    # The value of a scalar as written (raw, continuation lines joined), with
+    # a quote that never closes, or text after one, reported against label.
+    function scalar_of(raw, label,   v) {
+      v = yaml_scalar(raw)
+      if (YS_STATE == "open") print "V\t" label " has an unclosed quote — the frontmatter will not parse"
+      else if (YS_STATE == "trailing") print "V\t" label " has text after its closing quote — the frontmatter will not parse"
+      return v
+    }
+    function flush(   v) {
+      if (key == "") return
+      v = block ? trim(val) : scalar_of(val, key)
+      if (key == "name") print "NAME\t" v
+      else if (key == "description") print "DESC\t" v
+      else if (key == "compatibility") print "COMPAT\t" v
+      if (key == "allowed-tools" && listy) print "V\tallowed-tools must be one space-separated string (\"Bash Read Edit\"), not a YAML list"
+      if ((key == "name" || key == "description" || key == "license" || key == "compatibility") && listy)
+        print "V\t" key " must be a string, not a list"
+      if (key == "metadata") flush_meta()
+      key = ""; val = ""; listy = 0; block = 0
+    }
+    function flush_meta() {
+      if (mkey == "") return
+      if (mkey != "peers") {
+        print "V\tmetadata." mkey " is not allowed — the only metadata key is peers"
+      } else if (mlisty) {
+        print "V\tmetadata.peers must be a string of space-separated paths, not a list"
+      } else {
+        if (!mblock) mval = scalar_of(mval, "metadata.peers")
+        if (trim(mval) == "") print "V\tmetadata.peers is empty — name the peers or drop the key"
+      }
+      mkey = ""; mval = ""; mlisty = 0; mblock = 0
+    }
+    NR == 1 { if ($0 != "---") { print "V\tmissing frontmatter — the file must open with a --- line"; bad = 1; exit } next }
+    $0 == "---" { closed = 1; exit }
+    /^[ \t]*$/ { if (block && key != "") val = val " "; next }
+    /^#/ { next }
+    /^[^ \t]/ {
+      flush()
+      if (!match($0, /^[A-Za-z0-9_-]+:/)) { print "V\tline " NR " is not a key: value line: " $0; next }
+      key = substr($0, 1, RLENGTH - 1)
+      rest = trim(substr($0, RLENGTH + 1))
+      if (seen[key]++) print "V\tduplicate key " key
+      known = (key ~ /^(name|description|license|compatibility|allowed-tools|metadata)$/)
+      if (!known)
+        print "V\tunknown key " key " — allowed: name, description, license, compatibility, allowed-tools, metadata"
+      if (known && rest ~ /^[\[{]/) {
+        print "V\t" key " uses flow syntax (" rest ") — write it in block form"
+        rest = ""
+      }
+      if (is_block(rest)) { block = 1; val = "" }
+      else { block = 0; val = rest }
+      if (key == "metadata" && rest != "") print "V\tmetadata must be a block map (metadata:, then an indented peers: line)"
+      next
+    }
+    {
+      # An indented line: a continuation of the current key.
+      line = trim($0)
+      if (key == "metadata") {
+        # A child key sits at the indent of the first child; anything deeper, or
+        # any line while a block scalar is open, continues that child.
+        ind = match($0, /[^ \t]/) - 1
+        if (mind == 0 || ind <= mind) {
+          if (match($0, /^[ \t]+[A-Za-z0-9_-]+:/)) {
+            # Keep the match before flush_meta: it reads a scalar, and match()
+            # in there resets RLENGTH.
+            klen = RLENGTH
+            flush_meta()
+            mind = ind
+            mkey = trim(substr($0, 1, klen - 1))
+            mrest = trim(substr($0, klen + 1))
+            if (mrest ~ /^[\[{]/) { print "V\tmetadata." mkey " uses flow syntax — write it in block form"; mrest = "x" }
+            mblock = is_block(mrest)
+            mval = mblock ? "" : mrest
+          } else {
+            print "V\tline " NR " under metadata is not a key: value line: " line
           }
-          in_gate = 0; seen_tool = 0; seen_on_fail = 0
-          last_id = $0; sub(/^\s+- id:\s*/, "", last_id)
-          next
+        } else if (line ~ /^- / && mval == "") {
+          mlisty = 1
+        } else {
+          mval = mval " " line
         }
-        /^\s+kind:\s*gate/ { in_gate = 1; next }
-        /^\s+kind:/ { in_gate = 0; next }
-        in_gate && /^\s+tool:/ { seen_tool = 1 }
-        in_gate && /^\s+on_fail:/ { seen_on_fail = 1 }
-        END {
-          if (in_gate && (!seen_tool || !seen_on_fail)) {
-            missing = ""
-            if (!seen_tool) missing = missing "tool "
-            if (!seen_on_fail) missing = missing "on_fail"
-            print "step `" last_id "` kind: gate missing " missing
-          }
-        }
-      ')
-      if [[ -n "$gate_issues" ]]; then
-        while IFS= read -r gi; do
-          report "$file: $gi"
-        done <<< "$gate_issues"
-      fi
+        next
+      }
+      if (line ~ /^- / && !block) { listy = 1; next }
+      val = (val == "" ? line : val " " line)
+    }
+    END {
+      if (bad) exit
+      if (NR == 0) { print "V\tmissing frontmatter — the file is empty"; exit }
+      if (!closed) { print "V\tfrontmatter is never closed by a second --- line"; exit }
+      flush()
+    }
+  ' "$1"
+}
 
-      # Body-step parity (skill-body-step-parity): every declared step id
-      # MUST appear in the markdown body as a heading or bullet referencing
-      # it, and every `## N.` body heading with a step-id tag MUST match a
-      # declared id. Pragmatic check: collect declared step ids, then grep
-      # the body (post-frontmatter) for each id as a token.
-      declared_ids=$(echo "$step_block" | awk '/^\s+- id:/{sub(/^\s+- id:\s*/, ""); print}')
-      body=$(sed -n "$((frontmatter_end + 1)),\$p" "$file")
-      if [[ -n "$declared_ids" ]] && [[ -n "$body" ]]; then
-        while IFS= read -r step_id; do
-          [[ -z "$step_id" ]] && continue
-          if ! grep -qFw "$step_id" <<<"$body" ; then
-            report "$file: frontmatter step \`$step_id\` not referenced in skill body (body-step parity violation)"
-          fi
-        done <<< "$declared_ids"
-      fi
+name_re='^[a-z0-9]+(-[a-z0-9]+)*$'
+
+for file in "${files[@]}"; do
+  dir="$(dirname "$file")"
+  folder="$(basename "$dir")"
+
+  if [[ ! -f "$file" ]]; then
+    if [[ -d "$dir" ]]; then
+      report "$dir: no SKILL.md — every skill folder holds one"
     fi
+    continue
   fi
 
-  # Collect handoffs for symmetry check (processed after the loop)
-  skill_name=$(echo "$frontmatter" | awk '/^name:/{sub(/^name:[ \t]*/, ""); print; exit}' | tr -d '"')
-  # Both handoff lists extract the SKILL NAME. A bare word-grep here split
-  # `- .agents/skills/close/SKILL.md` into five targets (claude, skills, close,
-  # SKILL, md), so the symmetry check below reported 53 phantom violations and
-  # its real signal was buried — the check was dead until 2026-07-26.
-  #
-  # TWO entry shapes are in use and both must be recognized: a full
-  # `.agents/skills/<name>/SKILL.md` path, and a bare kebab name (`budget`,
-  # `explain`, `reconcile-monarch`). Matching only the path shape silently
-  # DROPPED every bare-name relationship instead of validating it — trading 53
-  # false positives for a quieter set of false negatives. Anything else in these
-  # lists (rule ids, `apps/{name}/SPEC.md`) is deliberately not a skill and is
-  # skipped. Keep the two extractions identical or the comparison is meaningless.
-  if echo "$frontmatter" | grep -qE '^handoffs_to:'; then
-    echo "$frontmatter" | awk '/^handoffs_to:/{in_list=1; next} in_list && /^[a-zA-Z]/{in_list=0} in_list' \
-      | sed -n -e 's#^[[:space:]]*-[[:space:]]*.*/skills/\([^/]*\)/SKILL\.md[[:space:]]*$#\1#p' \
-               -e 's#^[[:space:]]*-[[:space:]]*\([a-z][a-z0-9-]*\)[[:space:]]*$#\1#p' \
-      | while IFS= read -r target; do
-        echo "$skill_name -> $target" >> "$handoffs_to_tmp"
-      done
+  name="" desc="" has_name=0 has_desc=0
+  while IFS= read -r line; do
+    tag="${line%%$'\t'*}"
+    value="${line#*$'\t'}"
+    case "$tag" in
+      V) report "$file: $value" ;;
+      NAME) name="$value"; has_name=1 ;;
+      DESC) desc="$value"; has_desc=1 ;;
+      COMPAT)
+        n="$(char_count "$value")"
+        [[ "$n" -le 500 ]] || report "$file: compatibility is $n characters — at most 500"
+        ;;
+    esac
+  done < <(parse_frontmatter "$file")
+
+  if [[ "$has_name" != 1 ]]; then
+    report "$file: frontmatter missing required key name"
+  elif [[ "$name" != "$folder" ]]; then
+    report "$file: name '$name' must equal the folder name '$folder'"
+  elif [[ ${#name} -gt 64 ]] || [[ ! "$name" =~ $name_re ]]; then
+    report "$file: name '$name' must be 1-64 characters of a-z, 0-9 and single hyphens, not starting or ending with one"
   fi
-  if echo "$frontmatter" | grep -qE '^handoffs_from:'; then
-    echo "$frontmatter" | awk '/^handoffs_from:/{in_list=1; next} in_list && /^[a-zA-Z]/{in_list=0} in_list' \
-      | sed -n -e 's#^[[:space:]]*-[[:space:]]*.*/skills/\([^/]*\)/SKILL\.md[[:space:]]*$#\1#p' \
-               -e 's#^[[:space:]]*-[[:space:]]*\([a-z][a-z0-9-]*\)[[:space:]]*$#\1#p' \
-      | while IFS= read -r source; do
-        echo "$source -> $skill_name" >> "$handoffs_from_tmp"
-      done
+
+  if [[ "$has_desc" != 1 ]]; then
+    report "$file: frontmatter missing required key description — it is what the model routes on"
+  elif [[ -z "$desc" ]]; then
+    report "$file: description is empty — say what the skill does and when to use it"
+  else
+    n="$(char_count "$desc")"
+    [[ "$n" -le 1024 ]] || report "$file: description is $n characters — at most 1024"
+  fi
+
+  if [[ -d "$dir/state" && ! -f "$dir/state/_doc.md" ]]; then
+    report "$dir/state: no _doc.md — say what the folder holds and which script writes and reads it"
   fi
 done
 
-# Cross-skill handoff symmetry: every `A -> B` in handoffs_to must have a
-# matching `A -> B` in handoffs_from.
-#
-# This used to run ONLY with no arguments. The commit hook always passes the
-# changed SKILL.md files, so in practice it never ran: a new handoffs_to: with no
-# matching handoffs_from: on the other side sailed through every commit.
-#
-# When args ARE given, BOTH sides are re-collected from every skill in the repo,
-# not just the changed files. Collecting only the changed side leaves the other
-# half of each pair invisible: with only consumers scanned repo-wide, deleting a
-# `handoffs_from:` line from an unchanged-producer pair passed, because the
-# producer whose `handoffs_to:` it broke was never read.
-if [[ -n "${1:-}" ]]; then
-  all_skill_dirs=()
-  [[ -d .agents/skills ]] && all_skill_dirs+=(.agents/skills)
-  [[ -d templates/agents/skills ]] && all_skill_dirs+=(templates/agents/skills)
-  if [[ ${#all_skill_dirs[@]} -gt 0 ]]; then
-    : > "$handoffs_to_tmp"
-    : > "$handoffs_from_tmp"
-    while IFS= read -r other; do
-      [[ -n "$other" ]] || continue
-      other_name="$(basename "$(dirname "$other")")"
-      other_fm="$(awk '/^---$/{n++; next} n==1' "$other")"
-      # Same two extractions as the per-file pass above. Keep them identical or
-      # the comparison is meaningless.
-      echo "$other_fm" \
-        | awk '/^handoffs_to:/{f=1; next} /^[a-zA-Z]/{f=0} f' \
-        | sed -n -e 's#^[[:space:]]*-[[:space:]]*.*/skills/\([^/]*\)/SKILL\.md[[:space:]]*$#\1#p' \
-                 -e 's#^[[:space:]]*-[[:space:]]*\([a-z][a-z0-9-]*\)[[:space:]]*$#\1#p' \
-        | while IFS= read -r target; do
-            echo "$other_name -> $target" >> "$handoffs_to_tmp"
-          done
-      echo "$other_fm" \
-        | awk '/^handoffs_from:/{f=1; next} /^[a-zA-Z]/{f=0} f' \
-        | sed -n -e 's#^[[:space:]]*-[[:space:]]*.*/skills/\([^/]*\)/SKILL\.md[[:space:]]*$#\1#p' \
-                 -e 's#^[[:space:]]*-[[:space:]]*\([a-z][a-z0-9-]*\)[[:space:]]*$#\1#p' \
-        | while IFS= read -r source; do
-            echo "$source -> $other_name" >> "$handoffs_from_tmp"
-          done
-    done < <(find "${all_skill_dirs[@]}" -type f -name 'SKILL.md' 2>/dev/null)
-  fi
-fi
-
-if [[ -s "$handoffs_to_tmp" ]]; then
-  while IFS= read -r handoff; do
-    if ! grep -Fxq "$handoff" "$handoffs_from_tmp"; then
-      report "handoff \`$handoff\` declared in producer's handoffs_to: but not in consumer's handoffs_from:"
-    fi
-  done < "$handoffs_to_tmp"
-fi
-
 if [[ $issues -gt 0 ]]; then
   echo "" >&2
-  echo "⚠ $issues skill-format violation(s)" >&2
+  echo "⚠ $issues skill-format violation(s) — the shape is the Agent Skills spec, https://agentskills.io/specification" >&2
   exit 1
 fi
 

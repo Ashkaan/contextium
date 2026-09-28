@@ -2,16 +2,12 @@
 # Contract: commit ONLY this session's files, unstaging any other session's staged work first (non-destructively) so it cannot ride along.
 # Usage: safe-commit.sh <subject> <file> [file...]   Exit 2 = bad args; 3 = lock timeout; other non-zero = commit failed.
 #
-# The check-then-commit race this header used to document as a KNOWN LIMIT is
-# CLOSED as of 2026-07-25. Foreign files were read from the index once and then
-# the commit ran; anything another session staged in that window rode along —
-# observed 2026-07-24 on this script's own first live use, when a concurrent
-# session's file deletion was staged after the check and landed in the commit.
-# Narrowing the window never closes it; only a lock does. The unstage + commit
-# now runs under /tmp/context-repo-git.lock, the SAME lock the SSH-automation
-# path has taken since 2026-06-03 (integrations/github/git_local.ts) and that
-# any other automated committer holds across its own commit + push. One lock, every writer to this
-# repo's shared index.
+# Reading the index and committing are one critical section under a lock file,
+# the same one any other automated committer to this repo should take. Without
+# the lock, a file another session stages between the check and the commit rides
+# along under this session's subject; narrowing the window never closes it.
+# flock(1) when it is installed; on a system without it (stock macOS) the
+# lock.sh symlink lock with the same wait bound.
 set -euo pipefail
 
 SUBJECT="${1:-}"
@@ -38,24 +34,26 @@ fi
 MINE=("$@")
 
 # ── Take the shared repo lock for the whole read-then-write ────────────────
-# The refuse-loud
-#         shape), integrations/github/git_local.ts:424-425 (same lock, same 120s
-#         bound). fd 201 rather than 200 so an inherited-and-unlocked fd 200 from
-#         a calling script can never be confused with this one.
-# Everything from here to the commit is one critical section: reading the index,
-# unstaging what is not ours, staging what is, and committing. A lock around only
-# the commit would leave the original race exactly where it was.
-# Both overridable so the paired test can exercise contention against its own
-# lock file with a short bound, instead of taking the real host-wide lock and
-# blocking live automation for two minutes.
+# fd 201 rather than 200 so an inherited-and-unlocked fd 200 from a calling
+# script can never be confused with this one. Both knobs are overridable so the
+# paired test can contend on its own lock file with a short bound.
 LOCK_FILE="${CONTEXT_REPO_GIT_LOCK:-${SAFE_COMMIT_LOCK:-/tmp/context-repo-git.lock}}"
 LOCK_WAIT="${SAFE_COMMIT_LOCK_WAIT:-120}"
-exec 201>"$LOCK_FILE"
-if ! flock -w "$LOCK_WAIT" 201; then
+lock_timeout() {
   echo "safe-commit: could not acquire $LOCK_FILE within ${LOCK_WAIT}s." >&2
   echo "Another /close or an automation writer is committing to this repo." >&2
   echo "NOTHING was staged or committed. Re-run in a moment." >&2
   exit 3
+}
+if command -v flock >/dev/null 2>&1 && [[ -z "${SAFE_COMMIT_NO_FLOCK:-}" ]]; then
+  exec 201>"$LOCK_FILE"
+  flock -w "$LOCK_WAIT" 201 || lock_timeout
+else
+  # No flock (stock macOS): lock.sh's pid symlink, with a dead holder's lock
+  # taken over one taker at a time.
+  # shellcheck disable=SC1091  # sibling file, resolved at run time
+  source "$(dirname "${BASH_SOURCE[0]}")/lock.sh"
+  lock_take "$LOCK_FILE.d" "$LOCK_WAIT" || lock_timeout
 fi
 
 # Everything currently staged that this session did not ask for. On a shared

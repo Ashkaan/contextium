@@ -9,7 +9,7 @@ to add the rest.
 
 ## write-your-own-rules
 The rules in `.agents/rules/` are the starter set: voice, depth, boundaries, simplicity, no-deferral,
-mechanisms, journal format. They encode a methodology, not your specifics. The system gets valuable as
+mechanisms, reading before asserting, tests, decision records, journal format. They encode a methodology, not your specifics. The system gets valuable as
 you add rules that capture *your* corrections and *your* domain. Here is the discipline for doing that
 well.
 
@@ -24,8 +24,9 @@ and usually becomes noise. (See @rule:mechanisms-not-prose on speculative enforc
 - An imperative body: MUST / MUST NOT / SHOULD, with the boundary stated plainly.
 - One line on *why* — the failure or principle behind it — so a future reader can tell whether it
   still applies.
-- A backing mechanism if the rule is load-bearing (a hook, a check, a skill step). If you can't
-  mechanize it, keep it short and accept it's advisory.
+- A backing mechanism if the rule is load-bearing (a hook, a check, a skill step). A skill step that
+  enforces it cites it as `@rule:<id>` in its body; there is no frontmatter list of enforced rules.
+  If you can't mechanize it, keep it short and accept it's advisory.
 
 **Keep the set lean.** Every rule loaded into context costs attention. Prune rules that stopped
 firing, fold duplicates together, and prefer extending an existing rule over adding a near-twin. A
@@ -37,4 +38,4 @@ domain-specific ones often shouldn't be.
 
 When a correction recurs and you want it enforced, that is the signal to write it down — once, in one
 file, with a mechanism if it matters. That loop, more than any single rule, is what makes the layer
-yours. [2026-04-18]
+yours. [2026-04-18] [2026-09-28]

@@ -10,8 +10,8 @@ resolve it.
 
 ## The Claude Code half
 
-Everything the Loop needs is in `.agents/`, and `.claude/skills`, `.claude/rules`, `.claude/templates`
-and `.claude/agents` are symlinks into it — edit either path, it is the same file. What is genuinely
+Everything the Loop needs is in `.agents/`, and `.claude/skills`, `.claude/rules` and `.claude/agents`
+are symlinks into it — edit either path, it is the same file. What is genuinely
 Claude-only lives here as real directories:
 
 | Path | Holds |

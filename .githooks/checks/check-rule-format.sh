@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# check-rule-format.sh — Validate v8 rule format in .agents/rules/*.md
+# check-rule-format.sh — Validate the rule format in .agents/rules/*.md
 #
 # Usage:
 #   check-rule-format.sh                  # check all .agents/rules/*.md files
@@ -92,9 +92,8 @@ for file in "${files[@]}"; do
   fi
 
   # Collect rule IDs; check for duplicates. `|| true` so a path-scoped
-  # reference/pointer file with no lowercase-kebab `## <id>` headers (e.g.
-  # style-linkedin-voice.md, integrations-folder-decision.md) doesn't crash
-  # the script under `set -e` when grep finds no match (exit 1).
+  # reference/pointer file with no lowercase-kebab `## <id>` headers doesn't
+  # crash the script under `set -e` when grep finds no match (exit 1).
   rule_ids=$(grep -E '^## [a-z][a-z0-9-]*$' "$file" | sed 's/^## //' | sort || true)
   if [[ -n "$rule_ids" ]]; then
     dupes=$(echo "$rule_ids" | uniq -d)

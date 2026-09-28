@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
-# Test harness for run-rule-linters.sh — boundary cases mirror
-# SPEC § 4 of propose-rule-rebuild.spec.md.
+# Test harness for run-rule-linters.sh — covers the empty, single, many and error cases.
 #
 # Hermetic: builds a fake REPO_ROOT with stub linters under .githooks/checks/.
 #

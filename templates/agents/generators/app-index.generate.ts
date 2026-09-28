@@ -5,6 +5,7 @@
 import { readdirSync, readFileSync, writeFileSync } from "fs";
 import { join } from "path";
 import { parseFrontmatter } from "./parse_frontmatter.ts";
+import { repoRoot } from "./repo_root.ts";
 import { validateOutcome } from "./validate_outcome.ts";
 
 // ── Domain labels ────────────────────────────────────────────────────
@@ -201,14 +202,10 @@ function buildReadme(apps: AppMeta[]): string {
 
 // ── Main ─────────────────────────────────────────────────────────────
 
-import { fileURLToPath } from "url";
-import { dirname } from "path";
 import process from "node:process";
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = dirname(__filename);
-const repoRoot = join(__dirname, "../../..");
-const appsDir = join(repoRoot, "apps");
+const root = repoRoot(import.meta.url);
+const appsDir = join(root, "apps");
 
 // `--out <path>` requires a non-empty value when the flag is present — a silent
 // fallback to the canonical path on a missing/empty value would let a caller
@@ -247,4 +244,4 @@ for (const a of apps) {
   byDomain.set(domain, (byDomain.get(domain) ?? 0) + 1);
 }
 const breakdown = [...byDomain.entries()].sort().map(([k, v]) => `${k}=${v}`).join(", ");
-console.log(`Generated apps/README.md: ${apps.length} apps (${breakdown})`);
+console.error(`Generated apps/README.md: ${apps.length} apps (${breakdown})`);

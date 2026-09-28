@@ -1,42 +1,9 @@
 ---
 name: debate
-description: Adversarial debate — spawn competing AI agents to argue a question, then synthesize the strongest conclusion. Use when the user says "debate this", "I'm torn between X and Y", "red-team this plan", or "council on this".
-disable-model-invocation: false
-argument-hint: "[question] [--format dialectic|redteam|council] [--agents 2|3]"
-allowed-tools:
-  - Bash
-  - Read
-  - AskUserQuestion
-peers:
-  - .agents/skills/implement-audit/SKILL.md
-  - .agents/skills/explain/SKILL.md
-enforces:
-  - "@rule:no-guessing"
-  - "@rule:mechanisms-not-prose"
-  - "@rule:single-source-of-truth"
-  - "@rule:adversarial-recursion-cap"
-steps:
-  - id: step-1-parse-input
-    kind: gate
-    gate:
-      tool: AskUserQuestion
-      on_fail: continue
-      condition: Fires only when the question is unclear or too vague to debate. Otherwise extract the question, auto-detect the format, and default to 2 agents.
-  - id: step-2-build-prompts
-    kind: action
-    action: Run scripts/build-agent-prompts.sh to assemble role-specific prompt files per format and seat count.
-  - id: step-3-dispatch-agents
-    kind: gate
-    gate:
-      tool: shell
-      on_fail: halt
-      condition: Run scripts/dispatch-agents.sh; halt if all agents fail (script exits non-zero).
-  - id: step-4-synthesize
-    kind: action
-    action: Read parse-agent-output.sh stdout and produce the structured synthesis — judgment, not summarization.
-  - id: step-5-optional-round-2
-    kind: action
-    action: If user requests another round (or --rounds 2), re-dispatch agents with rebuttal prompts and re-synthesize. Stop when a round produces no argument not already on the table (@rule:adversarial-recursion-cap ends loops on the work, not a count). Rounds here are user-requested, so never ask whether to continue.
+description: Adversarial debate — spawns competing AI agents to argue a question, then synthesizes the strongest conclusion. Use when the user says "debate this", "I'm torn between X and Y", "red-team this plan", or "council on this". Takes [question] [--format dialectic|redteam|council] [--agents 2|3].
+allowed-tools: Bash Read AskUserQuestion
+metadata:
+  peers: ".agents/skills/debate/scripts/build-agent-prompts.sh .agents/skills/debate/scripts/dispatch-agents.sh .agents/skills/debate/scripts/parse-agent-output.sh .agents/skills/implement-audit/SKILL.md .agents/skills/explain/SKILL.md"
 ---
 
 # Debate — Multi-Agent Adversarial Reasoning
@@ -44,7 +11,7 @@ steps:
 Spawn 2-3 AI agents with competing perspectives on a question, collect their
 arguments, and synthesize the strongest conclusion.
 
-**Step graph** (mirrors frontmatter `steps:`): step-1-parse-input → step-2-build-prompts → step-3-dispatch-agents → step-4-synthesize → step-5-optional-round-2
+**Steps:** step-1-parse-input → step-2-build-prompts → step-3-dispatch-agents → step-4-synthesize → step-5-optional-round-2
 
 ## Critical
 
@@ -216,7 +183,7 @@ User: `/debate red-team this plan: stand up an HTTP service with bearer auth so 
 |---|---|---|
 | `dispatch-agents.sh` reports an agent timeout | Real CLI took >120s (rare but happens under load or slow model auto-routing) | The `.gap` file records the timeout; synthesis names it in the Gaps section. To retry, re-invoke `/debate` with the same question + a larger `--timeout-s`. |
 | A CLI's header/footer noise leaks into the synthesis input | `parse-agent-output.sh` strips it; the fixtures cover the shapes seen so far | Add a fixture under `scripts/fixtures/` with the new shape and extend the trim pattern in `parse-agent-output.sh`. |
-| A model CLI hits a rate limit | dispatch records a `.gap` for that seat | Synthesis names the gap. For a critical decision, re-invoke with `--config claude` (all 3 roles on different models from one vendor) to avoid the cross-provider failure mode. |
+| A model CLI hits a rate limit | dispatch records a `.gap` for that seat | Synthesis names the gap. For a critical decision, re-run once the limit clears, or set `CONTEXTIUM_VOICES` to the CLIs that still answer so they fill every seat. |
 | `council` + `--agents 2` rejected at build | a council is three positions by construction | Use `--agents 3` for a council, or switch format to `dialectic` if 2 perspectives suffice. |
 | A round re-runs the same arguments | The loop should have ended on the work per `@rule:adversarial-recursion-cap` | Stop and synthesize. Do not fire a question; the count was never the signal. |
 | All agents fail → `dispatch-agents.sh` exits non-zero | Network outage, all CLIs degraded, or invalid prompts | Halt the skill. Surface the failure to the user; do NOT emit a synthesis with zero inputs. |

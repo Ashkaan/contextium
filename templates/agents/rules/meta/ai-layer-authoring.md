@@ -45,19 +45,24 @@ A rule written from a hunch is indistinguishable, at read time, from one written
 one of them is worth the attention it takes from the others. [2026-04-18]
 
 ## skill-required-frontmatter
-Every skill MUST declare `name`, `description`, and `disable-model-invocation` in its frontmatter,
-plus `argument-hint` when it takes arguments and `enforces:` (which may be `[]`).
+Every skill's frontmatter MUST follow the [Agent Skills specification](https://agentskills.io/specification):
+`name` (equal to the folder name) and `description` required; `license`, `compatibility`,
+`allowed-tools` (one space-separated string) and `metadata` optional; no other key. `metadata` MUST
+hold only `peers` — one space-separated string of the paths the skill loads or dispatches. Whether
+the model may fire a skill on its own is harness configuration, never a file field.
 
-The `description` is what the model routes on: it MUST say WHAT the skill does and WHEN to use it. A
-description that never states its trigger produces a skill that never fires, and nothing reports
-that. [2026-04-18]
+The `description` is what the model routes on: it MUST say WHAT the skill does and WHEN to use it,
+and the arguments it takes, in at most 1,024 characters. A harness ignores a key it does not know
+without a word, so a skill carrying one looks configured and is not; `check-skill-format.sh` refuses
+it at commit. [2026-04-18] [2026-09-24]
 
 ## skill-step-graph
 When a skill has gates — a question it asks, a point it halts at, a check it runs, another skill it
-dispatches — its `steps:` frontmatter MUST declare each step's `id`, its `kind` (action or gate), and
-for a gate the `tool` and what happens `on_fail`. Every declared step id MUST have a matching section
-in the body. A step graph nobody implemented is a promise the skill does not keep. Simple skills omit
-`steps:` entirely. [2026-04-18]
+dispatches — each step MUST be its own body section, `## <step-id>`, saying what it does and, for a
+gate, what it checks and what happens when it fails. The frontmatter carries no step list: a graph
+in a field no harness reads is a promise nobody checks. A step that is data (a lookup, a check, a
+transform) calls a script rather than describing it (@rule:deterministic-over-ai). Simple skills are
+one body. [2026-04-18] [2026-09-24]
 
 ## hook-errors-actionable
 Every blocking hook MUST name the exact file, the line where applicable, and the concrete thing to do

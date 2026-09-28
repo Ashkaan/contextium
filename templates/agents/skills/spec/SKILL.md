@@ -1,140 +1,149 @@
 ---
 name: spec
-description: Write the SPEC. Given a design (handed over by /project, or gathered ad-hoc mid-session), write the lean 4-section SPEC file, audit it via /spec-audit (independent design review + spirit-check), then auto-invoke /close on a clean pass. The SPEC-writing half of the loop's Think verb — broken out so a SPEC can be produced anytime one is needed, not only inside a full /project think flow.
-disable-model-invocation: false
-argument-hint: "[spec-name or scope hint]"
-allowed-tools: "Bash(.agents/skills/close/scripts/*:*) Read Edit Write Task Skill AskUserQuestion"
-peers:
-  - .agents/skills/project/SKILL.md
-  - .agents/skills/spec-audit/SKILL.md
-  - .agents/reviewers/spirit-check.md
-  - .agents/skills/project/references/spec-schema.md
-  - .agents/skills/close/references/auto-close-gate.md
-  - .agents/templates/spec-lean.md
-enforces:
-  - "@rule:boundary-inputs"
-  - "@rule:simplest-solution-default"
-  - "@rule:depth-policy"
-  - "@rule:no-deferral"
-handoffs_from:
-  - .agents/skills/project/SKILL.md
-handoffs_to:
-  - .agents/skills/spec-audit/SKILL.md
-  - .agents/skills/close/SKILL.md
-writes:
-  - projects/{domain}/{date}_{slug}/{name}.spec.md
-  - apps/{name}/SPEC.md
-steps:
-  - id: step-1-write-spec
-    kind: action
-    action: "Write the SPEC file using the lean 4-section template at .agents/templates/spec-lean.md (Ask / Behavior / Files / Done). Location depends on work shape per the table in the body — new app: apps/{name}/SPEC.md; non-app work: projects/{domain}/{date}_{slug}/{name}.spec.md."
-  - id: step-2-spec-audit
-    kind: gate
-    gate:
-      tool: skill
-      on_fail: halt
-      condition: "UNCONDITIONAL. Dispatch /spec-audit on the SPEC path. It decides materiality itself, runs the independent design reviewer and the spirit-check agent, folds accepted findings into the SPEC in place, and returns the `spec-audit:` trailer. A DRIFT the user must adjudicate is a depth-policy decision → HALT. A reviewer that could not run is a FAILED audit → report it, do not auto-close."
-  - id: step-3-auto-close
-    kind: gate
-    gate:
-      tool: skill
-      on_fail: halt
-      condition: "Terminal auto-close gate. SPEC written + /spec-audit clean and no depth-policy decision / deferral outstanding → auto-invoke /close per .agents/skills/close/references/auto-close-gate.md (check close-fired.sh status, mark, dispatch /close to commit the SPEC with the spec-audit: trailer). The SPEC commits and is revised on the main branch — no sign-off halt. The next /implement runs in a fresh context (a new tab, or /clear)."
+description: Writes one spec folder, specs/NNN-name/ with spec.md, plan.md, tasks.md and research.md from spec-kit's templates, for each designed roadmap row; sets each row in ROADMAP.md and re-derives the README's next:, runs /spec-audit on every folder, then auto-invokes /close. Use when /project hands over a design, or when work in progress turns out to need a spec ("/spec <scope hint>").
+allowed-tools: "Bash(bash .agents/skills/close/scripts/*:*) Bash(bash .agents/skills/spec-audit/scripts/*:*) Read Edit Write Task Skill AskUserQuestion"
+metadata:
+  peers: ".agents/skills/project/SKILL.md .agents/skills/spec-audit/SKILL.md .agents/skills/close/references/auto-close-gate.md .agents/skills/spec/references/templates/SOURCE.md .agents/skills/project/references/templates/ROADMAP.md .agents/skills/close/scripts/roadmap.sh"
 ---
 
-# /spec — write the SPEC
+# /spec — write the specs
 
-`/spec` is the **SPEC-writing half of the Think verb**. `/project` does the thinking — goal-alignment, context-load, explore, design — then hands the design to `/spec`, which writes the actual SPEC file, audits it, and auto-closes (commits) on a clean pass. Breaking it out means a SPEC can be produced ANY time one is needed: inside a full `/project` think flow, OR ad-hoc when work-in-progress turns out to need one in the moment.
+`/project` does the thinking and hands over a design; `/spec` writes it down,
+one spec folder per roadmap row, gets each audited, and auto-closes. Split out
+so a spec can be written whenever work needs one, not only at the end of a full
+think flow.
 
 ## Critical
 
-- **The SPEC stays lean.** Four sections — Ask / Behavior / Files / Done — per [`.agents/templates/spec-lean.md`](../../templates/spec-lean.md). Don't pad it with boilerplate that degrades to "N/A"; a heavy project grows its own sections when a real gap bites, per `@rule:simplest-solution-default`.
-- **The Ask section is the user's verbatim ask.** Capture it in their words. It's the thing the finished work is checked against — it keeps the implementation from drifting into a fancier interpretation than was wanted.
-- **`/spec` auto-closes; there is no sign-off halt.** On a clean audit, `/spec` auto-invokes `/close` to commit the SPEC (per [`../close/references/auto-close-gate.md`](../close/references/auto-close-gate.md)). The SPEC lands on the main branch and is revised there — the user reviews it in the fresh `/implement` tab, not at a pre-commit gate. `/spec` only HALTS if the audit surfaces a choice the user must make (a `@rule:depth-policy` decision), or if the reviewer could not run.
-- **Fresh-context boundary preserved.** `/spec`'s auto-close ENDS the session. The next `/implement` runs in a fresh tab — `/spec` does NOT roll into `/implement`.
-- **Don't paper over a gap.** If the design left a credential, a file path, or an API unresolved, resolve it now (read the file, find the item) — a SPEC that says "from whatever config X uses" is a guess, not a spec.
+- **Every spec is audited before it lands.** `/spec-audit` runs on every folder
+  written; the user is never the first reviewer.
+- **No sign-off halt.** An audited spec is committed by the auto-close and read
+  by the user on the branch, or in the fresh `/implement` session. `/spec` halts
+  only for a decision the user must make.
+- **Fresh context.** The auto-close ends the session; `/implement` runs in a new
+  one. `/spec` never rolls into `/implement`.
+- **No guesses in a spec.** A credential, path or API the design left
+  unresolved is resolved now, by reading, or written as a
+  `[NEEDS CLARIFICATION: …]` marker — never "whatever X uses".
 
-## step-1-write-spec — write the SPEC file
+## step-1-write-specs
 
-The SPEC is a committed artifact capturing WHAT this work delivers + HOW + done criteria, using the lean 4-section template. See [project/references/spec-schema.md](../project/references/spec-schema.md) for the section-by-section explainer.
+A spec is a folder, `projects/<domain>/<date>_<slug>/specs/NNN-name/`, from
+spec-kit's templates (provenance and the byte check:
+[references/templates/SOURCE.md](references/templates/SOURCE.md)):
 
-**Location depends on the work shape:**
+| File | Template | Holds |
+|---|---|---|
+| `spec.md` | [spec.md](references/templates/spec.md) | `**Input**` — the user's words verbatim; `## Clarifications` — how we read them, and the grill's ledger; user stories, Edge Cases, Requirements, Success Criteria, Acceptance — the behavior contract |
+| `plan.md` | [plan.md](references/templates/plan.md) | Simplest shape, Technical Context, Inputs / Outputs and Data sourcing, Constitution Check (the audit line lands here), Patterns to follow, Failure modes, Validation Commands |
+| `tasks.md` | [tasks.md](references/templates/tasks.md) | the task lines `/implement` executes, tests included |
+| `research.md` | [research.md](references/templates/research.md) | what was looked up, with sources; decisions that outlive the spec link to `decisions/` |
 
-| Work shape | Destination |
+`report.md` is added later, by `/implement`.
+
+For each row handed over:
+
+1. **Number and name.** `NNN` is the highest existing `specs/NNN-*` plus one,
+   zero-padded (`001` first); the name is the row's Sub-feature in kebab-case.
+2. **Fill the four files.** Replace the template's instructions and examples as
+   you answer them — including the example FR lines, whose
+   `[NEEDS CLARIFICATION]` text would otherwise read as open questions.
+   `N/A — <reason>` is fine for a section the work genuinely lacks, except
+   `**Input**`, `## Clarifications` and `### Simplest shape`, which are never
+   removed. Keep the `- spec-audit: […]` placeholder in plan.md; step 2
+   replaces it. The grill ledger goes under `## Clarifications` →
+   `### Session YYYY-MM-DD`, one row per decision; an ad-hoc spec with no grill
+   says `N/A — no grill (ad-hoc spec)`.
+3. **Leave open items open.** Anything not settled is written in place as
+   `[NEEDS CLARIFICATION: <the question>]`.
+   `.agents/skills/close/scripts/open-clarifications.sh <spec-folder>` lists
+   them, `/implement` refuses to start while one remains, and `/project` routes
+   the row back to planning.
+4. **Set the row.** With no `ROADMAP.md` yet, create it from
+   [the roadmap template](../project/references/templates/ROADMAP.md): fill the
+   epic name and intro and REPLACE the three placeholder rows with the real
+   ones (a new row's ID is `R` + highest + 1; IDs are never reused). Then, for
+   each folder, through the table's one writer:
+
+   ```bash
+   bash .agents/skills/close/scripts/roadmap.sh <project-folder> --set <ID> planned --sub-spec specs/NNN-name/
+   ```
+
+   and once, after the last:
+
+   ```bash
+   bash .agents/skills/close/scripts/roadmap.sh <project-folder> --sync-next
+   ```
+
+   `next:` is derived by the README template's rule, never hand-written.
+
+**Where a spec goes:**
+
+| Work | Destination |
 |---|---|
-| New app (first SPEC) | `apps/{name}/SPEC.md` (canonical, permanent — evolves in-place) |
-| Non-app work (audits, rule/hook edits, refactors) | `projects/{domain}/{date}_{slug}/{name}.spec.md` (project-scoped) |
-| Genuinely one-off, too small for a SPEC | Skip — do the work directly and journal it |
+| Any build work — a feature, a fix, a refactor, an audit, a rule change | `projects/<domain>/<date>_<slug>/specs/NNN-name/` |
+| An app's living contract | `apps/<name>/SPEC.md`, kept beside the code; not a project spec, and `/implement` does not execute it |
+| One-off work too small for a spec | none — do it and journal it |
 
-A multi-session project produces multiple SPECs over its life (`foundation.spec.md`, then per-phase SPECs) — name each for what it covers.
+## step-2-spec-audit
 
-## step-2-spec-audit — review the design before it becomes code
+For every folder written, invoke `/spec-audit <spec-folder>` and wait for it.
+It decides materiality itself, runs the independent reviewer and the
+spirit-check, folds accepted findings into the files, and writes its
+`spec-audit:` line into the folder's plan.md.
 
-Dispatch [`/spec-audit`](../spec-audit/SKILL.md) on the SPEC path. Unconditionally — it decides for
-itself whether the change is material enough to spend a reviewer call on, so this step never asks you
-to judge that.
+- Findings accepted and folded, spirit MATCH → next folder.
+- Spirit DRIFT or AMBIGUOUS, or a reviewer finding still disputed after round 2
+  → a decision for the user (`@rule:depth-policy`). Surface it and HALT.
+- A reviewer that could not run is a failed audit, not a clean one → report it
+  and HALT.
 
-It runs two reviewers with different jobs:
+## step-3-auto-close
 
-- an **independent design reviewer** (a different model from the one that wrote the SPEC, when one is
-  installed) attacks the design — missing boundary cases, peers left inconsistent, a shape bigger than
-  the ask, a "done" section that cannot actually be run;
-- the **spirit-check agent** reads only the user's verbatim ask and the behavior contract, and answers
-  whether the SPEC describes the thing that was asked for. This catches what the design reviewer
-  structurally cannot: a SPEC that is internally excellent and solves the wrong problem.
-
-Accepted findings are folded into the SPEC in place. On a clean pass it returns the `spec-audit:`
-trailer for the close commit. On a DRIFT the user must adjudicate, that is a `@rule:depth-policy`
-decision — surface it and HALT; auto-close does not fire until it is resolved. If the reviewer could
-not run at all, that is a FAILED audit, not a clean one: report it and do not auto-close.
-
-This is the cheapest review in the loop. A missing boundary case costs one line here and a rewrite
-after the code exists.
-
-## step-3-auto-close — auto-invoke /close
-
-Terminal gate. The SPEC is written and audited clean, and no depth-policy decision or deferral is outstanding. Per the auto-close gate ([`../close/references/auto-close-gate.md`](../close/references/auto-close-gate.md)): check `close-fired.sh status`, `mark`, and dispatch `/close`. The SPEC is committed to the main branch — **no sign-off halt** — and the user reviews it in the fresh `/implement` tab, revising on main if needed.
-
-Auto-close ENDS this session. **Do not start implementing.** `/implement` runs in a fresh context — open a new tab (or `/clear`), then `/implement <project-slug>`.
-
-Before dispatching `/close`, print a short summary so the closing commit is legible:
+Follow [`../close/references/auto-close-gate.md`](../close/references/auto-close-gate.md):
+on clean completion — every folder written and audited, nothing held — invoke
+`/close`. It commits the specs with the roadmap and README edits and prints
+each ready row's `/implement` command. Before invoking it, print:
 
 ```markdown
-## SPEC Created
+## Specs written
 
-**File**: `<spec-path>`
-**Summary**: {2-3 sentence overview}
-**Scope**: {N} files to CREATE, {M} to UPDATE, {K} total tasks
-**Key Patterns**: {pattern with file:line}, {pattern with file:line}
-**Audit**: {reviewer} — {N findings folded}; spirit {MATCH | DRIFT — <what was fixed>}
-
-**Next Step**: `/close` is committing the SPEC now. Review it on the branch, then in a fresh context (a new tab, or `/clear`): `/implement <project-slug>`
+**Specs**: `<project-folder>/specs/NNN-name/` — row R#, <Sub-feature> (one line per folder)
+**Summary**: <2-3 sentences>
+**Scope**: <N> files to create, <M> to update, <K> tasks
+**Audit**: <the spec-audit: line from each plan.md>
+**Open clarifications**: none | <rows whose spec still holds a marker — they go back to /project>
 ```
+
+The next step is a fresh context (a new tab, or `/clear`), one session per
+ready row: `/implement <project-slug>` for the first, or
+`/implement <project-slug> <row-id>` for a specific one (e.g. `r2`, matched
+case-insensitively). Rows whose dependencies are met can run in parallel.
 
 ## Examples
 
-### Example 1 — dispatched by /project (the golden path)
+**From /project.** Two designed rows, R1 and R2 (R2 depends on R1). No
+`ROADMAP.md` yet, so it is created with those two rows; `specs/001-retry-queue/`
+and `specs/002-exhaustion-alert/` are written, each set with `--set`, then
+`--sync-next` writes `next: "R1: retry queue"`. Both audits come back round-1,
+spirit MATCH. `/close` commits and prints one command — R2 is not ready until
+R1 is done.
 
-`/project <slug>` runs the think flow through design, then its `think-step-4-dispatch-spec` invokes `/spec`. `step-1` writes `projects/<domain>/<date>_<slug>/main.spec.md`. `step-2` dispatches `/spec-audit` → two findings folded, spirit MATCH. `step-3` prints `## SPEC Created` and auto-invokes `/close`, which commits the SPEC to main. The session ends; the user opens a fresh tab for `/implement` and reviews the committed SPEC there.
+**Ad hoc.** Mid-session a small change turns out to need a spec. `/spec "cap
+export batch size"` adds a row to the project's roadmap, writes its folder with
+`## Clarifications` reading `N/A — no grill (ad-hoc spec)`, audits it, closes.
 
-### Example 2 — ad-hoc mid-session SPEC
-
-Working together, it turns out a small change needs a SPEC. `/spec "<scope hint>"` reads the design context already in session (lighter than a full think flow), writes the SPEC at the schema-correct location, audits it, and auto-closes (commits). No `/project` think flow required.
-
-### Example 3 — the SPEC drifted from the ask
-
-`step-2` returns spirit DRIFT: the Behavior section describes a scheduled service, and the user asked for a script. `/spec` rewrites it down to a script. If the divergence is a real choice, it surfaces the decision and HALTS — auto-close does not fire until the user resolves it; then `/spec` resumes and auto-closes.
-
-### Example 4 — no independent reviewer installed
-
-`step-2`'s design reviewer exits 3 (only the authoring model on this machine). `/spec-audit` falls back to a fresh-context agent, folds its findings, and labels the trailer `claude-fallback`. The summary says plainly that the reviewer shared the author's model, so independence was reduced.
+**Drift.** The spirit-check says the user asked for a script and the spec
+describes a scheduled service. If the fix is obvious, rewrite down to a script
+and re-audit; if it is a real choice, ask the user and HALT — the auto-close
+fires after the answer.
 
 ## Troubleshooting
 
-| Symptom | Likely cause | Fix |
+| Symptom | Cause | Fix |
 |---|---|---|
-| SPEC written but not at the schema location | Wrong work-shape branch in `step-1` | Re-check the location table; new apps → `apps/{name}/SPEC.md`, non-app → `projects/.../{name}.spec.md` |
-| spirit-check agent "not found" | The harness has not auto-loaded `.agents/reviewers/spirit-check.md` this session, or the tool has no subagents | Run the check in a clean context with the spirit-check body prepended, and note the fallback in the summary |
-| Commit rejected: missing `spec-audit:` trailer | The git hook saw a SPEC change with no audit on the record | Run `/spec-audit` on the SPEC and put its trailer in the commit message. A non-material edit still emits one. |
-| `/spec` rolled straight into implementing | `step-3` auto-close dispatched `/implement` instead of `/close` | Auto-close commits the SPEC and ENDS the session; the fresh-context boundary is load-bearing — `/implement` runs in a new tab, never inline |
-| `/close` fired twice | `close-fired` marker missing (no session id) | Expected fail-safe; `close-fired.sh` skips dedup when `CLAUDE_CODE_SESSION_ID` is unset. A rare same-session double-close is harmless |
+| `roadmap.sh` exits 1, `placeholder row R1` | rows appended under the template's placeholders | delete the `<name>` rows |
+| plan.md still holds `- spec-audit: […]` | step 2 skipped, or its line printed but not written | run `/spec-audit <spec-folder>` |
+| `/implement` refuses with `NEEDS CLARIFICATION` | a marker was left in spec.md, plan.md or tasks.md | the gate working — settle it in `/project <slug>`, edit the marker out |
+| `next:` is stale | `--sync-next` not run after the last `--set` | run it |
+| `/close` ran twice | the auto-close gate's double-fire check was skipped | follow the gate as written before invoking `/close` |

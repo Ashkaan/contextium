@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Test harness for build-agent-prompts.sh — boundary cases mirror SPEC § 4
-# of debate-rebuild.spec.md.
+# Test harness for build-agent-prompts.sh — each format, both seat counts,
+# and the bad-input cases.
 #
 # peers: build-agent-prompts.sh
 

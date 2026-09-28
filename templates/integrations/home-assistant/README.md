@@ -2,7 +2,6 @@
 name: Home Assistant
 description: Home automation via SSH and REST API
 cli: REST API / SSH
-typed_client: integrations/home-assistant/home_assistant.ts
 hosts:
   - home-assistant
 aliases:
@@ -15,37 +14,16 @@ aliases:
 
 A Home Assistant instance, managed via SSH and REST API. Replace the hostname/IP below with your own.
 
-## TypeScript Client
+## If you write a client
 
-Canonical typed reference: [`home_assistant.ts`](home_assistant.ts).
+Nothing here ships one; `curl` and `ssh` cover every call below. If your code talks to HA, this is its shape:
 
-```ts
-import {
-  createHaSession,
-  haGetStates,
-  haGetState,
-  haCallService,
-  haExec,
-  type HaState,
-} from "../../integrations/home-assistant/home_assistant.ts";
+- A session built from a Long-Lived Access Token read from your vault, with an explicit-token override for tests.
+- Generic typed GET / POST wrappers that retry 429 and 5xx a few times with backoff.
+- `getStates()` (all entities), `getState(entityId)`, and `callService(domain, service, data)`, which returns the states it changed.
+- An SSH wrapper that runs the `ha` CLI (`ssh root@home-assistant "ha ..."`) for backups, add-ons and system ops, which the REST API does not cover.
 
-const session = await createHaSession();
-const states = await haGetStates(session);
-await haCallService(session, "light", "turn_on", { entity_id: "light.living_room" });
-const { stdout } = await haExec("ha core info");
-```
-
-| Function / Type | Purpose |
-|---|---|
-| `createHaSession(opts?)` | Long-Lived Access Token from your secrets vault; returns session |
-| `haGet<T>(session, path)` / `haPost<T>(session, path, body?)` | Generic typed REST wrappers with retry on 429/5xx |
-| `haGetStates(session)` | All current entity states |
-| `haGetState(session, entityId)` | Single entity by ID |
-| `haCallService(session, domain, service, data?)` | Service invocation; returns changed states |
-| `haExec(command, timeoutMs?)` | SSH `ha`-CLI wrapper (root@home-assistant); for backups, addons, system ops |
-| `HaSession`, `HaState`, `HaCallResult` | Shared types |
-
-REST auth: a Long-Lived Access Token from your secrets vault (item `Home Assistant - <your-vault>`, field `API Token`) — pass `tokenOverride` to supply the token explicitly (e.g. for tests). SSH auth: key-based via `~/.ssh/config`, user `root`.
+REST auth: a Long-Lived Access Token in your vault (item `Home Assistant - <consumer>`, field `API Token`). SSH auth: key-based via `~/.ssh/config`, user `root`.
 
 ## System
 
@@ -71,16 +49,16 @@ Requires a Long-Lived Access Token (create at `http://home-assistant:8123/profil
 
 ```bash
 # Retrieve token from your secrets vault
-HA_TOKEN=$(op read "op://<your-vault>/Home Assistant - <your-vault>/API Token")
+HA_TOKEN=$(op read "op://<your-vault>/Home Assistant - <consumer>/API Token")
 
 # Check API
-curl -s -H "Authorization: Bearer $HA_TOKEN" http://home-assistant:8123/api/ | jq
+curl -fsS -H "Authorization: Bearer $HA_TOKEN" http://home-assistant:8123/api/ | jq
 
 # Get all states
-curl -s -H "Authorization: Bearer $HA_TOKEN" http://home-assistant:8123/api/states | jq
+curl -fsS -H "Authorization: Bearer $HA_TOKEN" http://home-assistant:8123/api/states | jq
 
 # Call a service
-curl -s -X POST -H "Authorization: Bearer $HA_TOKEN" \
+curl -fsS -X POST -H "Authorization: Bearer $HA_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"entity_id": "light.living_room"}' \
   http://home-assistant:8123/api/services/light/turn_on
@@ -136,31 +114,37 @@ ssh root@home-assistant "ha supervisor restart"
 
 ## Common invocations
 
-The snippets below fetch the LLAT from your vault via shell `op read` and pass it as `tokenOverride` to `createHaSession`.
+Every REST snippet assumes the token is loaded:
+
+```bash
+HA_TOKEN="$(op read 'op://<your-vault>/Home Assistant - <consumer>/API Token')"
+HA=http://home-assistant:8123
+```
 
 ### Smoke / auth check
 ```bash
-HA_TOKEN="$(op read 'op://<your-vault>/Home Assistant - <your-vault>/API Token')" node --input-type=module -e 'import { createHaSession, haGet } from "./integrations/home-assistant/home_assistant.ts"; const s = await createHaSession({ tokenOverride: process.env.HA_TOKEN }); const r = await haGet(s, "/api/"); console.log(JSON.stringify({ baseUrl: s.baseUrl, message: r?.message ?? null }, null, 2));'
+curl -fsS -H "Authorization: Bearer $HA_TOKEN" "$HA/api/" | jq -r '.message'   # → "API running."
 ```
 
 ### Refresh / re-auth
+Home Assistant uses a Long-Lived Access Token (no refresh flow). To rotate, mint a new LLAT at `http://home-assistant:8123/profile` → "Long-Lived Access Tokens", then:
 ```bash
-# Home Assistant uses a Long-Lived Access Token (no refresh flow). To rotate, mint a new LLAT at http://home-assistant:8123/profile → "Long-Lived Access Tokens" and update your vault.
-op item edit 'Home Assistant - <your-vault>' --vault '<your-vault>' 'API Token=NEW_LLAT_VALUE' && HA_TOKEN="$(op read 'op://<your-vault>/Home Assistant - <your-vault>/API Token')" node --input-type=module -e 'import { createHaSession, haGet } from "./integrations/home-assistant/home_assistant.ts"; const s = await createHaSession({ tokenOverride: process.env.HA_TOKEN }); const r = await haGet(s, "/api/"); console.log("HA auth ok:", r?.message ?? "(no message)");'
+op item edit 'Home Assistant - <consumer>' --vault '<your-vault>' 'API Token=NEW_LLAT_VALUE'
 ```
+and rerun the smoke check.
 
 ### Common queries / actions
-- All entity states (count + sample): `HA_TOKEN="$(op read 'op://<your-vault>/Home Assistant - <your-vault>/API Token')" node --input-type=module -e 'import { createHaSession, haGetStates } from "./integrations/home-assistant/home_assistant.ts"; const s = await createHaSession({ tokenOverride: process.env.HA_TOKEN }); const states = await haGetStates(s); console.log(JSON.stringify({ count: states.length, sample: states.slice(0, 5).map((e) => ({ entity_id: e.entity_id, state: e.state })) }, null, 2));'`
-- Single entity by id (replace `$ENTITY_ID`): `ENTITY_ID="sensor.example" HA_TOKEN="$(op read 'op://<your-vault>/Home Assistant - <your-vault>/API Token')" node --input-type=module -e 'import { createHaSession, haGetState } from "./integrations/home-assistant/home_assistant.ts"; const s = await createHaSession({ tokenOverride: process.env.HA_TOKEN }); const e = await haGetState(s, process.env.ENTITY_ID); console.log(JSON.stringify(e, null, 2));'`
-- Filter states by domain (e.g., `sensor.*`): `DOMAIN="sensor" HA_TOKEN="$(op read 'op://<your-vault>/Home Assistant - <your-vault>/API Token')" node --input-type=module -e 'import { createHaSession, haGetStates } from "./integrations/home-assistant/home_assistant.ts"; const s = await createHaSession({ tokenOverride: process.env.HA_TOKEN }); const all = await haGetStates(s); const filtered = all.filter((e) => e.entity_id.startsWith(process.env.DOMAIN + ".")); console.log(JSON.stringify({ domain: process.env.DOMAIN, count: filtered.length, sample: filtered.slice(0, 10).map((e) => ({ entity_id: e.entity_id, state: e.state })) }, null, 2));'`
-- Call a service (e.g., toggle a light): `HA_TOKEN="$(op read 'op://<your-vault>/Home Assistant - <your-vault>/API Token')" node --input-type=module -e 'import { createHaSession, haCallService } from "./integrations/home-assistant/home_assistant.ts"; const s = await createHaSession({ tokenOverride: process.env.HA_TOKEN }); const changed = await haCallService(s, "light", "toggle", { entity_id: "light.living_room" }); console.log(JSON.stringify({ changed: changed.length, states: changed.map((e) => ({ entity_id: e.entity_id, state: e.state })) }, null, 2));'`
-- History for an entity (last 24h): `ENTITY_ID="sensor.example" HA_TOKEN="$(op read 'op://<your-vault>/Home Assistant - <your-vault>/API Token')" node --input-type=module -e 'import { createHaSession, haGet } from "./integrations/home-assistant/home_assistant.ts"; const s = await createHaSession({ tokenOverride: process.env.HA_TOKEN }); const start = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString(); const rows = await haGet(s, "/api/history/period/" + start + "?filter_entity_id=" + process.env.ENTITY_ID); console.log(JSON.stringify({ start, entity: process.env.ENTITY_ID, points: Array.isArray(rows) ? (rows[0]?.length ?? 0) : 0 }, null, 2));'`
+- All entity states (count + sample): `curl -fsS -H "Authorization: Bearer $HA_TOKEN" "$HA/api/states" | jq '{count: length, sample: [.[:5][] | {entity_id, state}]}'`
+- Single entity by id: `curl -fsS -H "Authorization: Bearer $HA_TOKEN" "$HA/api/states/sensor.example" | jq`
+- Filter states by domain (e.g., `sensor.*`): `curl -fsS -H "Authorization: Bearer $HA_TOKEN" "$HA/api/states" | jq '[.[] | select(.entity_id | startswith("sensor.")) | {entity_id, state}]'`
+- Call a service (e.g., toggle a light; returns the changed states): `curl -fsS -X POST -H "Authorization: Bearer $HA_TOKEN" -H 'Content-Type: application/json' -d '{"entity_id": "light.living_room"}' "$HA/api/services/light/toggle" | jq '[.[] | {entity_id, state}]'`
+- History for an entity since a timestamp: `curl -fsS -H "Authorization: Bearer $HA_TOKEN" "$HA/api/history/period/<ISO-8601-start>?filter_entity_id=sensor.example" | jq '.[0] | length'`
 - System info via SSH (no token needed): `ssh root@home-assistant "ha core info"`
 - New manual backup via SSH: `ssh root@home-assistant "ha backups new --name manual-$(date +%Y%m%d-%H%M)"`
 
 ### Common failures
-- `op read for HA token failed: ...` → rerun `op signin` and confirm `op read 'op://<your-vault>/Home Assistant - <your-vault>/API Token'` returns a value.
-- `Home Assistant GET /api/... failed: 401 ...` → LLAT is revoked or wrong; mint a fresh token at `http://home-assistant:8123/profile`, update your vault, rerun.
-- `Home Assistant POST /api/services/... failed: 400 ...` → service domain/name or required `entity_id` is wrong; verify with `haGetState` first and confirm the service exists in the HA dev tools UI.
-- `fetch failed: ENOTFOUND home-assistant` / connection refused → host unreachable from this network; verify `ping home-assistant` and that the SSH add-on is running.
-- `... failed: 429 ...` after `MAX_RETRIES=3` → REST API throttling; back off and reduce parallel callers, or fall back to `haExec` (SSH `ha` CLI) for heavy state ops.
+- `op read` fails → run `op signin` (or check `OP_SERVICE_ACCOUNT_TOKEN`) and confirm `op read 'op://<your-vault>/Home Assistant - <consumer>/API Token'` returns a value.
+- HTTP 401 on `/api/...` → LLAT is revoked or wrong; mint a fresh token at `http://home-assistant:8123/profile`, update your vault, rerun.
+- HTTP 400 on `/api/services/...` → service domain/name or required `entity_id` is wrong; check the entity with `/api/states/<entity_id>` and confirm the service exists in the HA developer tools.
+- `Could not resolve host: home-assistant` / connection refused → host unreachable from this network; verify `ping home-assistant` and that the SSH add-on is running.
+- HTTP 429 → REST API throttling; back off and reduce parallel callers, or use the `ha` CLI over SSH for heavy state operations.

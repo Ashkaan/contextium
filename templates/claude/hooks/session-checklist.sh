@@ -25,6 +25,6 @@ echo "$(date -Iseconds) session-checklist fired (dedup-key=${DEDUP_KEY})" >> "/t
 jq -n '{
   "hookSpecificOutput": {
     "hookEventName": "UserPromptSubmit",
-    "additionalContext": "SESSION START CHECKLIST:\n1. Classify this session: New Project | Existing | One-Off (default: journal-only).\n2. For non-trivial work, skim the relevant knowledge/ context before starting.\n3. Before ending: create or update today'"'"'s journal, commit, and push (via /close)."
+    "additionalContext": "SESSION START CHECKLIST:\n1. Classify this session: New Project | Existing | One-Off (default: journal-only).\n2. For non-trivial work, skim the relevant knowledge/ context before starting.\n3. Before ending: /close writes this session'"'"'s journal entry, commits, and pushes."
   }
 }'

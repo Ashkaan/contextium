@@ -4,9 +4,8 @@
 # Run:  bash .agents/skills/close/scripts/close-fired.test.sh
 # Exit: 0 all pass; 1 any failure.
 #
-# The load-bearing row is `isolation:ingest-does-not-suppress-spec`: that is the
-# 2026-08-18 defect this script was rewritten to fix, and it is the one that
-# must be able to come back negative.
+# The load-bearing row is `isolation:audit-does-not-suppress-spec`: one caller's
+# mark must never suppress another caller's auto-close in the same session.
 
 set -uo pipefail
 
@@ -54,14 +53,14 @@ check "one:same-caller-now-fired" "fired" \
 
 # ── THE REGRESSION ROW ─────────────────────────────────────────────────
 # A mid-session caller's mark MUST NOT suppress a different caller's
-# auto-close in the same session. Before 2026-08-18 the marker was
-# session-wide and this returned `fired`, stranding all later work.
+# auto-close in the same session: a session-wide marker returned `fired` here,
+# stranding all later work.
 S2=$(sid b)
-CLAUDE_CODE_SESSION_ID="$S2" bash "$SCRIPT" mark ingest >/dev/null 2>&1
-check "isolation:ingest-does-not-suppress-spec" "not-fired" \
+CLAUDE_CODE_SESSION_ID="$S2" bash "$SCRIPT" mark implement-audit >/dev/null 2>&1
+check "isolation:audit-does-not-suppress-spec" "not-fired" \
   "$(CLAUDE_CODE_SESSION_ID="$S2" bash "$SCRIPT" status spec)"
-check "isolation:ingest-still-marked" "fired" \
-  "$(CLAUDE_CODE_SESSION_ID="$S2" bash "$SCRIPT" status ingest)"
+check "isolation:audit-still-marked" "fired" \
+  "$(CLAUDE_CODE_SESSION_ID="$S2" bash "$SCRIPT" status implement-audit)"
 
 # ── Sessions are isolated from each other ──────────────────────────────
 S3=$(sid c)
@@ -104,12 +103,11 @@ CLAUDE_CODE_SESSION_ID="$S6" bash "$SCRIPT" status "$TOOLONG" >/dev/null 2>&1
 check_exit "max:65-char-caller-rejected" "2" "$?"
 
 # ── `any`: is this close running as SOMEBODY's auto-close? ─────────────
-# /close § 2.5 asks this to pick interactive-vs-silent. It must see a mark made
-# under any caller key, and must stay `not-fired` for a session with none.
+# It must see a mark made under any caller key, and must stay `not-fired` for a session with none.
 S7=$(sid g)
 check "any:none-marked" "not-fired" \
   "$(CLAUDE_CODE_SESSION_ID="$S7" bash "$SCRIPT" any)"
-CLAUDE_CODE_SESSION_ID="$S7" bash "$SCRIPT" mark reflection >/dev/null 2>&1
+CLAUDE_CODE_SESSION_ID="$S7" bash "$SCRIPT" mark implement >/dev/null 2>&1
 check "any:sees-another-callers-mark" "fired" \
   "$(CLAUDE_CODE_SESSION_ID="$S7" bash "$SCRIPT" any)"
 check "any:other-session-still-clean" "not-fired" \

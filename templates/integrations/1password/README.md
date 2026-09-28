@@ -7,8 +7,6 @@ aliases:
   - secrets vault
   - credential vault
   - op cli
-  - op_helper
-  - getCred
 ---
 # 1Password Integration
 
@@ -17,7 +15,7 @@ Static credentials (API keys, client secrets, passwords) are stored in a dedicat
 ## Service Account
 
 ```
-OP_SERVICE_ACCOUNT_TOKEN=<stored in your vault as "1Password Service Account Token">
+OP_SERVICE_ACCOUNT_TOKEN=<stored in your vault as "1Password Service Account - <consumer>">
 ```
 
 Set it where every shell that runs your automations will see it. For zsh, `~/.zshenv` is the safe choice — it's sourced for non-interactive, non-login shells too (which is what SSH-invoked commands and cron use). `~/.zshrc` only covers interactive shells.
@@ -65,7 +63,7 @@ Does a human log in to this with username + password at a website?
 
 Keep it as a one-liner ("what it is + who refreshes it + who reads it"). No tags, no custom metadata fields.
 
-The classification is cosmetic at the code level: `getCred(CREDS.x, "field")` works the same regardless of category. The category drives 1P UI rendering, autofill, and `op` CLI editability.
+The category is cosmetic to code: `op read` returns a field the same way whatever the category. It drives 1P UI rendering, autofill, and `op` CLI editability.
 
 ## Vault Items
 
@@ -75,54 +73,22 @@ The 1Password vault is the source of truth. Query it directly rather than mainta
 op item list --vault "<your-vault>"
 ```
 
-The typed map at [`credentials.ts`](credentials.ts) declares which UUIDs are referenced by repo code, but the vault itself is canonical.
+If your code keeps a map of the item UUIDs it reads, the vault is still canonical and the map only mirrors it.
 
-## Helper Module
+## If you write a helper
 
-`integrations/1password/op_helper.ts` exposes two APIs.
+Nothing here ships a credentials module; `op read` is enough to start. If your code reads many credentials, a small helper is worth writing, and this is its shape (a sketch, not shipped code):
 
-### UUID-based (preferred)
-
-References the typed map at [`credentials.ts`](credentials.ts). Stable across renames; field names type-checked at compile time.
-
-```typescript
-import { CREDS, getCred, getCredAll } from "../integrations/1password/op_helper.ts";
-
-// Single field — type-safe field name
-const clientId = await getCred(CREDS.someService, "clientId");
-
-// All declared fields — typed return shape
-const creds = await getCredAll(CREDS.someService);
-```
-
-### Execution paths — Connect (optional) → `op` CLI (fallback)
-
-If you run a 1Password Connect server on your network, reads can go through it first and fall back to the `op` CLI. Connect gives you a dedicated rate-limit budget and per-item caching — useful when many workers read credentials at once.
-
-Reads (`getCred`, `getCredAll`, `getRawField`) follow this order on every call:
-
-1. **1P Connect server (primary, if configured).** If `OP_CONNECT_HOST` + `OP_CONNECT_TOKEN` env vars are set, fetch the full item from the local Connect server. One HTTP call returns all fields; per-item cache keys mean any subsequent field on the same item is a cache hit.
-2. **Retry transient failures.** On HTTP 5xx, 429, or a fetch-level network error, the helper retries up to `OP_CONNECT_MAX_ATTEMPTS` times (default 3) with exponential backoff. 4xx errors propagate immediately.
-3. **Fall back to `op` CLI.** After retries are exhausted on transient errors, the helper runs `op read op://<vault>/<id>/<field>` for that single call. Subsequent calls retry Connect from scratch.
-4. **No Connect env vars set?** Skip steps 1-3, use `op` CLI directly. This is the simplest setup and works fine without Connect.
-
-### Title-based (legacy)
-
-Couples code to 1P titles — a rename breaks callers. Kept for backward compatibility; prefer UUID-based.
-
-```typescript
-import { getItem, getField } from "../integrations/1password/op_helper.ts";
-
-const creds = await getItem("Some Service - <your-vault>");
-const apiKey = await getField("Todoist API - <your-vault>", "api_key");
-```
+- **Look items up by UUID, not title.** Keep one map of `key → { id, fields }` (code-side field names → 1P field labels). A UUID survives a rename; a title lookup breaks every caller when someone renames the item, and titles with `(`, `)` or `@` cannot be used in an `op://` reference at all.
+- **Two calls:** one returns a single field (`getField(key, "clientId")`), one returns every declared field of an item.
+- **Read path: Connect (optional) → `op` CLI (fallback).** If `OP_CONNECT_HOST` + `OP_CONNECT_TOKEN` are set, fetch the whole item from your Connect server in one HTTP call and cache it per item, so the next field on the same item is a cache hit. Retry HTTP 5xx, 429 and network errors a few times with exponential backoff; let other 4xx errors through. When retries run out, run `op read op://<vault>/<id>/<field>` for that one call. With no Connect variables set, go straight to `op read` — the simplest setup, and enough for most people.
+- **Let callers skip the cache** for fields another job rotates (OAuth access tokens), so they pick up the new value on the next call.
 
 ### Adding a new credential
 
 1. Create the item in 1P following the naming convention above.
 2. Get the UUID: `op item list --vault "<your-vault>" --format json | jq '.[] | select(.title=="<title>") | .id'`
-3. Add an entry to [`credentials.ts`](credentials.ts) with `id` (UUID), `title`, `fields` map (code-side names → 1P field labels), `rotates: true` if it's an OAuth token, and a one-line description.
-4. Use it: `await getCred(CREDS.newCred, "fieldName")`
+3. Read it: `op read "op://<your-vault>/<item-id>/<field>"` (add `<item-id>` to your helper's map if you wrote one).
 
 ## CLI Quick Reference
 
@@ -175,18 +141,13 @@ op connect token create "<connect-name>" --server "<connect-name>" --vault "<you
 #    to your vault for runtime lookup.
 
 # 4. Verify health:
-curl -s http://<connect-host>:8080/heartbeat   # → ok
+curl -fsS http://<connect-host>:8080/heartbeat   # → ok
 ```
 
 **Verification after Connect is live:**
 
-```typescript
-import { CONNECT_AVAILABLE } from "../integrations/1password/op_helper.ts";
-console.log("Connect:", CONNECT_AVAILABLE);  // true if env vars set
-```
-
 ```bash
-curl -s -H "Authorization: Bearer $OP_CONNECT_TOKEN" \
+curl -fsS -H "Authorization: Bearer $OP_CONNECT_TOKEN" \
   "$OP_CONNECT_HOST/v1/vaults" | jq '.[].name'
 # → "<your-vault>"
 ```
@@ -214,7 +175,7 @@ curl -s -H "Authorization: Bearer $OP_CONNECT_TOKEN" \
 
 ### Smoke / auth check
 ```bash
-op whoami && op read 'op://<your-vault>/1Password Service Account Token/credential' >/dev/null && echo '1Password CLI auth OK'
+op whoami && op read 'op://<your-vault>/1Password Service Account - <consumer>/credential' >/dev/null && echo '1Password CLI auth OK'
 ```
 
 ### Common queries / actions

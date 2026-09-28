@@ -1,246 +1,210 @@
 ---
 name: implement
-description: The "do" verb of the loop — execute a lean SPEC with rigorous self-validation. Use ONLY in a fresh context, after a prior session wrote the SPEC via /project.
-argument-hint: "<project-name-or-slug> (or a spec-file path)"
-disable-model-invocation: false
-allowed-tools: "Bash(git *:*) Bash(npm *:*) Bash(node *:*) Bash(npx *:*) Bash(.agents/skills/close/scripts/*:*) Bash(.agents/skills/implement/scripts/*:*) Read Edit Write Task Skill AskUserQuestion"
-peers:
-  - .agents/skills/project/SKILL.md
-  - .agents/skills/implement-audit/SKILL.md
-  - .agents/skills/close/SKILL.md
-  - .agents/skills/close/references/auto-close-gate.md
-  - .agents/templates/spec-lean.md
-enforces:
-  - "@rule:boundary-inputs"
-  - "@rule:mechanisms-not-prose"
-  - "@rule:no-deferral"
-  - "@rule:simplest-solution-default"
-handoffs_from:
-  - .agents/skills/project/SKILL.md
-  - .agents/skills/explain/SKILL.md
-handoffs_to:
-  - .agents/skills/implement-audit/SKILL.md
-  - .agents/skills/close/SKILL.md
-reads:
-  - projects/{domain}/{date}_{slug}/{name}.spec.md
-  - apps/{name}/SPEC.md
-writes:
-  - projects/{domain}/{date}_{slug}/{name}-report.md
-steps:
-  - id: load
-    kind: action
-    action: "Resolve and read the lean SPEC (4 sections — Ask / Behavior / Files / Done) from a project slug or a file path."
-  - id: execute
-    kind: action
-    action: "For each file in § 3: Verify Assumptions (read the target + adjacent files, confirm the SPEC's references exist) → Implement (mirror existing patterns) → Validate Immediately (run the project's checks/tests; fix before moving on)."
-  - id: validate-all
-    kind: action
-    action: "Write tests for new code incl. boundary cases per @rule:boundary-inputs. Then the hard end-to-end gate: actually run the thing against § 2 / § 4, not just unit tests."
-  - id: mechanism-match
-    kind: gate
-    gate:
-      tool: halt
-      on_fail: halt
-      condition: "Re-read § 1. Write one line: 'Agreed to X. Diff does X.' If it reads 'Diff does Y', halt and either fix the diff or ask the user before reporting."
-  - id: implement-audit
-    kind: gate
-    gate:
-      tool: skill
-      on_fail: halt
-      condition: "For a substantial change (a new app, or a large diff across code files), dispatch /implement-audit on the session diff. It runs the project's checks plus an independent reviewer, fixes every ready finding in flight, and owns its own round cap — later rounds review only the fixes. It also writes the once-per-session marker, so /close will not re-review this diff. Proceed to the report only on a clean pass, and carry its `implement-audit:` trailer forward. Minor edits skip this."
-  - id: report
-    kind: action
-    action: "Write a short {name}-report.md next to the SPEC: tasks, validation results, deviations. Write the `implement-audit:` trailer line verbatim into the validation section — /close reads it from the report onto the commit message, where the git hook requires it."
-  - id: auto-close
-    kind: gate
-    gate:
-      tool: skill
-      on_fail: halt
-      condition: "Terminal auto-close gate. Code built + validated, mechanism-match clean, implement-audit clean, no depth-policy decision / deferral outstanding → auto-invoke /close per .agents/skills/close/references/auto-close-gate.md (check close-fired.sh status, mark, dispatch /close to journal + commit + push). A mechanism-match FAIL or an outstanding decision HALTS here — auto-close does not fire."
+description: The "do" verb of the loop — build one roadmap row's spec folder (spec.md, plan.md, tasks.md) with validation after every task, an end-to-end walk, a mechanism check, and one independent code review, then write report.md and close. Use in a fresh session after /project and /spec wrote the spec, as `/implement <project-slug>` or `/implement <project-slug> <row-id>`.
+allowed-tools: "Bash Read Edit Write Task Skill AskUserQuestion"
+metadata:
+  peers: ".agents/skills/project/scripts/find-project.sh .agents/skills/project/scripts/detect-stage.sh .agents/skills/close/scripts/roadmap.sh .agents/skills/close/scripts/open-clarifications.sh .agents/skills/implement/scripts/peer-sweep.sh .agents/skills/implement/references/templates/report.md .agents/skills/implement-audit/SKILL.md .agents/skills/close/SKILL.md .agents/skills/close/references/auto-close-gate.md"
 ---
 
-# /implement — SPEC-Driven Executor
+# /implement — build a spec
 
-The "do" verb of the loop. A prior session used `/project` to think and write a lean SPEC; this
-session executes it. Validation loops catch mistakes early: run checks after every change, fix issues
-immediately, never accumulate broken state.
+A prior session thought and wrote the spec; this one builds it. Validate after
+every change, fix before moving on, and never accumulate broken state.
 
-## Start in a fresh context
+**Start in a fresh session.** A session that wrote the plan defends its own
+choices instead of building to what the spec says. Open a new tab or clear the
+context, then run `/implement`. Nothing enforces this; it is the reason the
+think and do verbs are separate.
 
-A session that wrote the plan is invested in it. It defends the choices it made while thinking instead
-of building cleanly to what the SPEC actually says. A fresh session has no such attachment — it reads
-the contract and implements it honestly.
+## 1 — Resolve the spec
 
-So before you run `/implement`: open a new tab (or clear the context), then reload the SPEC from disk.
-Nothing enforces this. It is a discipline you follow because it is the whole point of separating the
-think and do verbs. Skip it and you lose that benefit.
+Which spec runs is a script result, never a glob of the folder:
 
-## load — read the SPEC
+```bash
+bash .agents/skills/project/scripts/find-project.sh <slug>                  # PATH:projects/<domain>/<date>_<slug>
+bash .agents/skills/project/scripts/detect-stage.sh <project-folder>        # stage:, active-spec:, next-row:
+bash .agents/skills/close/scripts/roadmap.sh <project-folder>               # ID, Status, ready, Sub-spec, Sub-feature
+```
 
-The argument is either a project name/slug or a SPEC-file path.
-
-1. If the argument resolves to an existing file path, use it directly.
-2. Otherwise treat it as a project slug — find `projects/*/{date}_<slug>/` (any date prefix).
-3. Inside the matched folder, find `*.spec.md`:
-
-| Match shape | Behavior |
+| Invocation | Spec to run |
 |---|---|
-| 0 SPEC files | HALT: "no SPEC in `<project>` — run `/project <project>` to write one first." |
-| 1 SPEC file | Use it. |
-| Multiple SPEC files | Pick the most-recent with no sibling `*-report.md` (not yet implemented). Still ambiguous → ask the user, listing them. |
-| No project matches the slug | HALT: "no project matches `<name>`" + list nearest slugs. |
+| `/implement <slug>` | `active-spec:` from `detect-stage.sh`; `next-row:` names its row — the first ready row (in-progress before planned) whose spec is still owed work and has no open clarification |
+| `/implement <slug> <id>` | Row `<id>`, matched case-insensitively, only if `roadmap.sh <project-folder> --check <id>` exits 0 (it prints the Sub-spec). Exit 1 → HALT with its lines: each unmet dependency by name, a `blocked:` / `done` status, no spec yet, or a spec already complete |
+| stage is `ready-to-close` | HALT: "`<slug>` row `<next-row>` has a complete report but is not `done` — run `/close`" |
+| any other stage but `ready-to-implement` | HALT: "`<slug>` is at stage `<stage>` — run `/project <slug>`" |
+| `roadmap-error:` | HALT with the message; the table needs fixing first |
+| `NOT_FOUND` | HALT: "no project matches `<slug>`" plus the nearest slugs it printed |
 
-Then read the SPEC. It follows the lean 4-section template (`.agents/templates/spec-lean.md`):
+A project without `ROADMAP.md` (loose `*.spec.md` files, the older layout)
+resolves the same way: `active-spec:` names the loose spec still owed work.
 
-- **§ 1 — Ask** — the verbatim ask. This is what you check the finished work against; it informs
-  Verify Assumptions and the mechanism-match line.
-- **§ 2 — Behavior** — the behavior contract, including boundary cases (0/1/empty/max/error per
-  `@rule:boundary-inputs`).
-- **§ 3 — Files** — files to create/change, patterns to mirror, downstream consumers to update in the
-  same pass (nothing deferred, per `@rule:no-deferral`).
-- **§ 4 — Done** — the exact commands to run and the output that means success, including the
-  end-to-end check.
+**Refuse on an open clarification.** A marker is a decision nobody made, and
+building past it is the misalignment `/project`'s grill exists to prevent:
 
-## execute — each task in turn
+```bash
+bash .agents/skills/close/scripts/open-clarifications.sh <project-folder>/specs/NNN-name   # exit 1 → HALT
+```
 
-Work through § 3 file by file. For each one:
+Exit 1 prints each `NEEDS CLARIFICATION` as `file:line: text`. HALT with those
+lines and `run /project <slug>`. Exit 2 means a spec file could not be read —
+HALT with that, too. Once it passes, and only when the project has a
+`ROADMAP.md`, mark the row:
 
-**Verify Assumptions** (this is the failure-class fix). Before writing any code: read the target file
-you're about to create or modify, read its adjacent files (what it imports, what imports it), and
-confirm the functions, paths, and patterns the SPEC names actually exist and match. If an assumption
-is wrong, adapt before implementing and record what differed in the report's Deviations section.
+```bash
+bash .agents/skills/close/scripts/roadmap.sh <project-folder> --set <ID> in-progress
+```
 
-**Sweep for peers, before you edit.** If the change touches a shared pattern — a helper everything
-calls, a config key read in several places, a convention repeated across sibling files — find every
-instance first:
+A loose-spec project has no row to mark; skip this.
 
-    bash .agents/skills/implement/scripts/peer-sweep.sh --pattern '<extended-regex>' --scope 'apps/**/*.ts'
+`in-progress` is the only Status this skill writes. `/close` sets `done` from
+the report.
 
-Read the whole output, not the first few lines. Then fix every match in this session. One call site
-updated and three siblings left on the old behavior is the expensive version of this mistake: the
-reviewer catches some of them afterwards, and the ones it misses fail later in a way that looks
-unrelated to this change. Landing them together is not "more scope" — it is the scope, per
-`@rule:no-deferral`.
+## 2 — Read the spec by section name
 
-**Implement.** Read the pattern file § 3 told you to mirror; understand its shape before copying.
-Make the change as specified. Then check integration — do imports resolve, do callers and callees
-still work, does data flow correctly across the boundary you touched?
+A spec is a folder, `specs/NNN-name/`. Read `spec.md`, `plan.md` and `tasks.md`
+whole, then use these sections by name:
 
-**Validate Immediately.** After every task, run the project's own cheap checks before moving on:
+| Used below as | In the spec folder | In a loose `*.spec.md` |
+|---|---|---|
+| the verbatim ask | spec.md `**Input**` | § 1 Ask |
+| the settled decisions | spec.md `## Clarifications` | § 1 Ask |
+| the behavior contract | spec.md `## User Scenarios & Testing`, `## Requirements` | § 2 Behavior |
+| the boundary cases | spec.md `### Edge Cases` | § 2 Behavior |
+| the acceptance checks | spec.md `### Acceptance` | § 4 Done |
+| the simplest shape | plan.md `### Simplest shape` | § 3 Files |
+| the inputs and data sourcing | plan.md `## Technical Context`, `### Data sourcing` | § 2 Behavior |
+| the patterns to mirror | plan.md `### Patterns to follow` | § 3 Files |
+| the validation commands | plan.md `## Validation Commands` | § 4 Done |
+| the tasks | tasks.md task lines (`- [ ] T001 …`) | § 3 Files |
+| the E2E walk | tasks.md's test tasks, then spec.md `### Acceptance` | § 4 Done |
 
-    npm run check        # or: npx tsc --noEmit, plus the project's linter
+`research.md` holds the reasoning behind the plan's choices; read it when a
+task's intent is unclear. An app's own `SPEC.md` is context, never the build
+spec.
 
-If it fails, read the error, fix at the source, re-run, and only proceed when green. Per
-`@rule:simplest-solution-default`, fix the actual cause — don't add the file to an exclude list.
+## 3 — Execute tasks.md
 
-## validate-all — tests, then the real thing
+Work through tasks.md in order; tasks marked `[P]` may run in any order within
+their phase. For each task:
 
-**Write tests.** Every new function gets at least one test. Each boundary case you enumerated per
-`@rule:boundary-inputs` (0, 1, empty, max, error) becomes a test case. Update existing tests if
-behavior changed. Test across boundaries — the integration shape, not just an isolated unit.
+**Verify assumptions first.** Read the file you are about to change and its
+neighbours (what it imports, what imports it). Confirm the functions, paths and
+patterns the plan names exist and match. If one is wrong, adapt, and record the
+difference for the report's Deviations.
 
-    npm run check        # type-check
-    npm test             # or: node --test
+**Sweep for peers before editing a shared pattern** — a helper everything
+calls, a config key read in several places, a convention repeated across
+sibling files:
 
-**Then the end-to-end gate (hard).** Green unit tests are the floor, not the finish line. Re-read § 4
-and run every done-command as a checklist:
+```bash
+bash .agents/skills/implement/scripts/peer-sweep.sh --pattern '<extended-regex>' --scope '<pathspec>'
+```
 
-- [ ] Start the thing (CLI, dev server, worker — whatever § 2 / § 4 describes).
-- [ ] For EACH check in § 4: run it exactly as written, confirm the output matches what § 4 says
-      success looks like, and if it fails — fix, re-run, confirm.
+Sweep the mechanism, not the file; siblings live in directories you did not
+touch. Read the whole output and fix every match this session
+(`@rule:class-fix-is-atomic`). `MATCHES: 0` is valid evidence. Record the
+command and its `MATCHES:` line for the report's `class-sweep:` line.
 
-If § 4 has no explicit E2E step, run a basic smoke test of the new behavior. Static checks and unit
-tests alone are never sufficient — this gate catches what they miss. Do not report complete until it
-passes.
+**Implement**, mirroring the file plan.md `### Patterns to follow` names, in the shape `### Simplest shape` settled. Then check the
+integration: imports resolve, callers and callees still work, data crosses the
+boundary you touched correctly.
 
-## mechanism-match — did you build what was agreed?
+**Validate immediately.** Run the plan's cheap checks (type-check, lint) after
+the task. Red → read the error, fix the cause, re-run. Never add a file to an
+exclude list to go green. Tick the task (`- [x]`) in tasks.md when it passes.
 
-The E2E gate verifies the diff WORKS. This one verifies it is the RIGHT mechanism — the one the ask
-describes, not a shortcut that solves the surface symptom another way.
+## 4 — Validate everything
 
-1. Re-read § 1 (the verbatim ask).
-2. Name the agreed mechanism in ONE plain sentence, using the ask's own words where possible.
-3. Run `git diff --stat HEAD` (or `git log --oneline <base>..HEAD` for multi-commit work) to see what
-   actually shipped.
-4. Write ONE verification line:
-   - PASS: `Agreed to X. Diff does X.` → proceed to the report.
-   - FAIL: `Agreed to X. Diff does Y.` → halt. Surface the divergence. Either fix the diff to actually
-     implement X, or ask the user whether the divergence is acceptable. Do not proceed with a
-     known mismatch.
+**Tests.** Every new function gets a test; each boundary case (0, 1, empty,
+max, error — `@rule:boundary-inputs`) becomes a case. See each new test fail
+first — break the code or the fixture on purpose, confirm the message names
+what the test claims, restore — and keep that red excerpt for the report's
+`test-failure-observed:` line. A test that never failed proves nothing
+(`@rule:red-before-green`).
 
-Drift patterns to watch for:
+**The validation commands.** Run every command in plan.md
+`## Validation Commands`, exactly as written. All must pass.
 
-- Ask said "use the library" → you called the REST API directly because it was faster.
-- Ask said "make it persistent" → you added a one-shot fix instead of a scheduled job.
-- Ask said "a shared function" → you built a deployed service (see `@rule:simplest-solution-default`).
+**The E2E walk (hard gate).** Green unit tests are the floor. Run the thing —
+the CLI, the server, the job — and execute every test task in tasks.md, then
+each spec.md `### Acceptance` check, as a checklist: run it as written, compare
+to what the spec says success looks like, fix and re-run on a mismatch. No test tasks → a smoke test of the new behavior.
+Do not report complete with a step red, and re-walk it whenever a later fix
+changes the code.
 
-## implement-audit — the code review (substantial changes)
+## 5 — Mechanism-match (hard gate)
 
-The diff works and is the right mechanism. Now it gets its one machine review before it lands.
+The E2E walk proves the diff works; this proves it is the mechanism that was
+agreed, not a shortcut that solves the symptom another way.
 
-For a **substantial change** — a new app, or a large diff across code files — dispatch `/implement-audit`
-via the Skill tool, scoped to this session's diff. It is the loop's single code reviewer: it runs the
-project's own checks, puts the judgment half on a model that did not write the code (falling back to a
-fresh-context agent, loudly, when no other model is installed), merges the triaged findings, and fixes
-every ready finding in this session per `@rule:no-deferral`. Later rounds review only the fixes, and the
-round cap lives inside that skill — don't re-implement it here, and don't ask the user whether to run
-another round.
+1. Re-read the verbatim ask and `## Clarifications`.
+2. Name the agreed mechanism in one sentence, in the ask's own words.
+3. `git diff --stat <base>` (plus untracked files) to see what actually changed.
+4. Write one line:
+   - `Agreed to X. Diff does X.` → continue.
+   - `Agreed to X. Diff does Y.` → HALT. Fix the diff, or ask the user whether
+     the divergence is acceptable (a numbered list, recommendation first; in
+     Claude Code, `AskUserQuestion`). Never continue past a known mismatch.
 
-Two things it produces that you need afterwards:
+Typical drift: the ask said "use the library" and the diff calls the API
+directly; the ask said "a shared function" and the diff adds a service.
 
-- the **`implement-audit:` trailer**, which goes verbatim into the report's validation section and from
-  there onto the commit message;
-- the **once-per-session marker**, which is why `/close` will not review this same diff a second time.
+## 6 — Code review
 
-Proceed to the report only on a clean pass. A reviewer that could not run is a failed review, not a
-clean one.
+Dispatch `/implement-audit --from-implement specs/NNN-name` on this session's
+diff — the argument tells it `/implement` owns the close, since `report.md` does
+not exist yet. It runs the project's
+automated checks, puts the judgment half on a reviewer that did not write the
+code, and fixes every ready finding in its own loop. Continue only on a clean
+pass. A reviewer that could not run is a failed review, not a clean one: HALT
+and report it. Its `implement-audit:` line goes into the report.
 
-Minor edits — a README tweak, a typo, a config bump — skip this; the review is for changes big enough to
-hide a real bug.
+## 7 — Report
 
-## report — write it down
+Write `specs/NNN-name/report.md` from
+[references/templates/report.md](references/templates/report.md) (for a loose
+spec: `<name>-report.md` beside it, with `spec: <name>`). `spec-status:` is
+`complete` only when nothing in the spec is still owed; anything less is
+`partial`. `spec-state.sh` reads that line, and it is how `/close` knows whether
+to flip the row to `done`. Fill in the three record lines verbatim:
+`implement-audit:`, `class-sweep:`, `test-failure-observed:`. Leave ROADMAP.md
+alone; the row is `/close`'s to finish.
 
-Write `{spec-name}-report.md` next to the SPEC (its project folder, or `apps/<name>/` for an app SPEC):
+## 8 — Auto-close
 
-    # Implementation Report
-    **SPEC**: `{spec-path}`  **Status**: COMPLETE
-    ## Summary — {what was implemented}
-    ## Tasks Completed — table of # / task / file / status
-    ## Validation Results — table of check / result (type-check, lint, tests, implement-audit, E2E § 4, mechanism-match)
-    <the implement-audit: trailer line, verbatim — /close reads it from here onto the commit>
-    ## Deviations from SPEC — list with rationale, or "None — implementation matched the SPEC."
-
-The SPEC stays in place; the report sits beside it. On a clean run — mechanism-match clean,
-implement-audit clean, no decision outstanding — the `auto-close` gate auto-invokes `/close` (journal +
-commit + push) per [`../close/references/auto-close-gate.md`](../close/references/auto-close-gate.md).
-"Wrap" is not a verb the user types; `/implement` closes itself. Print the closing summary, then
-dispatch `/close`.
+Print a short summary — the spec and row, what changed, the validation results,
+any deviation — then hand the session to `/close` per
+[../close/references/auto-close-gate.md](../close/references/auto-close-gate.md),
+with caller `implement`. A mechanism-match FAIL, a failed review or an open
+question halts instead.
 
 ## Examples
 
-**Fresh-context invocation (golden path).** The user clears context and types `/implement <slug>`.
-Load resolves `projects/<domain>/<date>_<slug>/*.spec.md` and reads its four sections. Execute runs
-each file with Verify-Assumptions → Implement → Validate-Immediately. Validate-all writes tests, runs
-the suite, then exercises the § 4 done-commands against the running surface. Mechanism-match writes
-"Agreed to X. Diff does X." For a substantial change, `/implement-audit` runs and its findings are fixed
-this round. Report writes `<slug>-report.md`. The `auto-close` gate then auto-invokes `/close` — journal,
-commit, push — and the session ends. No one types `/close`.
+**Golden path.** In a fresh session: `/implement checkout-flow`.
+`detect-stage.sh` says `ready-to-implement`, `next-row: R2`,
+`active-spec: projects/web/2026-01-10_checkout-flow/specs/002-retry/spec.md`.
+No open clarifications; R2 goes `in-progress`. Tasks T001–T006 run with a check
+after each; the tests go red then green; the validation commands pass; the E2E
+walk retries a declined test card once. "Agreed to retry once with the
+fallback processor. Diff does that." `/implement-audit` converges in two rounds.
+`report.md` says `spec-status: complete`; `/close` flips R2 to `done` and prints
+`/implement checkout-flow r3` in its own block.
 
-**No SPEC yet.** `/implement <slug>` against a folder with no `*.spec.md` hits the "0 SPEC files" row
-and HALTs: "no SPEC in `<project>` — run `/project <project>` to write one first."
+**Parallel rows.** A close printed `/implement sync-engine r4` and
+`/implement sync-engine r5`; both rows' dependencies are `done`. Each runs in
+its own session and each close flips its own row.
 
-**Multi-SPEC ambiguity.** The folder has 3 `*.spec.md` files and no `*-report.md` companions. Load
-tries to pick the most-recent without a sibling report; two qualify. the question fires with the
-SPEC paths; the user selects; Load continues with that file.
+**Unsettled spec.** `/implement sync-engine r3` finds
+`spec.md:41: - FR-004 [NEEDS CLARIFICATION: keep or drop deleted rows?]`.
+HALT with that line and `run /project sync-engine`.
 
 ## Troubleshooting
 
-| Failure | Symptom | Fix |
-|---|---|---|
-| SPEC not found | Load HALT: "no SPEC in `<project>`" | Run `/project <project>` first to write a SPEC. |
-| Multi-SPEC ambiguity | Load finds >1 `*.spec.md` with no unambiguous pick | the question fires with the SPEC paths; pick the one for this session. |
-| Type/lint fails | check / tsc --noEmit non-zero | Read the error, fix at the source, re-run. Don't add to an exclude list. |
-| Tests fail | test suite red | Fix the implementation or the test; re-run until green. |
-| E2E fails | A § 4 step against the running thing doesn't match expected output | Diagnose; if a shared pattern is wrong, fix every instance now per `@rule:no-deferral`; if the approach is wrong, revise the SPEC and re-run. Never declare complete with E2E red. |
-| SPEC reference missing | A function or path the SPEC names doesn't exist | Document in Deviations; if the SPEC was based on stale state, revise it and re-run. |
-| Mechanism mismatch | "Agreed to X. Diff does Y." | Fix the diff to actually implement X, or ask the user whether the divergence is acceptable. Never proceed with a known mismatch. |
+| Failure | Fix |
+|---|---|
+| Stage is `needs-planning` | The row has no spec, or its spec has open clarifications. Run `/project <slug>`. |
+| The bare slug picked the wrong row | Name it: `/implement <slug> <id>`. |
+| A check or test fails | Fix the cause and re-run; never exclude the file. |
+| A path or function the plan names does not exist | Record it under Deviations; if the plan was written against stale code, stop and revise the spec with `/project`. |
+| E2E step fails | Diagnose; if a shared pattern is wrong, fix every instance now; if the approach is wrong, revise the spec. Never report complete with E2E red. |
+| Mechanism mismatch | Fix the diff, or ask the user. Never proceed past it. |

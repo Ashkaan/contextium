@@ -42,3 +42,13 @@ CLI produces, and reading it as "nothing wrong" hands you a passing gate over wo
 
 That is why the reviewers require an explicit `NO_FINDINGS` line for a clean pass, and why a round
 that produces neither a finding nor that sentinel exits non-zero. [2026-08-27]
+
+## audit-lines-are-records
+A review's verdict MUST be written as one line into the folder of the artifact it reviewed, where the
+next reader of that artifact finds it: `/spec-audit` writes its `spec-audit:` line into the spec's
+`plan.md`, and `/implement` writes `implement-audit:`, `class-sweep:` and `test-failure-observed:`
+into the spec's `report.md`. The close's journal entry quotes them.
+
+No hook refuses a commit for a missing line. A line in a commit message is read by nobody at review
+time, and a gate that only checks a line exists teaches its escape hatch rather than the review. What
+makes the review happen is the producing skill dispatching it every time. [2026-09-24]

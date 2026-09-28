@@ -4,10 +4,9 @@
 
 import { readdirSync, readFileSync, writeFileSync } from "fs";
 import { join } from "path";
-import { fileURLToPath } from "url";
-import { dirname } from "path";
 import process from "node:process";
 import { parseFrontmatter } from "./parse_frontmatter.ts";
+import { repoRoot } from "./repo_root.ts";
 import { validateOutcome } from "./validate_outcome.ts";
 
 // ── Types ────────────────────────────────────────────────────────────
@@ -109,17 +108,15 @@ function buildReadme(integrations: IntegrationMeta[]): string {
     "",
     `**Total: ${integrations.length} integrations**`,
     "",
-    "See [CLAUDE.md](../.claude/CLAUDE.md) for repo conventions. See each integration's README for configuration details.",
+    "See [AGENTS.md](../AGENTS.md) for repo conventions. See each integration's README for configuration details.",
     "",
   ].join("\n");
 }
 
 // ── Main ─────────────────────────────────────────────────────────────
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = dirname(__filename);
-const repoRoot = join(__dirname, "../../..");
-const integrationsDir = join(repoRoot, "integrations");
+const root = repoRoot(import.meta.url);
+const integrationsDir = join(root, "integrations");
 
 // `--out <path>` requires a non-empty value when the flag is present — a silent
 // fallback to the canonical path on a missing/empty value would let a caller
@@ -152,4 +149,4 @@ validateOutcome("generate_integration_index", [
   { check: "README content generated", pass: () => readme.length > 0 },
 ]);
 
-console.log(`Generated integrations/README.md: ${integrations.length} integrations`);
+console.error(`Generated integrations/README.md: ${integrations.length} integrations`);

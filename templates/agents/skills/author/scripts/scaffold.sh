@@ -11,7 +11,7 @@
 # (@rule:rule-stable-id) and prints insertion guidance.
 #
 # Names are rejected, never normalized — a silent rename would surprise
-# the author (SPEC § 2 name contract).
+# the author.
 #
 # peers: verify.sh, .agents/skills/author/SKILL.md,
 #        .agents/skills/author/references/templates/
@@ -71,7 +71,7 @@ case "$type" in
     exit 2 ;;
 esac
 
-# Empty name is the "no name" boundary (SPEC § 4) → the skill prompts.
+# Empty name is the "no name" boundary → the skill prompts.
 if [[ -z "$name" ]]; then
   err "name required (empty) — prompt the author for a $type name"
   exit 2

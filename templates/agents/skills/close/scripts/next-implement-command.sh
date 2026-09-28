@@ -1,40 +1,43 @@
 #!/usr/bin/env bash
 # next-implement-command.sh — emit the EXACT copy-paste next command(s) for a
-# touched project, derived deterministically from project state (the next command
-# is DATA, not judgment — @rule:deterministic-over-ai). /close step-5 calls this
-# and emits its stdout VERBATIM instead of hand-composing the `/implement`
-# argument, which is where the SPEC-name-vs-slug bug lives.
+# touched project, derived from project state. The next command is data, not
+# judgment: /close prints this script's stdout verbatim, one fenced block per
+# line, instead of composing a command by hand.
 #
-# THE BUG THIS PREVENTS (2026-06-17): /close emitted `/implement
-# sourced-through-form` (the SPEC basename) instead of `/implement
-# direct-hire-recruiting` (the project slug). `/implement` resolves by PROJECT
-# slug and HALTs on a sub-SPEC name. The argument is ALWAYS the project slug;
-# Phase 1 auto-resolves the un-reported SPEC itself.
+# The argument is ALWAYS the project slug (the folder name without its date),
+# never a spec's name: /implement resolves by project slug, and a hand-written
+# pointer naming the spec file sends the next session to a slug that does not
+# exist.
 #
 # Usage: next-implement-command.sh <project-folder>
-#   <project-folder> — repo-relative or absolute path to projects/<domain>/<date>_<slug>/
+#   <project-folder> — path to projects/<domain>/<date>_<slug>/
 # Output (stdout): zero or more lines, each a literal next command, e.g.
-#   /implement direct-hire-recruiting
-#   /implement trigger-dev-migration oauth-refresher     (sharded → one per shard)
-#   /project some-slug                                   (active, no pending SPEC)
-# Emits a leading `# ` comment line instead of a command for blocked/monitor/
-# completed. For the two finished states that line REPLACES the next-phase
-# pointer with the finish itself — `# <slug> — project complete: <## Outcome
-# first line>`, or `# <slug> — work complete, monitoring until <date>: <what is
-# being watched>` — so a project whose last piece just landed says so rather
-# than pointing at a phase that does not exist.
+#   /implement checkout-flow r2          (ROADMAP.md → one per ready row with a spec)
+#   /project checkout-flow               (a ready row needs a spec, or nothing is ready)
+#   /implement checkout-flow             (a loose *.spec.md still owed work)
+#   # checkout-flow R4 is blocked: vendor reply
+# A `# ` line is a statement, not a command. For completed / monitor / blocked
+# projects it REPLACES the command with what happened — `# <slug> — project
+# complete: <## Outcome first line>`, `# <slug> — work complete, monitoring
+# until <date>: <what is watched>` — so a project whose last piece just landed
+# says so rather than pointing at work that does not exist.
 #
 # peers:
 #   .agents/skills/close/scripts/next-implement-command.test.sh
-#   .agents/skills/close/SKILL.md (step-5-reiterate-implement)
+#   .agents/skills/close/scripts/roadmap.sh
+#   .agents/skills/close/scripts/spec-state.sh
+#   .agents/skills/close/scripts/open-clarifications.sh
+#   .agents/skills/close/SKILL.md
 
 set -euo pipefail
 
 err() { echo "Error: $*" >&2; }
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+TAB="$(printf '\t')"
 
 [[ $# -eq 1 ]] || { err "usage: next-implement-command.sh <project-folder>"; exit 2; }
 
-project_dir="$1"
+project_dir="${1%/}"
 [[ -d "$project_dir" ]] || { err "not a directory: $project_dir"; exit 2; }
 
 readme="$project_dir/README.md"
@@ -48,16 +51,16 @@ slug="$(printf '%s' "$base" | sed -E 's/^[0-9]{4}-[0-9]{2}-[0-9]{2}_//')"
 status="$(sed -nE 's/^status:[[:space:]]*([a-z]+).*/\1/p' "$readme" | head -n1)"
 
 trim() { printf '%s' "$1" | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//'; }
+lower() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
 
-# First non-empty line under a `## <heading>` section, stripped of list markers.
-# Used to carry the project's own words into the finished-project lines below
-# rather than inventing a summary at close time.
+# First non-empty line under a `## <heading>` section, stripped of a list
+# marker — the project's own words, not a summary invented at close time.
 first_line_under() {
   awk -v want="$1" '
-    $0 ~ "^## +" want "([[:space:]]|$)" { in_section = 1; next }
+    $0 ~ "^## +" want "([ \t]|$)" { in_section = 1; next }
     in_section && /^## / { exit }
     in_section && NF {
-      sub(/^[[:space:]]*[-*][[:space:]]+/, "")
+      sub(/^[ \t]*[-*][ \t]+/, "")
       print
       exit
     }
@@ -66,9 +69,6 @@ first_line_under() {
 
 case "$status" in
   completed)
-    # Finished project — no command, but SAY it finished. Emitting nothing here
-    # left the close silent about the one outcome the user most wants stated,
-    # and silence is indistinguishable from "the generator did not run".
     outcome="$(first_line_under Outcome)"
     if [[ -n "$outcome" ]]; then
       printf '# %s — project complete: %s\n' "$slug" "$outcome"
@@ -83,8 +83,7 @@ case "$status" in
     exit 0
     ;;
   monitor)
-    # `monitoring-until:` is either a bare YYYY-MM-DD or `YYYY-MM-DD — reason`;
-    # split so the reason (what is being watched) is stated, not just the date.
+    # `monitoring-until:` is a bare YYYY-MM-DD or `YYYY-MM-DD — reason`.
     watch="$(sed -nE 's/^monitoring-until:[[:space:]]*(.+)/\1/p' "$readme" | head -n1)"
     watch="${watch%\"}"
     watch="${watch#\"}"
@@ -108,37 +107,82 @@ case "$status" in
     ;;
 esac
 
-# active (or unrecognized → treat as active): collect un-reported SPECs.
-# An un-reported SPEC is a <name>.spec.md with NO sibling <name>-report.md.
-unreported=()
-shopt -s nullglob
-for spec in "$project_dir"/*.spec.md; do
-  name="$(basename "$spec" .spec.md)"
-  [[ -f "$project_dir/${name}-report.md" ]] || unreported+=("$name")
-done
-shopt -u nullglob
+# active (or unrecognized → treat as active). spec-state.sh owns "finished":
+# `none` has no report, `partial` has one that does not claim completion; both
+# are still owed work.
+states="$(bash "$SCRIPT_DIR/spec-state.sh" "$project_dir")"
+state_of() { printf '%s\n' "$states" | awk -F'\t' -v n="$1" '$1==n {print $2; exit}'; }
+unreported=(); partial_specs=()
+while IFS="$TAB" read -r _name _state _evidence; do
+  [[ -n "$_name" ]] || continue
+  case "$_state" in
+    none)    unreported+=("$_name") ;;
+    partial) unreported+=("$_name"); partial_specs+=("$_name") ;;
+  esac
+done <<<"$states"
 
-# Sharded project? The opt-in signal is a `## Shard Status` table (per
-# the sharded project layout). When present, each <shard>.spec.md is a shard and
-# the command is `/implement <slug> <shard>`; otherwise the command is the bare
-# `/implement <slug>` (Phase 1 auto-resolves the single un-reported SPEC, or
-# asks the user to disambiguate if several — the argument stays the slug).
-is_sharded=0
-grep -qE '^## +Shard Status' "$readme" && is_sharded=1
-
-if [[ ${#unreported[@]} -gt 0 ]]; then
-  if [[ "$is_sharded" -eq 1 ]]; then
-    # One line per pending shard (sorted for stable output).
-    printf '%s\n' "${unreported[@]}" | sort | while IFS= read -r shard; do
-      printf '/implement %s %s\n' "$slug" "$shard"
-    done
-  else
-    # Non-sharded: ALWAYS the bare project slug, never the SPEC basename.
-    printf '/implement %s\n' "$slug"
+# ── ROADMAP.md: one command per ready row ────────────────────────────────
+# Rows carry their own dependencies, so this can say which work may start now:
+# every ready row (roadmap.sh --ready, in-progress before planned) whose spec is
+# still owed work and has no open NEEDS CLARIFICATION is its own
+# `/implement <slug> <id>` — the parallel set, each runnable in its own session.
+# Ready rows with no spec yet, or with open clarifications, need planning: ONE
+# `/project <slug>` covers them all, because /project picks the row. A loose
+# spec that no row points at is work already in flight and prints first.
+if [[ -f "$project_dir/ROADMAP.md" ]]; then
+  rm_err="$(mktemp)"; rm_rc=0
+  rows="$(bash "$SCRIPT_DIR/roadmap.sh" "$project_dir" 2>"$rm_err")" || rm_rc=$?
+  if [[ "$rm_rc" -ne 0 ]]; then
+    msg="$(sed -n 's/^roadmap: //p' "$rm_err" | tail -n1)"; rm -f "$rm_err"
+    printf '# %s ROADMAP.md is malformed: %s\n' "$slug" "${msg:-roadmap.sh exited $rm_rc}"
+    exit 0
   fi
+  rm -f "$rm_err"
+  ready_rows="$(bash "$SCRIPT_DIR/roadmap.sh" "$project_dir" --ready 2>/dev/null)"
+  referenced="$(printf '%s\n' "$rows" | cut -f4)"
+  out=()
+  for _u in ${unreported[@]+"${unreported[@]}"}; do
+    [[ "$_u" == specs/* ]] && continue
+    printf '%s\n' "$referenced" | grep -qxF -- "$_u" && continue
+    out+=("/implement $slug"); break
+  done
+  needs_planning=0; comments=()
+  while IFS="$TAB" read -r id _st _ready sub _feat; do
+    [[ -n "$id" ]] || continue
+    if [[ "$sub" == "—" ]]; then needs_planning=1; continue; fi
+    case "$(state_of "$sub")" in
+      none|partial) ;;
+      complete) comments+=("# $slug $id's spec is complete — run /close to flip the row to done"); continue ;;
+      *) needs_planning=1; continue ;;   # the Sub-spec it names is not on disk
+    esac
+    if [[ "$sub" == specs/* ]] && ! bash "$SCRIPT_DIR/open-clarifications.sh" "$project_dir/$sub" >/dev/null 2>&1; then
+      needs_planning=1; continue
+    fi
+    out+=("/implement $slug $(lower "$id")")
+  done <<<"$ready_rows"
+  [[ "$needs_planning" -eq 1 ]] && out+=("/project $slug")
+  while IFS="$TAB" read -r id st ready _sub _feat; do
+    [[ -n "$id" && "$ready" == no ]] || continue
+    case "$(lower "$st")" in
+      blocked:*) comments+=("# $slug $id is ${st}") ;;
+      planned|in-progress|done|"absorbed by "*) ;;
+      *) comments+=("# $slug $id has a Status outside the vocabulary: $st") ;;
+    esac
+  done <<<"$rows"
+  [[ ${#out[@]} -gt 0 || ${#comments[@]} -gt 0 ]] || out+=("/project $slug")
+  printf '%s\n' ${out[@]+"${out[@]}"} ${comments[@]+"${comments[@]}"}
   exit 0
 fi
 
-# No pending SPEC but the project is active → the next phase needs a SPEC; the
-# /project router stage-detects and runs the next-phase think flow.
+# ── No ROADMAP.md: loose *.spec.md files ────────────────────────────────
+# Always the bare project slug — /implement picks the pending spec itself.
+if [[ ${#unreported[@]} -gt 0 ]]; then
+  printf '/implement %s\n' "$slug"
+  for _p in ${partial_specs[@]+"${partial_specs[@]}"}; do
+    printf '# %s %s is reported but not claimed complete — see its report Status line\n' "$slug" "$_p"
+  done
+  exit 0
+fi
+
+# Nothing pending and the project is active → the next piece needs planning.
 printf '/project %s\n' "$slug"

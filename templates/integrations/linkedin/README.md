@@ -2,7 +2,6 @@
 name: LinkedIn
 description: Automated content publishing and engagement on LinkedIn
 cli: REST API
-typed_client: integrations/linkedin/linkedin.ts
 hosts:
   - api.linkedin.com
   - www.linkedin.com
@@ -16,24 +15,14 @@ aliases:
 
 Automated content publishing and engagement on a personal LinkedIn profile and/or a company page.
 
-## TypeScript Client
+## If you write a client
 
-Canonical typed reference: [`linkedin.ts`](linkedin.ts).
+Nothing here ships one; `curl` covers every call below. A client is worth writing once a scheduled job posts, and this is its shape:
 
-```ts
-import { createLinkedInSession, linkedInGet, linkedInPost, type LinkedInSession } from "../../integrations/linkedin/linkedin.ts";
-```
-
-### Export surface
-
-| Function / Type | Purpose |
-|---|---|
-| `createLinkedInSession()` | OAuth token retrieval + Member URN; returns `LinkedInSession` |
-| `linkedInGet(session, path)` | GET request with REST API headers |
-| `linkedInPost(session, path, body)` | POST request for posts/shares |
-| `linkedInGetUserinfo(session)` | OpenID userinfo fetch (`/v2/userinfo`) |
-| `linkedInUploadBinary(session, uploadUrl, bytes)` | Image/video binary upload to LinkedIn assets |
-| `LinkedInSession` | Shared session type |
+- A session holding the access token and the member URN (`urn:li:person:<sub>`, from `/v2/userinfo`).
+- GET and POST helpers that always send the four REST headers shown under [API Reference](#api-reference), and retry 429/5xx honoring `Retry-After`.
+- A binary upload for images and video (initialize the upload, then `PUT` the bytes to the returned URL).
+- A commentary escaper (see [Post text is Little Text](#post-text-is-little-text)).
 
 ## Apps
 
@@ -41,8 +30,8 @@ You typically register one LinkedIn developer app per capability tier:
 
 | App | Vault Item | Products | Status |
 |-----|-----------|----------|--------|
-| Content Publisher | `LinkedIn - Content Publisher` | Sign In with OpenID Connect, Share on LinkedIn | Use for posting |
-| Community Manager | `LinkedIn - Community Manager` | Community Management API | Optional — fuller engagement once approved |
+| Content Publisher | `LinkedIn Content Publisher - <consumer>` | Sign In with OpenID Connect, Share on LinkedIn | Use for posting |
+| Community Manager | `LinkedIn Community Manager - <consumer>` | Community Management API | Optional — fuller engagement once approved |
 
 ## API Access
 
@@ -59,7 +48,7 @@ You typically register one LinkedIn developer app per capability tier:
 - Authorize URL: `https://www.linkedin.com/oauth/v2/authorization`
 - Token URL: `https://www.linkedin.com/oauth/v2/accessToken`
 - Redirect URI: `https://<your-callback-host>/oauth/callback` (the host need not actually serve the callback — copy the `code` from the URL bar after LinkedIn redirects you. It must match what's configured on the LinkedIn app at https://www.linkedin.com/developers/apps; if you change it there, update the authorize URL + token-exchange `redirect_uri` below too.)
-- Token storage: your secrets vault — item `LinkedIn OAuth (Content Publisher)`, fields `access_token` + `expires_at`.
+- Token storage: your secrets vault — the Content Publisher item, fields `access_token` + `expires_at`.
 
 ## Credentials
 
@@ -83,7 +72,7 @@ All LinkedIn OAuth state lives in your secrets vault:
 | `access_token` | 60-day hand-minted access token (no refresh path on Share-on-LinkedIn) |
 | `expires_at` | Unix epoch SECONDS when the access token expires (readers multiply by 1000 when comparing to `Date.now()`) |
 
-Read live every task invocation via `getCred(CREDS.linkedinContentPublisher, "accessToken" | "expiresAt")`. No env-var staging — when the 60-day token rotates in the vault, the next task run picks it up automatically.
+Read the token from the vault on every run (`op read "op://<your-vault>/<content-publisher-item-id>/access_token"`) rather than staging it in an environment variable, so a re-minted token is picked up by the next run without a restart.
 
 ## Automation
 
@@ -104,7 +93,7 @@ https://www.linkedin.com/oauth/v2/authorization?response_type=code&client_id=<yo
    CODE='...paste here...'
    CLIENT_ID="$(op read 'op://<your-vault>/<content-publisher-item-id>/client_id')"
    CLIENT_SECRET="$(op read 'op://<your-vault>/<content-publisher-item-id>/client_secret')"
-   curl -sS -X POST 'https://www.linkedin.com/oauth/v2/accessToken' \
+   curl -fsS -X POST 'https://www.linkedin.com/oauth/v2/accessToken' \
      -H 'Content-Type: application/x-www-form-urlencoded' \
      --data-urlencode "grant_type=authorization_code" \
      --data-urlencode "code=${CODE}" \
@@ -155,11 +144,22 @@ Headers: Authorization: Bearer {access_token}
 → returns { sub: "MEMBER_ID" }
 ```
 
+### Post text is Little Text
+
+`commentary` is parsed as LinkedIn's Little Text format, where `| { } @ [ ] ( ) < > # \ * _ ~` are reserved. Escape every one with a backslash unless you mean the markup (a mention or hashtag template), or the post is rejected (400/422) or renders wrong. In JSON the backslash itself is escaped, so `(finally)` becomes `"\\(finally\\)"`. Reference: https://learn.microsoft.com/en-us/linkedin/marketing/community-management/shares/little-text-format
+
 ## Common invocations
+
+Every snippet assumes the token (and, for writes, your author URN) is loaded:
+
+```bash
+TOKEN="$(op read 'op://<your-vault>/<content-publisher-item-id>/access_token')"
+AUTHOR="$(curl -fsS -H "Authorization: Bearer $TOKEN" https://api.linkedin.com/v2/userinfo | jq -r '"urn:li:person:" + .sub')"
+```
 
 ### Smoke / auth check
 ```bash
-node --input-type=module -e "import { createLinkedInSession, linkedInGetUserinfo } from './integrations/linkedin/linkedin.ts'; const { execSync } = await import('node:child_process'); const token = execSync(\"op read 'op://<your-vault>/<content-publisher-item-id>/access_token'\", { encoding: 'utf8' }).trim(); const li = createLinkedInSession(token); const me = await linkedInGetUserinfo(li); console.log(JSON.stringify({ sub: me.sub, email: me.email }, null, 2));"
+curl -fsS -H "Authorization: Bearer $TOKEN" https://api.linkedin.com/v2/userinfo | jq '{sub, email}'
 ```
 
 ### Refresh / re-auth
@@ -167,14 +167,16 @@ node --input-type=module -e "import { createLinkedInSession, linkedInGetUserinfo
 CLIENT_ID=$(op read 'op://<your-vault>/<content-publisher-item-id>/client_id') && echo "https://www.linkedin.com/oauth/v2/authorization?response_type=code&client_id=${CLIENT_ID}&redirect_uri=https%3A%2F%2F<your-callback-host>%2Foauth%2Fcallback&scope=openid%20profile%20email%20w_member_social"
 ```
 
+Then run steps 2-4 of [Initial authorization](#initial-authorization-one-time-every-60-days).
+
 ### Common queries / actions
-- Resolve author URN: `node --input-type=module -e "import { createLinkedInSession, linkedInGetUserinfo } from './integrations/linkedin/linkedin.ts'; const { execSync } = await import('node:child_process'); const token = execSync(\"op read 'op://<your-vault>/<content-publisher-item-id>/access_token'\", { encoding: 'utf8' }).trim(); const li = createLinkedInSession(token); const me = await linkedInGetUserinfo(li); const sub = String(me.sub ?? ''); console.log(sub.startsWith('urn:') ? sub : 'urn:li:person:' + sub);"`
-- Escape post text for LITTLE_TEXT: `node --input-type=module -e "import { escapeLinkedInCommentary } from './integrations/linkedin/linkedin.ts'; console.log(escapeLinkedInCommentary('Shipped a thing today (finally). #BuildInPublic'));"`
-- Initialize image upload: `node --input-type=module -e "import { createLinkedInSession, linkedInGetUserinfo, linkedInPost } from './integrations/linkedin/linkedin.ts'; const { execSync } = await import('node:child_process'); const token = execSync(\"op read 'op://<your-vault>/<content-publisher-item-id>/access_token'\", { encoding: 'utf8' }).trim(); const li = createLinkedInSession(token); const me = await linkedInGetUserinfo(li); const sub = String(me.sub ?? ''); const owner = sub.startsWith('urn:') ? sub : 'urn:li:person:' + sub; const resp = await linkedInPost(li, 'images?action=initializeUpload', { initializeUploadRequest: { owner } }); console.log(JSON.stringify({ status: resp.status, body: await resp.text() }, null, 2));"`
-- Publish a text post: `node --input-type=module -e "import { createLinkedInSession, escapeLinkedInCommentary, linkedInGetUserinfo, linkedInPost } from './integrations/linkedin/linkedin.ts'; const { execSync } = await import('node:child_process'); const token = execSync(\"op read 'op://<your-vault>/<content-publisher-item-id>/access_token'\", { encoding: 'utf8' }).trim(); const li = createLinkedInSession(token); const me = await linkedInGetUserinfo(li); const sub = String(me.sub ?? ''); const author = sub.startsWith('urn:') ? sub : 'urn:li:person:' + sub; const commentary = escapeLinkedInCommentary('Cookbook publish probe ' + new Date().toISOString()); const resp = await linkedInPost(li, 'posts', { author, commentary, visibility: 'PUBLIC', distribution: { feedDistribution: 'MAIN_FEED' }, lifecycleState: 'PUBLISHED' }); const err = resp.ok ? null : (await resp.text()).slice(0, 500); console.log(JSON.stringify({ status: resp.status, postId: resp.headers.get('x-restli-id') ?? null, error: err }, null, 2));"`
+- Resolve author URN: `curl -fsS -H "Authorization: Bearer $TOKEN" https://api.linkedin.com/v2/userinfo | jq -r '"urn:li:person:" + .sub'`
+- Initialize an image upload (returns `uploadUrl` + image URN): `curl -fsS -X POST 'https://api.linkedin.com/rest/images?action=initializeUpload' -H "Authorization: Bearer $TOKEN" -H 'LinkedIn-Version: 202601' -H 'X-Restli-Protocol-Version: 2.0.0' -H 'Content-Type: application/json' -d "{\"initializeUploadRequest\":{\"owner\":\"$AUTHOR\"}}" | jq '.value | {uploadUrl, image}'`
+- Publish a text post (the new post id is in the `x-restli-id` response header): `curl -sS -D - -o /dev/null -X POST 'https://api.linkedin.com/rest/posts' -H "Authorization: Bearer $TOKEN" -H 'LinkedIn-Version: 202601' -H 'X-Restli-Protocol-Version: 2.0.0' -H 'Content-Type: application/json' -d "{\"author\":\"$AUTHOR\",\"commentary\":\"Test post, please ignore\",\"visibility\":\"PUBLIC\",\"distribution\":{\"feedDistribution\":\"MAIN_FEED\"},\"lifecycleState\":\"PUBLISHED\"}" | grep -iE '^(HTTP|x-restli-id)'`
 
 ### Common failures
 - `invalid secret reference ... invalid character` from `op read` when using an item title with parentheses → use the item UUID path (`op://<your-vault>/<content-publisher-item-id>/...`).
-- `LinkedIn userinfo failed: 401` or `LinkedIn GET/POST ... 401` → access token expired; run the re-auth URL flow, then update `access_token` + `expires_at` in your vault item.
-- LinkedIn 429/5xx retries then failure → wait and retry with lower burst; the client retries up to 3 times with `Retry-After`/exponential backoff.
-- Post publish returns 400/422 for commentary parsing → run text through `escapeLinkedInCommentary()` before `linkedInPost(..., 'posts', ...)`.
+- HTTP 401 from `/v2/userinfo` or `/rest/*` → access token expired; run the re-auth URL flow, then update `access_token` + `expires_at` in your vault item.
+- HTTP 429 or 5xx → back off (honor `Retry-After`) and retry with a lower burst.
+- HTTP 400/422 on publish for commentary parsing → an unescaped Little Text reserved character; see [Post text is Little Text](#post-text-is-little-text).
+- A version error → the `LinkedIn-Version` header names a monthly version LinkedIn has sunset (each is retired roughly a year after release); bump it to a current `YYYYMM`.

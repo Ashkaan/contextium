@@ -1,5 +1,6 @@
 // Shared YAML frontmatter parser for index generators.
-// Handles key-value pairs, >- multiline folded scalars, and YAML lists.
+// Handles key-value pairs, quoted values (`next: "R3: checkout retries"` keeps
+// its colon), trailing comments, >- multiline folded scalars, and YAML lists.
 
 export function parseFrontmatter(content: string): Record<string, string> | null {
   if (!content.startsWith("---")) return null;
@@ -31,9 +32,13 @@ export function parseFrontmatter(content: string): Record<string, string> | null
       continue;
     }
 
-    // Strip surrounding quotes
+    // Strip surrounding quotes. An unquoted value ends at a ` #` comment, as in
+    // YAML: `priority: high  # required on active` is `high`.
     if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
       value = value.slice(1, -1);
+    } else {
+      const hash = value.search(/\s#/);
+      if (hash !== -1) value = value.slice(0, hash).trimEnd();
     }
 
     result[key] = value;

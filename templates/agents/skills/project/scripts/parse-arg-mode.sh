@@ -4,7 +4,7 @@
 # Parse the /project argument into a mode tag. Deterministic — pure regex.
 #
 # Modes:
-#   blank          → no args; /project renders the project index inline (step-0.5-render-index)
+#   blank          → no args; /project renders the project index
 #   create         → "create <freeform>" or bare freeform (new project)
 #   existing-slug  → "<slug>" or "<domain>/<slug>" matching an existing project
 #   complete       → "complete <slug>" (status change only)
@@ -18,6 +18,9 @@
 #   payload: <the remainder after the mode verb, or empty for blank>
 #
 # Exit code: 0 always.
+#
+# peers:
+#   .agents/skills/project/scripts/parse-arg-mode.test.sh
 
 set -euo pipefail
 

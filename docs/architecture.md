@@ -28,7 +28,6 @@ empty and fills in as you use it.
 | `.agents/rules/` | Behavioral rules the agent loads every session |
 | `.agents/skills/` | The loop verbs and supporting skills, as slash commands |
 | `.agents/scripts/` | The review machinery any tool can run |
-| `.agents/templates/` | The SPEC template and other starting points |
 | `.agents/generators/` | The index generators for `apps/`, `integrations/`, `projects/` |
 | `.agents/reviewers/` | Fresh-context reviewer prompts the skills dispatch; Claude Code reaches them as subagents via `.claude/agents` |
 | `.claude/hooks/` | Scripts the harness runs at edit, commit, and prompt time (Claude Code only) |
@@ -37,8 +36,9 @@ empty and fills in as you use it.
 | `apps/` | Code you write |
 | `integrations/` | External services you connect to |
 | `knowledge/` | Reference data, organized by domain |
-| `projects/` | Multi-session work, one dated folder each |
-| `journal/` | Daily session logs |
+| `projects/` | Multi-session work, one dated folder each, laid out the way spec-kit lays out a feature |
+| `decisions/` | Decision records in MADR format, for choices that would be expensive to reverse |
+| `journal/` | Session logs, one folder per day and one file per session |
 
 `.agents/AGENTS.md` is the working surface, reachable as `AGENTS.md` at the repo root. It's short on
 purpose: it tells a fresh session where things live, names the loop, and points at the rules.
@@ -56,9 +56,9 @@ slogan is the boundary between thinking and doing.
 
 | Verb | Skill | What it does |
 |---|---|---|
-| Think | `/project` → `/spec` | Plan the work, then write a lean SPEC — reviewed by `/spec-audit` and committed automatically |
-| Do | `/implement` | Execute the SPEC, validating as it goes — code-reviewed and committed automatically |
-| Wrap | `/close` | Journal the session, then commit — auto-fired by the two verbs above, or run by hand |
+| Think | `/project` → `/spec` | Agree the goal, settle the open decisions, split the work into roadmap rows, then write one spec folder per row — reviewed by `/spec-audit` and committed automatically |
+| Do | `/implement` | Build one row's spec, validating as it goes — code-reviewed and committed automatically |
+| Wrap | `/close` | Mark finished rows done, journal the session, then commit — auto-fired by the two verbs above, or run by hand |
 
 The third verb isn't one you usually type. Each producer verb runs its own review — `/spec-audit` on
 the design, `/implement-audit` on the code — and then invokes `/close` itself on a clean finish, so the
@@ -68,22 +68,41 @@ loop wraps itself. It only stops for you when a real decision needs your call. Y
 Here is the part that matters. `/implement` runs in a fresh context. When you've spent a long
 conversation thinking through a problem with `/project`, that context is full of dead ends, revisions,
 and half-formed ideas. Handing all of that to the implementation step makes the work worse, not
-better. So `/implement` refuses to run in a long or contaminated context. You think in one session,
-you write the SPEC, and then you start a new session to build. The SPEC is the handoff. It carries the
-decisions forward without the noise.
+better. So you think in one session, the spec is written and committed, and you start a new session to
+build. The spec is the handoff. It carries the decisions forward without the noise.
 
-This is the single most useful idea in the methodology. A SPEC written by a tired context and then
+This is the single most useful idea in the methodology. A plan written by a tired context and then
 executed by that same tired context tends to drift, because the model is still arguing with itself
 about choices it already made. Cut the context between the two and each step does one job well.
 
-The SPEC itself is short, and `/project` doesn't write it directly — it hands the agreed plan to
-`/spec`, which writes the file, sends it through `/spec-audit`, and commits it automatically. There's no pre-commit sign-off pause: the SPEC lands on the branch and you review it in
-the fresh `/implement` session, revising there if it drifted. The template has four sections: the ask in
-the human's own words, the behavior that counts as success, the files to touch, and how you'll know it
-works. That's enough for a fresh session to build
-against and enough for a reviewer to check. Heavier projects grow their own sections when a real gap
-bites, not before. Splitting `/spec` out of `/project` means a SPEC can also be written ad-hoc, any time
-work turns out to need one, without running the full think flow.
+### Before the design: the grill
+
+`/project` opens by stating the goal and the simplest mechanism it can see, and waits for you to say
+that is what you meant. Then it reads the code, and only then asks about the choices still open —
+each question with its recommended answer first, so the usual reply is "yes". A choice that would not
+change a file, an edge case, a data source or the scope is not asked; it is adopted and written down.
+Every answer, asked or adopted, lands in the spec's `## Clarifications` with the alternative it beat.
+That table is what stops a later session from re-arguing a settled choice.
+
+### The project folder
+
+A project is `projects/<domain>/YYYY-MM-DD_<slug>/`, and its files follow
+[spec-kit](https://github.com/github/spec-kit)'s templates, pinned to a release and kept beside the
+skill that writes each one:
+
+| File | Holds |
+|---|---|
+| `README.md` | Front matter, `## Goal`, `## Outcome`. Its `next:` is derived from the roadmap by a script, never typed |
+| `ROADMAP.md` | The rows (`R1`, `R2`, …) with what each depends on and its status — the project's only list of outstanding work |
+| `specs/NNN-name/` | One folder per row: `spec.md` (your words verbatim, the clarifications, the behavior contract), `plan.md` (the simplest shape, data sources, validation commands), `tasks.md` (what `/implement` executes, tests included), `research.md` (what was looked up, with sources), then `report.md` from `/implement` |
+| `decisions/` | MADR records for choices inside this project that would be expensive to reverse |
+
+Rows with no unmet dependency can run at the same time: a close prints one `/implement <slug> r4` block
+per ready row, each for its own session in its own `git worktree`, so two builds never share a working
+tree. Anything a spec leaves unsettled is written in place as
+`[NEEDS CLARIFICATION: …]`, and `/implement` refuses to start while one is open — the project routes
+back to `/project` to settle it. `/spec` can also be called on its own when work mid-session turns out
+to need a spec, without running the full think flow.
 
 ### The two reviewers
 
@@ -95,16 +114,16 @@ So both reviewers run through `.agents/scripts/reviewer-chain.sh`, which looks f
 not the author. Out of the box it tries the Codex CLI; `CONTEXTIUM_REVIEWER_CMD` points it at any other
 CLI that reads a prompt on stdin. If nothing is installed — the common case on a Claude-only machine —
 the chain reports that, and the skill falls back to a fresh-context Claude agent and labels the result
-`claude-fallback` in its report and its commit trailer. That fallback is a weaker review, and the point
+`claude-fallback` in the line it records. That fallback is a weaker review, and the point
 of labelling it is that a weaker review reported as a strong one is worse than no review at all.
 
 `/spec-audit` runs before any code exists, which makes it the cheapest review in the loop: a missing
-edge case costs one line to add to a SPEC and a rewrite to add after the implementation. It runs two
+edge case costs one line to add to a spec and a rewrite to add after the implementation. It runs two
 checks with different jobs — an independent reviewer attacking the design, and a `spirit-check` agent
-that reads only your verbatim ask and the behavior contract and asks whether the SPEC describes the
-thing you actually asked for. The second catches what the first structurally cannot: a SPEC that is
+that reads only your verbatim ask and the behavior contract and asks whether the spec describes the
+thing you actually asked for. The second catches what the first structurally cannot: a spec that is
 internally excellent and solves the wrong problem. It skips non-material edits on its own, so fixing a
-typo in a SPEC doesn't spend a reviewer call.
+typo in a spec doesn't spend a reviewer call.
 
 `/implement-audit` is the code reviewer, and it runs **once per session**. It writes a marker when it
 runs, and `/close` reads that marker rather than judging for itself whether a review already happened —
@@ -114,13 +133,12 @@ whole diff again: re-reading everything each round makes the reviewer re-decide 
 each round's own fixes into the next round's findings, which is how a fix loop reaches fifteen rounds.
 The loop stops when a round changes nothing, or at four rounds, whichever comes first.
 
-Both reviewers write a one-line trailer into the commit — `spec-audit:` or `implement-audit:` — naming
-who reviewed, how many rounds, and what is still open. `.githooks/checks/check-audit-trailers.sh`
-refuses a commit that changes a SPEC or a meaningful amount of code without one. The hook only checks
-that the line is there; it cannot tell a real trailer from an invented one. That is deliberate. The
-skills are the gate, and the hook is the backstop for commits made by hand, by another agent, or by a
-session that skipped the loop — its job is to make skipping the review a deliberate act rather than an
-oversight. `CONTEXTIUM_SKIP_AUDIT_GATE=1` is the documented way to do it deliberately.
+Each reviewer records a one-line verdict where the artifact lives: `/spec-audit` writes its
+`spec-audit:` line into the spec's `plan.md`, and `/implement-audit` writes `implement-audit:` into the
+row's `report.md`, naming who reviewed, how many rounds, and what is still open. The close's journal
+entry quotes it. No hook refuses a commit for a missing line: the skills that produce a spec or a diff
+dispatch its review unconditionally, and a gate that can only check that a line exists — not that the
+review behind it happened — added friction without adding proof.
 
 ### Supporting skills
 
@@ -137,7 +155,7 @@ changes, so the review happens before the commit rather than after a bug ships.
 It investigates until it's confident, then gives you a root-cause summary instead of a guess.
 
 There's also `/debate` for talking through a decision from more than one side, and `/author`
-for scaffolding a new rule, skill, hook, or agent in the shape the existing ones already use (its rule branch is the old propose-rule flow).
+for scaffolding a new rule, skill, hook, agent or output style in the shape the existing ones already use.
 
 ## Rules are mechanisms, not prose
 
@@ -162,7 +180,9 @@ practice.
 The rest of the starter rules are principles, not policies specific to anyone's setup. Voice (how to
 write for a human so it doesn't read like a bot), depth (when to present options versus just doing the
 thing), boundary inputs (enumerate the edges before the happy path), simplest solution first, no
-deferral, and the journal format. There's also `write-your-own-rules`, which is the meta-rule that
+deferral, the journal format, read before asserting (a claim about the code needs a reading from this
+session), red before green (a test never seen failing proves nothing), fix the cause rather than the
+symptom, and decision records. There's also `write-your-own-rules`, which is the meta-rule that
 tells you how to grow the set with your own corrections. That growth is where the layer gets valuable.
 The starter rules encode a way of working; your rules encode your work.
 
@@ -186,22 +206,30 @@ services the installer lets you pick from. They're READMEs, not working code: a 
 lives, and how you call it. Copy one into `integrations/` when you actually wire that service up, and
 fill in the real details.
 
-## Two-layer memory
+## Memory in three layers
 
-Memory is split across two surfaces, and each answers a different question.
+Memory is split across three surfaces, and each answers a different question.
 
 The git log answers what changed and when. Every commit subject is a one-line record, verb-first, of a
 real change. Months later, `git log` is a searchable history of the work.
 
-The journal answers why. One file per day under `journal/`, written by `/close` at the end of a working
-session. It uses labeled markers rather than prose: what the session set out to do, what actually
-changed, the decisions and the roads not taken, what went wrong, what to do differently, and the next
-concrete step. The journal is the one place the no-bold writing rule is deliberately overridden,
-because those markers are what make a day's entry greppable by a future session.
+The journal answers why this session went the way it did. A day is a folder under `journal/`, and each
+session `/close` wraps is one file in it, `journal/YYYY-MM-DD/HHMM-<slug>.md`, so two sessions on the
+same day never write into each other. The sections are fixed — what was done, what changed, what was
+found and from which reading, what you corrected — and a checker refuses an entry that drifts from the
+schema, because the fixed labels are what make a year of entries greppable.
 
-You need both. The git log tells you a file changed on a Tuesday. The journal tells you why you chose
-that approach over the obvious one, which is the thing you'll have forgotten and the thing that saves
-you from redoing the same argument.
+Decision records answer why the system is the way it is. A choice that would be expensive to reverse
+gets a file in `decisions/`, in [MADR](https://adr.github.io/madr/)'s minimal format: the problem, the
+options considered, the one chosen and why. An `accepted` record quotes the words that accepted it,
+dated; a record that cannot is `proposed`. A pre-commit check enforces the format, so a discussion
+cannot be written down as a decision. Records live in the narrowest folder containing everyone who
+could act against them — the repo root for a repo-wide choice, a project folder for one inside a
+project — and `decisions/README.md` is the one place the format is written.
+
+You need all three. The git log tells you a file changed on a Tuesday. The journal tells you what that
+session learned. The decision record tells you why the obvious alternative was rejected, which is the
+thing you'll have forgotten and the thing that saves you from redoing the same argument.
 
 ## Advanced patterns, not wired in
 
@@ -215,7 +243,8 @@ A few of the patterns you can grow toward when the need is real:
   session, rather than scripts you trigger by hand.
 - A declarative reconciler that watches for drift across many checks and fixes it, instead of
   one-off scripts.
-- Per-session git worktrees, so concurrent sessions never step on each other's staged changes.
+- Per-session git worktrees, so concurrent sessions on parallel roadmap rows never step on each
+  other's staged changes.
 - Runtime and dependency pinning rules, once you have enough code that version drift starts to bite.
 
 Each of those earns its weight only at a certain scale. Add the mechanism when the failure mode it
@@ -226,8 +255,8 @@ lean version is the one that stays out of your way.
 
 The Claude-only half under `.claude/` is built on Claude Code primitives (subagents, in-session hooks). The
 enforcement that matters, though, is wired through git rather than through the tool, so it fires no
-matter who or what made the commit. The commit-subject check, the secret scan, and the
-review-trailer gate live once in `.githooks/checks/`, called by the hooks in `.githooks/` (turn them on
+matter who or what made the commit. The commit-subject check, the secret scan, the skill and rule
+format checks, and the decision-record and journal-entry checks live once in `.githooks/checks/`, called by the hooks in `.githooks/` (turn them on
 with `git config core.hooksPath .githooks`, which the installer offers to do). They sit outside both `.agents/` and `.claude/`
 on purpose: a repo set up for a non-Claude tool never gets a `.claude/` directory, and the gate still
 has to fire. A commit made by hand or by Claude passes the same one.

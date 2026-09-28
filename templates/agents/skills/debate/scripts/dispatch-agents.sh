@@ -1,9 +1,8 @@
 #!/usr/bin/env bash
 # dispatch-agents.sh — run every debate role in parallel, one model CLI each.
 #
-# Sanitized from the source repo's version, which read its voice lineup from a
-# private model-assignment table. Here the lineup is whatever model CLIs you
-# have installed (see voices.sh), and a thin lineup degrades rather than fails:
+# The lineup is whatever model CLIs you have installed (see voices.sh), and a
+# thin lineup degrades rather than fails:
 # with one model CLI present, it plays every role and the skill says so.
 # That is a weaker debate — one model arguing with itself agrees more readily
 # than two different ones — but it is a debate, and it runs on a stock install.

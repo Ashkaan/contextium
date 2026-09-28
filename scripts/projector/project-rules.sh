@@ -15,7 +15,6 @@
 # Per-tool output (inside TARGET_DIR):
 #   claude   .claude/skills -> ../.agents/skills          (symlink)
 #            .claude/rules -> ../.agents/rules            (symlink)
-#            .claude/templates -> ../.agents/templates    (symlink)
 #            .claude/agents -> ../.agents/reviewers       (symlink)
 #            (.claude/CLAUDE.md is install.sh's, not this script's — it carries
 #             the --force and pre-v6-migration logic this script has no part in)
@@ -46,7 +45,7 @@ die() { echo "FATAL: $*" >&2; exit 1; }
 
 if [ "${1:-}" = "--list" ]; then
   echo "Supported tools (key -> instructions file + commands):"
-  echo "  claude    .claude/skills|rules|templates|agents -> .agents/ (CLAUDE.md is install.sh's)"
+  echo "  claude    .claude/skills|rules|agents -> .agents/ (CLAUDE.md is install.sh's)"
   echo "  codex     AGENTS.md (root, always) + .codex/skills -> .agents/skills"
   echo "  cursor    .cursor/rules/contextium.mdc    + .cursor/commands/*.md -> the skills"
   echo "  gemini    GEMINI.md                       + .gemini/commands/*.toml"
@@ -156,10 +155,11 @@ toml_escape() {
 }
 
 # Emit a SKILL.md for a tool that reads plain markdown with its own frontmatter.
-# The skill's OWN frontmatter carries the step graph, so it cannot be dropped —
-# but leaving it as a second `---` block makes the file look like it has two
-# frontmatters and the step graph renders as stray horizontal rules. Fence it
-# instead, so it survives intact and reads as what it is.
+# The skill's own frontmatter (name, description, allowed-tools, metadata.peers)
+# is kept, but left as a second `---` block it makes the file look like it has
+# two frontmatters and renders as stray horizontal rules. Fence it instead, so
+# it survives intact and reads as what it is — and so prune_stale_commands can
+# recognize a file this script wrote by its `# skill definition` line.
 # Args: $1=SKILL.md path
 skill_body_fenced() {
   awk '
@@ -229,9 +229,8 @@ prune_stale_commands() {
 
 # The skills ARE the commands. Tools that read SKILL.md as-is get a symlink; the
 # two that need another format get a file generated from the same source. The
-# whole SKILL.md goes through, frontmatter included — the step graph lives there,
-# and dropping it would hand the generated tools a weaker procedure than the
-# symlinked ones run.
+# whole SKILL.md goes through, frontmatter included, so the generated tools run
+# the same procedure the symlinked ones do.
 write_commands() {
   local d name desc out dir body
   prune_stale_commands
@@ -286,7 +285,6 @@ case "$TOOL" in
   claude)
     link_into_agents ".claude/skills"    "../.agents/skills"    ".agents/skills"
     link_into_agents ".claude/rules"     "../.agents/rules"     ".agents/rules"
-    link_into_agents ".claude/templates" "../.agents/templates" ".agents/templates"
     link_into_agents ".claude/agents"    "../.agents/reviewers" ".agents/reviewers"
     ;;
   codex)

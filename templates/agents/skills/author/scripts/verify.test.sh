@@ -1,22 +1,11 @@
 #!/usr/bin/env bash
 # Test harness for verify.sh — round-trips each type through scaffold.sh then
 # asserts verify passes the well-formed scaffold and fails a deliberately
-# broken one. Mirrors SPEC § 6 of author.spec.md.
+# broken one.
 #
 # peers: verify.sh, scaffold.sh
 
 set -euo pipefail
-
-# Telemetry isolation. The linters this exercises write a firing line to
-# "$HOME/.local/share/claude-mechanisms.log", and a test fixture is not a
-# firing — left unredirected, one run of this suite adds entries the
-# dead-mechanism report counts as real catches, which is the same
-# runs-vs-firings confusion that left 1,169 entries standing behind 4 real
-# catches (projects/ai/2026-08-03_rule-value-sweep/README.md, row 28 finding 2).
-# Redirect HOME so the log resolves to a throwaway path, exactly as
-# projects/ai/2026-08-03_rule-value-sweep/scripts/verify-stop-hook-telemetry.sh does.
-export HOME="${TMPDIR:-/tmp}/claude-hook-test-home"
-mkdir -p "$HOME/.local/share"
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 VERIFY="$SCRIPT_DIR/verify.sh"
@@ -113,7 +102,7 @@ case_rule() {
   assert_pass "rule dispatches to linters"
 }
 
-# ── Principle gates (SPEC § 5a) — each must FAIL a violating artifact ──
+# ── Principle gates (SKILL.md § The four principles) — each must FAIL a violating artifact ──
 
 write_skill() {
   # write_skill <name> <description> <body-line-count>
@@ -124,8 +113,6 @@ write_skill() {
     echo "---"
     echo "name: $name"
     echo "description: $desc"
-    echo "disable-model-invocation: false"
-    echo "enforces: []"
     echo "---"
     echo "# $name"
     for ((i = 0; i < lines; i++)); do echo "body line $i"; done
@@ -135,19 +122,19 @@ write_skill() {
 # Capture verify's combined output without tripping `set -e`/pipefail.
 verify_out() { "$VERIFY" "$@" 2>&1 || true; }
 
-# P1/P2: description over the 1,536-char cap → FAIL; at the cap → no cap error.
+# P1/P2: description over the 1,024-char cap (Agent Skills spec) → FAIL; at the cap → no cap error.
 case_desc_cap() {
   local name="zz-verify-desccap" big out
   CLEANUP+=(".agents/skills/$name")
-  big=$(printf 'x%.0s' $(seq 1 1537))
+  big=$(printf 'x%.0s' $(seq 1 1025))
   write_skill "$name" "$big" 5
   local rc; rc=$(verify_rc skill "$REPO_ROOT/.agents/skills/$name/SKILL.md")
-  [[ "$rc" -ne 0 ]] || { assert_fail "desc-cap" "1537-char description should fail"; return; }
-  big=$(printf 'x%.0s' $(seq 1 1536))
+  [[ "$rc" -ne 0 ]] || { assert_fail "desc-cap" "1025-char description should fail"; return; }
+  big=$(printf 'x%.0s' $(seq 1 1024))
   write_skill "$name" "$big" 5
   out=$(verify_out skill "$REPO_ROOT/.agents/skills/$name/SKILL.md")
-  grep -q "description is" <<<"$out" && { assert_fail "desc-cap" "1536-char description should pass the cap gate"; return; }
-  assert_pass "desc-cap 1537-fails 1536-ok"
+  grep -q "description is" <<<"$out" && { assert_fail "desc-cap" "1024-char description should pass the cap gate"; return; }
+  assert_pass "desc-cap 1025-fails 1024-ok"
 }
 
 # P1: first-person description → FAIL.
@@ -205,7 +192,7 @@ case_desc_folded() {
   dir="$REPO_ROOT/.agents/skills/$name"; mkdir -p "$dir"
   { echo "---"; echo "name: $name"; echo "description: >"; \
     printf '  %s\n' "$(printf 'x%.0s' $(seq 1 1600))"; \
-    echo "disable-model-invocation: false"; echo "enforces: []"; echo "---"; echo "# $name"; echo body; } > "$dir/SKILL.md"
+    echo "---"; echo "# $name"; echo body; } > "$dir/SKILL.md"
   out=$(verify_out skill "$dir/SKILL.md")
   grep -q "description is" <<<"$out" || { assert_fail "desc-folded" "folded 1600-char description should fail the cap"; return; }
   assert_pass "desc-folded cap not bypassed"

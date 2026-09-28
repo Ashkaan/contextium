@@ -1,5 +1,9 @@
 {
   "outputStyle": "decision-only",
+  "attribution": {
+    "commit": "",
+    "pr": ""
+  },
   "permissions": {
     "allow": [
       "Bash",

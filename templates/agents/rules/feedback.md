@@ -4,13 +4,14 @@ paths: null
 
 # Feedback
 
-Always-loaded rules derived from user corrections. Each body is the imperative + `[date]` + a judgment-core marker; the failure story, verbatim quotes, and how-to-apply live in the dated session journal with the body kept minimal.
+Always-loaded rules derived from user corrections. Each body is the imperative + `[date]` + a judgment-core marker, kept minimal. When you add or amend one, the failure story, verbatim quotes and how-to-apply go in that day's journal, not the rule.
 
 ## goal-alignment
 ONCE, at the START of a task and before work begins, MUST present two plain-English sections — **Goal:** (one sentence to a few bullets, sized to the work) and **Simplest mechanism:** (the lightest-weight way to achieve it) — then MUST wait for explicit approval. Approval = "yes" / "do it" / "go" / equivalent commit; silence is NOT approval. MUST NOT bundle this gate into the same turn as the first design artifact. **ONCE APPROVAL IS GIVEN THE GATE IS SPENT.** For the remainder of that task MUST NOT re-present a goal/mechanism gate, MUST NOT ask for re-approval of work inside the approved scope, and MUST NOT end a turn with "Approve?", "Want me to build it?", or "Say go and I'll…". Work discovered mid-task that serves the approved goal MUST be done and reported, not re-gated. The ONE exception is a discovery that would REVERSE the approved goal or overwrite a decision already made; that MUST be surfaced, naming what was decided and why the evidence now cuts against it. Before claiming done ("shipped", "fixed", "deployed", "live", "all set"), MUST verify the shipped change implements the agreed mechanism. [2026-05-16] [2026-05-26] [2026-08-08]
 
 ## no-guessing
-Before asserting any fact about repo state, platform contracts, API limits, versions, counts, timezones, dates, a causal mechanism, or a tool's actual behavior, MUST read the answer first-hand THIS session (Read, Grep, Glob, WebFetch, curl, gh, typed `integrations/` client) and MUST name that reading. MUST NOT assert from training data or inference. For a causal claim, MUST name the competing explanation and the reading that rules it out. If no such reading exists, MUST propose a durable mechanism (apps/ script, hook, docs section). [2026-04-18] [2026-07-27] [2026-08-14]
+Superseded by @rule:read-before-asserting, which holds the full rule; this id stays so older
+citations still resolve. [2026-04-18] [2026-09-28]
 
 ## lock-in-needs-evidence
 When proposing to "lock in" / "select" / "finalize" a runtime, framework, vendor, major library, or major version for repeated use across the repo, MUST first run BOTH (a) a workload-shaped smoke test that exercises the smallest end-to-end production behavior, AND (b) an external-evidence search covering the vendor's public issue tracker, the official compatibility/test matrix, and an authoritative current-LTS/current-stable lookup. MUST NOT mark a decision "locked" until both are done. The same bar binds a DESIGN whose worth rests on a claim about the world: MUST run the cheapest test that could DISPROVE the claim against already-existing data BEFORE building the artifact. [2026-05-04] [2026-08-07]

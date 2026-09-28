@@ -1,51 +1,48 @@
 #!/usr/bin/env bash
-# find-project.sh
-#
-# Resolve a project slug to its folder path. Walks `projects/<domain>/<date>_<slug>/`
-# and emits the matching path, or "NOT_FOUND" with the nearest matches.
-#
-# Deterministic — single filesystem scan.
+# find-project.sh — resolve a project slug to its folder,
+# `projects/<domain>/<date>_<slug>/`, relative to the repo root (run it from
+# there). Deterministic: one filesystem scan.
 #
 # Usage:
 #   find-project.sh <slug>
-#   find-project.sh <domain>/<slug>   # fully-qualified form bypasses slug-only scan
+#   find-project.sh <domain>/<slug>   # the qualified form searches one domain
 #
-# Output (one or more lines to stdout):
-#   PATH:projects/<domain>/<date>_<slug>     → success
-#   NOT_FOUND                                → no match
-#   NOT_FOUND:nearest: <slug1>, <slug2>, ... → no exact match; suggestions
+# Output (one line on stdout):
+#   PATH:projects/<domain>/<date>_<slug>   found
+#   NOT_FOUND                              no match
+#   NOT_FOUND:nearest: <slug>,<slug>,...   no exact match; up to five slugs
+#                                          containing the input
 #
-# Exit code: 0 always — caller parses stdout.
+# A slug in two domains resolves to the first in path order; the qualified form
+# picks the other.
+#
+# Exit: 0 always — the caller parses stdout.
+#
+# peers:
+#   .agents/skills/project/scripts/find-project.test.sh
 
 set -euo pipefail
 
 INPUT="${1:?slug required}"
 
-# Fully-qualified form: <domain>/<slug>
 if [[ "$INPUT" == */* ]]; then
   DOMAIN="${INPUT%%/*}"
   SLUG="${INPUT##*/}"
-  MATCH=$(find "projects/${DOMAIN}" -maxdepth 1 -type d -name "*_${SLUG}" 2>/dev/null | head -1)
-  if [ -n "$MATCH" ]; then
-    echo "PATH:${MATCH}"
-    exit 0
-  fi
-  echo "NOT_FOUND"
+  MATCH=$(find "projects/${DOMAIN}" -mindepth 1 -maxdepth 1 -type d -name "*_${SLUG}" 2>/dev/null | sort | head -1 || true)
+  if [ -n "$MATCH" ]; then echo "PATH:${MATCH}"; else echo "NOT_FOUND"; fi
   exit 0
 fi
 
-# Bare slug: scan all domains
-MATCH=$(find projects -maxdepth 2 -type d -name "*_${INPUT}" 2>/dev/null | head -1)
-
+MATCH=$(find projects -mindepth 2 -maxdepth 2 -type d -name "*_${INPUT}" 2>/dev/null | sort | head -1 || true)
 if [ -n "$MATCH" ]; then
   echo "PATH:${MATCH}"
   exit 0
 fi
 
-# Suggest nearest matches by substring
-NEAREST=$(find projects -maxdepth 2 -type d 2>/dev/null \
-  | grep -iE "_.*${INPUT}.*$" \
-  | sed 's|.*_||' \
+# Nearest: slugs containing the input, case-insensitively, as a fixed string.
+NEAREST=$(find projects -mindepth 2 -maxdepth 2 -type d -name '*_*' 2>/dev/null \
+  | sed 's|.*/[^_]*_||' \
+  | grep -iF -- "$INPUT" \
   | sort -u \
   | head -5 \
   | paste -sd, - || true)

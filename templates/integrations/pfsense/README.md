@@ -1,8 +1,7 @@
 ---
 name: pfSense
-description: Open-source firewall/router; version-scrape helper for upgrade tracking
+description: Open-source firewall/router; download-page scrape for upgrade tracking
 cli: HTTPS scrape (no auth)
-typed_client: integrations/pfsense/pfsense.ts
 hosts:
   - pfsense.org
   - www.pfsense.org
@@ -10,49 +9,43 @@ hosts:
 
 # pfSense Integration
 
-pfSense Community Edition runs on your network firewall/router. Source: Netgate. The integration is a public download-page scrape used to check for available CE upgrades.
+pfSense Community Edition runs on your network firewall/router. Source: Netgate. The integration is a scrape of the public download page, used to check for available CE upgrades.
 
-## TypeScript Client
+## If you write a checker
 
-Canonical typed reference: [`pfsense.ts`](pfsense.ts).
+Nothing here ships one; the `curl` below is the whole check. If a scheduled job tracks upgrades, this is its shape:
 
-```ts
-import { getLatestPfSenseVersion, type PfSenseVersionResult } from "../../integrations/pfsense/pfsense.ts";
-```
-
-### Export surface
-
-| Function / Type | Purpose |
-|---|---|
-| `getLatestPfSenseVersion(timeoutMs?)` | Scrapes `pfsense.org/download/` for the latest CE release version |
-| `PfSenseVersionResult` | Tagged union: `{ ok: true, version }` or `{ ok: false, cause: "http_fail"\|"parse_fail" }` |
-
-The result type distinguishes HTTP failure (escalate — site down) from parse failure (informational — Netgate page tweak). Two regex anchors prevent silent breakage from page restructuring.
+- Fetch `https://www.pfsense.org/download/` with a timeout (15s default; longer on slow networks).
+- Parse with two anchors so a page tweak does not silently break it: the filename pattern `pfSense-CE-<X.Y.Z>-RELEASE` first, the page's Version label block as a fallback.
+- Return a tagged result: `{ ok: true, version }`, or `{ ok: false, cause: "http_fail" | "parse_fail" }`. The distinction matters: `http_fail` means the site is down (escalate), `parse_fail` means Netgate changed the page (informational; fix the anchors).
 
 ## Notes
 
 - No auth, no API key — public download page.
-- 15-second AbortSignal timeout default; bump for slow networks.
-- Filename pattern primary anchor: `pfSense-CE-<X.Y.Z>-RELEASE`.
+- The filename list also carries installer variants (`pfSense-CE-memstick-…`); the numeric pattern below skips them.
 
 ## Common invocations
 
-### Smoke / auth check
+### Smoke / latest version
 ```bash
-node --input-type=module -e "import { getLatestPfSenseVersion } from './integrations/pfsense/pfsense.ts'; const r=await getLatestPfSenseVersion(); console.log(JSON.stringify(r));"
+page=$(curl -fsS --max-time 15 https://www.pfsense.org/download/) || { echo "http_fail"; exit 1; }
+v=$(printf '%s' "$page" | grep -oE 'pfSense-CE-[0-9.]+-RELEASE' | sort -uV | tail -1 | grep -oE '[0-9]+(\.[0-9]+)+')
+[ -n "$v" ] || v=$(printf '%s' "$page" | tr '\n' ' ' | sed 's/<[^>]*>/ /g' | grep -oE 'Version: +[0-9]+(\.[0-9]+)+' | head -1 | grep -oE '[0-9]+(\.[0-9]+)+')
+if [ -n "$v" ]; then echo "$v"; else echo "parse_fail"; exit 2; fi
 ```
 
+Prints the version, or `http_fail` (exit 1: the page is down or unreachable) or `parse_fail` (exit 2: both anchors missed, so Netgate changed the page).
+
 ### Refresh / re-auth
-No auth — public scrape. If the smoke check fails with `cause: "http_fail"`, the page is down or unreachable; if `cause: "parse_fail"`, the Netgate page restructured and `getLatestPfSenseVersion` regex anchors need updating in `pfsense.ts`.
+No auth — public scrape. If the fetch fails, the page is down or unreachable; if it succeeds but the grep prints nothing, Netgate restructured the page and the anchor needs updating.
 
 ### Common queries / actions
-- Latest CE version (default 15s timeout): `node --input-type=module -e "import { getLatestPfSenseVersion } from './integrations/pfsense/pfsense.ts'; const r=await getLatestPfSenseVersion(); console.log(r.ok ? r.version : 'ERR:'+r.cause);"`
-- Latest CE version (60s timeout for slow networks): `node --input-type=module -e "import { getLatestPfSenseVersion } from './integrations/pfsense/pfsense.ts'; const r=await getLatestPfSenseVersion(60_000); console.log(JSON.stringify(r));"`
-- Compare against your running firewall: fetch the latest version above, then SSH the box for the installed version comparison.
-- Raw download-page sniff (debug parse_fail): `curl -s --max-time 15 https://www.pfsense.org/download/ | grep -oE 'pfSense-CE-[A-Za-z0-9.-]+-RELEASE' | head -3`
+- Slow network: raise `--max-time 15` to `60` in the snippet above.
+- Compare against your running firewall: fetch the latest version above, then SSH the box for the installed version.
+- Raw download-page sniff (debug a parse failure): `curl -fsS --max-time 15 https://www.pfsense.org/download/ | grep -oE 'pfSense-CE-[A-Za-z0-9.-]+-RELEASE' | head -3`
 
 ### Common failures
-- `cause: "http_fail", status: 5xx` → Netgate site down or rate-limiting; retry after a few minutes, no action needed if transient.
-- `cause: "http_fail", status: 4xx` → Page URL changed; verify `https://www.pfsense.org/download/` still resolves, update fetch URL in `pfsense.ts` if Netgate moved it.
-- `cause: "parse_fail"` → HTML restructured; both regex anchors (filename pattern + Version label block) failed; inspect with the curl command above and update anchors in `pfsense.ts`.
-- `AbortError: The operation was aborted` → Fetch exceeded `timeoutMs`; rerun with the 60s-timeout snippet above.
+- HTTP 5xx → Netgate site down or rate-limiting; retry after a few minutes, no action needed if transient.
+- HTTP 4xx → page URL changed; verify `https://www.pfsense.org/download/` still resolves and update the URL if Netgate moved it.
+- Empty grep output → HTML restructured; inspect with the raw sniff above and update the anchor.
+- `curl: (28) Operation timed out` → fetch exceeded `--max-time`; rerun with the 60s variant.

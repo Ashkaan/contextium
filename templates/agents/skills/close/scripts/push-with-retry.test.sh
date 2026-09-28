@@ -1,9 +1,7 @@
 #!/usr/bin/env bash
-# Test harness for push-with-retry.sh — Fix B env-resolution boundary only.
+# Test harness for push-with-retry.sh — the repo-root resolution boundary.
 #
-# Scope: the CLAUDE_PROJECT_DIR git-fallback guard (Fix B completion,
-# projects/ai/2026-05-29_close-commit-gate-robustness). Verifies the env guard
-# resolves the root via git when CLAUDE_PROJECT_DIR is unset (push then
+# Verifies the script resolves the root via git when CLAUDE_PROJECT_DIR is unset (push then
 # succeeds against a local bare remote), and preserves the hard-error outside a
 # repo.
 #
@@ -36,9 +34,8 @@ make_pushable_repo() {
   printf '%s\n%s\n' "$work" "$bare"
 }
 
-# ── Case 1 (Fix B): CLAUDE_PROJECT_DIR unset, cwd inside a git repo with a
-# reachable origin → resolve root via git, push succeeds (exit 0). Pre-fix this
-# hard-blocks with "CLAUDE_PROJECT_DIR env var is required" (RED). ──
+# ── Case 1: CLAUDE_PROJECT_DIR unset, cwd inside a git repo with a
+# reachable origin → resolve root via git, push succeeds (exit 0). ──
 case1() {
   local work bare out rc=0
   { read -r work; read -r bare; } < <(make_pushable_repo)

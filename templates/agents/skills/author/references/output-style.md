@@ -1,15 +1,15 @@
 # /author output-style — branch flow
 
-The fifth type, added 2026-08-19. An output style is a single Markdown file at
+An output style is a single Markdown file at
 `.claude/output-styles/<name>.md` whose body is APPENDED TO THE SYSTEM PROMPT —
 so it is in force on every turn of every session that selects it, and it is the
 highest-leverage artifact in `.claude/` per character.
 
-Authoritative field list read first-hand from `code.claude.com/docs/en/output-styles`
-(2026-08-19), per `@rule:check-harness-surface-first`.
+Authoritative field list: `code.claude.com/docs/en/output-styles`, per
+`@rule:check-harness-surface-first`. Re-read it before relying on a field; the
+surface moves between versions.
 
-Governing rules: the convention that rule edits go through /author (the same trailer gate
-covers `.claude/output-styles/**`), `@rule:mechanisms-not-prose`,
+Governing rules: `@rule:mechanisms-not-prose`,
 `@rule:no-speculative-enforcement`, `@rule:single-source-of-truth`.
 
 ## Critical — three silent failures, all invisible without `verify`
@@ -85,15 +85,14 @@ every turn rather than a rare one.
 
 Decompose original vs. rewrite into clauses, hand
 `{original, rewrite, dropped_clauses}` — and NOT your rationale — to the
-policy-assigned adversary via
+external reviewer via
 `.agents/scripts/artifact-review.sh <file> <brief>`
 (exit 3 → dispatch `rule-efficacy-reviewer` instead). Any `load-bearing` verdict
 is restored and the gate re-runs. Converged = zero load-bearing drops.
 
-**Known limit, measured 2026-08-18:** the reviewer re-scores the same clause
-differently as the surviving pool changes (one rule flipped
-`non-behavioral` → `load-bearing` across two rounds on unchanged text). Treat a
-single clean round as weaker evidence than it looks.
+**Known limit:** the reviewer can score the same clause differently as the
+surviving pool changes, even on unchanged text. Treat a single clean round as
+weaker evidence than it looks.
 
 ## Step 5 — verify + register
 

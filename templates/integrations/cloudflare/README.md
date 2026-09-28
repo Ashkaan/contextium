@@ -2,7 +2,6 @@
 name: Cloudflare
 description: DNS, Pages, Workers KV, and domain management
 cli: "`wrangler` CLI / REST API"
-typed_client: integrations/cloudflare/cloudflare.ts
 hosts:
   - api.cloudflare.com
 aliases:
@@ -16,30 +15,15 @@ aliases:
 ---
 # Cloudflare Integration
 
-## TypeScript Client
+## If you write a client
 
-Canonical typed reference: [`cloudflare.ts`](cloudflare.ts) (regression tests: [`cloudflare.test.ts`](cloudflare.test.ts)).
+Nothing here ships one; the REST calls under [Common invocations](#common-invocations) cover reads. If your code touches Workers KV, this is a shape that has held up:
 
-```ts
-import { cfKvRead, cfKvList, cfKvDelete, NAMESPACES } from "../../integrations/cloudflare/cloudflare.ts";
-```
-
-### Scope
-
-KV **read / list / delete** only. Writes go through a separate `kv_write` helper — kept apart so a write-path check has a narrow grep target. A high-level convenience wrapper [`push_to_kv.ts`](push_to_kv.ts) wraps `kv_write` for simple `(ns, key, value)` writes from one-off scripts.
-
-### Export surface
-
-| Function / Constant | Purpose |
-|---|---|
-| `cfKvRead(ns, key, opts?)` | Single-key GET; returns null on 404; auto-unwraps `{_meta, data}` envelope by default |
-| `cfKvList(ns, opts?)` | Auto-paginated list of keys; supports `prefix` + `limit` |
-| `cfKvDelete(ns, key, opts?)` | Idempotent delete (404 → no-op) |
-| `getCfToken(provided?)` | Token resolution: returns `provided` if non-undefined; otherwise resolves from your configured credential source. Callers without that source MUST pass `provided`. |
-| `NAMESPACES` | Registry of your KV namespace ids by friendly name |
-| `KVNamespace`, `KVMeta`, `KVEnvelope<T>` | Shared types |
-
-Default timeout: 15s per request.
+- **Read / list / delete in one module; writes in a separate one**, so every write path is one narrow grep away.
+- Read is a single-key GET that returns null on 404. List follows the `cursor` until it is empty and accepts `prefix` + `limit`. Delete treats 404 as success, so it is idempotent.
+- Token resolution: take an explicit token argument first, else read it from your vault.
+- A registry of your namespace ids by friendly name, so call sites never paste raw ids.
+- A per-request timeout (15s is plenty for KV).
 
 ## Account
 
@@ -51,7 +35,7 @@ Default timeout: 15s per request.
 
 | Token | Vault Item | Permissions |
 |-------|-----------|-------------|
-| Pages + KV | `Cloudflare API Token (Pages)` | Account Settings Read, Cloudflare Pages Edit, User Details Read, Workers KV Storage Edit |
+| Pages + KV | `Cloudflare API Token - <consumer>` | Account Settings Read, Cloudflare Pages Edit, User Details Read, Workers KV Storage Edit |
 
 ## Wrangler CLI
 
@@ -153,14 +137,14 @@ CF_TOKEN=$(op item get "<cf-pages-item-id>" --vault "<your-vault>" --fields labe
 ACCOUNT_ID="<your-account-id>"
 
 # 1. Create the service token
-curl -s -X POST -H "Authorization: Bearer $CF_TOKEN" -H "Content-Type: application/json" \
+curl -fsS -X POST -H "Authorization: Bearer $CF_TOKEN" -H "Content-Type: application/json" \
   -d '{"name":"<probe-name>","duration":"forever"}' \
   "https://api.cloudflare.com/client/v4/accounts/$ACCOUNT_ID/access/service_tokens"
 # → returns id, client_id, client_secret. Save to your vault as
 #   "Cloudflare Access - <Probe Name>" (client_id, client_secret, token_id concealed).
 
 # 2. Create a non_identity policy referencing the token
-curl -s -X POST -H "Authorization: Bearer $CF_TOKEN" -H "Content-Type: application/json" \
+curl -fsS -X POST -H "Authorization: Bearer $CF_TOKEN" -H "Content-Type: application/json" \
   -d '{
     "name":"Service - <probe-name>",
     "decision":"non_identity",
@@ -171,10 +155,10 @@ curl -s -X POST -H "Authorization: Bearer $CF_TOKEN" -H "Content-Type: applicati
 
 # 3. Attach the new policy alongside the existing identity policy
 APP_ID="<app-id>"
-APP=$(curl -s -H "Authorization: Bearer $CF_TOKEN" \
+APP=$(curl -fsS -H "Authorization: Bearer $CF_TOKEN" \
   "https://api.cloudflare.com/client/v4/accounts/$ACCOUNT_ID/access/apps/$APP_ID")
 # Then PUT with full body and the merged policies array
-curl -s -X PUT -H "Authorization: Bearer $CF_TOKEN" -H "Content-Type: application/json" \
+curl -fsS -X PUT -H "Authorization: Bearer $CF_TOKEN" -H "Content-Type: application/json" \
   -d '{
     "name":"<existing-name>",
     "domain":"<existing-domain>",
@@ -202,22 +186,22 @@ allow` instead of `decision: non_identity` (per detail #1 above).
 
 ### Smoke / auth check
 ```bash
-CF_API_TOKEN="$(op read 'op://<your-vault>/<cf-pages-item-id>/credential')" && curl -sS -H "Authorization: Bearer $CF_API_TOKEN" https://api.cloudflare.com/client/v4/user/tokens/verify | jq -r '.result | "token_id=\(.id) status=\(.status)"'
+CF_API_TOKEN="$(op read 'op://<your-vault>/<cf-pages-item-id>/credential')" && curl -fsS -H "Authorization: Bearer $CF_API_TOKEN" https://api.cloudflare.com/client/v4/user/tokens/verify | jq -r '.result | "token_id=\(.id) status=\(.status)"'
 ```
 
 ### Refresh / re-auth
 ```bash
-export CF_API_TOKEN="$(op read 'op://<your-vault>/<cf-pages-item-id>/credential')" && curl -sS -H "Authorization: Bearer $CF_API_TOKEN" https://api.cloudflare.com/client/v4/user/tokens/verify | jq -e '.result.status=="active"' >/dev/null && echo "CF_API_TOKEN refreshed and active"
+export CF_API_TOKEN="$(op read 'op://<your-vault>/<cf-pages-item-id>/credential')" && curl -fsS -H "Authorization: Bearer $CF_API_TOKEN" https://api.cloudflare.com/client/v4/user/tokens/verify | jq -e '.result.status=="active"' >/dev/null && echo "CF_API_TOKEN refreshed and active"
 ```
 
 ### Common queries / actions
-- List KV keys with a prefix: `CF_API_TOKEN="$(op read 'op://<your-vault>/<cf-pages-item-id>/credential')" && curl -sS -H "Authorization: Bearer $CF_API_TOKEN" "https://api.cloudflare.com/client/v4/accounts/<your-account-id>/storage/kv/namespaces/<namespace-id>/keys?prefix=<prefix>&limit=1000" | jq -r '.result[].name'`
-- Read a KV value: `CF_API_TOKEN="$(op read 'op://<your-vault>/<cf-pages-item-id>/credential')" && curl -sS -H "Authorization: Bearer $CF_API_TOKEN" "https://api.cloudflare.com/client/v4/accounts/<your-account-id>/storage/kv/namespaces/<namespace-id>/values/<key>" | jq -r '._meta.updated_at'`
-- List Pages projects in the account: `CF_API_TOKEN="$(op read 'op://<your-vault>/<cf-pages-item-id>/credential')" && curl -sS -H "Authorization: Bearer $CF_API_TOKEN" "https://api.cloudflare.com/client/v4/accounts/<your-account-id>/pages/projects" | jq -r '.result[].name'`
+- List KV keys with a prefix: `CF_API_TOKEN="$(op read 'op://<your-vault>/<cf-pages-item-id>/credential')" && curl -fsS -H "Authorization: Bearer $CF_API_TOKEN" "https://api.cloudflare.com/client/v4/accounts/<your-account-id>/storage/kv/namespaces/<namespace-id>/keys?prefix=<prefix>&limit=1000" | jq -r '.result[].name'`
+- Read a KV value: `CF_API_TOKEN="$(op read 'op://<your-vault>/<cf-pages-item-id>/credential')" && curl -fsS -H "Authorization: Bearer $CF_API_TOKEN" "https://api.cloudflare.com/client/v4/accounts/<your-account-id>/storage/kv/namespaces/<namespace-id>/values/<key>"`
+- List Pages projects in the account: `CF_API_TOKEN="$(op read 'op://<your-vault>/<cf-pages-item-id>/credential')" && curl -fsS -H "Authorization: Bearer $CF_API_TOKEN" "https://api.cloudflare.com/client/v4/accounts/<your-account-id>/pages/projects" | jq -r '.result[].name'`
 - Probe a CF Access service-token bypass: `curl -sSI -H "CF-Access-Client-Id: $(op read 'op://<your-vault>/<cf-access-item-id>/client_id')" -H "CF-Access-Client-Secret: $(op read 'op://<your-vault>/<cf-access-item-id>/client_secret')" https://<your-domain>/ | sed -n '1p'`
 
 ### Common failures
 - `invalid secret reference ... invalid character in secret reference: '('` from `op read` → use vault item IDs in secret refs instead of titles containing parentheses.
 - `Authentication error [code: 10000]` from Wrangler/API → token is wrong or missing scope; reload the token from your vault and re-run Smoke. If still failing, rotate the Cloudflare API token and update the vault item.
 - CF Access probe returns `HTTP/2 302` instead of `200` → service token is not authorized; attach a separate `decision: non_identity` policy for the token on the Access app.
-- `jq` parse errors on KV value reads → key is missing or response is non-JSON; inspect HTTP status first (`curl -sS -o /dev/null -w '%{http_code}\n' ...`) and verify namespace/key spelling.
+- `jq` parse errors on KV value reads → key is missing or the stored value is not JSON; inspect HTTP status first (`curl -sS -o /dev/null -w '%{http_code}\n' ...`) and verify namespace/key spelling.

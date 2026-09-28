@@ -6,11 +6,12 @@
 # (@rule:deterministic-over-ai) — this script only moves text a caller already
 # decided to cut.
 #
-# The rule's `[YYYY-MM-DD]` IS the link id: a reader following it lands on
-# journal/<date>.md, which carries the full story (keeping the rule body minimal
-# detached-evidence contract, enacted rather than assumed).
+# The rule's `[YYYY-MM-DD]` IS the link id: a reader following it lists the
+# journal day folder journal/<date>/ and finds the evidence file there, so the
+# rule body stays minimal and the story is one hop away.
 #
-# peers: .agents/skills/author/SKILL.md, .agents/skills/author/references/rule.md
+# peers: .agents/skills/author/SKILL.md, .agents/skills/author/references/rule.md,
+#        .agents/skills/close/references/journal-entry.md (the entry shape)
 #
 # Usage:
 #   relocate-evidence.sh <slug> <date> <evidence-file>
@@ -19,17 +20,23 @@
 #     <evidence-file> file holding the cut prose (use - for stdin)
 #
 # Behavior:
-#   - Appends a `### <slug> — evidence (relocated from rule)` block to
-#     journal/<date>.md.
-#   - Idempotent: if that block already exists, exits 0 without duplicating.
-#   - If journal/<date>.md is absent (rule predates journaling), creates a
-#     minimal back-dated stub with valid frontmatter first.
-# exit: 0 on append or idempotent skip; 1 on bad args / unreadable evidence;
+#   - Writes journal/<date>/0000-<slug>-evidence.md, a journal entry in the
+#     shape journal-entry.md defines (front matter, a title equal to the
+#     heading, Action, a summary, the evidence under Findings), so the close's
+#     journal check accepts it. `0000` sorts it before the day's sessions.
+#     The evidence is quoted (`> `) so no line of it can read as schema, and
+#     the entry is run through close/scripts/check-journal-entry.sh before
+#     success is reported; a refused entry is removed and the exit is 1.
+#   - Idempotent: if that file already exists, exits 0 without touching it.
+# exit: 0 on write or idempotent skip; 1 on bad args / unreadable evidence;
 #       2 on usage.
 
 set -euo pipefail
 
 err() { echo "$@" >&2; }
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CHECKER="$SCRIPT_DIR/../../close/scripts/check-journal-entry.sh"
 
 if [[ $# -lt 3 ]]; then
   err "usage: $(basename "$0") <slug> <date> <evidence-file|->"
@@ -54,7 +61,8 @@ if [[ -z "$REPO_ROOT" ]]; then
   err "not inside a git repo, and CLAUDE_PROJECT_DIR is unset"
   exit 1
 fi
-journal="$REPO_ROOT/journal/$date.md"
+rel="journal/$date/0000-$slug-evidence.md"
+journal="$REPO_ROOT/$rel"
 
 # Read the evidence (file or stdin).
 if [[ "$ev_src" == "-" ]]; then
@@ -66,46 +74,59 @@ else
   fi
   evidence="$(cat "$ev_src")"
 fi
-# Strip leading/trailing blank lines.
-evidence="$(printf '%s\n' "$evidence" | sed -e '/./,$!d' -e ':a' -e '/^\n*$/{$d;N;ba}')"
+# Strip leading/trailing blank lines. awk, not a sed loop: BSD sed reads a
+# label inside braces differently from GNU sed.
+evidence="$(printf '%s\n' "$evidence" | awk 'NF { seen = 1 } seen { buf[++n] = $0 }
+  END { while (n > 0 && buf[n] ~ /^[[:space:]]*$/) n--; for (i = 1; i <= n; i++) print buf[i] }')"
 
 if [[ -z "$evidence" ]]; then
   err "no evidence text supplied — nothing to relocate"
   exit 1
 fi
 
-heading="### $slug — evidence (relocated from rule)"
+title="one-off (evidence relocated from rule $slug)"
 
-# Idempotency guard: if this rule's relocated block already exists, skip.
-if [[ -f "$journal" ]] && grep -qF "$heading" "$journal"; then
-  err "already relocated: '$heading' present in journal/$date.md — skipping"
+if [[ -f "$journal" ]]; then
+  err "already relocated: $rel exists — skipping"
   exit 0
 fi
 
-# Create a minimal valid stub if the journal entry does not exist.
-if [[ ! -f "$journal" ]]; then
-  mkdir -p "$REPO_ROOT/journal"
-  {
-    echo "---"
-    echo "date: $date"
-    echo "tags: [relocated-evidence]"
-    echo "---"
-    echo ""
-    echo "# $date"
-    echo ""
-    echo "Back-dated stub holding rule evidence relocated out of always-loaded"
-    echo "rules during a /author compress pass. Not a session log."
-  } > "$journal"
-  err "created back-dated stub: journal/$date.md"
+mkdir -p "$(dirname "$journal")"
+{
+  echo "---"
+  echo "date: $date"
+  echo 'time: "00:00"'
+  echo "title: $title"
+  echo "project: null"
+  echo "tags: [relocated-evidence]"
+  echo "---"
+  echo ""
+  echo "### $title"
+  echo "**Action:** updated"
+  echo ""
+  echo "The failure story behind @rule:$slug, cut from the always-loaded rule by an /author compress pass."
+  echo ""
+  echo "**Findings:**"
+  echo ""
+  # Quoted line by line: evidence is prose from a rule, and a line of it that
+  # starts `date:` or `**Decisions:**` at column 0 would otherwise be read as
+  # the entry's own front matter or sections.
+  printf '%s\n' "$evidence" | sed -e 's/^/> /' -e 's/^> $/>/'
+} > "$journal"
+
+# Report success only for an entry the close will accept. A refused one is
+# removed, so a re-run is not skipped as "already relocated".
+if [[ ! -f "$CHECKER" ]]; then
+  rm -f "$journal"
+  err "cannot validate the entry: no $CHECKER — nothing written"
+  exit 1
+fi
+if ! check_out="$(bash "$CHECKER" "$journal" 2>&1)"; then
+  rm -f "$journal"
+  err "the journal check refused the entry, so nothing was written:"
+  err "$check_out"
+  exit 1
 fi
 
-# Append the relocated block.
-{
-  echo ""
-  echo "$heading"
-  echo ""
-  printf '%s\n' "$evidence"
-} >> "$journal"
-
-err "relocated evidence for '$slug' → journal/$date.md"
+err "relocated evidence for '$slug' → $rel"
 exit 0

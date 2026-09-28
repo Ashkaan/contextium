@@ -17,10 +17,14 @@
 #      a rule file under .agents/rules/.
 #      Triggers on: "MUST", "MUST NOT", "user pushback", "user corrected",
 #                   "@rule:", "feedback:", "directive"
-#   3. Filename or content is project status / blocker / progress →
-#      projects/<domain>/<date>_<slug>/README.md (Claude provides the actual
-#      path from session context).
-#      Triggers on: "blocked", "next steps", "status:", "in progress"
+#   3. Filename or content is about a project (Claude provides the actual
+#      path from session context):
+#      a. the project's own status → projects/<domain>/<date>_<slug>/README.md,
+#         whose front matter holds status, blocked-on and monitoring-until.
+#         Triggers on: "status:", "blocked-on", "monitoring-until"
+#      b. outstanding work → a row in projects/<domain>/<date>_<slug>/ROADMAP.md,
+#         the project's one list of it, where each row carries its own status.
+#         Triggers on: "blocked", "next steps", "in progress"
 #   4. Filename or content names an app or integration →
 #      apps/<name>/README.md or integrations/<name>/README.md
 #      Triggers on: matching a directory under apps/ or integrations/
@@ -57,10 +61,17 @@ if [ -z "$DEST" ] && echo "$LOWER" | grep -qE '\b(must not|must|user pushback|us
   WHY="content describes a behavioral rule or user correction — add it as a new rule file (see @rule:write-your-own-rules)"
 fi
 
-# 3. Project status / blocker classification
-if [ -z "$DEST" ] && echo "$LOWER" | grep -qE '\b(blocked|next steps|status:|in progress|monitoring-until)\b'; then
+# 3a. The project's own status — checked first, since "blocked-on" also
+# contains "blocked".
+if [ -z "$DEST" ] && echo "$LOWER" | grep -qE '(status:|blocked-on|monitoring-until)'; then
   DEST="projects/<domain>/<date>_<slug>/README.md"
-  WHY="content is project status/progress — use the matching project's README"
+  WHY="content is the project's status — it lives in the README front matter (status, blocked-on, monitoring-until)"
+fi
+
+# 3b. Outstanding work.
+if [ -z "$DEST" ] && echo "$LOWER" | grep -qE '\b(blocked|next steps|in progress)\b'; then
+  DEST="projects/<domain>/<date>_<slug>/ROADMAP.md"
+  WHY="content is outstanding work — it is a row in the project's ROADMAP.md, with the row's own status"
 fi
 
 # 4. App / integration classification

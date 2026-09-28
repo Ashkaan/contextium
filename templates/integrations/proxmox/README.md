@@ -31,11 +31,11 @@ A Proxmox VE cluster of hypervisor nodes running VMs and LXC containers. Fill in
 
 ## Access
 
-API token authentication preferred over root password. Generate via web UI: Datacenter → Permissions → API Tokens. Save to your secrets vault as `Proxmox - <your-vault>` (token + secret).
+API token authentication preferred over root password. Generate via web UI: Datacenter → Permissions → API Tokens. Save to your secrets vault as `Proxmox - <consumer>` (token + secret).
 
 ```bash
 PVE_TOKEN="root@pam!<token-name>=<secret-uuid>"
-curl -s -k -H "Authorization: PVEAPIToken=$PVE_TOKEN" \
+curl -fsS -k -H "Authorization: PVEAPIToken=$PVE_TOKEN" \
   "https://<node>:8006/api2/json/nodes/<node>/status"
 ```
 

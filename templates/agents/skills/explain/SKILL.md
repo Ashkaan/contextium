@@ -1,45 +1,9 @@
 ---
 name: explain
-description: Deep research into a topic or issue — investigate until confident, then present executive summary and root cause analysis. Use when you need to understand WHY.
-argument-hint: "[topic, question, or issue description]"
-disable-model-invocation: false
-allowed-tools:
-  - Bash
-  - Read
-  - Grep
-  - Glob
-  - Task
-  - WebSearch
-  - WebFetch
-peers:
-  - .agents/reviewers/research-agent.md
-handoffs_to:
-  - .agents/skills/implement/SKILL.md
-enforces:
-  - "@rule:no-guessing"
-  - "@rule:class-fix-is-atomic"
-steps:
-  - id: step-0-validate-input
-    kind: action
-    action: If ARGUMENTS empty or vague, ask one clarifying question before launching research.
-  - id: step-1-classify-complexity
-    kind: action
-    action: State Quick | Standard | Deep and a one-sentence restatement of the question.
-  - id: step-2-frame
-    kind: action
-    action: Write INVESTIGATION FRAME (question, type, scope, hypotheses, unknowns) before investigating.
-  - id: step-3-research
-    kind: action
-    action: Execute research — sequential for Standard, 2-3 parallel agents for Deep — then verify with contradictions resolved.
-  - id: step-4-synthesize
-    kind: action
-    action: Emit Explain output with Executive Summary + Root Cause + Evidence + Implications sections.
-  - id: step-5-next-action-gate
-    kind: gate
-    gate:
-      tool: AskUserQuestion
-      on_fail: halt
-      condition: Fires when the explanation identifies a class-level design flaw. MUST ask Ship class fix now | Explain only | Defer with reason before ending the skill.
+description: Deep research into a topic or issue — investigates until confident, then presents an executive summary and root-cause analysis. Use when you need to understand WHY something happens. Takes [topic, question, or issue description].
+allowed-tools: Bash Read Grep Glob Task WebSearch WebFetch AskUserQuestion
+metadata:
+  peers: ".agents/reviewers/research-agent.md .agents/skills/explain/scripts/parallel-research.sh .agents/skills/implement/SKILL.md"
 ---
 
 # Explain — Deep Research & Root Cause Analysis
@@ -47,7 +11,7 @@ steps:
 Investigate a topic until confident in root cause or core understanding. Produce
 an actionable executive summary plus deeper analysis.
 
-**Step graph** (mirrors frontmatter `steps:`): step-0-validate-input → step-1-classify-complexity → step-2-frame → step-3-research → step-4-synthesize → step-5-next-action-gate
+**Steps:** step-0-validate-input → step-1-classify-complexity → step-2-frame → step-3-research → step-4-synthesize → step-5-next-action-gate
 
 ## Critical
 
@@ -165,14 +129,15 @@ the full class fix now per `@rule:class-fix-is-atomic`. Do NOT recommend
 That pattern is what produces the same bug three days running: the symptom gets
 patched, the mechanism does not, and the next sibling fails next.
 
-Before stopping at explanation, ask the user:
+Before stopping at explanation, ask the user (a numbered list, recommendation
+first; in Claude Code, `AskUserQuestion`):
 
 - **Ship class fix now** (default) — fix every instance this session per `@rule:class-fix-is-atomic`, starting from the root
   cause already identified; all peers ship this session
 - **Explain only, no fix** — user has other priorities; explanation is
   the output
-- **Defer with reason** — user-initiated; captured as
-  `deferred-by-user-directive` in the journal; requires a reason
+- **Defer with reason** — user-initiated; requires a reason, and the work
+  becomes a row in the project's `ROADMAP.md` so it is not lost
 
 If the explanation was for a concept, design rationale, or research question
 (not a class-level bug), Step 5 is "ready for next question" — no fix
@@ -182,7 +147,7 @@ chaining needed.
 
 ### Example 1 — Quick concept
 
-User: `/explain what is the difference between a queue worker and a scheduled job in our runner?` — well-scoped factual, single concept. step-1 classifies as Quick; step-2 frame is one-line; step-3 skips the parallel-research script (the answer is in one doc page); step-4 emits a 3-section synthesis (Executive Summary + Core Concept + Implications). No /solve chain — concept question, not a flaw.
+User: `/explain what is the difference between a queue worker and a scheduled job in our runner?` — well-scoped factual, single concept. step-1 classifies as Quick; step-2 frame is one-line; step-3 skips the parallel-research script (the answer is in one doc page); step-4 emits a 3-section synthesis (Executive Summary + Core Concept + Implications).
 
 ### Example 2 — Standard root-cause
 
@@ -198,7 +163,7 @@ User: `/explain why does our deploy keep failing on the step that copies files t
 |---|---|---|
 | `$ARGUMENTS` is empty or one ambiguous word | User invoked `/explain` without a target | Per step-0, ask ONE clarifying question first. Do NOT pick a target yourself — vague input wastes parallel-research budget. |
 | Sources contradict each other in step-3 | Different model recall, different doc versions, or one source is wrong | Do NOT guess. Launch a targeted secondary research call (single-source) or dispatch `research-agent` to resolve. Document the contradiction in the synthesis's Competing Explanations section. |
-| `codex` or `gemini` CLI not installed on this host | parallel-research.sh pre-flight check fails loud | Either install the missing CLI per integrations docs, or pass `--skip-missing` to continue with the available ones (synthesis names the gap). |
+| Fewer than three model CLIs installed | `voices.sh` found one or two | The script still runs, repeating a model across seats, and warns; say in the synthesis that the answers are less independent. With no model CLI at all it exits 1 — investigate the hypotheses yourself. |
 | Parallel-research script times out | One CLI is unusually slow (or model auto-routing is degraded) | Increase `--timeout` (max 600). For repeatedly slow sources, consider swapping that CLI for the in-repo `research-agent` per Step 3 Deep guidance. |
 | Step 5 defaulted to shipping a class fix when no class flaw exists | step-4 over-classified the symptom as class-level | Re-read the synthesis; if only a single file/script is affected, change the question's default to "Explain only, no fix" — don't synthesize a class fix where none exists. |
 | Parallel-agent cost is too high | Deep complexity is expensive (~$0.20-0.40 per invocation) | Reclassify as Standard if the question can be answered with one source. Reserve Deep for cross-cutting questions where source diversity changes the answer. |

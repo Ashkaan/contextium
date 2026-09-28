@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
-# Test harness for grep-rule-peers.sh — boundary cases mirror
-# SPEC § 4 of propose-rule-rebuild.spec.md.
+# Test harness for grep-rule-peers.sh — covers the empty, single, many and error cases.
 #
 # peers: grep-rule-peers.sh
 

@@ -7,6 +7,43 @@ root="$(git rev-parse --show-toplevel)"
 
 bash "$root/.githooks/checks/check-secrets.sh"
 
+# The format checks below judge what the commit RECORDS: the staged blobs, not
+# the working copy, which can differ — a repaired working file over a broken
+# staged one would otherwise pass. snapshot <pathspec>... copies the index
+# version of every matching path into $snap under the same relative path, and
+# the checks run inside $snap. The check scripts themselves run from $root.
+snap="$(mktemp -d)"
+trap 'rm -rf "$snap"' EXIT
+snapshot() {
+  local p
+  while IFS= read -r -d '' p; do
+    mkdir -p "$snap/$(dirname "$p")"
+    git show ":$p" >"$snap/$p"
+  done < <(git ls-files -z -- "$@")
+}
+
+# Decision records (decisions/*.md at the root, in a project folder, anywhere)
+# are held to the format in decisions/README.md. Only the staged ones: a record
+# committed long ago is not this commit's problem. The staged record's whole
+# folder is snapshotted, so the per-folder number check (f) sees every record
+# the commit will contain; ONE invocation, with repo-relative paths.
+decisions_check="$root/.githooks/checks/check-decision-records.sh"
+if [[ -f "$decisions_check" ]]; then
+  decision_files=()
+  while IFS= read -r f; do
+    [[ -n "$f" ]] || continue
+    decision_files+=("$f")
+    snapshot "$(dirname "$f")/"
+  done < <(git diff --cached --name-only --diff-filter=ACMR \
+             | grep -E '(^|/)decisions/[^/]+\.md$' | grep -vE '(^|/)README\.md$' || true)
+  if [[ ${#decision_files[@]} -gt 0 ]]; then
+    if ! summary="$(cd "$snap" && bash "$decisions_check" "${decision_files[@]}")"; then
+      echo "$summary — see decisions/README.md for the format" >&2
+      exit 1
+    fi
+  fi
+fi
+
 # The AI-layer checks only apply if you have the layer — a repo set up without
 # one skips them silently, which is why they are guarded rather than assumed.
 # Each is skipped again if that file was trimmed away. The layer lives at
@@ -24,37 +61,66 @@ if [[ -d "$root/.agents" || -d "$root/templates/agents" ]]; then
     bash "$refs"
   fi
 
-  # Malformed skill frontmatter loads fine and then never fires. Only check the
-  # SKILL.md files this commit actually touches.
-  #
-  # Both checks match on a REPO-RELATIVE path and silently skip anything else, so
-  # they are called from the repo root with the path git gave us. Passing an
-  # absolute path here makes every file skip, and the hook then reports success
-  # over files nobody checked.
   cd "$root"
-  fmt_skill=".githooks/checks/check-skill-format.sh"
-  fmt_rule=".githooks/checks/check-rule-format.sh"
+  fmt_skill="$root/.githooks/checks/check-skill-format.sh"
+  fmt_rule="$root/.githooks/checks/check-rule-format.sh"
 
+  # A skill whose frontmatter the harness cannot read is dropped from the
+  # listing without a word. Check every skill folder this commit touches — a
+  # SKILL.md edit, or a new file under its state/ — as staged, in one
+  # invocation. A folder the commit deletes has nothing staged and is skipped.
   if [[ -x "$fmt_skill" ]]; then
-    while IFS= read -r f; do
-      [[ -n "$f" && -f "$f" ]] || continue
-      bash "$fmt_skill" "$f"
-    done < <(git diff --cached --name-only --diff-filter=ACMR | grep -E '(^|[./])agents/skills/[^/]+/SKILL\.md$' || true)
+    skill_dirs=()
+    while IFS= read -r d; do
+      [[ -n "$d" ]] || continue
+      snapshot "$d/"
+      [[ -d "$snap/$d" ]] || continue
+      skill_dirs+=("$d")
+    done < <(git diff --cached --name-only --diff-filter=ACMRD \
+               | sed -n -E 's#^((.*[/.])?agents/skills/[^/]+)/.*#\1#p' | sort -u)
+    if [[ ${#skill_dirs[@]} -gt 0 ]]; then
+      # An explicit exit, not `set -e`: bash 3.2 does not stop on a failed
+      # ( … ) subshell here, and the commit went through with the violation printed.
+      if ! (cd "$snap" && bash "$fmt_skill" "${skill_dirs[@]}"); then
+        exit 1
+      fi
+    fi
+  fi
+
+  # A journal entry is held to the shape in the close skill's
+  # references/journal-entry.md. That check reads the staged copies itself (no
+  # arguments).
+  journal_check=""
+  for layer in .agents templates/agents; do
+    if [[ -f "$layer/skills/close/scripts/check-journal-entry.sh" ]]; then
+      journal_check="$layer/skills/close/scripts/check-journal-entry.sh"
+      break
+    fi
+  done
+  if [[ -n "$journal_check" ]]; then
+    bash "$journal_check"
   fi
 
   # A rule missing its frontmatter or its evidence date reads as a rule and
   # enforces nothing.
   # ONE invocation with every changed rule file. Called once per file, the
   # duplicate-id check has nothing to compare against and a commit that
-  # introduces the same rule id in two files passes.
+  # introduces the same rule id in two files passes. The whole staged rule set
+  # is snapshotted for that cross-file check, and the snapshot is made a git
+  # work tree because the check resolves its root with git — with this hook's
+  # GIT_* variables cleared, so it finds the snapshot and not this repo.
   if [[ -x "$fmt_rule" ]]; then
     rule_files=()
     while IFS= read -r f; do
-      [[ -n "$f" && -f "$f" ]] || continue
+      [[ -n "$f" ]] || continue
       rule_files+=("$f")
     done < <(git diff --cached --name-only --diff-filter=ACMR | grep -E '(^|[./])agents/rules/.*\.md$' || true)
     if [[ ${#rule_files[@]} -gt 0 ]]; then
-      bash "$fmt_rule" "${rule_files[@]}"
+      snapshot .agents/rules/ templates/agents/rules/
+      if ! (cd "$snap" && env -u GIT_DIR -u GIT_INDEX_FILE -u GIT_WORK_TREE git init -q . \
+        && env -u GIT_DIR -u GIT_INDEX_FILE -u GIT_WORK_TREE bash "$fmt_rule" "${rule_files[@]}"); then
+        exit 1
+      fi
     fi
   fi
 fi
