@@ -1,0 +1,84 @@
+# install-legacy.tsv — every file an earlier Contextium release installed into a place
+# v8 no longer writes, as <installed path>TAB<cksum CRC> <byte count>. install.sh
+# removes such a file only while it still matches, so an edited one is the
+# user's and stays. Made from the v6.0.0 and v7.0.0 tags:
+#   git ls-tree -r --name-only <tag> -- .githooks templates/claude \
+#     templates/agents/{rules,reviewers,scripts,templates}, each file mapped to
+#   its installed path and summed with `git show <tag>:<file> | cksum`.
+# Plus each top-level entry of templates/agents/{skills,generators} at those tags
+# that v8 does not install (a folder or file it no longer ships, or a test).
+.agents/reviewers/ai-layer-reviewer.md	2845351310 5215
+.agents/reviewers/ai-layer-reviewer.md	2974568152 5275
+.agents/reviewers/implement-audit-reviewer.md	101110821 7944
+.agents/reviewers/implement-audit-reviewer.md	1756650235 8077
+.agents/reviewers/research-agent.md	386025848 4699
+.agents/reviewers/rule-efficacy-reviewer.md	1040811236 4353
+.agents/reviewers/spirit-check.md	2153372817 8630
+.agents/reviewers/spirit-check.md	4686391 9039
+.agents/rules/adversarial-review.md	3551158165 3008
+.agents/rules/adversarial-review.md	3596326906 2322
+.agents/rules/ask-before-host-infra-changes.md	587774595 2421
+.agents/rules/boundary-inputs.md	3470329733 890
+.agents/rules/class-fix-is-atomic.md	2332590337 1766
+.agents/rules/decision-records.md	1204933913 913
+.agents/rules/depth-policy.md	3152200897 1280
+.agents/rules/feedback.md	1324008871 5297
+.agents/rules/feedback.md	3563544883 4881
+.agents/rules/fix-the-cause.md	2436044516 770
+.agents/rules/governance.md	1795624912 2429
+.agents/rules/governance.md	4037463727 2283
+.agents/rules/journal-format.md	1373428988 1266
+.agents/rules/journal-format.md	416060589 1391
+.agents/rules/mechanisms-not-prose.md	4149921536 2852
+.agents/rules/meta/ai-layer-authoring.md	2168201789 6337
+.agents/rules/meta/ai-layer-authoring.md	2453373160 5816
+.agents/rules/no-deferral.md	1850097466 1506
+.agents/rules/read-before-asserting.md	2308668582 1101
+.agents/rules/red-before-green.md	1606093296 828
+.agents/rules/simplest-solution-default.md	2878666339 1383
+.agents/rules/single-source-of-truth.md	4049694580 718
+.agents/rules/voice.md	3764746655 2015
+.agents/rules/write-your-own-rules.md	4225386910 2350
+.agents/rules/write-your-own-rules.md	598305411 2168
+.agents/scripts/artifact-review.sh	3058608762 5534
+.agents/scripts/code-review.sh	2712356482 17286
+.agents/scripts/code-review.sh	4256421725 17283
+.agents/scripts/reviewer-chain.sh	2292492559 7500
+.agents/scripts/spec-review.sh	301473208 12514
+.agents/scripts/spec-review.sh	438319941 10464
+.agents/scripts/spec-review.test.sh	716256972 3613
+.agents/scripts/voices.sh	135118133 2754
+.agents/templates/spec-lean.md	4214426014 1851
+.claude/CLAUDE.md	2519096494 1759
+.claude/CLAUDE.md	2899280176 1738
+.claude/hooks/block-memory-writes.sh	2033801947 4342
+.claude/hooks/block-memory-writes.sh	802015773 4992
+.claude/hooks/block-memory-writes.test.sh	359584709 1691
+.claude/hooks/check-destructive-git.sh	273102503 10969
+.claude/hooks/commit-gate.sh	3619213992 2519
+.claude/hooks/commit-gate.sh	3910737808 3134
+.claude/hooks/session-checklist.sh	1922463855 1189
+.claude/hooks/session-checklist.sh	4150424312 1189
+.claude/output-styles/brevity.md	740643845 3248
+.claude/output-styles/decision-only.md	2163248777 6753
+.claude/settings.json	3993416231 1516
+.claude/settings.json	46313915 1461
+.githooks/checks/check-audit-trailers.sh	1844169050 5840
+.githooks/checks/check-commit-subject.sh	4050607581 2430
+.githooks/checks/check-decision-records.sh	3884821502 11387
+.githooks/checks/check-decision-records.test.sh	4241934313 17555
+.githooks/checks/check-rule-format.sh	2433421130 6674
+.githooks/checks/check-rule-format.sh	490519340 6607
+.githooks/checks/check-rule-refs.sh	1322031624 5023
+.githooks/checks/check-rule-refs.sh	1362047753 4874
+.githooks/checks/check-secrets.sh	3879748128 1147
+.githooks/checks/check-skill-format.sh	1040248750 14152
+.githooks/checks/check-skill-format.sh	2808868091 9952
+.githooks/checks/check-skill-format.test.sh	237761933 11446
+.githooks/checks/yaml-scalar.sh	4133782048 1648
+.githooks/commit-msg	1361860346 437
+.githooks/commit-msg	780000867 378
+.githooks/pre-commit	2885603385 5535
+.githooks/pre-commit	668483796 2685
+.githooks/pre-commit.test.sh	3755138996 4462
+.agents/generators/generators.test.ts	845197066 6001

@@ -1,7 +1,6 @@
 ---
 name: Playwright
 description: Browser automation and screenshots via Playwright + Chromium
-cli: "`npx playwright screenshot`"
 hosts:
   - playwright.dev
 aliases:
@@ -12,9 +11,23 @@ aliases:
   - chromium
   - browse agent
   - playwright screenshot
+typed_client:
+  - none
+access:
+  - browser
+  - cli
+  - mcp
+uses: none
+base_url: none
+auth: none
+onepassword_item: none
+rate_limit: none documented
+cli: "`npx playwright screenshot`"
 ---
 
 # Playwright Integration
+
+**Access order:** browser, cli, mcp — the `playwright` library drives Chromium through every step (fills, clicks, waits), the `npx playwright` CLI takes one-shot screenshots, and the Playwright MCP server exists but this setup does not use it.
 
 Playwright + Chromium installed system-wide on the runner. **This setup uses the CLI only — no MCPs.** Three shapes for using it:
 

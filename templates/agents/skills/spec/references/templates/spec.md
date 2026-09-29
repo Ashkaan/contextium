@@ -31,8 +31,13 @@
   CONTEXTIUM: open with 2-3 sentences on how we interpreted the ask, then
   one Session per day the grill ran, holding its decision ledger — one row per
   decision, including the ones adopted without asking. The Rejected column is
-  what stops a later session re-litigating a settled choice. A question asked
-  and answered may also be written as spec-kit's clarify bullet,
+  what stops a later session re-litigating a settled choice. User's words is
+  the user's reply exactly as typed, dated and quoted the way decisions/README.md
+  requires of an accepted record: "1) a" stays "1) a", and Chosen carries the
+  option's text beside it, which is the AI's wording and never the user's —
+  a reviewer that sees "1) a" without its option cannot check any decision
+  built on it. A row whose Source is `user` without a quote is not a decision
+  the user made on the record. A question asked and answered may also be written as spec-kit's clarify bullet,
   `- Q: <question> → A: <final answer>`. When no grill ran this section reads
   `N/A — no grill (ad-hoc spec)`; it is never removed. Anything still open is
   written where it belongs as `[NEEDS CLARIFICATION: <the question>]`, and no
@@ -44,9 +49,9 @@
 
 ### Session YYYY-MM-DD
 
-| Decision | Chosen | Source | Rejected + why |
-|---|---|---|---|
-| [the choice in plain English] | [what we're doing] | user \| adopted (recommendation) \| adopted (user waved off) \| adopted (ceiling) | [the alternative and why it lost] |
+| Decision | Chosen | Source | User's words | Rejected + why |
+|---|---|---|---|---|
+| [the choice in plain English] | [the option picked, in the option's own wording — the AI's words] | user \| adopted (recommendation) \| adopted (user waved off) \| adopted (ceiling) | [`Your Name YYYY-MM-DD: "<the reply, exactly as typed>"`, or `—` when adopted] | [the alternative and why it lost] |
 
 <!-- /contextium -->
 ## User Scenarios & Testing *(mandatory)*
@@ -122,7 +127,7 @@
 
 <!-- contextium: boundaries -->
 <!--
-  CONTEXTIUM: cover every boundary shape (@rule:boundary-inputs) — 0 / empty,
+  CONTEXTIUM: cover every boundary shape (AGENTS.md § Standards → Plan the four before building) — 0 / empty,
   1, empty / null, max, error / invalid — one bullet each, or `N/A — <reason>`.
   A bullet describing existing code cites `file:line`, read, not remembered.
 -->

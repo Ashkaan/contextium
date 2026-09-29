@@ -32,10 +32,11 @@ export function parseFrontmatter(content: string): Record<string, string> | null
       continue;
     }
 
-    // Strip surrounding quotes. An unquoted value ends at a ` #` comment, as in
-    // YAML: `priority: high  # required on active` is `high`.
-    if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
-      value = value.slice(1, -1);
+    // A quoted value ends at its closing quote, not at the end of the line:
+    // `status: "active" # note` is `active`. An unquoted value ends at a ` #`
+    // comment, as in YAML: `priority: high  # required on active` is `high`.
+    if (value.startsWith('"') || value.startsWith("'")) {
+      value = unquote(value);
     } else {
       const hash = value.search(/\s#/);
       if (hash !== -1) value = value.slice(0, hash).trimEnd();
@@ -45,3 +46,37 @@ export function parseFrontmatter(content: string): Record<string, string> | null
   }
   return result;
 }
+
+/** The value of a quoted scalar that closes and is followed by nothing but
+ *  whitespace or a `#` comment, its escapes decoded; any other value comes back
+ *  as it was. In '…' a doubled '' is one quote and a backslash is literal. In
+ *  "…" a backslash escapes the next character: \" \\ \/ \t \n decode, and any
+ *  other escape is kept as written. */
+function unquote(value: string): string {
+  const q = value[0];
+  if (q !== '"' && q !== "'") return value;
+  let out = "";
+  for (let i = 1; i < value.length; i++) {
+    const c = value[i];
+    if (q === '"' && c === "\\") {
+      const e = value[i + 1] ?? "";
+      out += DOUBLE_QUOTED_ESCAPES[e] ?? `\\${e}`;
+      i++;
+      continue;
+    }
+    if (c !== q) {
+      out += c;
+      continue;
+    }
+    if (q === "'" && value[i + 1] === "'") {
+      out += "'";
+      i++;
+      continue;
+    }
+    const rest = value.slice(i + 1);
+    return /^(\s+#.*|\s*)$/.test(rest) ? out : value;
+  }
+  return value;
+}
+
+const DOUBLE_QUOTED_ESCAPES: Record<string, string> = { '"': '"', "\\": "\\", "/": "/", t: "\t", n: "\n" };

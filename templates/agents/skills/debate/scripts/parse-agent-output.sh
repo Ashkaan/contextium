@@ -8,6 +8,15 @@
 # `## Strongest Point`, `## Acknowledged Weaknesses`) and round-2
 # (`## Rebuttal`, `## Underweighted Argument`, `## Revised Position`).
 #
+# NO ANSWER IS DROPPED. Skipping an output whose anchor heading was not at the
+# start of a line silently takes an agent out of the debate — a model's
+# preamble can run straight into `## Position` with no newline. The anchor
+# is found anywhere in a line, and an answer with no anchor at all is
+# passed through whole, marked unstructured, for the synthesis to read.
+#
+# Each block names who argued it (`argued by:`), from the `.voice` file
+# dispatch-agents.sh writes — including a stand-in for a failed voice.
+#
 # peers: build-agent-prompts.sh, dispatch-agents.sh, .agents/skills/debate/SKILL.md
 #
 # Usage:
@@ -39,9 +48,9 @@ esac
 
 # Anchor heading that marks the start of the structured block per round.
 if [[ "$ROUND" -eq 1 ]]; then
-  anchor='^## Position'
+  anchor='## Position'
 else
-  anchor='^## Rebuttal'
+  anchor='## Rebuttal'
 fi
 
 ok_count=0
@@ -50,17 +59,24 @@ for f in "$OUTPUT_DIR"/*.output; do
   [[ -e "$f" ]] || continue
   files_found=$((files_found + 1))
   role=$(basename "$f" .output)
-  # Find the line number of the anchor; if absent, skip with stderr warn.
-  start_line=$(grep -nE "$anchor" "$f" | head -n 1 | cut -d: -f1 || true)
-  if [[ -z "$start_line" ]]; then
-    err "  $role: malformed output — no '$anchor' heading"
-    continue
-  fi
+  # The anchor's line: the heading may follow a preamble on the same line, but
+  # it ends the line — a sentence that merely MENTIONS it is not the heading.
+  # Empty when there is none.
+  start_line=$(grep -nE -- "${anchor}[[:space:]]*$" "$f" | head -n 1 | cut -d: -f1 || true)
   echo "=== $role ==="
-  # Take from anchor onward; stop at the first codex-style footer marker
-  # (`[done`, `total tokens:`, `tokens-in:`, `tokens-out:`, `model:` outside
-  # a code fence). Trim trailing blank lines from the result.
-  tail -n "+${start_line}" "$f" | awk '
+  if [[ -s "$OUTPUT_DIR/${role}.voice" ]]; then
+    echo "argued by: $(head -n 1 "$OUTPUT_DIR/${role}.voice")"
+  fi
+  if [[ -z "$start_line" ]]; then
+    err "  $role: unstructured output — no '$anchor' heading; passing it through whole"
+    echo "(unstructured — no '$anchor' heading)"
+    start_line=1
+  fi
+  # From the anchor onward (cutting any preamble on the anchor's own line);
+  # stop at the first codex-style footer marker (`[done`, `total tokens:`,
+  # `tokens-in:`, `tokens-out:`). Trim trailing blank lines from the result.
+  tail -n "+${start_line}" "$f" | awk -v a="$anchor" '
+    NR == 1 { i = index($0, a); if (i > 0 && substr($0, i + length(a)) ~ /^[[:space:]]*$/) $0 = substr($0, i) }
     /^\[done|^total tokens:|^tokens-(in|out):/ { exit }
     { print }
   ' | awk '

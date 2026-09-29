@@ -1,0 +1,17 @@
+{
+  "name": "review",
+  "private": true,
+  "type": "module",
+  "description": "Declares the parser packages blast-radius-symbols.mjs uses. There is no build step and no install target here: the packer looks for them in the workbench's own node_modules, then Node's global one (npm i -g typescript web-tree-sitter tree-sitter-bash), and falls back to a regex walk without them.",
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "devDependencies": {
+    "tree-sitter-bash": "^0.25.1",
+    "typescript": "^5.9.3",
+    "web-tree-sitter": "^0.27.0"
+  },
+  "scripts": {
+    "test": "bash ./run-tests.sh"
+  }
+}

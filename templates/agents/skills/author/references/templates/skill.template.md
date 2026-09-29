@@ -1,16 +1,18 @@
 ---
 name: {{name}}
-description: TODO WHAT this skill does + WHEN to use it, and the arguments it takes if any ("Takes [x]"). Third person ("Scaffolds…", not first-person); at most 1024 characters — the model's invocation trigger, not a label.
-allowed-tools: TODO space-separated tools, e.g. Bash Read Edit — or delete this line
-metadata:
-  peers: "TODO space-separated paths this skill loads or dispatches — or delete metadata"
+description: TODO third person, what this skill does AND when to fire it (trigger phrases included) — the model's invocation trigger, at most 1,024 characters; caveats and history go in the body
+# allowed-tools: TODO one space-separated string, only if the skill's own commands would otherwise prompt every run
+# metadata:
+#   peers: "TODO the references, scripts and dispatched skills/agents the body loads, space-separated"
 ---
 
 # {{name}}
 
 TODO one-paragraph statement of what `/{{name}}` does and when to reach for it.
-Keep this SKILL.md body ≤500 lines; push any longer detail into `references/`
-(one level deep) so it loads on demand at zero context cost until read.
+The shape this file must keep — the six frontmatter keys, `metadata.peers`,
+the learned-state folder convention, the body standard — is
+`AGENTS.md` § Skill shape; `check-skills.sh` holds it to that. Whether only the user may
+fire it is `skillOverrides` in `~/.claude/settings.json`, not a field here.
 
 ## Critical
 
@@ -21,10 +23,9 @@ Keep this SKILL.md body ≤500 lines; push any longer detail into `references/`
 1. TODO first step.
 2. TODO second step.
 
-If this skill has gates (user questions, halts, shell checks, agent/skill
-dispatch), give each step its own `## <step-id>` section saying what it does and,
-for a gate, what happens when it fails (per @rule:skill-step-graph). A skill
-without gates is one body.
+Every gate (a question, a halt, a shell check, an agent/skill dispatch) is a
+named section here stating its check and what happens on failure; every
+deterministic step is a script in `scripts/` that the section invokes.
 
 ## Examples
 

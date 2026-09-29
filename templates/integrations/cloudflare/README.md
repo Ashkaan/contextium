@@ -1,7 +1,6 @@
 ---
 name: Cloudflare
 description: DNS, Pages, Workers KV, and domain management
-cli: "`wrangler` CLI / REST API"
 hosts:
   - api.cloudflare.com
 aliases:
@@ -12,8 +11,21 @@ aliases:
   - cloudflare access
   - wrangler
   - cf access
+typed_client:
+  - none
+access:
+  - api
+  - cli
+uses: none
+base_url: https://api.cloudflare.com/client/v4
+auth: bearer token (API token)
+onepassword_item: none
+rate_limit: 1200 requests/5 min per user
+cli: "`wrangler` CLI / REST API"
 ---
 # Cloudflare Integration
+
+**Access order:** api, cli — the REST API reaches everything `wrangler` does plus what it does not (Access apps, analytics), and runs where `wrangler` is not installed.
 
 ## If you write a client
 

@@ -1,75 +1,83 @@
 # /author hook — branch flow
 
-Scaffolds `.claude/hooks/<name>.sh` (or `.githooks/checks/<name>.sh`) from
-`references/templates/hook-tooluse.template.sh` (tool-call hook) or
-`references/templates/hook-precommit.template.sh` (pre-commit check), then fills + WIRES it. The hook is the
-one type with a meaningful register step: a hook fires from nothing until it is
-wired into a settings matcher or a pre-commit body.
+Scaffolds `.agents/hooks/<name>.sh` (or `.agents/checks/<name>.sh`
+with `<name>.test.sh` beside it) from the matching template, then fills it. A
+PreToolUse/PostToolUse hook is the one shape with a register step: it fires from
+nothing until it is wired into a harness's hook manifest. A check is not wired
+here — nothing dispatches a new check until something calls it.
 
-Governing rules: `@rule:hook-blocking-exit-code`, `@rule:hook-errors-actionable`,
-`@rule:tiebreaker-commit-hook-placement`, `@rule:surface-visible-signal`,
-`@rule:no-speculative-enforcement`. A hook must also be shellcheck-clean and
-must not lint Markdown (Step 3).
-
-## Step 1 — resolve shape (ask the user)
+## Step 1 — resolve shape (ask the user: a numbered list, recommendation first; in Claude Code, `AskUserQuestion`)
 
 Two structure-determining questions:
 
 | Question | Options |
 |---|---|
-| Which of the 9 allowed categories? | (1) syntactic check, (2) peer-file co-commit, (3) progress-doc co-commit, (4) checklist gate, (5) journal frontmatter, (6) memory-write redirect, (7) tool-sandbox block, (8) session-discipline gate, (9) context injection. A hook MUST fall into exactly one. Semantic code review, feature-completeness judgment, and markdown-content quality are NOT hook territory. Do NOT author a hook for a failure mode that hasn't occurred (`@rule:no-speculative-enforcement`). |
-| Which firing surface (placement)? | (a) PreToolUse/PostToolUse on a tool call → top-level `.claude/hooks/<name>.sh`. (b) pre-commit check → `.githooks/checks/<name>.sh` (pass `checks` as the 3rd scaffold arg). |
+| Which of the 9 allowed categories? | (1) syntactic check, (2) peer-file co-commit, (3) progress-doc co-commit, (4) checklist gate, (5) journal frontmatter, (6) memory-write redirect, (7) tool-sandbox block, (8) session-discipline gate, (9) context injection. A hook MUST fall into exactly one. Semantic code review, feature-completeness judgment, and markdown-content quality are NOT hook territory. Do NOT author a hook for a failure mode that hasn't occurred. |
+| Which firing surface (placement)? | (a) PreToolUse/PostToolUse on a tool call → top-level `.agents/hooks/<name>.sh`. (b) a check over files → `.agents/checks/<name>.sh` (pass `checks` as the 3rd scaffold arg). |
 
 ## Step 2 — scaffold
 
 ```bash
 # PreToolUse/PostToolUse hook (top-level):
 bash .agents/skills/author/scripts/scaffold.sh hook <name>
-# pre-commit check (checks/ subdir):
+# a check (the workbench's checks folder, with <name>.test.sh beside it):
 bash .agents/skills/author/scripts/scaffold.sh hook <name> checks
 ```
 
-Writes the skeleton (shebang + `set -euo pipefail` + a category header, plus an actionable-error `fail()` helper in the pre-commit template) and `chmod +x`. Refuses if the file exists.
+Writes the skeleton (shebang + `set -euo pipefail` + actionable-error `fail()` helper, or the stdin read for a tool-call hook) and `chmod +x`. Refuses if the file exists.
 
 ## Step 3 — fill
 
 - Pick ONE category in the header comment; delete the rest.
 - Replace the TODO body with the actual check.
-- Every blocking path MUST call `fail` (or otherwise emit) an error naming the exact file + line + remediation (`@rule:hook-errors-actionable`). MUST NOT say "fix the issue" without pointing at it.
+- Every blocking path MUST call `fail` (or otherwise emit) an error naming the exact file + line + remediation. MUST NOT say "fix the issue" without pointing at it.
 - **Exit code is load-bearing and depends on placement** (per Anthropic hooks docs, [code.claude.com/docs/en/hooks](https://code.claude.com/docs/en/hooks)):
-  - A **PreToolUse/PostToolUse Claude hook** wired in `settings.json` MUST `exit 2` to BLOCK the action (stderr is fed back as the denial reason). **`exit 1` is non-blocking** — the single most common hook bug is using `exit 1` intending to block. Exit 0 = allow (optionally emit a JSON `permissionDecision` object on stdout for finer control).
-  - A **pre-commit check** invoked by `.githooks/pre-commit` follows the body convention (`exit 1` on violation) — the aggregating body turns a non-zero check into the commit block. The `fail()` helper's `exit 1` in the template is correct for THIS placement; change it to `exit 2` if you wired the hook as a PreToolUse blocker.
+  - A **PreToolUse/PostToolUse hook** wired in a hook manifest MUST `exit 2` to BLOCK the action (stderr is fed back as the denial reason). **`exit 1` is non-blocking** — the single most common hook bug is using `exit 1` intending to block. Exit 0 = allow (optionally emit a JSON `permissionDecision` object on stdout for finer control).
+  - A **check** follows the checks convention (`exit 1` on violation), which is what its `<name>.test.sh` asserts. The `fail()` helper's `exit 1` in the template is correct for THIS placement; change it to `exit 2` if you wired the hook as a PreToolUse blocker.
 - Hooks run with **no controlling terminal** — never `read -p`, prompt, or touch `/dev/tty`; emit a JSON `terminalSequence`/`additionalContext` instead.
-- Keep `set -euo pipefail` (`@rule:hook-blocking-exit-code`). Exception: a fail-open Stop/decision hook MAY drop `-e` per the carve-out — only with an inline rationale comment + per-command guards.
-- MUST NOT subject `.md` files to syntactic checks: Markdown is prose, and a formatter or linter on it churns diffs without catching real faults.
+- Keep `set -euo pipefail`. Exception: a fail-open Stop/decision hook MAY drop `-e` per the carve-out — only with an inline rationale comment + per-command guards.
+- MUST NOT subject `.md` files to syntactic checks.
+- For a check, fill the TODO case in `<name>.test.sh` with the violation the check exists for, and see it fail before the check makes it pass.
 
 ## Step 4 — verify
 
 ```bash
-bash .agents/skills/author/scripts/verify.sh hook .claude/hooks/<name>.sh
+# a PreToolUse/PostToolUse hook:
+bash .agents/skills/author/scripts/verify.sh hook .agents/hooks/<name>.sh
+# a check, at the path scaffold.sh printed, plus its own suite:
+bash .agents/skills/author/scripts/verify.sh hook .agents/checks/<name>.sh
+bash .agents/checks/<name>.test.sh
 ```
 
-Runs `shellcheck` + asserts `set -euo pipefail` is present. It also emits a non-blocking WARN if the hook is not yet wired (see Step 5). MUST exit 0 (shellcheck-clean + safe-mode present) before the branch completes. Disable a shellcheck warning only with an inline `# shellcheck disable=SCXXXX` naming the issue.
+Runs `shellcheck` + asserts `set -euo pipefail` is present. MUST exit 0 (shellcheck-clean + safe-mode present) before the branch completes. Disable a shellcheck warning only with an inline `# shellcheck disable=SCXXXX` naming the issue. For a top-level hook it also WARNs (non-blocking) while no hook manifest names it (see Step 5); for a check it makes no claim about wiring.
 
-## Step 5 — register (REQUIRED — the hook fires from nothing until wired)
+## Step 5 — register (a PreToolUse/PostToolUse hook only — it fires from nothing until wired)
 
-Pick the wiring that matches the placement chosen in Step 1:
-
-(a) PreToolUse / PostToolUse — add a matcher block to `.claude/settings.json` `hooks`:
+Do NOT hand-edit `~/.claude/settings.json`, `~/.codex/hooks.json` or
+`.agents/hooks.json`: the installer writes or links those, and a re-run replaces
+what it made. Your own hooks go in `.agents/user-hooks.json` at the workbench
+root — the installer never writes that file, and every run merges it into each
+harness's manifest:
 
 ```jsonc
-// in .claude/settings.json → "hooks" → "PreToolUse" (or "PostToolUse")
+// <workbench>/.agents/user-hooks.json
 {
-  "matcher": "<ToolName or regex>",
-  "hooks": [{ "type": "command", "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/<name>.sh" }]
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "<ToolName or regex>",
+        "hooks": [{ "type": "command", "command": "bash <workbench>/.agents/hooks/<name>.sh" }]
+      }
+    ]
+  }
 }
 ```
 
-(b) pre-commit check — add an invocation line to `.githooks/pre-commit`:
+Name the hook by the workbench's ABSOLUTE path (`<workbench>` is where
+`install.sh` put it, e.g. `~/code/workbench`): a session can be working in a
+product repo, where `$CLAUDE_PROJECT_DIR` is that repo and holds no
+`.agents/hooks/`. Then re-run `install.sh` to merge it.
 
-```bash
-# in .githooks/pre-commit — plain invocation, exactly like check-secrets.sh
-bash "$root/.githooks/checks/<name>.sh" <staged-files-or-args>
-```
+After wiring, re-run `verify.sh hook` — the "not wired" WARN should be gone. If you intentionally leave it unwired, the WARN is non-blocking but the hook will never fire.
 
-After wiring, re-run `verify.sh hook` — the "not wired" WARN should be gone. If you intentionally leave it unwired, the WARN is non-blocking but the hook will never fire (`@rule:surface-visible-signal`).
+A check has no register step here. Nothing dispatches a new check on its own; until something calls it, it runs by hand from the workbench root (say so where the check is documented: an automation nobody can see cannot be trusted).

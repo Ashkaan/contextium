@@ -14,8 +14,10 @@
 # monitor window can lapse while the project is still being mentioned daily,
 # and a stale project can sit well inside its window.
 #
-# EXPIRED exists because a monitor window that lapses silently is a decision
-# nobody made: the project stops being watched and nothing says so.
+# WHY EXPIRED EXISTS: a monitor window that lapses silently is a decision
+# nobody made — the project stops being watched, the defects the window was
+# there to catch go unnoticed, and nothing says so. Lapsed windows pile up
+# unless something prints them.
 #
 # Deterministic — filesystem + frontmatter + journal grep, no AI.
 #
@@ -32,25 +34,32 @@
 # Output is empty if nothing is flagged. Exit code: 0 always.
 #
 # PERFORMANCE — why frontmatter is read by ONE awk, not per-project subshells.
-# `--expired-only` runs on every blank-mode /project, so it is on the
-# interactive path. Shelling out per project costs seconds across a few hundred
-# projects; one awk pass plus bash string ops costs a tenth of one. Keep it that
-# way: no subshell inside the per-project loop except `date` on an
-# already-expired row.
+# `--expired-only` runs on every blank-mode /project, in front of the user, so
+# it is on the interactive path. Shelling out per project (basename x2, awk,
+# sed, grep, date) costs seconds across a few hundred projects — slower than
+# the full journal-grep scan it is supposed to be a fast subset of. One awk
+# pass + bash string ops costs about a tenth of a second. Keep it that way: no
+# subshell inside the per-project loop except `date` on an already-known
+# expired row (at most a handful).
 #
-# Dates are compared in the machine's local timezone, and a window whose date IS
-# today is NOT overdue — the day is still being watched. Day counts round to the
-# nearest day, so a daylight-saving hour does not turn 10 days into 9.
-#
-# Journal days are folders, `journal/<date>/<HHMM>-<slug>.md`; a day written as
-# one file, `journal/<date>.md` (the older shape), is read too. The date comes
-# from the path, not the file's contents.
+# Dates are compared in the machine's local timezone, so a window does not
+# read as lapsed for the last hours of its final day. A window whose date IS
+# today is NOT overdue — the day is still being watched. Day counts round to
+# the nearest day, so a daylight-saving hour does not turn 10 days into 9.
 #
 # peers:
 #   .agents/skills/project/scripts/check-staleness.test.sh
 #   .agents/skills/project/SKILL.md  (step-0.5-render-index + scripts table)
 
 set -uo pipefail
+
+# THE WRITE ROOT. This script reads projects and journals with repo-relative
+# paths, so it runs FROM the root the session resolves — the thread's worktree,
+# else the checkout it lives in — never from whichever cwd invoked it, because a
+# wrong cwd here reports "no projects" rather than failing.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+WRITE_ROOT="$(bash "$SCRIPT_DIR/../../implement/scripts/session-write-root.sh")" || exit 1
+cd "$WRITE_ROOT" || exit 1
 
 RUN_STALE=1
 DAYS=14
@@ -65,8 +74,8 @@ TODAY=$(date +%Y-%m-%d)
 TODAY_EPOCH=$(date -d "$TODAY" +%s 2>/dev/null || date -j -f "%Y-%m-%d" "$TODAY" +%s)
 
 # One pass over every project README: emit `path <TAB> status <TAB> until-value`.
-# Frontmatter ONLY — a body may quote `monitoring-until:` in prose, and a prose
-# mention is not a field.
+# Frontmatter ONLY — the body quotes `monitoring-until:` when narrating a lapse
+# (a lapse note in the body often does), and a prose mention is not a field.
 # The flush-on-next-file shape avoids gawk's ENDFILE, which mawk lacks.
 scan_frontmatter() {
   awk '
@@ -100,8 +109,9 @@ while IFS=$'\t' read -r readme status until_raw; do
 
   # --- EXPIRED (monitor only) ---
   if [ "$status" = "monitor" ]; then
-    # The value may be a bare date, a date followed by prose, or a quoted date
-    # followed by prose. Take the leading ISO date and ignore the rest.
+    # Value shapes in the wild: a bare date; `2026-01-05 — trailing prose`; and
+    # `"2026-01-27 — prose containing colons and quotes"`. Take the leading ISO
+    # date and ignore the rest.
     until_date="${until_raw#\"}"
     until_date="${until_date#\'}"
     until_date="${until_date:0:10}"
@@ -123,13 +133,16 @@ while IFS=$'\t' read -r readme status until_raw; do
   [ "$RUN_STALE" -eq 1 ] || continue
 
   # --- STALE (active/blocked/monitor) ---
-  # The boundary is hand-rolled, not `\b`: a journal usually names a project by
-  # its FOLDER (`projects/web/2026-01-10_checkout-flow/`), and `_` is a word
-  # character, so `\bcheckout-flow` never matches there. Excluding `-` on both
-  # sides keeps a slug from matching a longer one that merely contains it.
-  latest_mention=$(grep -rlE "(^|[^A-Za-z0-9-])${slug}([^A-Za-z0-9-]|$)" journal 2>/dev/null \
-    | sed -n -e 's|^journal/\([0-9]\{4\}-[0-9][0-9]-[0-9][0-9]\)/.*|\1|p' \
-             -e 's|^journal/\([0-9]\{4\}-[0-9][0-9]-[0-9][0-9]\)\.md$|\1|p' \
+  # The boundary is hand-rolled, not `\b`: a journal almost always names a
+  # project by its FOLDER (`projects/web/2026-01-10_checkout-flow/`), and
+  # `_` is a word character, so `\bcheckout-flow` never matches there — the
+  # scan would report `never` for a project written up the day before.
+  # Excluding `-` on both sides keeps a slug from matching a longer one that
+  # merely contains it.
+  # A DAY IS A FOLDER, `journal/<date>/<HHMM>-<slug>.md`, so the scan recurses
+  # and the date comes from the FOLDER name rather than the file's.
+  latest_mention=$(grep -rlE "(^|[^A-Za-z0-9-])${slug}([^A-Za-z0-9-]|$)" journal/ 2>/dev/null \
+    | sed -n 's|^journal/\([0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]\)/.*|\1|p' \
     | sort -ru \
     | head -1)
 

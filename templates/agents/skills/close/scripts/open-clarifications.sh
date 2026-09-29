@@ -1,24 +1,27 @@
 #!/usr/bin/env bash
 # open-clarifications.sh — list the `NEEDS CLARIFICATION` markers still open in
 # one spec folder. /implement does not start while any remain: a marker is a
-# decision nobody made, and building past it is the misalignment /project's
-# grill exists to prevent. detect-stage.sh routes the row back to planning and
-# next-implement-command.sh prints `/project` for it.
+# decision nobody made, and building past it is the misalignment the grill in
+# /project exists to prevent. setup-worktree.sh refuses on exit 1,
+# detect-stage.sh routes the row back to planning, next-implement-command.sh
+# prints `/project` for it.
 #
 # Read: spec.md, plan.md and tasks.md. research.md is not — it is where an open
 # question is SUPPOSED to be written down and resolved.
 #
 # Skipped: anything inside an HTML comment, single- or multi-line. The spec
-# template's own instructions name the marker inside one, and those are
-# directions to the writer, not open questions.
+# template's own instructions name the marker inside one
+# (spec/references/templates/spec.md), and those are directions to the writer,
+# not open questions.
 #
 # Usage: open-clarifications.sh <spec-folder>
 # Output: `<file>:<line>: <text>` per marker, with the file's own line number.
-# Exit: 0 none · 1 some · 2 usage, not a directory, or a file that cannot be
-# read (an unread file must never pass as one with no markers).
+# Exit: 0 none · 1 some · 2 usage, not a directory, or a spec file that cannot
+# be read (an unread file must never pass as one with no markers).
 #
 # peers:
 #   .agents/skills/close/scripts/open-clarifications.test.sh
+#   .agents/skills/implement/scripts/setup-worktree.sh
 #   .agents/skills/project/scripts/detect-stage.sh
 #   .agents/skills/close/scripts/next-implement-command.sh
 

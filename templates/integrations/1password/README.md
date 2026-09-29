@@ -1,14 +1,29 @@
 ---
 name: 1Password
 description: Secrets vault for API keys, client credentials, and passwords
-cli: "`op` CLI"
+hosts:
+  - my.1password.com
+  - <connect-host>
 aliases:
   - 1p
   - secrets vault
   - credential vault
   - op cli
+typed_client:
+  - none
+access:
+  - cli
+  - api
+uses: none
+base_url: http://<connect-host>:8080
+auth: service account token, or a Connect token for the Connect API
+onepassword_item: none
+rate_limit: per-account service-account limits upstream; a local Connect server has its own budget
+cli: "`op` CLI"
 ---
 # 1Password Integration
+
+**Access order:** cli, api — the `op` CLI reaches every vault operation, while the Connect REST API (optional, below) serves reads and item writes from a local cache on its own rate-limit budget.
 
 Static credentials (API keys, client secrets, passwords) are stored in a dedicated 1Password vault (referred to below as `<your-vault>`). OAuth tokens (access/refresh) are stored in each integration's vault item too, kept fresh by a refresher job. Pick one vault name and use it consistently.
 

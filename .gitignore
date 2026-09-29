@@ -28,3 +28,4 @@ dist/
 # installed copy or a test artifact, so ignore both outright.
 .claude/
 .agents/
+.gemini/worktrees/

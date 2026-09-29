@@ -1,40 +1,53 @@
 #!/usr/bin/env bash
-# audit-dedupe.sh — run the code review once per session, not once per caller.
+# audit-dedupe.sh — once-per-session guard for /implement-audit.
 #
-# WHY THIS EXISTS
+# The implement-audit review can be invoked twice in one session: /implement
+# fires it at phase-4.7, and it is also standalone-callable by hand afterwards.
+# Without a guard the second invocation would fire a second full fresh-context
+# review. This marker makes it a no-op that re-emits the first run's trailer
+# instead of re-reviewing.
 #
-# /implement fires the code review when it finishes building. /close fires it as
-# a backstop for work that never went through /implement. In a normal session
-# both fire, and without a marker the second one re-reviews a diff the first one
-# already cleared — a full reviewer call, and a fix loop, spent re-deciding
-# settled code.
+# Marker key: the harness's session id — CONTEXTIUM_SESSION, else Claude Code's
+# CLAUDE_CODE_SESSION_ID, else a caller-fed CLAUDE_SESSION_ID (harness.sh reads
+# them). When none is set the key is empty and the guard fails SAFE — status
+# always `fresh`, mark skipped — instead of colliding on a shared constant: a
+# `:-nosession` fallback makes every id-less session share ONE marker, so a
+# completed audit's trailer bleeds into the next session and can falsely
+# certify unreviewed code. The id is reduced to [A-Za-z0-9_-] so it names a file
+# inside the state folder and nothing outside it. Worktree-independent so it
+# works in both /implement worktree mode and standalone direct mode. The marker
+# file stores the emitted `implement-audit:` trailer so the no-op path can
+# reprint it for the close commit.
 #
-# Prose cannot close this. "Skip if /implement already audited" is a judgment the
-# second caller has to make about a fact it cannot observe, and it will sometimes
-# decide wrong. This marker turns it into a file test, and stores the first run's
-# `implement-audit:` line so the second caller can re-emit it instead of
-# re-earning it.
+# Env: CONTEXTIUM_AUDIT_STATE_DIR — the marker folder (default
+#      /tmp/implement-audit-done); the test suite points it at a temp dir.
 #
-# MARKER KEY: the Claude session id. Claude Code exports CLAUDE_CODE_SESSION_ID;
-# older contexts set CLAUDE_SESSION_ID, kept in the fallback chain. When NEITHER
-# is set the key is empty and the guard fails SAFE — status is always `fresh` and
-# `mark` is a no-op — rather than colliding on a shared constant. A shared
-# constant would make every id-less session write the SAME marker, so one
-# session's line could certify the next session's unreviewed code.
+# peers:
+#   .agents/skills/implement-audit/SKILL.md
+#   .agents/skills/implement/SKILL.md
 #
-# USAGE
-#   audit-dedupe.sh status   → line 1 `fresh` or `done`; on `done`, line 2+ is
-#                              the stored `implement-audit:` line. Always exits 0.
-#   audit-dedupe.sh mark "<line>"
-#                            → record that the audit ran, and its line.
-#
-# EXIT: 0 ok; 2 usage error.
+# Usage:
+#   audit-dedupe.sh status        → line 1 `fresh` (no prior run) OR `done`;
+#                                    on `done`, line 2+ is the stored trailer.
+#                                    Always exits 0 (informational).
+#   audit-dedupe.sh mark "<trailer>" → record that the audit ran + its trailer.
+# Exit: 0 ok; 2 usage error.
 
 set -euo pipefail
 
-DONE_DIR="${CONTEXTIUM_AUDIT_STATE_DIR:-/tmp/contextium-audit-done}"
-SID="${CLAUDE_CODE_SESSION_ID:-${CLAUDE_SESSION_ID:-}}"
-MARKER="${SID:+$DONE_DIR/${SID//[^A-Za-z0-9_-]/_}}"
+DONE_DIR="${CONTEXTIUM_AUDIT_STATE_DIR:-/tmp/implement-audit-done}"
+HARNESS_LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../../close/scripts/harness.sh"
+if [[ -f "$HARNESS_LIB" ]]; then
+  # shellcheck disable=SC1090  # a sibling skill's file, resolved at run time
+  source "$HARNESS_LIB"
+  SID="$(harness_session_id)"
+else
+  SID="${CONTEXTIUM_SESSION:-${CLAUDE_CODE_SESSION_ID:-}}"
+fi
+# harness.sh sanitizes; the fallbacks are sanitized here the same way.
+SID="${SID:-${CLAUDE_SESSION_ID:-}}"
+SID="$(printf '%s' "$SID" | tr -c 'A-Za-z0-9_-' '-' | cut -c1-64)"
+MARKER="${SID:+$DONE_DIR/$SID}"
 
 case "${1:-}" in
   status)
@@ -46,16 +59,15 @@ case "${1:-}" in
     fi
     ;;
   mark)
-    line="${2:-}"
-    [[ -n "$line" ]] || { echo "usage: audit-dedupe.sh mark \"<implement-audit: line>\"" >&2; exit 2; }
+    trailer="${2:-}"
+    [[ -n "$trailer" ]] || { echo "usage: audit-dedupe.sh mark \"<trailer>\"" >&2; exit 2; }
     if [[ -z "$MARKER" ]]; then
-      echo "audit-dedupe: no session id (CLAUDE_CODE_SESSION_ID unset) — dedupe skipped;" >&2
-      echo "              carry the line to the report or journal yourself." >&2
+      echo "implement-audit: no session id (CONTEXTIUM_SESSION / CLAUDE_CODE_SESSION_ID unset) — dedupe skipped; carry the trailer inline" >&2
       exit 0
     fi
     mkdir -p "$DONE_DIR"
-    printf '%s\n' "$line" > "$MARKER"
-    echo "audit-dedupe: session marked audited ($MARKER)"
+    printf '%s\n' "$trailer" > "$MARKER"
+    echo "implement-audit: marked session $SID audited ($MARKER)"
     ;;
   *)
     echo "usage: audit-dedupe.sh status|mark" >&2

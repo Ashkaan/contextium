@@ -1,7 +1,6 @@
 ---
 name: Uptime Kuma
 description: Push-based uptime + heartbeat monitoring with status pages and email alerts
-cli: Web UI / Push API
 hosts:
   - <kuma-host>
   - <lan-ip>
@@ -14,8 +13,22 @@ aliases:
   - status page
   - uptime monitoring
   - push monitor
+typed_client:
+  - none
+access:
+  - api
+  - ssh
+  - browser
+uses: none
+base_url: https://<kuma-host>
+auth: push tokens in the URL for push monitors; a login (with 2FA if enabled) for the Socket.IO API
+onepassword_item: none
+rate_limit: none documented
+cli: Web UI / Push API
 ---
 # Uptime Kuma Integration
+
+**Access order:** api, ssh, browser — the push API plus the Socket.IO API cover heartbeats and monitor and status-page changes; SSH adds the container restart and read-only SQLite lookups; the web UI does it all by hand.
 
 **Instance:** `https://<kuma-host>` (optionally behind a reverse proxy / tunnel)
 **Internal:** `<lan-ip>` (port 3001 default)

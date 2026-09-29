@@ -16,7 +16,7 @@
 
 <!--
   CONTEXTIUM: 1-2 sentences on the cheapest viable mechanism considered
-  (@rule:simplest-solution-default); cite an existing pattern by name if one
+  (AGENTS.md § Standards → Simplest mechanism that works); cite an existing pattern by name if one
   fits. Required — never removed.
 -->
 
@@ -82,9 +82,9 @@
 
 <!-- contextium: constitution -->
 <!--
-  CONTEXTIUM: the constitution is `.agents/AGENTS.md` plus the rules in
-  `.agents/rules/`; spec-kit's `constitution.md` is not used. Write one line per
-  rule this plan touches, PASS or the violation. The audit's verdict is a line
+  CONTEXTIUM: the constitution is AGENTS.md, its Standards section above all;
+  spec-kit's `constitution.md` is not used. Write one line per standard this
+  plan touches, PASS or the violation. The audit's verdict is a line
   here too, written by /spec-audit over the placeholder below: it carries the
   reviewer round and the spirit-check's result, which reads only the Input's
   verbatim words and spec.md's stories and requirements and flags shape, scope
@@ -92,7 +92,7 @@
   never ignored. The line is a record, not a gate on any commit.
 -->
 
-- [@rule:<id> from .agents/rules/]: [PASS | the violation]
+- [AGENTS.md § Standards → <name>]: [PASS | the violation]
 - spec-audit: [written by /spec-audit through write-audit-line.sh — leave this item in place]
 
 <!-- /contextium -->

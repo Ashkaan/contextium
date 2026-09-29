@@ -1,13 +1,22 @@
 ---
 name: Todoist
 description: Task management via Unified API
-cli: curl (direct API)
 hosts:
   - api.todoist.com
 aliases:
   - task management
   - personal tasks
   - todoist task
+typed_client:
+  - none
+access:
+  - api
+uses: none
+base_url: https://api.todoist.com/api/v1
+auth: bearer token
+onepassword_item: none
+rate_limit: 450 requests per 15 minutes per user
+cli: curl (direct API)
 ---
 # Todoist Integration
 

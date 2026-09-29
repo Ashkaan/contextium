@@ -1,10 +1,31 @@
 ---
 name: GitHub
 description: Git hosting, PRs, issues, and repo management via gh CLI
+hosts:
+  - api.github.com
+  - github.com
+aliases:
+  - gh
+  - gh cli
+  - pull request
+  - github issue
+typed_client:
+  - none
+access:
+  - api
+  - cli
+  - ssh
+uses: none
+base_url: https://api.github.com
+auth: bearer token (personal access token), or gh auth
+onepassword_item: none
+rate_limit: 5000 requests/hour authenticated
 cli: "`gh` CLI"
 ---
 
 # GitHub Integration
+
+**Access order:** api, cli, ssh — the REST and GraphQL APIs reach everything `gh` does and run where `gh` is not installed, while SSH reaches only git itself.
 
 ## If you write a client
 

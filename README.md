@@ -2,141 +2,146 @@
 
 > Give your AI an operating system.
 
-Contextium is a starting methodology for working with AI coding tools. Everything shared lives once,
-in `.agents/` — the working agreement, the rules, the skills, the review scripts. Pick your tools at
-install time and each one is wired to that single copy: Claude Code, Codex and Cursor by symlink,
-Gemini and Copilot by generated config in the format they need. Plus empty data directories that grow
-as you work. The point is not a pile of features. The point is a way of working that holds up over
-months, in whatever tool you reach for.
+Contextium sets up your workbench: one git repo that holds every project you work on, the records of
+that work, and the skills your AI tool runs against it. Everything shared lives once — the working
+agreement in `AGENTS.md` and the rest in `.agents/` — and every supported tool reads that one copy,
+either directly or through a link in your home folder. There are no per-tool copies to keep in sync.
+The point is not a pile of features. The point is a way of working that holds up over months, in
+whatever tool you reach for.
 
 ## The idea
 
 Most AI coding sessions start from zero. You re-explain your preferences, the AI makes a plausible
 guess, drifts halfway through a long thread, and you start over tomorrow. Contextium fixes that with
-four things:
+five things:
 
 1. **The Loop.** Three verbs with fresh context between thinking and doing. Each producer verb runs
    its own review and then wraps itself — you don't type the third verb.
 
    | Verb | Skill | What it does |
    |---|---|---|
-   | Think | `/project` → `/spec` | Agree the goal, settle the open decisions (each question with its recommended answer), split the work into roadmap rows, and write one spec per row — reviewed against both the design and your original ask, then committed automatically. |
-   | Do | `/implement` | Build one row's spec with self-validation from a clean context — code-reviewed and committed automatically. Rows that don't depend on each other can run in parallel, each session in its own `git worktree`. |
-   | Wrap | `/close` | Mark finished rows done, journal the session, then commit. Auto-fired by the two verbs above; still runnable by hand. |
+   | Think | `/project` → `/spec` | Agree the goal, settle the open decisions (each question with its recommended answer), split the work into roadmap rows, and write one spec per row — reviewed against both the design and your original ask, then landed automatically. |
+   | Do | `/implement` | Build one row's spec from a clean context, run the checks in a fixed order, get the code reviewed, then land it. |
+   | Wrap | `/close` | Verify what changed, mark finished rows done, journal the session, then land it on your trunk and prove it landed. Fired by the two verbs above; still runnable by hand. |
 
-   In Claude Code each verb is a real slash-command skill. In every other tool the same three verbs
-   ship as that tool's native commands (Gemini commands, Codex skills, Cursor commands, Copilot
-   prompts), so the Loop reads the same everywhere. `/close` runs at the tail of `/spec` and
-   `/implement` on a clean finish, so the loop wraps itself and only stops for you when a decision
-   genuinely needs your call.
+   The fresh-context boundary between thinking and doing is deliberate. A session that wrote the plan
+   and grew attached to its choices is the wrong session to also judge the implementation. A new one
+   catches what the invested one defends.
 
-   The fresh-context boundary between `/project` and `/implement` is deliberate. A session that wrote
-   the plan and grew attached to its choices is the wrong session to also judge the implementation. A
-   new one catches what the invested one defends.
+2. **A worktree per session.** Every session works in its own git worktree — the one its tool made
+   for it (T3 Code can give every thread one), or one made on its first write. Roadmap rows that don't
+   depend on each other run in parallel sessions without touching each other's files, and `ROADMAP.md`
+   merges row by row, so two sessions landing different rows don't conflict. `/close`
+   commits, merges your trunk, pushes, and ends on one line it prints only after checking a fresh
+   fetch: `origin/<trunk> is at <sha> — closing this tab loses nothing.`
 
-2. **Specs and decisions in published formats.** A project is laid out the way
-   [spec-kit](https://github.com/github/spec-kit) lays out a feature: a `ROADMAP.md` of rows with
-   dependencies, and one `specs/NNN-name/` folder per row holding `spec.md`, `plan.md`, `tasks.md`,
-   `research.md` and the build's `report.md`. The project's `next:` step is derived from the roadmap
-   by a script, never typed. Anything unsettled is marked `[NEEDS CLARIFICATION]` and blocks the build
-   until you settle it. Choices that would be expensive to reverse become
-   [MADR](https://adr.github.io/madr/) decision records, and an `accepted` one has to quote the words
-   that accepted it — a pre-commit check makes sure a discussion can't pass as a decision.
+3. **Specs and decisions in published formats.** A project is laid out the way
+   [spec-kit](https://github.com/github/spec-kit) lays out a feature: a `README.md` with a goal and
+   an outcome, a `ROADMAP.md` of rows with dependencies, and one `specs/NNN-name/` folder per row
+   holding `spec.md`, `plan.md`, `tasks.md`, `research.md` and the build's `report.md`. The project's
+   `next:` is derived from the roadmap by a script, never typed. Anything unsettled is marked
+   `[NEEDS CLARIFICATION]` and blocks the build until you settle it. Choices that would be expensive
+   to reverse become [MADR](https://adr.github.io/madr/) decision records, and an `accepted` one has to
+   quote the words that accepted it.
 
-3. **Rules as mechanisms.** A rule that lives only in a document gets forgotten in the moment it was
-   written to cover. The rules that matter here are backed by hooks that actually fire: a commit gate,
-   a destructive-git guard, a memory-write guard. Advisory prose is honest about being advisory.
+4. **Standards backed by checks.** The judgment rules a change is measured against live in
+   `AGENTS.md` § Standards. The ones that can be checked are: before every commit it makes, `/close`
+   runs the decision-record, journal, skill, integration-manifest, standards-citation and secrets
+   checks. In the tools where
+   it is wired, a pre-tool guard stops a write into the checkout your sessions share and a change to
+   host infrastructure you haven't approved.
 
-4. **Memory in three layers.** The git log records what changed. The journal records why each session
+5. **Memory in three layers.** The git log records what changed. The journal records why each session
    went the way it did — one file per session, in a folder per day, written by `/close` in a fixed
    shape a checker enforces. Decision records hold why the system is the way it is.
 
 ## Works in your tool
 
-Contextium is model-agnostic. The installer asks which tools you use and wires each one to `.agents/`.
-There is exactly one copy of every rule and skill on disk — the tools that read the same file format
-are symlinked into it, and only the two whose format differs get a generated file, regenerated on
-every run. So the rules read the same no matter what is driving, and editing one path edits them all.
+The installer's first question is which tool you drive the workbench with. T3 Code is the recommended
+one: it runs Claude Code or Codex and gives each thread its own worktree. Your answer goes to
+`.agents/harness`, which decides where new session worktrees go and which model family writes your
+code, so the reviews can leave it out. It also records every tool you wire, and a re-run keeps them
+all wired until you drop one with `--drop-tool`.
 
-| Tool | Instructions file | Loop commands |
-|---|---|---|
-| Claude Code | `AGENTS.md` + a thin `CLAUDE.md` | `.claude/skills` → `.agents/skills` (real slash commands) |
-| Gemini CLI | `GEMINI.md` | `.gemini/commands/*.toml` |
-| Codex | `AGENTS.md` → `.agents/AGENTS.md` | `.codex/skills` → `.agents/skills` |
-| Cursor | `.cursor/rules/contextium.mdc` | `.cursor/commands/*.md` → each `SKILL.md` |
-| GitHub Copilot | `.github/copilot-instructions.md` | `.github/prompts/*.prompt.md` |
+| Tool | Reads `AGENTS.md` | Finds the skills | Guards wired |
+|---|---|---|---|
+| T3 Code | through the agent it runs | through the agent it runs; type `$project` | the agent's |
+| Claude Code 2.1.277+ | yes | `~/.claude/skills` → `~/.agents/skills` | `~/.claude/settings.json` |
+| Codex | yes | `.agents/skills`, named `$project` | `~/.codex/hooks.json`, after a one-time trust |
+| Cursor | yes | `.agents/skills` | no |
+| VS Code + Copilot | yes | `.agents/skills` | no |
+| Gemini CLI | via `.gemini/settings.json` | `.agents/skills`, in a trusted folder | `.gemini/settings.json` |
+| Antigravity | yes | `.agents/skills` | `.agents/hooks.json` |
+| Grok Build | in a trusted folder | `.agents/skills`, in a trusted folder | `~/.grok/hooks/contextium.json` |
 
-Two things port to every tool: the methodology and rules, and the git-hook enforcement — a verb-led
-commit-subject check, a staged-secret scan, and the decision-record, journal and skill-format checks, all wired through
-`core.hooksPath`, so they fire on commits made by any tool, any agent, or by hand. Two things are a
-Claude Code bonus the others cannot run: the fresh-context review agents and the PreToolUse guards. The
-discipline travels everywhere; the most automation lives in Claude Code.
+Cursor, VS Code and Gemini CLI are described from their documentation; the others were checked against
+the installed tool. Three things are not verified: that Gemini CLI honors the project-level settings
+file, that its guards fire, and that Antigravity fires the hooks in `.agents/hooks.json`.
 
 ## What's in the box
 
-- Nine skills, shared by every tool: the Loop (`/project` → `/spec`, `/implement`, `/close`) plus its two
-  reviewers — `/spec-audit` (attacks the design before code exists) and `/implement-audit` (attacks the
-  code before it lands) — and `/explain` (deep investigation), `/debate`, and `/author` (scaffold and verify a
-  conforming rule, skill, hook, agent, or response style). Every tool gets all nine — as real slash
-  commands where the harness supports them, as its native command files where it does not.
-- **Reviews that aren't written by the author.** Claude writes most of the code and most of the specs,
-  so a Claude reviewer shares the blind spots that produced the work. Both reviewers run on a different
-  model when one is installed — the Codex CLI out of the box, or any CLI you point
-  `CONTEXTIUM_REVIEWER_CMD` at. With none installed they fall back to a fresh-context Claude agent and
-  say so, in the line they record. A weaker review is fine; a weaker review reported as
-  a strong one is not.
-- **Each review runs once and leaves a record.** `/implement-audit` writes a session marker, so `/close`
-  reads whether the code was already reviewed instead of guessing — and later rounds review only the
-  fixes, not the whole diff again. Each reviewer writes its verdict where the work lives — `spec-audit:`
-  into the spec's `plan.md`, `implement-audit:` into the row's `report.md` — and the journal quotes it.
-- **The skills ship with their machinery, not a description of it.** `/debate` builds its role prompts,
-  dispatches the agents and parses their output with scripts; `/explain` runs its hypotheses in
-  parallel; `/author` scaffolds from templates and verifies what it wrote; `/project` and `/close`
-  detect stage, staleness, and remaining work rather than guessing; `roadmap.sh` is the one writer of
-  a roadmap row's status and of the `next:` it derives. 37 test suites ship with them.
-- **A panel of models where one would do.** `/debate` and `/explain` use different model CLIs when you
-  have them, because one model asked three times agrees with itself. With only Claude installed they
-  fill every seat with Claude, warn once, and run.
-- Five fresh-context review agents the Claude skills dispatch when they need a second set of eyes.
-- 19 principle rules, kept short on purpose, shared verbatim across all tools — and a commit check that
-  refuses a commit citing a rule that no longer exists.
-- spec-kit's spec, plan, tasks and research templates (pinned to v1.0.10, with our additions fenced
-  so a re-vendor is a clean diff), a MADR `decisions/README.md`, two response styles
-  (`decision-only` by default, `brevity` alongside it), wired hooks, and 14 docs-only integration starters you pick from at install time.
+- Eleven skills, shared by every tool: the Loop (`/project` → `/spec`, `/implement`, `/close`), its
+  two reviewers — `/spec-audit` (attacks the design before code exists) and `/implement-audit`
+  (attacks the code before it lands) — `/qa` (screenshots and design checks for a web app you
+  changed), `/review` (the review scripts the others call), `/explain` (deep investigation),
+  `/debate` (three models argue a decision), and `/author` (scaffold a conforming skill, hook, agent
+  or response style).
+- **Reviews that aren't written by the author.** Code and spec reviews run on the Codex or Grok CLI,
+  in the order `.agents/skills/review/policy.json` sets, and skip the model family recorded as your
+  `agent=`. When no such reviewer is installed, the review still runs, in a fresh-context agent of
+  your own, and its recorded line says `claude-fallback (fresh context, NOT independent)`. A weaker
+  review is fine; a weaker review reported as a strong one is not.
+- **Each review runs once and leaves a record.** `/implement-audit` reviews once per session, later
+  rounds read only the fixes, and it stops at a clean round, or at round four at the latest. Each
+  reviewer writes its verdict where the work lives — `spec-audit:` into the spec's `plan.md`, `implement-audit:` into the
+  row's `report.md` — and the journal quotes it.
+- **The skills ship with their machinery, not a description of it.** Stage detection, roadmap edits,
+  worktree setup, the check order (`validate.sh`: lint and typecheck, tests, the workbench checks,
+  then review), journal filing and landing are all scripts. The test suites stay in this repo; the install carries
+  the scripts only.
+- **`/qa` installs what it needs when it first needs it.** Playwright and Chromium on first use,
+  impeccable when it is missing or older than the latest published version. A tool it cannot install
+  is reported as a skip, never a pass.
+- Four agent prompts the skills dispatch in a fresh context, a `.agents/output-styles/` folder for the
+  response styles `/author` writes (Claude Code reaches it through `~/.claude/output-styles`), the
+  spec-kit templates pinned to v1.0.10,
+  a MADR `decisions/README.md`, and 14 docs-only integration starters you pick from at install time.
 
 ## What's not in the box (on purpose)
 
-This ships lean. Orchestration platforms, large reconcilers, per-session git worktrees, and
-runtime-pinning rules are described in the docs as advanced patterns you can grow into. They are not
-wired in. You start with the methodology and add weight where your own work demands it.
+Orchestration platforms, reconcilers, deploy pipelines and runtime-pinning rules are not wired in.
+`/close` has an opt-in check that a push started a deploy, and everything else is yours to add
+when your own work demands it.
 
 ## Install
-
-From inside the project you want it in:
 
 ```bash
 curl -sSL contextium.ai/install | bash
 ```
 
 That fetches the template into a temp directory, runs the interview, and cleans up after itself. If
-you would rather keep the template around to update from, clone it instead and run the installer from
-there:
+you would rather keep the template around to update from, clone it and run the installer from there:
 
 ```bash
 git clone https://github.com/Ashkaan/contextium.git
 cd contextium
-bash install.sh ~/code/my-project
+bash install.sh ~/code/workbench
 ```
 
-The installer asks which AI tools you use, your name, how autonomous you want the AI to be, and which
-integration starters to include, then writes `.agents/`, wires each tool to it, and leaves your data
-directories alone on re-runs. The questions work through the pipe — they read the terminal directly
-rather than stdin, which the pipe has already taken. Default is Claude Code; add others interactively or with
-`--tools "claude gemini codex cursor copilot"` (or `--all-tools`). Then open the project in your tool
-and run the Think verb (`/project` in Claude Code, the same command in the others).
+The installer asks which tool you use (and, for T3 Code, which agent it runs), offers to install it
+if it is missing, then asks where your workbench is (default `~/code/workbench`), your name, and how
+autonomous the AI should be. It writes `AGENTS.md` and `.agents/`, links your harness homes to them,
+merges its guards into your tool's settings without touching the rest, and leaves your data
+directories, and anything you added to `.agents/`, alone on re-runs. A folder that isn't a git repo
+yet is made one on `main`, with the install as its first commit.
 
-See `docs/getting-started.md` for a first walk through the Loop, and `docs/architecture.md` for how the
-pieces fit.
+`/close` lands each session by pushing to your workbench's `origin`, and refuses to land without one.
+When there is none, the installer asks for a remote URL, and with the GitHub CLI signed in it offers
+to create a private repo; it does neither under `--yes`. For a run without questions, pass `--yes`
+with `--harness` and the other answers; `bash install.sh --help` lists them.
+
+See `docs/getting-started.md` for a first walk through the Loop, and `docs/architecture.md` for how
+the pieces fit.
 
 ## License
 

@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # roadmap.sh — THE one reader and writer of a project's ROADMAP.md table.
-# detect-stage.sh, project-remaining-work.sh and next-implement-command.sh all
-# call this instead of parsing the table themselves: a table read two ways
+# detect-stage.sh, project-remaining-work.sh, next-implement-command.sh and
+# setup-worktree.sh all call this instead of parsing the table themselves, for
+# the reason two shard-table parsers taught: they disagreed (`reported`
+# counted as done in one and as open in the other), and a table read two ways
 # routes a project two ways.
 #
 # WHICH ROW IS READY, AND WHAT `next:` SAYS, IS NOT DEFINED HERE. The rule is
@@ -315,7 +317,7 @@ case "$mode" in
   list|next|ready) parse "$mode" ;;
   check)
     sub="$(parse check)" || exit 1
-    state="$(bash "$(dirname "${BASH_SOURCE[0]}")/spec-state.sh" "$project_dir" | awk -F'\t' -v n="$sub" '$1==n {print $2; exit}')"
+    state="$(bash "$(dirname "${BASH_SOURCE[0]}")/spec-state.sh" "$project_dir" | awk -F'\t' -v n="$sub" '$1==n && !f {print $2; f=1}')"
     case "$state" in
       none|partial) printf '%s\n' "$sub" ;;
       complete) err "$set_id not ready: its spec $sub is already complete — /close flips the row to done"; exit 1 ;;

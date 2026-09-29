@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Test harness for parse-agent-output.sh — clean, noisy, malformed and empty
-# outputs. Uses fixture files under scripts/fixtures/.
+# Test harness for parse-agent-output.sh — the boundary cases of the parser's
+# contract. Uses fixture files under scripts/fixtures/.
 #
 # peers: parse-agent-output.sh
 
@@ -43,9 +43,11 @@ case1() {
 }
 
 # ── Case 2: codex header/footer noise → stripped ──
-# Legacy shape: current Codex CLIs write the banner and token count to stderr
-# (case 7), but an older CLI or another vendor may still print them to stdout,
-# so the stripper keeps a regression guard.
+# LEGACY SHAPE. Codex v0.147.0 and later write the banner and token count to
+# STDERR, so live stdout now looks like case7's fixture. This case stays as the
+# regression guard for the stripper — an older codex on another host, or a
+# vendor that reverts to stdout noise, must still parse. Case 7 covers the
+# shape the CLI actually produces today; neither alone is the real contract.
 case2() {
   local dir out rc=0
   dir=$(make_output_dir antithesis codex-noise.output)
@@ -59,14 +61,20 @@ case2() {
   assert_pass "case2 codex-noise-stripped"
 }
 
-# ── Case 3: malformed (no ## Position) → warn + skip; exit non-zero if zero usable ──
+# ── Case 3: no ## Position anywhere → passed through whole, marked, warned — never dropped ──
+# Skipping it would make the synthesis silently run on fewer voices than it
+# says it has.
 case3() {
-  local dir out rc=0
+  local dir out err rc=0
   dir=$(make_output_dir thesis malformed.output)
-  out=$("$SCRIPT" --output-dir "$dir" 2>&1) || rc=$?
-  [[ "$rc" -ne 0 ]] || { assert_fail "case3" "expected non-zero on zero-usable; got $rc"; return; }
-  echo "$out" | grep -q "malformed output" || { assert_fail "case3" "missing warn msg"; return; }
-  assert_pass "case3 malformed-zero-usable-nonzero"
+  out=$("$SCRIPT" --output-dir "$dir" 2>/tmp/parse-case3.err) || rc=$?
+  err=$(cat /tmp/parse-case3.err)
+  [[ "$rc" -eq 0 ]] || { assert_fail "case3" "expected 0 — the answer is usable; got $rc"; return; }
+  echo "$err" | grep -q "unstructured output" || { assert_fail "case3" "missing warn msg: $err"; return; }
+  echo "$out" | grep -q "=== thesis ===" || { assert_fail "case3" "the answer was dropped"; return; }
+  echo "$out" | grep -q "(unstructured" || { assert_fail "case3" "the answer is not marked unstructured"; return; }
+  echo "$out" | grep -q "The model wandered off" || { assert_fail "case3" "the answer's text is missing"; return; }
+  assert_pass "case3 unstructured-passed-through-not-dropped"
 }
 
 # ── Case 4: --round 2 against round-2 schema file → parses cleanly ──
@@ -100,8 +108,9 @@ case6() {
 }
 
 # ── Case 7: real codex v0.147.0 stdout (banner on stderr) → parses intact ──
-# The shape `codex exec --sandbox=read-only --skip-git-repo-check --color never`
-# (the invocation dispatch-agents.sh uses) prints on stdout.
+# The shape of a live `codex exec --sandbox=read-only --skip-git-repo-check
+# --color never` run, the invocation dispatch-agents.sh uses (content
+# genericized).
 case7() {
   local dir out rc=0
   dir=$(make_output_dir critic codex-v0147-clean-stdout.output)
@@ -113,6 +122,33 @@ case7() {
   assert_pass "case7 codex-v0147-clean-stdout"
 }
 
+# ── Case 8: preamble runs into the heading on one line → block kept, preamble cut ──
+# A reasoning preamble that ends with no newline puts `## Position`
+# mid-line, where a start-of-line anchor never matches.
+case8() {
+  local d out rc=0
+  d=$(mktemp -d)
+  printf '%s\n' "Let me think about this carefully.## Position" "Ship it." "" "## Key Arguments" "1. Speed" > "$d/skeptic.output"
+  out=$("$SCRIPT" --output-dir "$d") || rc=$?
+  [[ "$rc" -eq 0 ]] || { assert_fail "case8" "expected 0; got $rc"; return; }
+  echo "$out" | grep -qx "## Position" || { assert_fail "case8" "heading not recovered: $out"; return; }
+  echo "$out" | grep -q "Ship it." || { assert_fail "case8" "body missing: $out"; return; }
+  echo "$out" | grep -q "Let me think" && { assert_fail "case8" "preamble leaked: $out"; return; }
+  echo "$out" | grep -q "(unstructured" && { assert_fail "case8" "a found heading was treated as no heading: $out"; return; }
+  assert_pass "case8 mid-line-heading-recovered"
+}
+
+# ── Case 9: each block names who argued it, stand-ins included ──
+case9() {
+  local d out
+  d=$(make_output_dir skeptic clean.output)
+  echo "claude opus[1m] — stood in for codex (timeout after 120s (codex))" > "$d/skeptic.voice"
+  out=$("$SCRIPT" --output-dir "$d")
+  echo "$out" | grep -qF "argued by: claude opus[1m] — stood in for codex" \
+    || { assert_fail "case9" "voice line missing: $out"; return; }
+  assert_pass "case9 argued-by-line"
+}
+
 case1
 case2
 case3
@@ -120,6 +156,8 @@ case4
 case5
 case6
 case7
+case8
+case9
 
 echo
 echo "parse-agent-output.sh: ${pass}/$((pass + fail)) passed"

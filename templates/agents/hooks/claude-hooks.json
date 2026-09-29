@@ -1,0 +1,29 @@
+{
+  "description": "Contextium's PreToolUse guards in the shape Claude Code, Codex and Grok Build read (the matchers name Grok's own tool names too). install.sh fills in __WORKBENCH__ and adds .agents/user-hooks.json to this installed copy; ~/.codex/hooks.json and ~/.grok/hooks/contextium.json link to it and ~/.claude/settings.json has it merged in. The leading `: contextium;` marks the entries a re-run replaces.",
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash|run_terminal_command",
+        "hooks": [
+          {
+            "type": "command",
+            "command": ": contextium; d=\"${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel 2>/dev/null)}\"; h=\"$d/.agents/hooks/check-host-infra-safety.sh\"; [ -f \"$h\" ] || h=\"__WORKBENCH__/.agents/hooks/check-host-infra-safety.sh\"; [ -f \"$h\" ] || exit 0; exec bash \"$h\""
+          },
+          {
+            "type": "command",
+            "command": ": contextium; d=\"${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel 2>/dev/null)}\"; h=\"$d/.agents/hooks/check-shared-checkout-write.sh\"; [ -f \"$h\" ] || h=\"__WORKBENCH__/.agents/hooks/check-shared-checkout-write.sh\"; [ -f \"$h\" ] || exit 0; exec bash \"$h\""
+          }
+        ]
+      },
+      {
+        "matcher": "Edit|Write|MultiEdit|NotebookEdit|apply_patch|write|search_replace",
+        "hooks": [
+          {
+            "type": "command",
+            "command": ": contextium; d=\"${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel 2>/dev/null)}\"; h=\"$d/.agents/hooks/check-shared-checkout-write.sh\"; [ -f \"$h\" ] || h=\"__WORKBENCH__/.agents/hooks/check-shared-checkout-write.sh\"; [ -f \"$h\" ] || exit 0; exec bash \"$h\""
+          }
+        ]
+      }
+    ]
+  }
+}

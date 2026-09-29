@@ -1,11 +1,17 @@
 #!/usr/bin/env bash
 # lock.sh — a portable exclusive lock for the close scripts, sourced, not run.
 # Used where flock(1) may be missing (stock macOS): roadmap.sh's writers, and
-# safe-commit.sh's fallback.
+# the per-repo git lock write-root.sh and land.sh share.
 #
 #   source lock.sh
 #   lock_take <lock-path> <wait-seconds> || <timed out>   # sets an EXIT trap
 #   lock_release <lock-path>                               # optional; the trap does it
+#   lock_repo <lock-file> <wait-seconds> || <timed out>   # the per-repo git lock
+#   lock_repo_release <lock-file>
+#
+# lock_repo is flock(1) on fd 9 where flock exists — so it excludes every other
+# writer that flocks the same file — and lock_take on `<lock-file>.lnk` where
+# it does not.
 #
 # THE LOCK IS A SYMLINK whose target is the holder's pid. `ln -s` creates it
 # atomically and fails when it exists, and the pid is written in the same step,
@@ -22,7 +28,7 @@
 # peers:
 #   .agents/skills/close/scripts/lock.test.sh
 #   .agents/skills/close/scripts/roadmap.sh
-#   .agents/skills/close/scripts/safe-commit.sh
+#   .agents/skills/close/scripts/write-root.sh
 
 lock_take() {
   local lock="$1" wait_s="${2:-30}" ticks=0 holder
@@ -41,6 +47,24 @@ lock_take() {
   LOCK_PATH="$lock"
   trap 'lock_release "$LOCK_PATH"' EXIT
   return 0
+}
+
+lock_repo() {
+  if command -v flock >/dev/null 2>&1 && [[ -z "${LOCK_NO_FLOCK:-}" ]]; then
+    exec 9>"$1"
+    flock -w "$2" 9
+  else
+    lock_take "$1.lnk" "$2"
+  fi
+}
+
+lock_repo_release() {
+  if command -v flock >/dev/null 2>&1 && [[ -z "${LOCK_NO_FLOCK:-}" ]]; then
+    flock -u 9 2>/dev/null || true
+    exec 9>&-
+  else
+    lock_release "$1.lnk"
+  fi
 }
 
 lock_release() {

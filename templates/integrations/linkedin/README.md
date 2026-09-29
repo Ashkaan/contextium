@@ -1,7 +1,6 @@
 ---
 name: LinkedIn
 description: Automated content publishing and engagement on LinkedIn
-cli: REST API
 hosts:
   - api.linkedin.com
   - www.linkedin.com
@@ -10,8 +9,21 @@ aliases:
   - linkedin publish
   - linkedin company page
   - linkedin profile
+typed_client:
+  - none
+access:
+  - api
+  - browser
+uses: none
+base_url: https://api.linkedin.com/v2
+auth: oauth2 access token (60-day, hand-minted)
+onepassword_item: none
+rate_limit: per-app daily call quotas set in the LinkedIn developer console
+cli: REST API
 ---
 # LinkedIn Integration
+
+**Access order:** api, browser — the REST API does every post, upload and member lookup, and the browser is needed only for the 60-day OAuth consent click.
 
 Automated content publishing and engagement on a personal LinkedIn profile and/or a company page.
 

@@ -1,155 +1,306 @@
 #!/usr/bin/env bash
-# shellcheck disable=SC2016  # fixtures are literal markdown; backticks are not expansions
-# journal-file.test.sh — naming, collisions, the resume path with and without a
-# session id, and --check. Run: bash journal-file.test.sh
+# journal-file.test.sh — naming, collisions on both sides, and the resume path.
+#
+# Run: bash .agents/.agents/skills/close/scripts/journal-file.test.sh
+#
+# A fixture CODE repo with a bare origin stands in for workbench: it carries a
+# copy of these scripts under `.agents/.agents/skills/close/scripts/`, exactly where the real
+# ones live, so the script under test finds its own repo the way the real one
+# does — `git rev-parse --show-toplevel` from its own directory — and the
+# journal lands in the thread's worktree of THAT repo.
+
 set -uo pipefail
+# Local time is the journal's clock; the fixtures' times are written for this zone.
+export TZ=America/Los_Angeles
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-SCRIPT="$HERE/journal-file.sh"
 TMP="$(mktemp -d)"
-trap 'rm -rf "$TMP"' EXIT
 
-PASS=0; FAIL=0
+cleanup() {
+  git -C "${TMP}/jf-$$-code" worktree prune 2>/dev/null
+  git -C "${TMP}/jf-$$-prod" worktree prune 2>/dev/null
+  rm -rf "${TMP}"
+  rm -f "/tmp/jf-$$-"*-git.lock
+}
+trap cleanup EXIT
+
+PASS=0
+FAIL=0
 ok()  { PASS=$((PASS + 1)); echo "ok   $1"; }
 bad() { FAIL=$((FAIL + 1)); echo "FAIL $1"; }
-is()  { if [[ "$2" == "$3" ]]; then ok "$1"; else bad "$1: got '$2', wanted '$3'"; fi; }
+is()  { if [ "$2" = "$3" ]; then ok "$1"; else bad "$1: got '$2', wanted '$3'"; fi; }
 has() { case "$2" in *"$3"*) ok "$1" ;; *) bad "$1: '$2' lacks '$3'" ;; esac; }
 
-REPO="$TMP/repo"
-git init -q "$REPO"
-git -C "$REPO" config user.email t@example.com
-git -C "$REPO" config user.name tester
-echo seed >"$REPO/README.md"
-git -C "$REPO" add README.md
-git -C "$REPO" commit -q -m seed
-REPO="$(cd "$REPO" && pwd)"
+FAKE_HOME="${TMP}/home"
+T3="${TMP}/t3"
+mkdir -p "${FAKE_HOME}" "${T3}/userdata"
 
-# run [env assignments...] -- <args>; always from inside the repo, with a
-# fixed start time and no inherited session id.
-run() {
-  local envs=()
-  while [[ $# -gt 0 && "$1" != "--" ]]; do envs+=("$1"); shift; done
-  shift
-  OUT="$(cd "$REPO" && env -u CLAUDE_CODE_SESSION_ID -u CLAUDE_SESSION_ID -u JOURNAL_SESSION_ID -u CLAUDE_PROJECT_DIR \
-    JOURNAL_STARTED="2026-01-12 20:15" ${envs[@]+"${envs[@]}"} bash "$SCRIPT" "$@" 2>&1)"; RC=$?
-}
-S1="JOURNAL_SESSION_ID=session-one"
+TID=11111111-aaaa-bbbb-cccc-222222222222
+LEDGER_DIR="${FAKE_HOME}/.cache/workbench/threads/${TID}"
+
+# The code repo and its origin, holding these scripts at their real path. `jf-$$`
+# keeps the /tmp lock write-root takes from colliding with a concurrent run of
+# this suite.
+CODEBARE="${TMP}/code.git"
+CODE="${TMP}/jf-$$-code"
+git init -q --bare -b main "${CODEBARE}"
+git init -q -b main "${CODE}"
+git -C "${CODE}" config user.email t@example.com
+git -C "${CODE}" config user.name tester
+mkdir -p "${CODE}/.agents/skills/close/scripts" "${CODE}/journal"
+cp "${HERE}"/*.sh "${CODE}/.agents/skills/close/scripts/"
+echo "# Workbench" >"${CODE}/README.md"
+git -C "${CODE}" add README.md .agents
+git -C "${CODE}" commit -q -m seed
+git -C "${CODE}" remote add origin "${CODEBARE}"
+git -C "${CODE}" push -q -u origin main
+
+# The thread's own T3 worktree, of the code repo — the shape a workbench
+# thread has, and the one the journal lands in.
+T3_WT="${TMP}/t3wt"
+git -C "${CODE}" worktree add -q -b t3code/a-title "${T3_WT}" main
+
+# A second thread whose T3 worktree is of some OTHER repo — a product repo —
+# so the code repo is a satellite for it, the shape the resume case needs.
+TID2=22222222-aaaa-bbbb-cccc-333333333333
+LEDGER_DIR2="${FAKE_HOME}/.cache/workbench/threads/${TID2}"
+PRODBARE="${TMP}/prod.git"
+PROD="${TMP}/jf-$$-prod"
+git init -q --bare -b main "${PRODBARE}"
+git init -q -b main "${PROD}"
+git -C "${PROD}" config user.email t@example.com
+git -C "${PROD}" config user.name tester
+echo x >"${PROD}/f"
+git -C "${PROD}" add f
+git -C "${PROD}" commit -q -m seed
+git -C "${PROD}" remote add origin "${PRODBARE}"
+git -C "${PROD}" push -q -u origin main
+T3_WT2="${TMP}/t3wt2"
+git -C "${PROD}" worktree add -q -b t3code/b-title "${T3_WT2}" main
+
+node -e '
+const { DatabaseSync } = require("node:sqlite");
+const [dbPath, tid, wt, tid2, wt2] = process.argv.slice(1);
+const db = new DatabaseSync(dbPath);
+db.exec(`create table projection_threads (
+  thread_id TEXT PRIMARY KEY, project_id TEXT NOT NULL, title TEXT NOT NULL,
+  branch TEXT, worktree_path TEXT, created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL, deleted_at TEXT)`);
+const ins = db.prepare("insert into projection_threads values (?,?,?,?,?,?,?,?)");
+ins.run(tid, "p", "T", "t3code/a-title", wt, "2026-09-14T03:15:51.803Z", "x", null);
+ins.run(tid2, "p", "U", "t3code/b-title", wt2, "2026-09-14T03:15:51.803Z", "x", null);
+' "${T3}/userdata/state.sqlite" "${TID}" "${T3_WT}" "${TID2}" "${T3_WT2}"
+
+# The script under test is the thread's OWN copy, as a session in a workbench
+# worktree runs it.
+SCRIPT="${T3_WT}/.agents/skills/close/scripts/journal-file.sh"
+
+E=("HOME=${FAKE_HOME}" "T3CODE_HOME=${T3}")
+run() { OUT="$(cd "${T3_WT}" && env "${E[@]}" bash "${SCRIPT}" "$@" 2>&1)"; RC=$?; }
 
 # ── The name ───────────────────────────────────────────────────────────────
-run "$S1" -- "The checkout retry fix"
-is "path is <repo>/journal/<day>/<HHMM>-<stem>.md" "$OUT" "$REPO/journal/2026-01-12/2015-the-checkout-retry-fix.md"
-is "exits 0" "$RC" "0"
-if [[ -d "$REPO/journal/2026-01-12" ]]; then ok "the day folder is created"; else bad "no day folder"; fi
-if [[ -f "$OUT" && ! -s "$OUT" ]]; then ok "the file is reserved: created, empty"; else bad "the file was not reserved"; fi
+#
+# The session started 03:15 UTC on the 14th, which is 20:15 on the 13th in Los
+# Angeles — so it files under the 13th, the day the work happened.
 
-run "$S1" -- "  Mixed CASE, punctuation! and   spaces  "
-is "the stem is kebabbed and trimmed" "$(basename "$OUT")" "2015-mixed-case-punctuation-and-spaces.md"
+run "The close that works in T3"
+is "the path is <this repo's worktree>/journal/<start date>/<HHMM>-<slug>.md" "${OUT}" \
+  "${T3_WT}/journal/2026-09-13/2015-the-close-that-works-in-t3.md"
+is "exits 0" "${RC}" "0"
 
-run "$S1" -- "$(printf 'a%.0s' $(seq 1 90))"
-is "a long stem is cut to 60 characters" "$(basename "$OUT" .md | sed 's/^2015-//' | tr -d '\n' | wc -c | tr -d ' ')" "60"
+if [ -d "${T3_WT}/journal/2026-09-13" ]; then
+  ok "the day folder is created"; else bad "no day folder"; fi
+if [ -e "${OUT}" ]; then bad "the file itself was created"
+  else ok "the file itself is not created"; fi
 
-run "$S1" -- "!!!"
-is "a stem with nothing usable is refused" "$RC" "2"
-has "…and says why" "$OUT" "no usable characters"
+is "the chosen path is persisted for land.sh" "$(cat "${LEDGER_DIR}/journal")" "${OUT}"
 
-run "$S1" "JOURNAL_STARTED=yesterday" -- "x"
-is "a malformed start time is refused" "$RC" "2"
-has "…naming the format" "$OUT" "YYYY-MM-DD HH:MM"
+run "  Mixed CASE, punctuation! and   spaces  "
+is "the slug is kebabbed and trimmed" "$(basename "${OUT}")" \
+  "2015-mixed-case-punctuation-and-spaces.md"
 
-run "$S1" "JOURNAL_STARTED=2026-01-13T09:05:00" -- "iso start"
-is "an ISO start time works" "$(basename "$OUT")" "0905-iso-start.md"
+run "$(printf 'a%.0s' $(seq 1 90))"
+is "a long slug is cut to 60 characters" \
+  "$(basename "${OUT}" .md | sed 's/^2015-//' | wc -c)" "61"
 
-# ── Collisions ─────────────────────────────────────────────────────────────
-touch "$REPO/journal/2026-01-12/2015-same-stem.md"
-run "$S1" -- "same stem"
-is "a taken name moves to -2" "$OUT" "$REPO/journal/2026-01-12/2015-same-stem-2.md"
-run "$S1" -- "same stem"
-is "…then to -3 (the -2 reservation holds the name)" "$OUT" "$REPO/journal/2026-01-12/2015-same-stem-3.md"
+run "!!!"
+is "a slug with nothing usable in it is refused" "${RC}" "2"
+has "and says why" "${OUT}" "no usable characters"
 
-mkdir -p "$REPO/journal/2026-01-12"
-echo x >"$REPO/journal/2026-01-12/2015-gone.md"
-git -C "$REPO" add journal/2026-01-12/2015-gone.md
-git -C "$REPO" commit -q -m gone
-rm "$REPO/journal/2026-01-12/2015-gone.md"
-run "$S1" -- "gone"
-is "a committed name deleted from disk is still taken" "$(basename "$OUT")" "2015-gone-2.md"
+# ── A name taken in this worktree ──────────────────────────────────────────
 
-# ── --existing and --check, with a session id ──────────────────────────────
-run "$S1" -- "resume me"
-RESUME="$OUT"
-run "$S1" -- --existing
-is "--existing returns the reservation while it is still empty" "$OUT" "$RESUME"
-run "$S1" -- --check
-is "--check refuses the empty reservation" "$RC" "3"
-run "JOURNAL_SESSION_ID=never-allocated" -- --existing
-is "--existing exits 1 when nothing was reserved" "$RC" "1"
-is "…and prints nothing" "$OUT" ""
+FIRST="${T3_WT}/journal/2026-09-13/2015-same-slug.md"
+touch "${FIRST}"
+run "same slug"
+is "a name taken locally moves to -2" "${OUT}" \
+  "${T3_WT}/journal/2026-09-13/2015-same-slug-2.md"
+touch "${OUT}"
+run "same slug"
+is "…then to -3" "${OUT}" "${T3_WT}/journal/2026-09-13/2015-same-slug-3.md"
 
-cat >"$RESUME" <<'EOF'
+# ── A name taken on origin/main by a thread that landed first ──────────────
+#
+# The other thread wrote it in ITS worktree, so nothing here can see it except
+# by looking at the remote.
+
+OTHER="${TMP}/other-thread"
+git clone -q "${CODEBARE}" "${OTHER}"
+git -C "${OTHER}" config user.email t@example.com
+git -C "${OTHER}" config user.name tester
+mkdir -p "${OTHER}/journal/2026-09-13"
+echo "another session" >"${OTHER}/journal/2026-09-13/2015-remote-slug.md"
+git -C "${OTHER}" add journal
+git -C "${OTHER}" commit -q -m "another thread's close"
+git -C "${OTHER}" push -q origin main
+
+if [ -e "${T3_WT}/journal/2026-09-13/2015-remote-slug.md" ]; then
+  bad "fixture error: the name is visible locally"
+  else ok "the other thread's name is invisible in this worktree"; fi
+
+run "remote slug"
+is "a name taken only on origin/main still moves to -2" "${OUT}" \
+  "${T3_WT}/journal/2026-09-13/2015-remote-slug-2.md"
+
+# ── --existing: the resume path ────────────────────────────────────────────
+
+run "resume me"
+RESUME="${OUT}"
+run --existing
+is "--existing exits 1 while the file is unwritten" "${RC}" "1"
+is "…and prints nothing" "${OUT}" ""
+
+echo "written" >"${RESUME}"
+run --existing
+is "--existing prints the path once the file is there" "${OUT}" "${RESUME}"
+is "…and exits 0" "${RC}" "0"
+
+# A second close must resume on that file, not allocate a second one.
+run "resume me"
+is "re-running with the same slug does not reuse a written name" "${OUT}" \
+  "${T3_WT}/journal/2026-09-13/2015-resume-me-2.md"
+
+# ── No thread ──────────────────────────────────────────────────────────────
+
+# A failed Land must reuse its entry, expose the validation error before any
+# repo is pushed, and accept a repair without allocating another filename.
+run --check
+is "--check exits 1 while the allocated journal is unwritten" "${RC}" "1"
+is "an unwritten journal check prints nothing" "${OUT}" ""
+
+CHECK_PATH="$(cat "${LEDGER_DIR}/journal")"
+cat >"${CHECK_PATH}" <<'EOF'
 ---
-date: 2026-01-12
+date: 2026-09-13
 time: "20:15"
-title: resume-me
+slug: security-policy-ai
+tags: []
 ---
 
-### one-off (resume me)
-**Action:** fixed
+### one-off (security policy and client data in AI)
+**Action:** completed
 
-Fixed it.
+Policy drafted.
 EOF
-run "$S1" -- --existing
-is "--existing prints the path once the file is there" "$OUT" "$RESUME"
-run "$S1" -- --check
-is "--check on a title/heading mismatch exits 3" "$RC" "3"
-has "…with the checker's diagnosis" "$OUT" "J3"
-sed 's/^title: resume-me$/title: one-off (resume me)/' "$RESUME" >"$RESUME.new" && mv "$RESUME.new" "$RESUME"
-run "$S1" -- --check
-is "--check passes once repaired" "$RC" "0"
-is "…and prints the path" "$OUT" "$RESUME"
+run --check
+is "the real filename-stem/title mismatch exits 3" "${RC}" "3"
+has "the check exposes the existing validator's diagnosis" "${OUT}" "front matter says slug"
+is "a failed check preserves the allocated path" "$(cat "${LEDGER_DIR}/journal")" "${CHECK_PATH}"
+is "a failed check leaves the journal intact" "$(sed -n '4p' "${CHECK_PATH}")" "slug: security-policy-ai"
 
-git -C "$REPO" add journal && git -C "$REPO" commit -q -m "close"
-run "$S1" -- --existing
-is "with a session id, a committed entry is still this session's" "$OUT" "$RESUME"
+sed -i 's/^slug: security-policy-ai$/slug: one-off (security policy and client data in AI)/' "${CHECK_PATH}"
+run --check
+is "repairing the title makes the same journal pass" "${RC}" "0"
+is "a successful check prints the existing path" "${OUT}" "${CHECK_PATH}"
+run --existing
+is "resume still uses the repaired journal" "${OUT}" "${CHECK_PATH}"
 
-run "JOURNAL_SESSION_ID=session-two" -- --existing
-is "another session id does not see it" "$RC" "1"
+# ── --existing after the close removed the worktree ────────────────────────
+#
+# `land.sh` merges the entry to the trunk and then REMOVES this thread's
+# worktree of this repo — when that worktree is a satellite, which it is for
+# a thread T3 opened on a product repo. Work continues in the same session, so
+# the next close has to resume on the entry it already landed — but the
+# recorded path is off disk until write-root re-adds the worktree at the same
+# deterministic path, and the entry itself is safe on the trunk. Testing the
+# path before that recreation reports the entry missing, and the allocator
+# then files a second entry beside the landed one.
+#
+# Thread two is that shape: its T3 worktree is of the PROD repo, and the script
+# runs out of the shared code checkout — the path the `~/.agents/skills` link
+# resolves to — so the code repo is a satellite it creates on first write.
 
-run "CLAUDE_CODE_SESSION_ID=session-one" -- --existing
-is "the harness session id is the same key" "$OUT" "$RESUME"
+run2() { OUT="$(cd "${T3_WT2}" && env "${E[@]}" bash "${CODE}/.agents/skills/close/scripts/journal-file.sh" "$@" 2>&1)"; RC=$?; }
 
-# ── --existing without a session id ────────────────────────────────────────
-run -- "no session"
-NOSID="$OUT"
-printf -- '---\ndate: 2026-01-12\ntitle: one-off (no session)\n---\n\n### one-off (no session)\n**Action:** fixed\n\nx\n' >"$NOSID"
-run -- --existing
-is "no session id: an uncommitted entry resumes" "$OUT" "$NOSID"
-git -C "$REPO" add journal && git -C "$REPO" commit -q -m "close 2"
-run -- --existing
-is "no session id: a committed entry is not resumed" "$RC" "1"
-echo "more" >>"$NOSID"
-run -- --existing
-is "no session id: a committed entry edited again resumes" "$OUT" "$NOSID"
+run2 "landed then removed"
+LANDED="${OUT}"
+is "a thread on another repo files its journal in a satellite of this one" "${RC}" "0"
+# Everything below writes to ${LANDED}. When the allocation failed, ${OUT} is
+# the error text, and writing to it as a filename would plant a file named
+# `write-root: not a repo I know: …` in this scripts folder. A failed
+# allocation ends the suite here instead.
+if [[ "${RC}" -ne 0 || "${LANDED}" != /* ]]; then
+  echo "journal-file.test.sh: allocation failed, cannot continue: ${LANDED}" >&2
+  echo "journal-file.test.sh: ${PASS} passed, $((FAIL + 1)) failed"
+  exit 1
+fi
+CODESAT="${LANDED%%/journal/*}"
+has "…under the thread's cache, not under its own T3 worktree" "${CODESAT}" \
+  "/.cache/workbench/worktrees/jf-$$-code-"
+cat >"${LANDED}" <<'ENTRY'
+---
+date: 2026-09-13
+time: "20:15"
+slug: landed-then-removed
+tags: []
+---
 
+### landed-then-removed
+**Action:** completed
 
-# ── The race: same minute, same stem, many sessions at once ────────────────
-RACE="$TMP/race"; mkdir -p "$RACE"
-for i in 1 2 3 4 5 6 7 8; do
-  ( cd "$REPO" && env -u CLAUDE_CODE_SESSION_ID -u CLAUDE_SESSION_ID JOURNAL_SESSION_ID="race-$i" \
-      JOURNAL_STARTED="2026-01-14 10:00" bash "$SCRIPT" "same minute" >"$RACE/$i" 2>&1 ) &
-done
-wait
-is "eight racing closes get eight distinct paths" "$(cat "$RACE"/* | LC_ALL=C sort -u | grep -c .)" "8"
-is "…and eight reserved files" "$(find "$REPO/journal/2026-01-14" -name '1000-same-minute*.md' | grep -c .)" "8"
+The entry this session landed.
+ENTRY
+git -C "${CODESAT}" add -A
+git -C "${CODESAT}" -c user.email=t@example.com -c user.name=tester commit -q -m "close: land the entry"
+# The other thread above landed first, so this branch merges the trunk before
+# pushing — exactly what land.sh does, and without it the entry never reaches
+# origin/main and this test would be red for the wrong reason.
+git -C "${CODESAT}" fetch -q origin main
+git -C "${CODESAT}" -c user.email=t@example.com -c user.name=tester merge -q --no-edit FETCH_HEAD
+git -C "${CODESAT}" push -q origin HEAD:main
+LANDED_BRANCH="$(git -C "${CODESAT}" rev-parse --abbrev-ref HEAD)"
+git -C "${CODE}" worktree remove --force "${CODESAT}"
+git -C "${CODE}" branch -q -D "${LANDED_BRANCH}"
 
-# ── Usage and repo errors ──────────────────────────────────────────────────
-run "$S1" -- --check extra
-is "extra arguments are usage" "$RC" "2"
-OUT2="$(cd "$TMP" && env -u CLAUDE_PROJECT_DIR bash "$SCRIPT" "x" 2>&1)"; RC2=$?
-is "outside a git repo it exits 2" "$RC2" "2"
-has "…and says why" "$OUT2" "not inside a git repo"
-OUT3="$(cd "$TMP" && CLAUDE_PROJECT_DIR="$REPO" JOURNAL_STARTED="2026-01-12 20:15" bash "$SCRIPT" "from outside" 2>&1)"
-is "CLAUDE_PROJECT_DIR names the repo from anywhere" "$OUT3" "$REPO/journal/2026-01-12/2015-from-outside.md"
+if [ -e "${LANDED}" ]; then bad "fixture error: the recorded path survived the removal"
+  else ok "the close removed the worktree, taking the recorded path with it"; fi
+
+run2 --existing
+is "--existing recovers the landed entry after the worktree is gone" "${OUT}" "${LANDED}"
+is "…and exits 0" "${RC}" "0"
+is "…and the entry is really back at that path" "$(sed -n '11p' "${LANDED}" 2>/dev/null)" \
+  "The entry this session landed."
+
+run2 --check
+is "--check validates the recovered entry rather than reporting it missing" "${RC}" "0"
+is "…and prints the same path" "${OUT}" "${LANDED}"
+
+# A recorded path that is missing for any OTHER reason is still a miss — the
+# recovery is not allowed to turn "no entry yet" into a phantom one.
+echo "${CODESAT}/journal/2026-09-13/2015-never-written.md" >"${LEDGER_DIR2}/journal"
+run2 --existing
+is "a recorded path absent from the trunk too still exits 1" "${RC}" "1"
+is "…and prints nothing" "${OUT}" ""
+printf '%s\n' "${LANDED}" >"${LEDGER_DIR2}/journal"
+
+run --check unexpected
+is "check rejects extra arguments" "${RC}" "2"
+
+OUT2="$(cd "${TMP}" && env "HOME=${FAKE_HOME}" "T3CODE_HOME=${TMP}/nowhere" \
+  bash "${SCRIPT}" "x" 2>&1)"
+RC2=$?
+is "outside a thread it exits 2" "${RC2}" "2"
+has "and says why, rather than choosing a path anyway" "${OUT2}" "not in a thread"
 
 echo
-echo "journal-file.test.sh: $PASS passed, $FAIL failed"
-[[ "$FAIL" -eq 0 ]]
+echo "journal-file.test.sh: ${PASS} passed, ${FAIL} failed"
+[ "${FAIL}" -eq 0 ]

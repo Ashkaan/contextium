@@ -1,0 +1,82 @@
+{
+  "_about": "The review chain's work-type table: which vendor CLIs serve each task-kind, in order. policy-chain.sh walks a row; debate reads the panel. tracks names an exact model id for the CLI's -m flag; empty runs the CLI's own default model. A review row (chain) skips the vendor recorded as agent= in .agents/harness. Contextium: a row marked \"fallback\": \"fresh-context\" returns exit 3 when every vendor in it is unavailable, so the caller runs a fresh-context review of its own and records it as NOT independent.",
+  "rows": {
+    "adversarial-review": {
+      "mode": "single",
+      "fallback": "fresh-context",
+      "chain": [
+        {
+          "vendor": "codex",
+          "model": "codex",
+          "tracks": ""
+        },
+        {
+          "vendor": "grok",
+          "model": "grok",
+          "tracks": ""
+        }
+      ]
+    },
+    "judgment": {
+      "mode": "single",
+      "fallback": "fresh-context",
+      "chain": [
+        {
+          "vendor": "grok",
+          "model": "grok",
+          "tracks": ""
+        },
+        {
+          "vendor": "codex",
+          "model": "codex",
+          "tracks": ""
+        },
+        {
+          "vendor": "claude",
+          "model": "opus",
+          "tracks": ""
+        }
+      ]
+    },
+    "panel": {
+      "mode": "panel",
+      "voices": [
+        {
+          "vendor": "claude",
+          "model": "opus",
+          "tracks": ""
+        },
+        {
+          "vendor": "codex",
+          "model": "codex",
+          "tracks": ""
+        },
+        {
+          "vendor": "grok",
+          "model": "grok",
+          "tracks": ""
+        }
+      ]
+    },
+    "repo-investigation": {
+      "mode": "single",
+      "chain": [
+        {
+          "vendor": "codex",
+          "model": "codex",
+          "tracks": ""
+        },
+        {
+          "vendor": "grok",
+          "model": "grok",
+          "tracks": ""
+        },
+        {
+          "vendor": "claude",
+          "model": "opus",
+          "tracks": ""
+        }
+      ]
+    }
+  }
+}

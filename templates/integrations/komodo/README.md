@@ -1,9 +1,27 @@
 ---
 name: Komodo
 description: Docker container management and monitoring
+hosts:
+  - <komodo-host>
+aliases:
+  - komodo
+  - docker management
+  - container management
+typed_client:
+  - none
+access:
+  - api
+  - browser
+uses: none
+base_url: https://<komodo-host>
+auth: x-api-key + x-api-secret headers (both required)
+onepassword_item: none
+rate_limit: none documented
 cli: Web UI / REST API
 ---
 # Komodo Integration
+
+**Access order:** api, browser — the REST API reads, executes and writes everything below (list, deploy, restart), and the web UI adds only API-key rotation.
 
 **Instance:** `https://<komodo-host>`
 **Runs on:** your services host (compose at `~/docker/komodo/<host>/compose.yaml`)

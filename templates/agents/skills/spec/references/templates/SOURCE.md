@@ -1,7 +1,7 @@
 # Where these templates come from
 
-spec-kit ([github/spec-kit](https://github.com/github/spec-kit)) tag `v1.0.10`:
-commit `b5d97b41a3ad703800179eab0e711c1d7173422e` (annotated tag object
+spec-kit ([github/spec-kit](https://github.com/github/spec-kit)) tag `v1.0.10`,
+released 2026-09-22: commit `b5d97b41a3ad703800179eab0e711c1d7173422e` (annotated tag object
 `6af89a4b2156966e8a1d62ee4d1dbad4ba15a200`). Every vendored file is spec-kit's
 bytes at that commit, plus a first-line `<!-- source: … -->` comment and blocks
 fenced `<!-- contextium: <name> -->` … `<!-- /contextium -->`. Nothing of ours
@@ -14,8 +14,8 @@ sits outside a block, so a re-vendor is a three-way diff against this commit.
 | `tasks.md` | `templates/tasks-template.md` | v1.0.10 | `b5d97b41a3ad703800179eab0e711c1d7173422e` | `tests-required` (top, and once per user story), `task-lines` |
 | `research.md` | `templates/commands/plan.md:114-135`, Phase 0; its entry format is lines 130-133 | v1.0.10 | `b5d97b41a3ad703800179eab0e711c1d7173422e` | `sources`, `decision-records`. Not a file upstream, so there is nothing to diff; the Phase 0 steps and the `Decision` / `Rationale` / `Alternatives considered` fields are spec-kit's words |
 
-Not adopted: `constitution-template.md` (`.agents/AGENTS.md` and
-`.agents/rules/` are the constitution) and `checklist-template.md`
+Not adopted: `constitution-template.md` (AGENTS.md and its Standards section
+are the constitution) and `checklist-template.md`
 (`/spec-audit` is the checklist).
 
 The roadmap template is vendored beside `/project`, in

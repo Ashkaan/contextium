@@ -1,7 +1,6 @@
 ---
 name: UniFi
 description: UniFi OS Console controller — version + firmware status reporting
-cli: HTTPS with cookie auth
 hosts:
   - <unifi-host>
   - <lan-ip>
@@ -9,9 +8,22 @@ aliases:
   - unifi
   - cloudkey
   - uck
+typed_client:
+  - none
+access:
+  - api
+  - browser
+uses: none
+base_url: https://<unifi-host>
+auth: session cookie from POST /api/auth/login, plus X-CSRF-Token
+onepassword_item: none
+rate_limit: none documented
+cli: HTTPS with cookie auth
 ---
 
 # UniFi Integration
+
+**Access order:** api, browser — the controller API returns the sysinfo and device firmware state below and can be scripted; the UI is the manual firmware-apply path.
 
 UniFi runs on a dedicated UniFi OS appliance (e.g. CloudKey / Dream Machine) at `<lan-ip>`, optionally fronted by a reverse proxy or tunnel. It hosts the UniFi Network Application (controller) and manages your access points.
 

@@ -1,5 +1,4 @@
 #!/usr/bin/env bash
-# shellcheck disable=SC2016  # fixtures are literal markdown; backticks are not expansions
 # open-clarifications.test.sh — peer of open-clarifications.sh.
 set -uo pipefail
 SUT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/open-clarifications.sh"
@@ -47,7 +46,6 @@ t "research.md not counted" "0" "$(rc "$tmp/research")"
 # Usage
 t "no argument is usage" "2" "$(bash "$SUT" >/dev/null 2>&1; echo $?)"
 t "missing folder is usage" "2" "$(rc "$tmp/nope")"
-
 
 # An unreadable file is an error, never "no markers"
 mkdir -p "$tmp/unreadable"

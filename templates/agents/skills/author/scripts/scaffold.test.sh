@@ -1,25 +1,36 @@
 #!/usr/bin/env bash
-# Test harness for scaffold.sh — the boundary cases of each type: a valid
-# name, a non-kebab name, an unknown type, a collision.
+# Test harness for scaffold.sh — boundary cases for the name contract (unknown
+# type, empty name, non-kebab, collision) and each type's round-trip.
 #
-# scaffold.sh writes into CLAUDE_PROJECT_DIR when it is set, so this harness
-# pins it to the checkout it asserts against; otherwise a live session could
-# have the scaffold write into a different tree than the one being checked.
+# scaffold.sh writes into THIS SESSION's write root (session-write-root.sh), not
+# a self-located repo root, so this harness pins CONTEXT_WRITE_ROOT to the
+# checkout it is asserting against. Without the pin the test was asserting in one
+# tree while the scaffold wrote in another: run from a worktree with a live
+# session it wrote into the MAIN checkout, and four cases failed with "file not
+# written" while the files sat, uncleaned, one directory over.
 #
-# Destructive cases (skill/hook/agent writes) use throwaway kebab names under a
-# `zz-` prefix and clean up after themselves.
+# Destructive cases (skill/hook/agent writes) still use throwaway kebab names
+# under a `zz-` prefix and clean up after themselves.
 #
-# peers: scaffold.sh, verify.sh
+# peers: scaffold.sh, verify.sh, ../../implement/scripts/session-write-root.sh
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 SCRIPT="$SCRIPT_DIR/scaffold.sh"
-# Five levels, not four: scripts -> author -> skills -> agents -> templates -> the
-# repo root. Stopping at templates/ left the collision case with no rules to
-# compare against, so a slug that already exists came back clean.
-REPO_ROOT="$(cd "$SCRIPT_DIR/../../../../.." && pwd)"
-export CLAUDE_PROJECT_DIR="$REPO_ROOT"
+# A scaffolded skill lands under `<workbench>/.agents/skills/`. Skill cases run
+# against a throwaway SKILLS_ROOT — without it they would scaffold into the live
+# tree and lean on the cleanup trap to take it back out. REPO_ROOT is asked of
+# git, and governs the hook/agent cases, which write into a repo.
+SKILLS_ROOT="$(mktemp -d -t author-skills-XXXXXX)"
+export SKILLS_ROOT
+# REPO_ROOT is a THROWAWAY workbench, not a live checkout. Pointing it at the
+# real one would make every hook/agent case write a file into the working tree
+# and lean on the cleanup trap to take it out again, so the cases run somewhere
+# disposable.
+REPO_ROOT="$(mktemp -d -t author-repo-XXXXXX)"
+mkdir -p "$REPO_ROOT/.agents/hooks" "$REPO_ROOT/.agents/checks" "$REPO_ROOT/.agents/agents"
+export CONTEXT_WRITE_ROOT="$REPO_ROOT"
 
 [[ -x "$SCRIPT" ]] || { echo "FAIL: not executable: $SCRIPT" >&2; exit 1; }
 
@@ -34,6 +45,8 @@ cleanup() {
   for p in "${CLEANUP[@]:-}"; do
     [[ -n "$p" ]] && rm -rf "${REPO_ROOT:?}/${p:?}"
   done
+  [[ -n "${SKILLS_ROOT:-}" ]] && rm -rf "${SKILLS_ROOT:?}"
+  [[ -n "${REPO_ROOT:-}" && "$REPO_ROOT" == */author-repo-* ]] && rm -rf "${REPO_ROOT:?}"
 }
 trap cleanup EXIT
 
@@ -70,76 +83,75 @@ case_non_kebab() {
   res=$(run skill MySkill); rc=$(rc_of "$res")
   [[ "$rc" -eq 1 ]] || { assert_fail "non-kebab" "expected exit 1; got $rc"; return; }
   out_of "$res" | grep -q '\[a-z\]' || { assert_fail "non-kebab" "missing kebab regex"; return; }
-  [[ ! -e "$REPO_ROOT/.agents/skills/MySkill" ]] || { assert_fail "non-kebab" "wrote a dir anyway"; return; }
+  [[ ! -e "$SKILLS_ROOT/MySkill" ]] || { assert_fail "non-kebab" "wrote a dir anyway"; return; }
   assert_pass "non-kebab rejected exit1"
 }
 
 # ── Case 4: skill round-trip → writes SKILL.md, prints path ──
 case_skill_write() {
   local name="zz-scaffold-test-skill" res rc path
-  CLEANUP+=(".agents/skills/$name")
   res=$(run skill "$name"); rc=$(rc_of "$res")
   [[ "$rc" -eq 0 ]] || { assert_fail "skill-write" "expected exit 0; got $rc: $res"; return; }
   path=$(out_of "$res")
-  [[ "$path" == ".agents/skills/$name/SKILL.md" ]] || { assert_fail "skill-write" "bad path: $path"; return; }
-  [[ -f "$REPO_ROOT/$path" ]] || { assert_fail "skill-write" "file not written"; return; }
-  grep -q "name: $name" "$REPO_ROOT/$path" || { assert_fail "skill-write" "{{name}} not substituted"; return; }
-  ! grep -q "{{name}}" "$REPO_ROOT/$path" || { assert_fail "skill-write" "unsubstituted placeholder remains"; return; }
+  # The skill branch prints an ABSOLUTE path — SKILLS_ROOT need not sit under
+  # the write root, so there is nothing for a relative one to be relative to.
+  [[ "$path" == "$SKILLS_ROOT/$name/SKILL.md" ]] || { assert_fail "skill-write" "bad path: $path"; return; }
+  [[ -f "$path" ]] || { assert_fail "skill-write" "file not written"; return; }
+  grep -q "name: $name" "$path" || { assert_fail "skill-write" "{{name}} not substituted"; return; }
+  ! grep -q "{{name}}" "$path" || { assert_fail "skill-write" "unsubstituted placeholder remains"; return; }
   assert_pass "skill-write round-trip"
 }
 
 # ── Case 5: collision → 2nd write exits 1, 1st file intact ──
 case_collision() {
   local name="zz-scaffold-test-collide" res rc
-  CLEANUP+=(".agents/skills/$name")
   run skill "$name" >/dev/null
-  [[ -f "$REPO_ROOT/.agents/skills/$name/SKILL.md" ]] || { assert_fail "collision" "first write missing"; return; }
+  [[ -f "$SKILLS_ROOT/$name/SKILL.md" ]] || { assert_fail "collision" "first write missing"; return; }
   res=$(run skill "$name"); rc=$(rc_of "$res")
   [[ "$rc" -eq 1 ]] || { assert_fail "collision" "expected exit 1 on 2nd; got $rc"; return; }
   out_of "$res" | grep -qi "exists" || { assert_fail "collision" "missing exists msg"; return; }
-  [[ -f "$REPO_ROOT/.agents/skills/$name/SKILL.md" ]] || { assert_fail "collision" "first file clobbered"; return; }
+  [[ -f "$SKILLS_ROOT/$name/SKILL.md" ]] || { assert_fail "collision" "first file clobbered"; return; }
   assert_pass "collision refuses overwrite"
 }
 
 # ── Case 6: hook round-trip (default + checks placement) ──
 case_hook_write() {
   local name="zz-scaffold-test-hook" res rc path
-  CLEANUP+=(".claude/hooks/$name.sh" ".githooks/checks/$name.sh")
+  CLEANUP+=(".agents/hooks/$name.sh" ".agents/checks/$name.sh" ".agents/checks/$name.test.sh")
   res=$(run hook "$name"); rc=$(rc_of "$res"); path=$(out_of "$res")
-  [[ "$rc" -eq 0 && "$path" == ".claude/hooks/$name.sh" ]] || { assert_fail "hook-write" "default placement wrong: rc=$rc path=$path"; return; }
+  [[ "$rc" -eq 0 && "$path" == ".agents/hooks/$name.sh" ]] || { assert_fail "hook-write" "default placement wrong: rc=$rc path=$path"; return; }
   [[ -x "$REPO_ROOT/$path" ]] || { assert_fail "hook-write" "hook not executable"; return; }
   res=$(run hook "$name" checks); rc=$(rc_of "$res"); path=$(out_of "$res")
-  [[ "$rc" -eq 0 && "$path" == ".githooks/checks/$name.sh" ]] || { assert_fail "hook-write" "checks placement wrong: rc=$rc path=$path"; return; }
+  [[ "$rc" -eq 0 && "$path" == ".agents/checks/$name.sh" ]] || { assert_fail "hook-write" "checks placement wrong: rc=$rc path=$path"; return; }
+  [[ -x "$REPO_ROOT/$path" ]] || { assert_fail "hook-write" "check not executable"; return; }
+  [[ -f "$REPO_ROOT/.agents/checks/$name.test.sh" ]] || { assert_fail "hook-write" "checks placement wrote no $name.test.sh beside the check"; return; }
+  grep -q "$name.sh" "$REPO_ROOT/.agents/checks/$name.test.sh" || { assert_fail "hook-write" "the test does not name the check it tests"; return; }
   assert_pass "hook-write both placements"
 }
 
 # ── Case 7: agent round-trip ──
 case_agent_write() {
   local name="zz-scaffold-test-agent" res rc path
-  CLEANUP+=(".agents/reviewers/$name.md")
+  CLEANUP+=(".agents/agents/$name.md")
   res=$(run agent "$name"); rc=$(rc_of "$res"); path=$(out_of "$res")
-  [[ "$rc" -eq 0 && "$path" == ".agents/reviewers/$name.md" ]] || { assert_fail "agent-write" "rc=$rc path=$path"; return; }
+  [[ "$rc" -eq 0 && "$path" == ".agents/agents/$name.md" ]] || { assert_fail "agent-write" "rc=$rc path=$path"; return; }
   grep -q "name: $name" "$REPO_ROOT/$path" || { assert_fail "agent-write" "{{name}} not substituted"; return; }
   assert_pass "agent-write round-trip"
 }
 
-# ── Case 8: rule writes nothing, prints guidance ──
-case_rule_no_write() {
-  local res rc
-  res=$(run rule "zz-scaffold-test-rule-slug"); rc=$(rc_of "$res")
-  [[ "$rc" -eq 0 ]] || { assert_fail "rule-no-write" "expected exit 0; got $rc: $res"; return; }
-  out_of "$res" | grep -qi "scaffolds inline" || { assert_fail "rule-no-write" "missing inline guidance"; return; }
-  assert_pass "rule prints guidance no-write"
-}
-
-# ── Case 9: rule slug collision → exit 1 citing rule-stable-id ──
-case_rule_collision() {
-  # Use a slug known to exist in .agents/rules/ (mechanisms-not-prose).
-  local res rc
-  res=$(run rule "mechanisms-not-prose"); rc=$(rc_of "$res")
-  [[ "$rc" -eq 1 ]] || { assert_fail "rule-collision" "expected exit 1; got $rc: $res"; return; }
-  out_of "$res" | grep -q "rule-stable-id" || { assert_fail "rule-collision" "missing rule-stable-id citation"; return; }
-  assert_pass "rule-collision rejected"
+# ── Case 8: output-style round-trip ──
+# Styles live in the shared layer (.agents/output-styles/), which the installer
+# links from ~/.claude/output-styles; there is no in-repo .claude/.
+case_output_style_write() {
+  local name="zz-scaffold-test-style" res rc path
+  CLEANUP+=(".agents/output-styles/$name.md")
+  res=$(run output-style "$name"); rc=$(rc_of "$res"); path=$(out_of "$res" | head -n 1)
+  [[ "$rc" -eq 0 && "$path" == ".agents/output-styles/$name.md" ]] || { assert_fail "output-style-write" "rc=$rc path=$path"; return; }
+  grep -q "name: $name" "$REPO_ROOT/$path" || { assert_fail "output-style-write" "{{name}} not substituted"; return; }
+  [[ ! -e "$REPO_ROOT/.claude" ]] || { assert_fail "output-style-write" "wrote an in-repo .claude/"; return; }
+  res=$(run output-style "$name"); rc=$(rc_of "$res")
+  [[ "$rc" -eq 1 ]] || { assert_fail "output-style-write" "a second scaffold must refuse the collision, got rc=$rc"; return; }
+  assert_pass "output-style-write round-trip"
 }
 
 case_unknown_type
@@ -149,8 +161,7 @@ case_skill_write
 case_collision
 case_hook_write
 case_agent_write
-case_rule_no_write
-case_rule_collision
+case_output_style_write
 
 echo
 echo "scaffold.sh: ${pass}/$((pass + fail)) passed"

@@ -1,19 +1,18 @@
-// Boundary rows for the generators: the repo root they resolve in both
-// layouts, the frontmatter values a project README now carries, and the
-// project index against a fixture repo — empty, one project, the preamble kept.
-// Run: node --test .agents/generators/generators.test.ts
+// Boundary rows for the helpers the app and integration indexes share: the
+// repo root they resolve in both layouts, and the frontmatter values a README
+// carries. The project index has its own suite, project-index.generate.test.ts.
+// Run: node --test templates/agents/generators/generators.test.ts
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
-import { chmodSync, cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { pathToFileURL, fileURLToPath } from "node:url";
+import { spawnSync } from "node:child_process";
+import { chmodSync, cpSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
 import { parseFrontmatter } from "./parse_frontmatter.ts";
 import { repoRoot } from "./repo_root.ts";
-
-const here = dirname(fileURLToPath(import.meta.url));
+import { oneLineCell } from "./table_cell.ts";
 
 test("repoRoot: installed layout is two levels up", () => {
   const url = pathToFileURL("/r/.agents/generators/x.generate.ts").href;
@@ -36,106 +35,180 @@ test("parseFrontmatter: a trailing comment is not part of the value", () => {
   assert.equal(fm?.description, "the");
 });
 
+test("parseFrontmatter: a quoted value followed by a comment loses the quotes and the comment", () => {
+  const fm = (body: string) => parseFrontmatter(`---\n${body}\n---\n`);
+  assert.equal(fm('status: "active" # note')?.status, "active");
+  assert.equal(fm("status: 'active'   # note")?.status, "active");
+  assert.equal(fm('project: "issue #42" # tracked')?.project, "issue #42");
+  assert.equal(fm('project: "say \\"hi\\"" # x')?.project, 'say "hi"');
+  assert.equal(fm("project: 'it''s here' # x")?.project, "it's here");
+  assert.equal(fm('project: "unclosed')?.project, '"unclosed');
+});
+
+test("parseFrontmatter: YAML escapes are decoded once the closing quote is found", () => {
+  const fm = (body: string) => parseFrontmatter(`---\n${body}\n---\n`);
+  assert.equal(fm('p: "a\\\\b"')?.p, "a\\b");
+  assert.equal(fm('p: "tab\\there"')?.p, "tab\there");
+  assert.equal(fm("p: 'a backslash \\ stays'")?.p, "a backslash \\ stays");
+  assert.equal(fm("p: 'x'''")?.p, "x'");
+});
+
 test("parseFrontmatter: a missing next: is undefined, not empty", () => {
   const fm = parseFrontmatter("---\nstatus: blocked\nblocked-on: vendor reply\n---\n\n## Goal\n\nx\n");
   assert.equal(fm?.next, undefined);
   assert.equal(fm?.["blocked-on"], "vendor reply");
 });
 
-// A throwaway installed repo: .agents/generators copied in, projects/ as given.
-function fixture(projects: Record<string, string>, readme?: string): string {
-  const repo = mkdtempSync(join(tmpdir(), "ctx-gen-"));
-  cpSync(here, join(repo, ".agents", "generators"), { recursive: true });
-  mkdirSync(join(repo, "projects"), { recursive: true });
-  for (const [path, body] of Object.entries(projects)) {
-    mkdirSync(join(repo, "projects", dirname(path)), { recursive: true });
-    writeFileSync(join(repo, "projects", path), body);
-  }
-  if (readme !== undefined) writeFileSync(join(repo, "projects", "README.md"), readme);
-  return repo;
-}
-
-function run(repo: string, ...args: string[]): string {
-  return execFileSync(process.execPath, [join(repo, ".agents/generators/project-index.generate.ts"), ...args], {
-    cwd: repo,
-    encoding: "utf-8",
-    stdio: ["ignore", "pipe", "pipe"],
-  });
-}
-
-const PROJECT = `---
-project: checkout-flow
-status: active
-priority: high
-created: 2026-01-10
-description: Card checkout that survives a declined card
-next: "R2: retry on declined cards"
----
-
-# Project: Checkout flow
-
-## Goal
-
-Checkout keeps the order when a card is declined.
-
-## Outcome
-
-`;
-
-test("project index: zero projects still renders the header", (t) => {
-  const repo = fixture({});
-  t.after(() => rmSync(repo, { recursive: true, force: true }));
-  const out = run(repo, "--out", "-");
-  assert.match(out, /^# Active Project Status Overview/);
-  assert.match(out, /\*None\*/);
-});
-
-test("project index: one project shows its derived next:", (t) => {
-  const repo = fixture({ "web/2026-01-10_checkout-flow/README.md": PROJECT });
-  t.after(() => rmSync(repo, { recursive: true, force: true }));
-  const out = run(repo, "--out", "-");
-  assert.match(out, /\| Priority \| Domain \| Project \| Description \| Next \|/);
-  assert.match(
-    out,
-    /\[checkout-flow\]\(web\/2026-01-10_checkout-flow\/README\.md\) \| Card checkout that survives a declined card \| R2: retry on declined cards \|/,
+// integrations/README.md is hand-maintained: it holds the manifest schema the
+// integration-manifest check enforces. The index prints; a run with no flags
+// must never replace that README.
+// A throwaway workbench holding these generators and one readable integration.
+function integrationFixture(): string {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const root = mkdtempSync(join(tmpdir(), "integration-index-"));
+  cpSync(here, join(root, ".agents", "generators"), { recursive: true });
+  mkdirSync(join(root, "integrations", "demo"), { recursive: true });
+  writeFileSync(
+    join(root, "integrations", "demo", "README.md"),
+    "---\nname: Demo\ndescription: A demo\ncli: demo\n---\n# Demo\n",
   );
+  return root;
+}
+
+function runIntegrationIndex(root: string, args: string[] = []) {
+  return spawnSync(
+    process.execPath,
+    [
+      "--experimental-strip-types",
+      "--no-warnings",
+      join(root, ".agents", "generators", "integration-index.generate.ts"),
+      ...args,
+    ],
+    { encoding: "utf8" },
+  );
+}
+
+test("integration-index: a run with no flags prints the index and leaves integrations/README.md alone", () => {
+  const root = integrationFixture();
+  const readme = "# Integrations\n\n## Manifest\n\nthe schema\n";
+  writeFileSync(join(root, "integrations", "README.md"), readme);
+  const r = runIntegrationIndex(root);
+  assert.equal(r.status, 0);
+  assert.match(r.stdout, /\[Demo\]\(demo\/\)/);
+  assert.equal(readFileSync(join(root, "integrations", "README.md"), "utf8"), readme);
 });
 
-test("project index: the text above the marker survives a rewrite", (t) => {
-  const preamble = "# Projects\n\nMy own words.\n\n<!-- Generated by .agents/generators/project-index.generate.ts below this line — edit the text above it only -->\n";
-  const repo = fixture({ "web/2026-01-10_checkout-flow/README.md": PROJECT }, `${preamble}\nstale index\n`);
-  t.after(() => rmSync(repo, { recursive: true, force: true }));
-  run(repo);
-  const written = readFileSync(join(repo, "projects/README.md"), "utf-8");
-  assert.ok(written.startsWith(`${preamble}\n## Active Project Status Overview`), written.slice(0, 300));
-  assert.doesNotMatch(written, /stale index/);
-  assert.match(written, /R2: retry on declined cards/);
+test("integration-index: --out <file> is refused after an integration could not be read", () => {
+  const root = integrationFixture();
+  mkdirSync(join(root, "integrations", "broken"), { recursive: true });
+  const out = join(root, "index.md");
+  writeFileSync(out, "the last good index\n");
+  const r = runIntegrationIndex(root, ["--out", out]);
+  assert.notEqual(r.status, 0);
+  assert.match(r.stderr, /refused/);
+  assert.equal(readFileSync(out, "utf8"), "the last good index\n");
 });
 
-test("project index: without a marker the index is the whole file", (t) => {
-  const repo = fixture({}, "# Active Project Status Overview\n\nold\n");
-  t.after(() => rmSync(repo, { recursive: true, force: true }));
-  run(repo);
-  const written = readFileSync(join(repo, "projects/README.md"), "utf-8");
-  assert.ok(written.startsWith("# Active Project Status Overview"));
-  assert.doesNotMatch(written, /\nold\n/);
+// The app index writes apps/README.md by default; the same rule holds for it.
+test("app-index: apps/README.md is left as it was after an app could not be read", () => {
+  const root = integrationFixture();
+  mkdirSync(join(root, "apps", "demo"), { recursive: true });
+  writeFileSync(join(root, "apps", "demo", "README.md"), "---\nname: demo\ndescription: A demo app\n---\n# demo\n");
+  mkdirSync(join(root, "apps", "broken"), { recursive: true });
+  writeFileSync(join(root, "apps", "README.md"), "the last good index\n");
+  const r = spawnSync(
+    process.execPath,
+    ["--experimental-strip-types", "--no-warnings", join(root, ".agents", "generators", "app-index.generate.ts")],
+    { encoding: "utf8" },
+  );
+  assert.notEqual(r.status, 0);
+  assert.match(r.stderr, /refused/);
+  assert.equal(readFileSync(join(root, "apps", "README.md"), "utf8"), "the last good index\n");
 });
 
-test("project index: --out with no path is refused", (t) => {
-  const repo = fixture({});
-  t.after(() => rmSync(repo, { recursive: true, force: true }));
-  assert.throws(() => run(repo, "--out"), /--out flag requires a path/);
+// A domain bundle whose folder cannot be listed has lost its member apps: that
+// is a drop, not an empty bundle. (Root lists any folder, so it cannot run this.)
+test("app-index: a domain bundle that cannot be listed is a drop, and apps/README.md is left as it was", {
+  skip: process.getuid?.() === 0,
+}, () => {
+  const root = integrationFixture();
+  mkdirSync(join(root, "apps", "demo"), { recursive: true });
+  writeFileSync(join(root, "apps", "demo", "README.md"), "---\nname: demo\ndescription: A demo app\n---\n# demo\n");
+  const bundle = join(root, "apps", "media");
+  mkdirSync(join(bundle, "player"), { recursive: true });
+  writeFileSync(join(bundle, "trigger.config.ts"), "// trigger-domain-bundle: media\n");
+  writeFileSync(join(bundle, "player", "README.md"), "---\nname: player\ndescription: Plays\n---\n");
+  writeFileSync(join(root, "apps", "README.md"), "the last good index\n");
+  chmodSync(bundle, 0o300);
+  try {
+    const r = spawnSync(
+      process.execPath,
+      ["--experimental-strip-types", "--no-warnings", join(root, ".agents", "generators", "app-index.generate.ts")],
+      { encoding: "utf8" },
+    );
+    assert.notEqual(r.status, 0);
+    assert.match(r.stderr, /media/);
+    assert.equal(readFileSync(join(root, "apps", "README.md"), "utf8"), "the last good index\n");
+  } finally {
+    chmodSync(bundle, 0o700);
+  }
 });
 
-test("project index: a README it cannot read is an error, not an empty preamble", (t) => {
-  const preamble = "# Projects\n\nMy own words.\n\n<!-- Generated by .agents/generators/project-index.generate.ts below this line -->\n";
-  const repo = fixture({}, preamble);
-  t.after(() => rmSync(repo, { recursive: true, force: true }));
-  // Write-only: the read fails with EACCES while a write would still succeed,
-  // so treating the error as "no preamble" would overwrite the user's text.
-  const readme = join(repo, "projects", "README.md");
-  chmodSync(readme, 0o200);
-  assert.throws(() => run(repo), /EACCES/);
-  chmodSync(readme, 0o600);
-  assert.equal(readFileSync(readme, "utf-8"), preamble);
+// A decoded `\n` or a `|` in a frontmatter value must not break the table.
+const MULTILINE = '---\nname: "Two | names"\ndescription: "two\\nlines | piped"\ncli: "a\\nb"\n---\n# x\n';
+
+test("integration-index: a value with a line break and a pipe stays one table cell", () => {
+  const root = integrationFixture();
+  writeFileSync(join(root, "integrations", "demo", "README.md"), MULTILINE);
+  const r = runIntegrationIndex(root);
+  assert.equal(r.status, 0, r.stderr);
+  const row = r.stdout.split("\n").find((l) => l.includes("two lines"));
+  assert.ok(row, `the row renders on one line:\n${r.stdout}`);
+  assert.ok(row.includes("two lines \\| piped"), row);
+  assert.ok(row.includes("[Two \\| names]"), row);
+  assert.ok(row.includes("| a b |"), row);
+});
+
+test("app-index: a value with a line break and a pipe stays one table cell", () => {
+  const root = integrationFixture();
+  mkdirSync(join(root, "apps", "demo"), { recursive: true });
+  writeFileSync(
+    join(root, "apps", "demo", "README.md"),
+    MULTILINE.replace('cli: "a\\nb"', 'schedule: "daily\\nat 9 | UTC"'),
+  );
+  const r = spawnSync(
+    process.execPath,
+    [
+      "--experimental-strip-types",
+      "--no-warnings",
+      join(root, ".agents", "generators", "app-index.generate.ts"),
+      "--out",
+      "-",
+    ],
+    { encoding: "utf8" },
+  );
+  assert.equal(r.status, 0, r.stderr);
+  const row = r.stdout.split("\n").find((l) => l.includes("two lines"));
+  assert.ok(row, `the row renders on one line:\n${r.stdout}`);
+  assert.ok(row.includes("two lines \\| piped"), row);
+  assert.ok(row.includes("daily at 9 \\| UTC"), row);
+});
+
+test("integration-index: --out <file> writes when every integration was read", () => {
+  const root = integrationFixture();
+  const out = join(root, "index.md");
+  const r = runIntegrationIndex(root, ["--out", out]);
+  assert.equal(r.status, 0);
+  assert.match(readFileSync(out, "utf8"), /\[Demo\]\(demo\/\)/);
+});
+
+test("oneLineCell: whitespace collapses to one line and a pipe is escaped", () => {
+  assert.equal(oneLineCell("  two\nlines\r\n\tand  more  "), "two lines and more");
+  assert.equal(oneLineCell("a | b"), "a \\| b");
+});
+
+test("oneLineCell: backslashes are escaped before pipes, so every pipe stays escaped", () => {
+  assert.equal(oneLineCell("a|b"), "a\\|b");
+  assert.equal(oneLineCell("a\\|b"), "a\\\\\\|b");
+  assert.equal(oneLineCell("a\\\\|b"), "a\\\\\\\\\\|b");
 });

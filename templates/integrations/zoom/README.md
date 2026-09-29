@@ -1,11 +1,23 @@
 ---
 name: Zoom
 description: Meeting summaries via AI Companion
-cli: REST API
+hosts:
+  - api.zoom.us
+  - zoom.us
 aliases:
   - zoom meeting
   - zoom call
   - zoom recording
+typed_client:
+  - none
+access:
+  - api
+uses: none
+base_url: https://api.zoom.us/v2
+auth: oauth2 account_credentials grant (server-to-server), then bearer token
+onepassword_item: none
+rate_limit: per-endpoint tiers; see the vendor's rate-limit table
+cli: REST API
 ---
 
 # Zoom Integration

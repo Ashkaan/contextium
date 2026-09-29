@@ -2,8 +2,8 @@
 
 A decision that would be expensive to reverse gets a file here, or in the
 `decisions/` folder nearer to the work it governs. This README is the one place
-the format and the placement rule are written down; `.agents/AGENTS.md` and the
-rules point here and do not restate them.
+the format and the placement rule are written down; `AGENTS.md` and its
+standards point here and do not restate them.
 
 ## Format
 
@@ -84,10 +84,10 @@ edited into a different decision.
 
 ## The check
 
-`.githooks/checks/check-decision-records.sh` holds every record to this format.
-The pre-commit hook runs it on the staged records, and `/close` runs it on the
-records it is about to commit — a violation refuses either. Each violation
-names its part:
+`.agents/checks/check-decision-records.sh` holds every record to this format,
+and `/close` runs it on the records a close is about to commit — `land.sh`
+calls it with `--since origin/<trunk>` before its commit — so a violation
+refuses the close. Each violation names its part:
 
 | Part | Rejects |
 |---|---|
@@ -105,7 +105,7 @@ decision.
 Run it by hand:
 
 ```bash
-bash .githooks/checks/check-decision-records.sh                     # changed since HEAD, staged or not
-bash .githooks/checks/check-decision-records.sh --since origin/main # this branch's, committed or not
-bash .githooks/checks/check-decision-records.sh decisions/          # every record in a folder
+bash .agents/checks/check-decision-records.sh                     # changed since HEAD, staged or not
+bash .agents/checks/check-decision-records.sh --since origin/main # this branch's, committed or not — what /close runs
+bash .agents/checks/check-decision-records.sh decisions/          # every record in a folder
 ```

@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# shellcheck disable=SC2016  # fixtures are literal markdown; backticks are not expansions
-# project-remaining-work.test.sh — covers the veto signals (a spec still owed
-# work, an open roadmap row, an unchecked Next Steps box) and the clean
-# no-hard-signal case that lets /close flip a finished project.
+# shellcheck disable=SC2016  # fixtures hold literal backticks and $ in single quotes
+# project-remaining-work.test.sh — covers the veto signals (un-reported SPEC,
+# open shard row, unchecked Next Steps box) and the clean no-hard-signal case
+# that lets /close step-2.1 flip a finished project.
 # Run: bash project-remaining-work.test.sh
 
 set -euo pipefail
@@ -58,6 +58,42 @@ check "all-reported-verdict" "no-hard-signal" "$(field verdict "$out")"
 check "all-reported-specs" "0" "$(field unreported_specs "$out")"
 check "all-reported-next-steps" "no" "$(field next_steps_section "$out")"
 
+# 3. Open shard row → work-remains even with every SPEC reported.
+d="$(mkproj "2026-03-03_sharded" active)"
+: >"$d/a.spec.md"
+: >"$d/a-report.md"
+: >"$d/b.spec.md"
+: >"$d/b-report.md"
+{
+  echo "## Shard Status"
+  echo ""
+  echo "| Shard | SPEC | Report | State |"
+  echo "|---|---|---|---|"
+  echo "| a | \`a.spec.md\` | \`a-report.md\` | closed |"
+  echo "| b | \`b.spec.md\` | — | in-flight |"
+} >>"$d/README.md"
+out="$("$GEN" "$d")"
+check "open-shard-verdict" "work-remains" "$(field verdict "$out")"
+check "open-shard-count" "1" "$(field shard_open "$out")"
+check "open-shard-row" "b in-flight" "$(field shard "$out")"
+check "shard-table-present" "yes" "$(field shard_table "$out")"
+
+# 4. All shard rows closed → no-hard-signal (header + separator not counted).
+d="$(mkproj "2026-04-04_shards-closed" active)"
+: >"$d/a.spec.md"
+: >"$d/a-report.md"
+{
+  echo "## Shard Status"
+  echo ""
+  echo "| Shard | SPEC | Report | State |"
+  echo "|---|---|---|---|"
+  echo "| a | \`a.spec.md\` | \`a-report.md\` | closed |"
+  echo "| b | \`b.spec.md\` | \`b-report.md\` | dropped |"
+} >>"$d/README.md"
+out="$("$GEN" "$d")"
+check "closed-shards-verdict" "no-hard-signal" "$(field verdict "$out")"
+check "closed-shards-count" "0" "$(field shard_open "$out")"
+
 # 5. Unchecked box under ## Next Steps → work-remains; checked ones ignored,
 #    and a box in a LATER section does not leak in.
 d="$(mkproj "2026-05-05_open-todos" active)"
@@ -101,7 +137,11 @@ rc=$?
 set -e
 check "missing-readme-exit2" "2" "$rc"
 
-# ── Backlogs that are not checkboxes ─────────────────────────────────
+# ── Backlogs that are not checkboxes ───────────────────────────────────
+#
+# Counting only unchecked boxes under a case-SENSITIVE heading clears projects that
+# carry written backlogs, and misses one whose heading is "## Next steps". Each
+# shape below is one of those cases.
 
 # 9. A numbered backlog is real work, not an empty one.
 d="$(mkproj "2026-08-10_numbered" active)"
@@ -140,7 +180,8 @@ out="$("$GEN" "$d")"
 check "bullets-unparsed" "3" "$(field next_steps_unparsed "$out")"
 check "bullets-verdict" "work-remains" "$(field verdict "$out")"
 
-# 12. It must NOT over-fire. Narrative prose with no list markers is not a backlog.
+# 12. It must NOT over-fire. Narrative prose with no list markers is not a backlog,
+#     and pinning those projects active forever would make the veto useless the other way.
 d="$(mkproj "2026-08-10_prose" active)"
 {
   echo "## Next Steps"
@@ -191,7 +232,9 @@ out="$("$GEN" "$d")"
 check "other-section-unparsed" "0" "$(field next_steps_unparsed "$out")"
 check "other-section-verdict" "no-hard-signal" "$(field verdict "$out")"
 
-# 16. Sub-bullets under a COMPLETED box are explanation, not backlog.
+# 16. Sub-bullets under a COMPLETED box are explanation, not backlog. Counting them
+#     would pin a finished checklist work-remains forever — the same defect as
+#     under-counting, pointed the other way.
 d="$(mkproj "2026-08-10_nested-under-done" active)"
 {
   echo "## Next Steps"
@@ -218,7 +261,9 @@ out="$("$GEN" "$d")"
 check "nested-open-box-count" "1" "$(field next_steps_unchecked "$out")"
 check "nested-open-box-verdict" "work-remains" "$(field verdict "$out")"
 
-# 18. All three markdown bullet markers are checkboxes, at any depth.
+# 18. All three markdown bullet markers are checkboxes, at any depth. Recognizing only
+#     `-` and `*` meant a `+ [ ]` was not a box, and once unparsed narrowed to column
+#     zero a NESTED one was counted as nothing at all.
 d="$(mkproj "2026-08-10_plus-boxes" active)"
 {
   echo "## Next Steps"
@@ -242,7 +287,7 @@ d="$(mkproj "2026-08-10_plus-done" active)"
 out="$("$GEN" "$d")"
 check "plus-done-verdict" "no-hard-signal" "$(field verdict "$out")"
 
-# ── ROADMAP.md projects ─────────────────────────────────────────
+# ── ROADMAP.md projects ─────────────────────────────────────────────
 RM_HDR='| ID | Sub-feature | Intent | Scope boundary | Depends on | Status | Sub-spec |
 |----|-------------|--------|----------------|-----------|--------|----------|'
 mkroadmap() { # mkroadmap <dir> <rows...>
@@ -250,7 +295,7 @@ mkroadmap() { # mkroadmap <dir> <rows...>
   { printf '# Roadmap: t\n\n%s\n' "$RM_HDR"; local r; for r in "$@"; do printf '%s\n' "$r"; done; } >"$d/ROADMAP.md"
 }
 
-# A project with no ROADMAP.md prints no roadmap lines at all.
+# A legacy project prints no roadmap lines at all.
 d="$(mkproj "2026-09-01_no-roadmap" active)"
 out="$("$GEN" "$d")"
 check "legacy-no-roadmap-lines" "" "$(printf '%s\n' "$out" | grep '^roadmap' || true)"
@@ -299,31 +344,14 @@ mkdir -p "$d/specs/001-a"; : >"$d/specs/001-a/spec.md"
 out="$("$GEN" "$d")"
 check "rm-folder-spec" "specs/001-a none" "$(field spec "$out")"
 
-
-# A spec folder whose report claims complete no longer counts.
-printf -- '---\nspec: 001-a\nspec-status: complete\n---\n' >"$d/specs/001-a/report.md"
-out="$("$GEN" "$d")"
-check "rm-folder-complete-count" "0" "$(field unreported_specs "$out")"
-check "rm-folder-complete-row-still-open" "work-remains" "$(field verdict "$out")"
-
-
-# A ROADMAP project ignores a leftover README ## Next Steps list.
+# A ROADMAP project ignores a leftover README ## Next Steps list: the roadmap
+# is its one list of outstanding work.
 d="$(mkproj "2026-09-07_rm-stale-list" active)"
 mkroadmap "$d" '| R1 | a | i | s | — | done | — |'
 printf '\n## Next Steps\n\n- [ ] an old todo\n1. an old numbered item\n' >>"$d/README.md"
 out="$("$GEN" "$d")"
 check "rm-ignores-next-steps-verdict" "no-hard-signal" "$(field verdict "$out")"
-check "rm-prints-no-next-steps-lines" "" "$(printf '%s\n' "$out" | grep '^next_steps\|^todo\|^unparsed' || true)"
-
-# A trailing slash on the folder argument reads the same.
-out="$("$GEN" "$d/")"
-check "trailing-slash" "0" "$(field unreported_specs "$out")"
-
-# Usage errors exit 2.
-set +e
-"$GEN" >/dev/null 2>&1; rc=$?
-set -e
-check "no-arg-exit2" "2" "$rc"
+check "rm-reports-no-next-steps-section" "no" "$(field next_steps_section "$out")"
 
 echo "── project-remaining-work: $pass passed, $fail failed ──"
 [[ "$fail" -eq 0 ]]

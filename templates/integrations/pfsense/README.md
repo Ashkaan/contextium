@@ -1,13 +1,28 @@
 ---
 name: pfSense
 description: Open-source firewall/router; download-page scrape for upgrade tracking
-cli: HTTPS scrape (no auth)
 hosts:
   - pfsense.org
   - www.pfsense.org
+aliases:
+  - pfsense
+  - firewall
+typed_client:
+  - none
+access:
+  - ssh
+  - browser
+uses: none
+base_url: https://www.pfsense.org/download/
+auth: none
+onepassword_item: none
+rate_limit: none documented; a 5xx means the vendor site is throttling, retry later
+cli: HTTPS scrape (no auth)
 ---
 
 # pfSense Integration
+
+**Access order:** ssh, browser — SSH is a shell on the firewall itself (the installed version, live config), while the browser shape reaches only Netgate's public download page and the web GUI.
 
 pfSense Community Edition runs on your network firewall/router. Source: Netgate. The integration is a scrape of the public download page, used to check for available CE upgrades.
 

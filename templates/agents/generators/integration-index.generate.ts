@@ -1,11 +1,15 @@
 #!/usr/bin/env -S npx tsx
-// Generates integrations/README.md from integration frontmatter
+// Prints the integration index from integration frontmatter. It does NOT write
+// integrations/README.md: that README is hand-maintained and holds the
+// manifest schema .agents/checks/check-integration-manifest.sh enforces, so a
+// generated copy over it would delete the schema.
 // Usage: node .agents/generators/integration-index.generate.ts [--out /path/to/output.md]
 
 import { readdirSync, readFileSync, writeFileSync } from "fs";
 import { join } from "path";
 import process from "node:process";
 import { parseFrontmatter } from "./parse_frontmatter.ts";
+import { oneLineCell } from "./table_cell.ts";
 import { repoRoot } from "./repo_root.ts";
 import { validateOutcome } from "./validate_outcome.ts";
 
@@ -22,7 +26,7 @@ interface IntegrationMeta {
 
 const SKIP_DIRS = new Set(["_config", ".git"]);
 
-function discoverIntegrations(integrationsDir: string): IntegrationMeta[] {
+function discoverIntegrations(integrationsDir: string): { integrations: IntegrationMeta[]; drops: number } {
   const integrations: IntegrationMeta[] = [];
   const warnings: string[] = [];
 
@@ -74,7 +78,8 @@ function discoverIntegrations(integrationsDir: string): IntegrationMeta[] {
     for (const w of warnings) console.error(`  - ${w}`);
   }
 
-  return integrations;
+  // Every warning is an integration left out of the index.
+  return { integrations, drops: warnings.length };
 }
 
 // ── Build markdown ───────────────────────────────────────────────────
@@ -90,9 +95,9 @@ function buildReadme(integrations: IntegrationMeta[]): string {
   const sorted = [...integrations].sort((a, b) => a.dirName.localeCompare(b.dirName));
 
   const rows = sorted.map((i) => {
-    const link = `[${i.name}](${i.dirName}/)`;
-    const purpose = truncate(i.description);
-    return `| ${link} | ${i.cli} | ${purpose} |`;
+    const link = `[${oneLineCell(i.name)}](${i.dirName}/)`;
+    const purpose = oneLineCell(truncate(i.description));
+    return `| ${link} | ${oneLineCell(i.cli)} | ${purpose} |`;
   });
 
   return [
@@ -118,13 +123,12 @@ function buildReadme(integrations: IntegrationMeta[]): string {
 const root = repoRoot(import.meta.url);
 const integrationsDir = join(root, "integrations");
 
-// `--out <path>` requires a non-empty value when the flag is present — a silent
-// fallback to the canonical path on a missing/empty value would let a caller
-// bug overwrite the live index. `--out -` writes to stdout.
+// stdout by default. `--out <path>` writes a file and requires a non-empty
+// value when the flag is present. `--out -` is stdout too.
 const outFlag = process.argv.indexOf("--out");
 let outputPath: string;
 if (outFlag === -1) {
-  outputPath = join(integrationsDir, "README.md");
+  outputPath = "-";
 } else {
   const v = process.argv[outFlag + 1];
   if (!v) {
@@ -134,7 +138,17 @@ if (outFlag === -1) {
   outputPath = v;
 }
 
-const integrations = discoverIntegrations(integrationsDir);
+const { integrations, drops } = discoverIntegrations(integrationsDir);
+
+// A file the index replaces is refused while an integration could not be read:
+// a partial index would overwrite the last good one. stdout replaces nothing.
+if (outputPath !== "-" && drops > 0) {
+  console.error(
+    `--out ${outputPath}: refused, ${drops} integration(s) could not be read (see the warnings above); the file was left as it was`,
+  );
+  process.exit(1);
+}
+
 const readme = buildReadme(integrations);
 
 if (outputPath === "-") {
@@ -145,8 +159,7 @@ if (outputPath === "-") {
 
 // An empty integrations/ dir is valid (the template ships empty): the header
 // always renders, so readme.length > 0 holds even with zero integrations.
-validateOutcome("generate_integration_index", [
-  { check: "README content generated", pass: () => readme.length > 0 },
-]);
+validateOutcome("generate_integration_index", [{ check: "README content generated", pass: () => readme.length > 0 }]);
 
-console.error(`Generated integrations/README.md: ${integrations.length} integrations`);
+if (outputPath !== "-")
+  console.error(`Wrote the integration index to ${outputPath}: ${integrations.length} integrations`);

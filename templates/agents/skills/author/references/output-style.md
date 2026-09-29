@@ -1,16 +1,12 @@
 # /author output-style — branch flow
 
-An output style is a single Markdown file at
-`.claude/output-styles/<name>.md` whose body is APPENDED TO THE SYSTEM PROMPT —
+The fourth type. An output style is a single Markdown file at
+`.agents/output-styles/<name>.md` (only Claude Code reads styles; the installer
+links `~/.claude/output-styles` to this folder) whose body is APPENDED TO THE SYSTEM PROMPT —
 so it is in force on every turn of every session that selects it, and it is the
-highest-leverage artifact in `.claude/` per character.
+highest-leverage AI-layer artifact per character.
 
-Authoritative field list: `code.claude.com/docs/en/output-styles`, per
-`@rule:check-harness-surface-first`. Re-read it before relying on a field; the
-surface moves between versions.
-
-Governing rules: `@rule:mechanisms-not-prose`,
-`@rule:no-speculative-enforcement`, `@rule:single-source-of-truth`.
+Authoritative field list read first-hand from `code.claude.com/docs/en/output-styles`.
 
 ## Critical — three silent failures, all invisible without `verify`
 
@@ -29,31 +25,28 @@ Governing rules: `@rule:mechanisms-not-prose`,
 Two more facts that shape what a style may promise:
 
 - **A style does NOT reach subagents.** Each subagent runs its own system
-  prompt; only a fork inherits the parent's. So if you read a subagent's text
-  directly, your style does not govern it. Two ways to close that: put the
-  format requirements into the brief you hand the subagent, or add a
-  `SubagentStart` hook that injects the style file for the agent types whose
-  output you read. The brief is the simpler one and needs nothing new.
+  prompt. Only a `fork` inherits the parent's. So a style whose rules must bind
+  a subagent needs a `SubagentStart` hook to carry them — a hook in
+  `.agents/hooks/` (`/author hook`) whose allowlist fails closed.
 - **It takes effect at session start.** Changes need `/clear` or a new session;
   editing the file does not change the turn you are in.
 
 ## Step 1 — cite-evidence
 
-Same bar as the rule branch: a real cited failure (journal path, commit SHA,
+A real cited failure (journal path, commit SHA,
 verbatim user correction). A style governs every reply, so "this reads better"
 is not evidence. Halt if there is none.
 
 ## Step 2 — resolve-shape
 
-Ask the user about the two decisions the docs make load-bearing:
+Ask the user (a numbered list, recommendation first; in Claude Code, `AskUserQuestion`) for the two decisions the docs make load-bearing:
 
 - **`keep-coding-instructions`** — true when the style changes HOW Claude
   communicates while still doing engineering work; false only when the sessions
   it governs are genuinely not software engineering.
-- **Does it need to bind subagents?** If yes, the brief each subagent gets has
-  to carry the format itself (or you add a `SubagentStart` hook). If no, say so
-  explicitly — the default silently does not, and "I assumed it applied
-  everywhere" is how a style ends up governing half the output.
+- **Does it need to bind subagents?** If yes, the `register` step wires
+  a `SubagentStart` hook; if no, say so explicitly, because the default silently
+  does not.
 
 ## Step 3 — scaffold
 
@@ -61,7 +54,7 @@ Ask the user about the two decisions the docs make load-bearing:
 bash .agents/skills/author/scripts/scaffold.sh output-style <name>
 ```
 
-Writes `.claude/output-styles/<name>.md` from the template. Refuses on
+Writes `.agents/output-styles/<name>.md` from the template. Refuses on
 collision; never overwrites.
 
 ## Step 4 — fill
@@ -74,30 +67,31 @@ Fill the body. Two shape constraints, both from what a system prompt is:
   is subordinate to that one, and a reader who stops after the first paragraph
   should already behave mostly right.
 
-Keep project facts OUT — those go to CLAUDE.md. A style that names a repo path
+Keep project facts OUT — those go to AGENTS.md. A style that names a repo path
 or a vendor is usually a rule wearing the wrong hat.
 
-## Step 4.5 — efficacy-gate (shared with the rule branch)
+## Step 4.5 — design-review
 
-Runs identically, and matters MORE here: a system-prompt edit is not sampled at
-a decision point, it is present in every reply, so a dropped clause changes
-every turn rather than a rare one.
+`/author`'s design-review step, with one addition that matters MORE here: a
+system-prompt edit is not sampled at a decision point, it is present in every
+reply, so a dropped clause changes every turn rather than a rare one. Decompose
+original vs. rewrite into clauses and hand `{original, rewrite, dropped_clauses}`
+— and NOT your rationale — to the policy-assigned adversary via
+`.agents/skills/review/policy-review.sh adversarial-review <file> <brief>`.
+The brief lists every dropped clause and asks for one finding per clause in the
+reviewer's own format: a `[must-fix]` naming the clause means it is load-bearing
+(restore it and re-run); a `[nit]` or no finding means it was not. Converged =
+a round with no `[must-fix]` on any dropped clause.
 
-Decompose original vs. rewrite into clauses, hand
-`{original, rewrite, dropped_clauses}` — and NOT your rationale — to the
-external reviewer via
-`.agents/scripts/artifact-review.sh <file> <brief>`
-(exit 3 → dispatch `rule-efficacy-reviewer` instead). Any `load-bearing` verdict
-is restored and the gate re-runs. Converged = zero load-bearing drops.
-
-**Known limit:** the reviewer can score the same clause differently as the
-surviving pool changes, even on unchanged text. Treat a single clean round as
-weaker evidence than it looks.
+**Known limit, measured:** the reviewer re-scores the same clause
+differently as the surviving pool changes (one clause flipped
+from no finding to `[must-fix]` across two rounds on unchanged text). Treat a
+single clean round as weaker evidence than it looks.
 
 ## Step 5 — verify + register
 
 ```bash
-bash .agents/skills/author/scripts/verify.sh output-style .claude/output-styles/<name>.md
+bash .agents/skills/author/scripts/verify.sh output-style .agents/output-styles/<name>.md
 ```
 
 Checks frontmatter delimiters, rejects any key outside the documented four,
@@ -107,7 +101,8 @@ and explicitly `true` or `false`.
 **Register** — unlike skills and agents, an output style is NOT auto-selected by
 existing. Two wirings, neither automatic:
 
-1. To make it the repo default, set `outputStyle: "<name>"` in
-   `.claude/settings.json`.
-2. To carry it into subagents, put the format into their briefs, or add a
-   `SubagentStart` hook that injects this file. Nothing does it for you.
+1. To make it the default, set `outputStyle: "<name>"` in
+   `~/.claude/settings.json`.
+2. To carry it into subagents, add the agent types to the allowlist of the
+   `SubagentStart` hook in `.agents/hooks/`. Its allowlist fails closed — an
+   unlisted agent type gets nothing.

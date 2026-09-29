@@ -44,5 +44,18 @@ bash -c 'source "$1"; lock_release "$2"' _ "$LIB" "$TMP/lock"
 is "release never removes another holder's lock" "$(readlink "$TMP/lock")" "$other"
 kill "$other" 2>/dev/null; wait "$other" 2>/dev/null
 
+# lock_repo: flock where it exists, the portable lock otherwise — and the
+# second must also exclude a racing writer.
+for mode in flock portable; do
+  echo 0 >"$TMP/c2"
+  for _ in $(seq 1 10); do
+    ( if [[ $mode == portable ]]; then export LOCK_NO_FLOCK=1; fi
+      bash -c 'source "$1"; lock_repo "$2" 30 || exit 1; n=$(cat "$3"); sleep 0.05; echo $((n + 1)) >"$3"; lock_repo_release "$2"' _ "$LIB" "$TMP/repo.lock" "$TMP/c2" ) &
+  done
+  wait
+  is "lock_repo ($mode): 10 writers lose no increment" "$(cat "$TMP/c2")" "10"
+done
+is "the portable repo lock is released" "$([[ -L "$TMP/repo.lock.lnk" ]] && echo held || echo free)" "free"
+
 echo "lock.test.sh: $pass passed, $fail failed"
 [[ $fail -eq 0 ]]

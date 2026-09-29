@@ -1,0 +1,33 @@
+{
+  "context": {
+    "fileName": [
+      "AGENTS.md"
+    ]
+  },
+  "hooks": {
+    "BeforeTool": [
+      {
+        "matcher": "run_shell_command",
+        "hooks": [
+          {
+            "type": "command",
+            "command": ": contextium; d=\"${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel 2>/dev/null)}\"; h=\"$d/.agents/hooks/check-host-infra-safety.sh\"; [ -f \"$h\" ] || h=\"__WORKBENCH__/.agents/hooks/check-host-infra-safety.sh\"; [ -f \"$h\" ] || exit 0; exec bash \"$h\""
+          },
+          {
+            "type": "command",
+            "command": ": contextium; d=\"${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel 2>/dev/null)}\"; h=\"$d/.agents/hooks/check-shared-checkout-write.sh\"; [ -f \"$h\" ] || h=\"__WORKBENCH__/.agents/hooks/check-shared-checkout-write.sh\"; [ -f \"$h\" ] || exit 0; exec bash \"$h\""
+          }
+        ]
+      },
+      {
+        "matcher": "write_file|replace",
+        "hooks": [
+          {
+            "type": "command",
+            "command": ": contextium; d=\"${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel 2>/dev/null)}\"; h=\"$d/.agents/hooks/check-shared-checkout-write.sh\"; [ -f \"$h\" ] || h=\"__WORKBENCH__/.agents/hooks/check-shared-checkout-write.sh\"; [ -f \"$h\" ] || exit 0; exec bash \"$h\""
+          }
+        ]
+      }
+    ]
+  }
+}

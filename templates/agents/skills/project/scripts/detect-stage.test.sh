@@ -2,10 +2,11 @@
 # shellcheck disable=SC2016 # the backticks in the roadmap rows are markdown, not command substitution
 # detect-stage.test.sh — peer of detect-stage.sh. Run: bash detect-stage.test.sh
 #
-# detect-stage.sh calls three sibling helpers in close/scripts/ (roadmap.sh,
-# spec-state.sh, open-clarifications.sh). They are used as they are, not stubbed,
-# so this suite also pins their contract; CONTEXTIUM_CLOSE_SCRIPTS points at
-# another copy of them.
+# detect-stage.sh reads project paths relative to the write root, which it
+# asks session-write-root.sh for; CONTEXT_WRITE_ROOT points that at a fixture.
+# It calls three sibling helpers in close/scripts/ (roadmap.sh, spec-state.sh,
+# open-clarifications.sh). They are used as they are, not stubbed, so this suite
+# also pins their contract; CONTEXTIUM_CLOSE_SCRIPTS points at another copy.
 set -uo pipefail
 SUT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/detect-stage.sh"
 pass=0; fail=0
@@ -14,6 +15,9 @@ t() { # t <label> <expected> <actual>
     fail=$((fail+1)); echo "FAIL: $1"; echo "  expected: [$2]"; echo "  actual  : [$3]"; fi
 }
 tmp="$(mktemp -d "${TMPDIR:-/tmp}/detect-stage-test.XXXXXX")"; trap 'rm -rf "$tmp"' EXIT
+tmp="$(cd "$tmp" && pwd -P)"
+export CONTEXT_WRITE_ROOT="$tmp"
+unset CLAUDE_SESSION_ID CLAUDE_CODE_SESSION_ID
 cd "$tmp" || exit 1
 
 # mk <slug> <status> → creates projects/t/2026-01-01_<slug>, prints the relative path
@@ -48,6 +52,9 @@ status: active
 specs: 1
 reports: 1
 active-spec: " "$(run "$p")"
+
+p="$(mk legacy-plan active)"; : >"$p/a.plan.md"
+t "legacy: an unreported *.plan.md is ready-to-implement" "ready-to-implement $p/a.plan.md" "$(field "$p" stage) $(field "$p" active-spec)"
 
 for st in monitor blocked completed; do
   p="$(mk "s-$st" "$st")"
@@ -149,7 +156,19 @@ broken="$tmp/broken-close"; mkdir -p "$broken"
 printf 'exit 1\n' >"$broken/spec-state.sh"; printf 'exit 3\n' >"$broken/roadmap.sh"
 p="$(mk helpers-fail active)"; : >"$p/a.spec.md"; roadmap "$p" '| R1 | a | i | s | — | planned | — |'
 out="$(CONTEXTIUM_CLOSE_SCRIPTS="$broken" bash "$SUT" "$p" 2>/dev/null; echo "rc=$?")"
-t "failing helpers: every line printed, exit 0" "stage: unknown|status: active|specs: 1|reports: 0|active-spec: |next-row: |roadmap-error: roadmap.sh exited 3|rc=0" "$(printf '%s' "$out" | tr '\n' '|')"
+t "failing helpers: every line printed, exit 0" "stage: unknown|status: active|specs: 1|reports: 0|active-spec: |spec-state-error: spec-state.sh exited 1|next-row: |roadmap-error: roadmap.sh exited 3|rc=0" "$(printf '%s' "$out" | tr '\n' '|')"
+
+# A spec-state.sh that CRASHES is not "no spec owed work": its silence would
+# send an already specified row back to planning. `stage: unknown`, named.
+ssonly="$tmp/ss-only"; mkdir -p "$ssonly"
+for h in roadmap.sh open-clarifications.sh; do ln -s "$(cd "$(dirname "$SUT")/../../close/scripts" && pwd)/$h" "$ssonly/$h"; done
+printf 'echo boom >&2; exit 7\n' >"$ssonly/spec-state.sh"
+p="$(mk ss-crash active)"; roadmap "$p" '| R1 | a | i | s | — | planned | `specs/001-a/` |'
+mkdir -p "$p/specs/001-a"; : >"$p/specs/001-a/spec.md"
+t "a crashed spec-state.sh is stage unknown" "unknown" "$(CONTEXTIUM_CLOSE_SCRIPTS="$ssonly" bash "$SUT" "$p" 2>/dev/null | sed -n 's/^stage: //p')"
+t "…and names the failure" "spec-state.sh exited 7" "$(CONTEXTIUM_CLOSE_SCRIPTS="$ssonly" bash "$SUT" "$p" 2>/dev/null | sed -n 's/^spec-state-error: //p')"
+p="$(mk ss-crash-mon monitor)"; : >"$p/a.spec.md"
+t "a status that wins still wins over a crashed helper" "monitor" "$(CONTEXTIUM_CLOSE_SCRIPTS="$ssonly" bash "$SUT" "$p" 2>/dev/null | sed -n 's/^stage: //p')"
 
 # Folder specs with no ROADMAP.md: the folder spec owed work is the active one.
 p="$(mk folders-only active)"; mkdir -p "$p/specs/001-a"; : >"$p/specs/001-a/spec.md"
@@ -165,6 +184,8 @@ t "a trailing slash on the path reads the same" "$p/a.spec.md" "$(field "$p/" ac
 
 p="$(mk no-status active)"; printf -- '---\nproject: x\n---\n' >"$p/README.md"
 t "no status field is unknown" "unknown unknown" "$(field "$p" stage) $(field "$p" status)"
+printf '\nstatus: active\n' >>"$p/README.md"
+t "a body status: line does not stand in for a missing field" "unknown unknown" "$(field "$p" stage) $(field "$p" status)"
 
 echo "detect-stage.test.sh: $pass passed, $fail failed"
 [[ $fail -eq 0 ]]

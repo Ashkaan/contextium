@@ -5,6 +5,7 @@
 import { readdirSync, readFileSync, writeFileSync } from "fs";
 import { join } from "path";
 import { parseFrontmatter } from "./parse_frontmatter.ts";
+import { oneLineCell } from "./table_cell.ts";
 import { repoRoot } from "./repo_root.ts";
 import { validateOutcome } from "./validate_outcome.ts";
 
@@ -88,7 +89,7 @@ function parseAppReadme(appsDir: string, relDir: string, warnings: string[]): Ap
   };
 }
 
-function discoverApps(appsDir: string): AppMeta[] {
+function discoverApps(appsDir: string): { apps: AppMeta[]; drops: number } {
   const apps: AppMeta[] = [];
   const warnings: string[] = [];
 
@@ -111,7 +112,10 @@ function discoverApps(appsDir: string): AppMeta[] {
           .filter((d) => d.isDirectory())
           .map((d) => d.name);
       } catch {
-        members = [];
+        // Its member apps are unreadable, not absent: a drop, so the index is
+        // not rewritten without them.
+        warnings.push(`${dirName}: domain bundle could not be listed`);
+        continue;
       }
       for (const m of members) {
         const meta = parseAppReadme(appsDir, `${dirName}/${m}`, warnings);
@@ -128,7 +132,8 @@ function discoverApps(appsDir: string): AppMeta[] {
     for (const w of warnings) console.error(`  - ${w}`);
   }
 
-  return apps;
+  // Every warning is an app left out of the index.
+  return { apps, drops: warnings.length };
 }
 
 // ── Truncate description for table ───────────────────────────────────
@@ -148,9 +153,9 @@ function buildTable(apps: AppMeta[]): string {
 
   const sorted = [...apps].sort((a, b) => a.dirName.localeCompare(b.dirName));
   const rows = sorted.map((a) => {
-    const link = `[${a.name}](${a.dirName}/)`;
-    const purpose = truncate(a.description);
-    return `| ${link} | ${purpose} | ${a.schedule} | ${a.runtime} |`;
+    const link = `[${oneLineCell(a.name)}](${a.dirName}/)`;
+    const purpose = oneLineCell(truncate(a.description));
+    return `| ${link} | ${purpose} | ${oneLineCell(a.schedule)} | ${oneLineCell(a.runtime)} |`;
   });
 
   return ["| App | Purpose | Schedule | Runtime |", "|-----|---------|----------|---------|", ...rows].join("\n");
@@ -223,7 +228,17 @@ if (outFlag === -1) {
   outputPath = v;
 }
 
-const apps = discoverApps(appsDir);
+const { apps, drops } = discoverApps(appsDir);
+
+// A file the index replaces — apps/README.md by default — is refused while an
+// app could not be read: a partial index would overwrite the last good one.
+if (outputPath !== "-" && drops > 0) {
+  console.error(
+    `${outputPath}: refused, ${drops} app(s) could not be read (see the warnings above); the file was left as it was`,
+  );
+  process.exit(1);
+}
+
 const readme = buildReadme(apps);
 
 if (outputPath === "-") {

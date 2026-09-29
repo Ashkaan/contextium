@@ -2,119 +2,143 @@
 # journal-file.sh — the path this session's journal entry goes to.
 #
 # A journal day is a FOLDER, `journal/<date>/`, and a session is one file in
-# it: `<HHMM>-<stem>.md` (.agents/skills/close/references/journal-entry.md).
-# One file per session means two sessions never write the same file, so
-# concurrent closes cannot merge into, or drop, each other's entries.
+# it: `<HHMM>-<slug>.md`. A day kept as one shared file every session appends
+# to is merged by concurrent closes without a git conflict — which silently
+# drops whole sessions from it.
 #
-# THE PATH IS RECORDED, not remembered, under the repo's git dir. A second
-# /close in the same session — work continued after the first — resumes on the
-# entry already written instead of filing a second one. The record is keyed by
-# the session id when the harness exports one; without one, a recorded entry
-# is resumed only while it is still uncommitted or modified, so the next
-# session never inherits the last session's entry.
+# THE TIME IS THE SESSION'S START, not the close, in local time. A session that
+# closes after midnight files under the day it happened on, which is the day
+# its work is in.
+#
+# TWO PLACES A NAME CAN ALREADY BE TAKEN, and both are checked. The obvious one
+# is this worktree. The other is the trunk: another thread that started in
+# the same minute with the same slug allocated the name in ITS worktree, where
+# this one cannot see it, and landed first. Checking only locally picks a name
+# that collides at merge time — and a merge of two files with one path is
+# exactly the shared-write failure the one-file-per-session shape removed.
+# `land.sh` re-checks against a freshly fetched trunk at merge time,
+# because the other thread may land in between; this is the first of the two.
+#
+# THE PATH IS PERSISTED, not remembered. `land.sh` verifies that this exact
+# path reached the trunk, and a re-run after a failed Land resumes on the
+# file already written rather than writing a second one.
 #
 # Usage:
-#   journal-file.sh "<stem>"   reserve and print the path — the file is
-#                              created EMPTY, atomically, so two closes in the
-#                              same minute with the same stem cannot get one
-#                              path — and record it
-#   journal-file.sh --existing print the recorded path if that file exists
-#                              (a reserved, still-empty one included); exit 1
-#                              if not
-#   journal-file.sh --check    run check-journal-entry.sh on the recorded
-#                              entry, then print its path; no writes
+#   journal-file.sh "<filename-stem>" — choose and print the path (creates the day
+#                                folder; does NOT create the file)
+#   journal-file.sh --existing — print the path already chosen for this thread,
+#                                if the file is there. Exit 1 if not.
+#   journal-file.sh --check    — validate that existing entry using the same
+#                                gate as Land (check-journal-entry.sh: front
+#                                matter and the body's sections), then print
+#                                its path. No writes.
 #
 # Env:
-#   CLAUDE_PROJECT_DIR     repo root; defaults to git's toplevel of the cwd
-#   CLAUDE_CODE_SESSION_ID, CLAUDE_SESSION_ID, JOURNAL_SESSION_ID
-#                          the session key, first one set wins
-#   JOURNAL_STARTED        "YYYY-MM-DD HH:MM", the session's start, when the
-#                          harness knows it; defaults to now (local time)
+#   WORKBENCH_THREAD_ID, T3CODE_HOME — read by thread.sh.
 #
-# Exit: 0 ok (path on stdout) · 1 no recorded entry on disk · 2 usage or repo
-#       error · 3 --check found an invalid entry
+# WHERE. Under `journal/` of this thread's worktree of THIS repo — the one
+# these scripts live in, the workbench, where the records sit beside the code.
+# The repo is found by asking git for the toplevel of the script's own
+# directory. That works from a worktree copy of the scripts and through the
+# `~/.agents/skills` link into the landed checkout alike: write-root.sh
+# canonicalises whatever it is handed to the shared checkout and answers with
+# the thread's worktree of it — the harness's own when the thread is on the
+# workbench, a satellite when the thread is on a product repo.
 #
 # peers:
 #   .agents/skills/close/scripts/journal-file.test.sh
-#   .agents/skills/close/scripts/check-journal-entry.sh
-#   .agents/skills/close/references/journal-entry.md
+#   .agents/skills/close/references/journal-entry.md  (the file's shape)
+#   .agents/skills/close/scripts/check-journal-entry.sh (the gate --check runs)
+#   .agents/skills/close/scripts/land.sh              (re-checks at merge)
+#
+# Exit: 0 ok (path on stdout) · 1 no existing file · 2 usage/thread error
+#       3 --check found an invalid entry
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+THREAD="${SCRIPT_DIR}/thread.sh"
+WRITE_ROOT="${SCRIPT_DIR}/write-root.sh"
+TRUNK_SH="${SCRIPT_DIR}/trunk.sh"
+
 fail() { echo "journal-file: $*" >&2; exit 2; }
 
-[[ $# -eq 1 ]] || fail 'usage: journal-file.sh "<stem>" | --existing | --check'
+[ $# -eq 1 ] || fail 'usage: journal-file.sh "<filename-stem>" | --existing | --check'
 
-ROOT="${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel 2>/dev/null || true)}"
-[[ -n "$ROOT" && -d "$ROOT" ]] || fail "not inside a git repo, and CLAUDE_PROJECT_DIR is unset"
-ROOT="$(cd "$ROOT" && pwd)"
-GIT_DIR_ABS="$(cd "$ROOT" && d="$(git rev-parse --git-common-dir 2>/dev/null)" && cd "$d" && pwd)" \
-  || fail "not a git repo: $ROOT"
+# The repo the journal belongs to is the one this script is in.
+SELF_REPO="$(git -C "${SCRIPT_DIR}" rev-parse --show-toplevel 2>/dev/null)" \
+  || fail "these scripts are not inside a git repo: ${SCRIPT_DIR}"
 
-SID="${CLAUDE_CODE_SESSION_ID:-${CLAUDE_SESSION_ID:-${JOURNAL_SESSION_ID:-}}}"
-KEY="$(printf '%s' "${SID:-default}" | tr -c 'A-Za-z0-9_-' '_')"
-RECORD="$GIT_DIR_ABS/contextium/journal-$KEY"
+TID="$(bash "${THREAD}" --id 2>&1)" || fail "${TID#thread: }"
+LEDGER_JOURNAL="${HOME}/.cache/workbench/threads/${TID}/journal"
 
-# The recorded path, if this session may still resume it; empty otherwise.
-recorded() {
-  local chosen
-  [[ -f "$RECORD" ]] || return 0
-  chosen="$(head -n 1 "$RECORD")"
-  [[ -n "$chosen" && -f "$chosen" ]] || return 0
-  if [[ -z "$SID" ]] && [[ -z "$(git -C "$ROOT" status --porcelain -- "$chosen" 2>/dev/null)" ]]; then
-    return 0   # no session id and already committed: it belongs to an earlier session
+if [ "$1" = "--existing" ] || [ "$1" = "--check" ]; then
+  [ -f "${LEDGER_JOURNAL}" ] || exit 1
+  CHOSEN="$(head -n 1 "${LEDGER_JOURNAL}")"
+  [ -n "${CHOSEN}" ] || exit 1
+  # RECREATE BEFORE TESTING. `land.sh` merges the entry to the trunk and then
+  # removes this thread's worktree of this repo when it is a satellite (a
+  # thread T3 opened on a product repo), so the recorded path leaves disk
+  # while the entry itself is safe on origin. Work continues in the same
+  # session, and the next close must resume on that entry — but a `-f` test run
+  # first reports it missing, and the allocator then files a second entry
+  # beside the one already landed. write-root re-adds the worktree at the same deterministic path from
+  # origin/<trunk>, so the landed entry comes back exactly where it was; a path
+  # missing for any other reason is still a miss, and still exits 1 below.
+  [ -f "${CHOSEN}" ] || bash "${WRITE_ROOT}" "${SELF_REPO}" >/dev/null || true
+  [ -f "${CHOSEN}" ] || exit 1
+  if [ "$1" = "--check" ]; then
+    bash "${SCRIPT_DIR}/check-journal-entry.sh" "${CHOSEN}" || exit 3
   fi
-  printf '%s\n' "$chosen"
-}
-
-if [[ "$1" == "--existing" || "$1" == "--check" ]]; then
-  chosen="$(recorded)"
-  [[ -n "$chosen" ]] || exit 1
-  if [[ "$1" == "--check" ]]; then
-    bash "$SCRIPT_DIR/check-journal-entry.sh" "$chosen" || exit 3
-  fi
-  printf '%s\n' "$chosen"
+  printf '%s\n' "${CHOSEN}"
   exit 0
 fi
 
+SLUG_IN="$1"
+
 # Kebab: lower-case, every run of anything else collapsed to one hyphen, ends
-# trimmed, 60 characters at most.
-STEM="$(printf '%s' "$1" \
+# trimmed, 60 characters at most (`journal-entry.md` § One file per session).
+SLUG="$(printf '%s' "${SLUG_IN}" \
   | tr '[:upper:]' '[:lower:]' \
   | sed -E 's/[^a-z0-9]+/-/g; s/^-+//; s/-+$//' \
   | cut -c1-60 \
   | sed -E 's/-+$//')"
-[[ -n "$STEM" ]] || fail "stem '$1' has no usable characters"
+[ -n "${SLUG}" ] || fail "slug '${SLUG_IN}' has no usable characters"
 
-# One `date` call, so the day and the time cannot straddle midnight.
-STARTED="${JOURNAL_STARTED:-$(date '+%Y-%m-%d %H:%M')}"
-STARTED_RE='^([0-9]{4}-[0-9]{2}-[0-9]{2})[ T]([0-9]{2}):([0-9]{2})'
-[[ "$STARTED" =~ $STARTED_RE ]] \
-  || fail "JOURNAL_STARTED must be 'YYYY-MM-DD HH:MM', got '$STARTED'"
-DAY="${BASH_REMATCH[1]}"
-HHMM="${BASH_REMATCH[2]}${BASH_REMATCH[3]}"
+WT="$(bash "${WRITE_ROOT}" "${SELF_REPO}")" || exit 2
 
-DAY_DIR="$ROOT/journal/$DAY"
-mkdir -p "$DAY_DIR"
+STARTED="$(bash "${THREAD}" --started)" || fail "no start time for thread ${TID}"
+DATE="$(bash "${THREAD}" --started --local-day)" \
+  || fail "cannot parse the thread's start time: ${STARTED}"
+HHMM="$(bash "${THREAD}" --started --local)" || fail "cannot format the start time"
 
-# Reserve the name by creating the file with noclobber: the create fails if
-# the name exists, so of two sessions racing for one name exactly one wins and
-# the other moves on to -2. A name tracked at HEAD but deleted from disk is
-# taken too: it belongs to an earlier session.
-reserve() {
-  git -C "$ROOT" cat-file -e "HEAD:journal/$DAY/$1" 2>/dev/null && return 1
-  ( set -C; : >"$DAY_DIR/$1" ) 2>/dev/null
+DAY_DIR="${WT}/journal/${DATE}"
+mkdir -p "${DAY_DIR}"
+
+# The trunk ref is only as fresh as the last fetch, and a stale one is how two
+# threads agree on a name that is already taken. The trunk's NAME is asked of
+# trunk.sh rather than spelled `main`, the same as every other close script;
+# a repo it cannot name gets the local check only, which is the most this can
+# do without a ref to compare against.
+JTRUNK="$(bash "${TRUNK_SH}" "${WT}" 2>/dev/null || true)"
+[ -z "${JTRUNK}" ] || git -C "${WT}" fetch -q origin "${JTRUNK}" 2>/dev/null || true
+
+taken() {
+  local rel="journal/${DATE}/$1"
+  [ -e "${WT}/${rel}" ] && return 0
+  [ -n "${JTRUNK}" ] || return 1
+  git -C "${WT}" cat-file -e "origin/${JTRUNK}:${rel}" 2>/dev/null && return 0
+  return 1
 }
-NAME="$HHMM-$STEM.md"
+
+NAME="${HHMM}-${SLUG}.md"
 N=1
-until reserve "$NAME"; do
+while taken "${NAME}"; do
   N=$((N + 1))
-  [[ "$N" -le 999 ]] || fail "no free name for $HHMM-$STEM in $DAY_DIR"
-  NAME="$HHMM-$STEM-$N.md"
+  NAME="${HHMM}-${SLUG}-${N}.md"
 done
 
-CHOSEN="$DAY_DIR/$NAME"
-mkdir -p "$(dirname "$RECORD")"
-printf '%s\n' "$CHOSEN" >"$RECORD"
-printf '%s\n' "$CHOSEN"
+CHOSEN="${DAY_DIR}/${NAME}"
+mkdir -p "$(dirname "${LEDGER_JOURNAL}")"
+printf '%s\n' "${CHOSEN}" >"${LEDGER_JOURNAL}"
+printf '%s\n' "${CHOSEN}"

@@ -1,7 +1,6 @@
 ---
 name: Google
 description: Drive, Sheets, Docs, Gmail, Calendar access + OAuth2 authorization flow
-cli: API / scripts
 hosts:
   - sheets.googleapis.com
   - www.googleapis.com
@@ -26,9 +25,22 @@ aliases:
   - google calendar
   - spreadsheet
   - spreadsheets
+typed_client:
+  - none
+access:
+  - api
+  - browser
+uses: none
+base_url: https://www.googleapis.com
+auth: oauth2 refresh token / service account
+onepassword_item: none
+rate_limit: per-API daily quotas set in the Google Cloud project
+cli: API / scripts
 ---
 
 # Google Integration
+
+**Access order:** api, browser — the Workspace APIs cover every Drive, Sheets, Docs, Gmail and Calendar operation below, and the browser is needed only for the OAuth consent click.
 
 Access Google Workspace APIs (Drive, Sheets, Gmail, Calendar, Contacts, Docs,
 Slides) and the OAuth2 authorization flow used to mint and refresh the tokens

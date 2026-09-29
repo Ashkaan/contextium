@@ -1,7 +1,6 @@
 ---
 name: Home Assistant
 description: Home automation via SSH and REST API
-cli: REST API / SSH
 hosts:
   - home-assistant
 aliases:
@@ -9,8 +8,21 @@ aliases:
   - node-red
   - node red
   - thermostat
+typed_client:
+  - none
+access:
+  - api
+  - ssh
+uses: none
+base_url: http://home-assistant:8123
+auth: bearer token (long-lived access token)
+onepassword_item: none
+rate_limit: none documented
+cli: REST API / SSH
 ---
 # Home Assistant Integration
+
+**Access order:** api, ssh — the REST API serves entity states, service calls and history, while SSH's `ha` CLI covers only supervisor housekeeping (backups, add-ons, core restarts and updates).
 
 A Home Assistant instance, managed via SSH and REST API. Replace the hostname/IP below with your own.
 

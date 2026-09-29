@@ -1,71 +1,76 @@
 ---
 name: close
-description: Ends the session — verify what changed, update the project's roadmap, write the journal entry, commit and push, then report the next commands. Use when the user says "close", "wrap up", "let's close", or any plain-English request to end the session, and when a producer skill's auto-close gate fires (/spec, /implement, a standalone /implement-audit).
-allowed-tools: "Bash Read Edit Write Skill Task AskUserQuestion"
+description: Ends the session — verify what changed, update the project, journal it, land every worktree this thread owns on its repo's trunk, report a line a script proved. Use when the user says "close", "wrap up", "let's close", or any plain-English request to end the session, and when a producer skill's auto-close gate fires. The gate is in close/references/auto-close-gate.md.
+allowed-tools: "Bash Read Edit Write"
 metadata:
-  peers: ".agents/skills/close/scripts/verify.sh .agents/skills/close/scripts/project-remaining-work.sh .agents/skills/close/scripts/roadmap.sh .agents/skills/close/scripts/spec-state.sh .agents/skills/close/scripts/journal-file.sh .agents/skills/close/scripts/check-journal-entry.sh .agents/skills/close/scripts/safe-commit.sh .agents/skills/close/scripts/push-with-retry.sh .agents/skills/close/scripts/next-implement-command.sh .agents/skills/close/references/journal-entry.md .agents/skills/close/references/auto-close-gate.md .agents/skills/implement-audit/SKILL.md .githooks/checks/check-decision-records.sh"
+  peers: ".agents/skills/close/scripts/harness.sh .agents/skills/close/scripts/transcripts.sh .agents/skills/close/scripts/thread.sh .agents/skills/close/scripts/write-root.sh .agents/skills/close/scripts/trunk.sh .agents/skills/close/scripts/verify.sh .agents/skills/close/scripts/corrections.sh .agents/skills/close/scripts/journal-file.sh .agents/skills/close/scripts/land.sh .agents/skills/close/scripts/project-remaining-work.sh .agents/skills/close/scripts/next-implement-command.sh .agents/skills/close/scripts/roadmap.sh .agents/skills/close/scripts/roadmap-merge.sh .agents/skills/close/scripts/spec-state.sh .agents/skills/close/references/journal-entry.md .agents/skills/close/references/auto-close-gate.md"
 ---
 
-# /close — verify, project, journal, commit, report
+# /close — verify, project, journal, land, report
 
-Five steps, in this order. Verify comes first so a fix it forces lands before
-the journal entry that describes the session; the report comes last so it can
-name the SHA that is actually on the remote.
+Five steps in this order: verify first in case it forces further fixes, then
+update the project, then journal, then land, then report. A fix forced by the
+verify would otherwise post-date the entry describing it. Nothing below names a
+repo, a branch or a session variable, so it runs on T3 Code, Claude Code, Codex,
+Grok Build and Antigravity unchanged.
 
 **A clean `git status` is not "nothing to close."** A session that only
-answered a question still ran, and it still gets a journal entry. Steps 1, 3, 4
-and 5 always run their script, and the script decides what there is to do. Only
-step 2 is skipped, and only when no project folder was touched.
+answered a question still ran, and it still gets a journal entry (step 3) and
+a landed close (step 4). Steps 1, 3, 4 and 5 always run their script, and the
+script decides what there is to do — not a glance at the diff. Only step 2 has
+nothing to run, and only when no project folder was touched.
+
+**Where this session's files are.** One repo, one worktree: code, records
+(`knowledge/`, `journal/`, `projects/`) and skills (`.agents/skills/`) all live in
+the workbench, and a session writes them all in its own worktree — the one its
+harness gave it (a T3 Code thread, `claude -w`, a Codex app thread), or one made
+for it on first ask when it started in the main checkout. Ask before writing
+any file — a write into the shared checkout is in no worktree, so nothing lands
+it:
+
+```bash
+bash .agents/skills/close/scripts/write-root.sh .   # or an absolute repo path
+```
 
 ## 1 — Verify
 
 ```bash
-bash .agents/skills/close/scripts/verify.sh --base <first commit before this session>
+bash .agents/skills/close/scripts/verify.sh
 ```
 
-Omit `--base` when the session made no commits. It runs every `*.test.sh` of
-each skill folder that changed, `.githooks/checks/check-decision-records.sh` on
-each changed `decisions/NNNN-*.md`, and the `check` / `test` scripts of the
-nearest `package.json` above each changed code file. **A `FAIL` halts here:**
-fix it and re-run; nothing is recorded yet. An `unverified` line is a gap to
-report in step 5, not a failure. For `unverified code`, run the project's own
-test command yourself (a spec's plan.md `## Validation Commands`, when one
-applies) and say what you ran.
+Runs the `check` and `test` of every app whose files moved in this thread's
+worktree, and every `*.test.sh` beneath every `.agents/skills/<skill>/` folder that
+moved — a skill is code, and without this it would be the only code that closed
+with nothing run against it. **A `FAIL` halts here** — fix it and re-run;
+nothing is recorded yet, which is the point of going first. `unverified` is a
+gap in the app or the skill folder, not a failure.
 
-**Audit backstop, for work that skipped `/implement`.** Ask the marker, don't
-judge it:
-
-```bash
-bash .agents/skills/implement-audit/scripts/audit-dedupe.sh status
-```
-
-`done` → this session was already reviewed; nothing to run. (If no `report.md`
-holds its `implement-audit:` line, printed on line 2, the journal quotes it.) `fresh` and the session changed real code (a new app
-directory, or roughly 50+ changed lines) → run `/implement-audit --from-close`
-now (the flag stops it closing the session itself) and fix
-every ready finding before continuing. `fresh` and only docs, config or records
-→ skip.
+It also reads the shared checkout the home link (AGENTS.md § Skills) points at.
+A file sitting there uncommitted is in no worktree and nothing will land it;
+when this thread's worktree does not account for it, that is a write which
+escaped the write guard and the close halts.
 
 ## 2 — Project
 
-For each project this session touched:
-
 ```bash
-bash .agents/skills/close/scripts/project-remaining-work.sh projects/<domain>/<date>_<slug>
+bash .agents/skills/close/scripts/project-remaining-work.sh <project-folder>
 ```
 
+For each project this session touched, under `projects/` of the worktree
+`write-root.sh .` names:
+
 **A project with `ROADMAP.md`** — the roadmap is its only list of outstanding
-work, so the README carries no progress or next-steps list:
+work, so the README gets no `## Current Progress` or `## Next Steps`:
 
 1. **Anything still outstanding becomes a row**, never a README bullet. A watch
-   is a row with Status `blocked: <date>`; a manual step or something waiting
-   on someone is a row with Sub-spec `—`. New IDs continue from the highest
+   is a row with Status `blocked: <date>`; a manual step or a waiting-on-someone
+   item is a row with Sub-spec `—`. New IDs continue from the highest
    existing one and are never reused.
 2. **Flip each row whose spec is finished** — `spec-state.sh` reads its
-   `report.md` as `complete` — to `done`. `/close` is the only writer of
+   `report.md` as `complete` — to `done`. This close is the only writer of
    `done`; `/implement` only ever sets `in-progress`.
-3. **Re-derive `next:`.** Never hand-write it; the rule lives in the project
-   README template (`.agents/skills/project/references/templates/README.md`).
+3. **Re-derive `next:`.** Never hand-write it; the rule is the README
+   template's.
 
 ```bash
 bash .agents/skills/close/scripts/spec-state.sh <project-folder>             # which specs are complete
@@ -73,91 +78,135 @@ bash .agents/skills/close/scripts/roadmap.sh <project-folder> --set <ID> done
 bash .agents/skills/close/scripts/roadmap.sh <project-folder> --sync-next
 ```
 
-**A project without `ROADMAP.md`** (loose `*.spec.md` files, the older layout)
-— update its README's `## Status`, `## Current Progress` and `## Next Steps` by
-hand, as that layout always did.
+**A project with no `ROADMAP.md`** — update `## Current Progress` and
+`## Next Steps` in its README.
 
-**Either way, the `status:` flip:**
+**Either way**, flip `status:` to `completed` or `monitor` only when
+`project-remaining-work.sh` says `no-hard-signal` AND the goal is met;
+`work-remains` keeps it `active`. On a ROADMAP project `no-hard-signal` means
+no row is open — every row `done` or `absorbed by …` — and a `roadmap-error:`
+line is `work-remains` until the table is fixed. A project whose only open rows
+are `blocked:` watches is `monitor`, with `monitoring-until:` naming the first
+watch's date.
 
-- `work-remains` keeps the project `active` — unless nothing remaining is work
-  this repo's tooling can do (a vendor must act, someone must reply). Then it is
-  `monitor` with `monitoring-until:` naming the date and what is awaited, or
-  `blocked` with `blocked-on:`. `active` is a promise that `/implement` or
-  `/project` has something to do, because step 5 turns it into that command.
-- `no-hard-signal` AND the README's `## Goal` is met → `completed` (write
-  `## Outcome`), or `monitor` when the shipped thing needs a watch window. On a
-  ROADMAP project `no-hard-signal` means every row is `done` or `absorbed by …`.
-- A `roadmap-error:` line is `work-remains` until the table is fixed.
+**`work-remains` does not mean `active` when nothing remaining is implementable.**
+`active` is a claim that a `/implement` run against this project has something to
+do, because that is what step 5's generator turns it into — an `active` project
+with an un-reported SPEC yields a literal `/implement <slug>`. When every open
+item is external or handover work that no run of this repo's tooling can perform
+— rotate a credential, have a vendor disable an account, wait on another firm —
+the project is `monitor` with `monitoring-until:` naming what is being waited on,
+or `completed` when nothing is owed at all. Record the items either way — as
+`blocked: <what>` rows in `ROADMAP.md`, or in a legacy README's `## Next Steps`;
+they are still real, they are just not this project's work.
+
+This exists because a close that reads `work-remains` as `active` prints an
+`/implement` for work that no longer exists — say, a dashboard deleted an hour
+earlier. The generator is correct; `active` is the false input.
 
 ## 3 — Journal
 
 ```bash
 bash .agents/skills/close/scripts/journal-file.sh --existing \
-  || bash .agents/skills/close/scripts/journal-file.sh "<short-stem>"
+  || bash .agents/skills/close/scripts/journal-file.sh "<filename-stem>"
 ```
 
-`--existing` returns the entry an earlier close in this session already wrote;
-update that one rather than allocating a second. Read
-[references/journal-entry.md](references/journal-entry.md) before writing — it
-is the schema: the day folder, the front matter, the seven sections, what a
-`**Decisions:**` bullet may be, and how `**Corrections:**` quotes the user
-verbatim.
+Read [references/journal-entry.md](references/journal-entry.md) before writing —
+it is the schema, and the check below enforces it: eight sections and no other
+label, a `**Decisions:**` bullet that is a link to where the choice lives or one
+`rejected:` line, and `root_cause_status` one of four values. `**Next:**` and
+`**Issues:**` are retired. `--existing` reuses the entry from an earlier close;
+it does not prove the entry is valid. Repair it if needed, and update it if work
+continued after that close. Do not allocate a second entry. The filename stem
+and the frontmatter `slug:` are different: the reference shows their exact
+relationship. For `**Corrections:**`:
 
-Quote the audit lines under `**Changes:**`: a session that wrote or audited a
-spec quotes the `spec-audit:` line from that spec's plan.md Constitution
-Check; a session that ran `/implement-audit` without a `report.md` to hold it
-quotes the `implement-audit:` line. These lines are records; no hook checks a
-commit for them.
+```bash
+bash .agents/skills/close/scripts/corrections.sh          # one row per turn
+bash .agents/skills/close/scripts/corrections.sh --full   # a turn that spans lines
+```
 
-Then validate, repair, and repeat until clean:
+It reads T3 Code's record of the session, or outside T3 the harness's own
+transcript. Keep the rows where the user corrected, redirected or rejected
+something; drop the ones that only move work along; quote what you keep
+**verbatim**. That filter is the only judgment here — never re-word a row or
+write the section from memory. When it finds no record, say so and omit the
+section.
+
+A session that wrote or audited a spec quotes that spec's `spec-audit:` line —
+the one `/spec-audit` wrote into its plan.md Constitution Check — under the
+entry's `**Changes:**`. A session that ran `/implement-audit` standalone (no
+`report.md` to hold it) quotes its `implement-audit:` line the same way. The
+line is a record in the artifact and the journal, never a gate on a commit.
+
+After writing or updating the entry, validate it before Land:
 
 ```bash
 bash .agents/skills/close/scripts/journal-file.sh --check
 ```
 
-## 4 — Commit and push
+Repair any reported errors in this thread's entry and repeat the check. This
+uses Land's validator, `scripts/check-journal-entry.sh`; do not bypass it or
+change another session's entry. Land refuses the close when the entry fails it,
+and refuses too when the checker itself is missing.
 
-Stage only the files this session wrote — recall them from your own edits, do
-not blanket-add. The guard takes a lock, unstages anything you did not name
-(another session's work, left intact in the tree), and commits:
+## 4 — Land
 
 ```bash
-bash .agents/skills/close/scripts/safe-commit.sh "<verb-led subject>" <file> [<file>...]
-bash .agents/skills/close/scripts/push-with-retry.sh "$(git rev-parse --abbrev-ref HEAD)"
+bash .agents/skills/close/scripts/land.sh "<verb-led subject, ≤72 chars>"
 ```
 
-A pre-commit refusal names what to fix; fix it and re-run the commit. The push
-retries transient failures only. When origin has commits this branch lacks it
-stops with exit 3; report that and let the user choose how to reconcile — never
-pull, rebase or force on your own.
+Runs the workbench's checks (decision records, skills, secrets, standards
+citations) and the journal check, commits, merges the repo's trunk, pushes,
+confirms the push deployed where the repo opts in
+(`.agents/deployable-prefixes.json`), removes the worktrees it made, then
+re-fetches and checks. `ROADMAP.md` merges row by row (`roadmap-merge.sh`), so
+two sessions closing two rows of one project do not conflict; a real clash in
+one row still does. On any failure it prints one
+`NOT CLOSED: <reason>` and exits 3; the worktrees are intact and re-running resumes.
+For a repairable error within the authorized work (such as this thread's journal
+format), fix the cause, re-run affected checks, update the journal, and retry Land.
+Do not retry an unchanged failure indefinitely or bypass a check. If recovery
+requires user input, additional permission, or an external change, report the
+exact `NOT CLOSED` line and the blocker; never print the success line yourself.
 
 ## 5 — Report
 
-Say what shipped, the journal entry's path, and any `unverified` gap from
-step 1. Then the next step for each touched project:
+Copy the final Markdown block from `land.sh` verbatim. It mechanically emits
+`Shipped`, a clickable journal link whose target is the absolute landed path, the project journal's
+deterministic `Next` commands when there are any, and the proof line. Do not
+reconstruct or condense that block. Each `Next` command is in its own fenced
+block, so each has its own copy button: on a ROADMAP project every ready row
+with a spec is its own `/implement <slug> <id>`, and those rows can run in
+parallel sessions.
 
-```bash
-bash .agents/skills/close/scripts/next-implement-command.sh <project-folder>
-```
+The journal path is absolute and points into the shared checkout because that
+is the copy that survives: the worktree that held it is gone by then, and a
+relative path resolved against a removed worktree renders as a link that cannot
+open. When the user asks about a record
+later in the session, hand back that line rather than retyping a path. Report a verify
+gap or unfinished work immediately before it when either exists.
 
-Print each command line in **its own fenced block**, so each has its own copy
-button — on a ROADMAP project every ready row with a spec is its own
-`/implement <slug> <id>`, and those rows can run in parallel sessions. A line
-starting `# ` is a statement (complete, monitoring, blocked); write it as a
-sentence, not a command. Never compose a command by hand: the argument is the
-project slug, and a spec's name there sends the next session nowhere.
+The last line is `origin/<trunk> is at <sha> — closing this tab loses nothing.`
+**Only `land.sh` may produce it**, after proving against a freshly fetched trunk
+that every merge SHA is an ancestor, the journal path is in the tree, and no
+worktree still holds anything. Writing it yourself is a false claim with a
+checkable SHA in it.
 
-End with the branch and the SHA now on the remote (`git rev-parse HEAD` after
-the push), so the user knows closing the tab loses nothing. If the push did not
-land, say so instead — never claim a push you did not see succeed.
+`<trunk>` is the trunk of the repo whose SHA the line carries. It reads
+`origin/main` on most repos and is resolved rather than spelled, so a repo on
+`master` gets a true sentence instead of a reassuring one about a branch its
+work is not on.
 
-## Troubleshooting
+## What this close does not do
 
-| Failure | Fix |
+Each was removed deliberately; re-adding one needs a reason this table lacks.
+
+| Not here | Because |
 |---|---|
-| `verify.sh` prints `FAIL` | Re-run the printed command, fix the cause, re-run `verify.sh`. Nothing is recorded until it is clean. |
-| `journal-file.sh --check` exits 3 | Its message names the check and line (J1–J5); fix the entry and re-check. Never delete another session's file. |
-| `roadmap.sh` exits 1 | The table is malformed (its message says how). Fix ROADMAP.md, then re-run the flip and `--sync-next`. |
-| `safe-commit.sh` exits 3 | Another writer holds the lock. Nothing was staged; re-run in a moment. |
-| `push-with-retry.sh` exits 3 | Origin moved or refused the push. Report it with the commands it printed; the user decides. |
-| The audit ran twice | No session id was exported, so the marker could not be written. Carry the first run's line forward by hand. |
+| Attestation markers, a `closed-by:` trailer, and a script that checked it before each commit | Three moving parts to prove what one ancestry check proves — and a commit-hook checker never runs in a repo whose hooks path points elsewhere |
+| Reading `implement-audit:` or `spec-audit:` lines off commits | The skill that produced the artifact writes its line into the artifact folder (`report.md`, `plan.md`) and § 3's journal entry quotes it |
+| Mode detection, a list of known checkouts | Every repo is a worktree in the ledger; there is one path |
+| A repo-to-trunk-branch table | `trunk.sh` reads `refs/remotes/origin/HEAD`, which is what the remote itself says. A table is a second copy that goes stale silently |
+| Mid-session self-improvement, judgment sweeps, a root-cause prompt | Each re-checks something another skill owns |
+| Committing in a shared checkout | It holds other sessions' files. That is the failure this replaced |

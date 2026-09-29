@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Test harness for build-agent-prompts.sh — each format, both seat counts,
-# and the bad-input cases.
+# Test harness for build-agent-prompts.sh — always exactly three role prompts,
+# named so they sort into seat order, and no format or config to choose.
 #
 # peers: build-agent-prompts.sh
 
@@ -17,78 +17,79 @@ fail=0
 assert_pass() { echo "ok: $1"; pass=$((pass + 1)); }
 assert_fail() { echo "FAIL: $1 — $2" >&2; fail=$((fail + 1)); }
 
-# ── Case 1: dialectic + claude → 2 prompts (thesis + antithesis) ──
+# ── Case 1: any question → exactly the three role prompts, in seat order ──
 case1() {
-  local out rc=0 dir
-  out=$("$SCRIPT" --question "X or Y?" --format dialectic --config claude) || rc=$?
+  local out rc=0 dir order
+  out=$("$SCRIPT" --question "X or Y?") || rc=$?
   [[ "$rc" -eq 0 ]] || { assert_fail "case1" "expected 0; got $rc"; return; }
   dir="${out#prompts_dir=}"
   [[ -d "$dir" ]] || { assert_fail "case1" "dir not created: $dir"; return; }
-  local n
-  n=$(find "$dir" -name '*.prompt' | wc -l)
-  [[ "$n" -eq 2 ]] || { assert_fail "case1" "expected 2 prompts; got $n"; return; }
-  [[ -f "$dir/thesis.prompt" && -f "$dir/antithesis.prompt" ]] \
-    || { assert_fail "case1" "missing expected role files"; return; }
-  assert_pass "case1 dialectic+claude=2"
+  # Sorted order IS seat order: dispatch-agents.sh gives seat N to panel voice N.
+  # `sed` rather than GNU find's -printf, which BSD find lacks.
+  order=$(find "$dir" -name '*.prompt' | sed 's|.*/||' | sort | tr '\n' ' ')
+  [[ "$order" == "pragmatist.prompt skeptic.prompt visionary.prompt " ]] \
+    || { assert_fail "case1" "expected pragmatist, skeptic, visionary; got: $order"; return; }
+  assert_pass "case1 three-roles-in-seat-order"
 }
 
-# ── Case 2: dialectic + cross → 3 prompts (thesis + antithesis + third-position) ──
+# ── Case 2: every prompt carries the question, its stance and the schema anchor ──
 case2() {
-  local out rc=0 dir n
-  out=$("$SCRIPT" --question "X or Y?" --format dialectic --config cross) || rc=$?
-  [[ "$rc" -eq 0 ]] || { assert_fail "case2" "expected 0; got $rc"; return; }
+  local out dir role
+  out=$("$SCRIPT" --question "Should we ship feature X?")
   dir="${out#prompts_dir=}"
-  n=$(find "$dir" -name '*.prompt' | wc -l)
-  [[ "$n" -eq 3 ]] || { assert_fail "case2" "expected 3; got $n"; return; }
-  [[ -f "$dir/third-position.prompt" ]] || { assert_fail "case2" "missing third-position"; return; }
-  assert_pass "case2 dialectic+cross=3"
+  for role in pragmatist skeptic visionary; do
+    grep -q "Question: Should we ship feature X?" "$dir/$role.prompt" \
+      || { assert_fail "case2" "$role prompt lacks the question"; return; }
+    grep -q "^## Position" "$dir/$role.prompt" \
+      || { assert_fail "case2" "$role prompt lacks the ## Position anchor the parser reads"; return; }
+  done
+  grep -q "Your assigned position: Skeptic" "$dir/skeptic.prompt" \
+    || { assert_fail "case2" "skeptic prompt lacks its stance"; return; }
+  assert_pass "case2 prompts-carry-question-stance-schema"
 }
 
-# ── Case 3: redteam (any config) → 2 prompts (advocate + critic) ──
+# ── Case 3: the removed choices are refused, not silently ignored ──
 case3() {
-  local out rc=0 dir n
-  out=$("$SCRIPT" --question "Should we ship feature X?" --format redteam --config cross) || rc=$?
-  [[ "$rc" -eq 0 ]] || { assert_fail "case3" "expected 0; got $rc"; return; }
-  dir="${out#prompts_dir=}"
-  n=$(find "$dir" -name '*.prompt' | wc -l)
-  [[ "$n" -eq 2 ]] || { assert_fail "case3" "expected 2; got $n"; return; }
-  [[ -f "$dir/advocate.prompt" && -f "$dir/critic.prompt" ]] || { assert_fail "case3" "missing roles"; return; }
-  # Critic uses different schema (Fatal Flaw section)
-  grep -q "Fatal Flaw" "$dir/critic.prompt" || { assert_fail "case3" "critic missing Fatal Flaw schema"; return; }
-  assert_pass "case3 redteam-2-roles-critic-schema"
+  local out rc=0
+  out=$("$SCRIPT" --question "q" --format council 2>&1) || rc=$?
+  [[ "$rc" -eq 2 ]] || { assert_fail "case3" "expected exit 2 on --format; got $rc"; return; }
+  echo "$out" | grep -q "unknown flag: --format" || { assert_fail "case3" "missing unknown-flag msg: $out"; return; }
+  rc=0
+  "$SCRIPT" --question "q" --config cross >/dev/null 2>&1 || rc=$?
+  [[ "$rc" -eq 2 ]] || { assert_fail "case3" "expected exit 2 on --config; got $rc"; return; }
+  assert_pass "case3 format-and-config-refused"
 }
 
-# ── Case 4: a council with only 2 seats → reject ──
+# ── Case 4: --question empty → fail loud, exit 2 ──
 case4() {
   local out rc=0
-  out=$("$SCRIPT" --question "What should we prioritize?" --format council --agents 2 2>&1) || rc=$?
-  [[ "$rc" -ne 0 ]] || { assert_fail "case4" "expected non-zero on council with 2 agents"; return; }
-  echo "$out" | grep -q "council is a 3-agent format" || { assert_fail "case4" "missing reject msg: $out"; return; }
-  # The old vendor-flavoured names still map to a seat count, so an existing
-  # invocation keeps working rather than erroring on an unknown flag.
-  rc=0
-  out=$("$SCRIPT" --question "What should we prioritize?" --format council --config duo 2>&1) || rc=$?
-  [[ "$rc" -ne 0 ]] || { assert_fail "case4" "old --config duo should still map to 2 seats and be rejected for council"; return; }
-  assert_pass "case4 council-needs-3-seats"
+  out=$("$SCRIPT" --question "" 2>&1) || rc=$?
+  [[ "$rc" -eq 2 ]] || { assert_fail "case4" "expected exit 2; got $rc"; return; }
+  echo "$out" | grep -q "question empty" || { assert_fail "case4" "missing empty msg"; return; }
+  assert_pass "case4 empty-question-rejected"
 }
 
-# ── Case 5: --question empty → fail loud, exit 2 ──
+# ── Case 5: --context-file path missing → fail loud ──
 case5() {
   local out rc=0
-  out=$("$SCRIPT" --question "" --format dialectic --config claude 2>&1) || rc=$?
-  [[ "$rc" -eq 2 ]] || { assert_fail "case5" "expected exit 2; got $rc"; return; }
-  echo "$out" | grep -q "question empty" || { assert_fail "case5" "missing empty msg"; return; }
-  assert_pass "case5 empty-question-rejected"
+  out=$("$SCRIPT" --question "q" --context-file /tmp/does-not-exist-$$ 2>&1) || rc=$?
+  [[ "$rc" -ne 0 ]] || { assert_fail "case5" "expected non-zero on missing context"; return; }
+  echo "$out" | grep -q "context file not found" || { assert_fail "case5" "missing not-found msg"; return; }
+  assert_pass "case5 missing-context-file-rejected"
 }
 
-# ── Case 6: --context-file path missing → fail loud ──
+# ── Case 6: a context file reaches every prompt ──
 case6() {
-  local out rc=0
-  out=$("$SCRIPT" --question "q" --format dialectic --config claude \
-    --context-file /tmp/does-not-exist-$$ 2>&1) || rc=$?
-  [[ "$rc" -ne 0 ]] || { assert_fail "case6" "expected non-zero on missing context"; return; }
-  echo "$out" | grep -q "context file not found" || { assert_fail "case6" "missing not-found msg"; return; }
-  assert_pass "case6 missing-context-file-rejected"
+  local ctx out dir role
+  ctx=$(mktemp)
+  echo "- Decision: pick a queue" > "$ctx"
+  out=$("$SCRIPT" --question "q" --context-file "$ctx")
+  dir="${out#prompts_dir=}"
+  for role in pragmatist skeptic visionary; do
+    grep -q "Decision: pick a queue" "$dir/$role.prompt" \
+      || { assert_fail "case6" "$role prompt lacks the context"; return; }
+  done
+  assert_pass "case6 context-reaches-every-prompt"
 }
 
 case1
