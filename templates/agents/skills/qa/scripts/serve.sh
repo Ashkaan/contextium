@@ -195,13 +195,17 @@ do_up() {
     local live_url="$LIVE_URL"
     if [[ -z "$live_url" ]]; then
       live_url="$(qa_derive_live_url_from_cf "$(basename "$REPO")" || true)"
-      [[ -n "$live_url" ]] && qa_err "serve up: live URL derived from CF Pages API -> $live_url"
+      # A Worker is not in the Pages registry; ask the Workers custom-domain
+      # registry for the Worker the repo's wrangler config names.
+      [[ -n "$live_url" ]] || live_url="$(qa_derive_live_url_from_workers "$REPO" || true)"
+      [[ -n "$live_url" ]] && qa_err "serve up: live URL derived from the Cloudflare registry -> $live_url"
     fi
     [[ -n "$live_url" ]] || {
       qa_err "serve up: --live needs a live URL — pass --live-url <url>, or set"
-      qa_err "  CLOUDFLARE_API_TOKEN + CLOUDFLARE_ACCOUNT_ID for a Cloudflare Pages"
-      qa_err "  lookup (none matched repo '$(basename "$REPO")'). Or use --before to"
-      qa_err "  build and serve the working tree instead."
+      qa_err "  CLOUDFLARE_API_TOKEN + CLOUDFLARE_ACCOUNT_ID for a Cloudflare lookup"
+      qa_err "  (no Pages project matched repo '$(basename "$REPO")', and no Workers"
+      qa_err "  custom domain serves the Worker its wrangler config names). Or use"
+      qa_err "  --before to build and serve the working tree instead."
       exit 6
     }
     # A Cloudflare-Access-gated site needs a service token so a headless GET
@@ -223,6 +227,11 @@ do_up() {
       printf 'QA_AUTH_OP_ITEM=%s\n' "$ap_item"
       printf 'QA_AUTH_ID_FIELD=%s\n' "$ap_idf"
       printf 'QA_AUTH_SECRET_FIELD=%s\n' "$ap_secf"
+      # An app that pairs the Access service token with a person (PROBE_ACTS_AS
+      # in its wrangler config) answers every page with a machine's 403 unless
+      # the act-as header names that person; emit it. Absent, nothing is sent.
+      local act_as; act_as="$(qa_probe_acts_as "$REPO")"
+      [[ -n "$act_as" ]] && printf 'QA_AUTH_ACT_AS=%s\n' "$act_as"
       printf 'QA_PAGES=%q\n' "$pages"
     } | tee "$RUNFILE"
     return 0
@@ -270,7 +279,7 @@ do_up() {
       # following Workflows, which are not exported in your entrypoint file". The astro-dev
       # fallback below eventually catches it, but only after the pages attempt burns its full
       # health-check window, and the fallback has no CF bindings — so a whole QA pass runs
-      # against a server that cannot read KV, for a repo that would have served fine.
+      # against a server with no data bindings, for a repo that would have served fine.
       if qa_wrangler_declares_main "$build_dir"; then
         serve_cmd="npx wrangler dev --port $port --persist-to $persist"
       else
@@ -314,16 +323,16 @@ do_up() {
     fi
   fi
 
-  # ── no local-KV seed: a --before build of a KV-backed site renders
-  #    empty/no-data states by design. For DATA-correctness QA of those sites,
-  #    use --live (real KV) or read production KV directly. ──
+  # ── no local data seed: a --before build of a portal that reads a remote
+  #    store renders empty/no-data states by design. For DATA-correctness QA
+  #    of those portals, use --live (real data) or read the store directly. ──
 
   # ── start the server in its OWN process group, health-poll, and
   #    for astro-cf fall back to `astro dev` when workerd won't boot. ──
   # astro-cf primary is `wrangler pages dev` (real CF bindings); workerd fails to
-  # start in some sandboxes, so `astro dev` (Vite, serves source, no build/KV
-  # bindings) is queued as a second attempt. It loses local KV — pages fall back
-  # to code defaults; verify real DATA via KV directly, not this server.
+  # start in some sandboxes, so `astro dev` (Vite, serves source, no build/CF
+  # bindings) is queued as a second attempt. It loses local data — pages fall back
+  # to code defaults; verify real DATA against the store directly, not this server.
   local pid pgid up="no" attempt idx=0 used_fallback="no"
   local -a serve_cmds=("$serve_cmd")
   if [[ "$TYPE" == "astro-cf" ]]; then
@@ -335,7 +344,7 @@ do_up() {
     # workerd fallback: a second attempt, not a different code path.
     serve_cmds+=("npx next dev --port $port")
   fi
-  for attempt in "${serve_cmds[@]}"; do
+  for attempt in ${serve_cmds[@]+"${serve_cmds[@]}"}; do
     idx=$((idx + 1))
     echo "qa: starting $TYPE server on :$port ($attempt)…" >&2
     qa_spawn_group bash -c "cd '$serve_cwd' && exec $attempt" >"$logfile" 2>&1 &
@@ -343,7 +352,7 @@ do_up() {
     # The child leads its own process group, so its PGID is its own PID — read
     # it back rather than assuming, and fall back to $pid if it has already
     # exited.
-    pgid="$(ps -o pgid= -p "$pid" 2>/dev/null | tr -d ' ')"
+    pgid="$(ps -o pgid= -p "$pid" 2>/dev/null | tr -d ' ' || true)"
     [[ -n "$pgid" ]] || pgid="$pid"
     up="no"
     for _ in $(seq 1 40); do

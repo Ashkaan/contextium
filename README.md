@@ -70,13 +70,16 @@ all wired until you drop one with `--drop-tool`.
 | Codex | yes | `.agents/skills`, named `$project` | `~/.codex/hooks.json`, after a one-time trust |
 | Cursor | yes | `.agents/skills` | no |
 | VS Code + Copilot | yes | `.agents/skills` | no |
-| Gemini CLI | via `.gemini/settings.json` | `.agents/skills`, in a trusted folder | `.gemini/settings.json` |
+| Gemini CLI | via `.gemini/settings.json`, in a trusted folder | `.agents/skills`, in a trusted folder | `.gemini/settings.json`, in a trusted folder |
 | Antigravity | yes | `.agents/skills` | `.agents/hooks.json` |
 | Grok Build | in a trusted folder | `.agents/skills`, in a trusted folder | `~/.grok/hooks/contextium.json` |
 
-Cursor, VS Code and Gemini CLI are described from their documentation; the others were checked against
-the installed tool. Three things are not verified: that Gemini CLI honors the project-level settings
-file, that its guards fire, and that Antigravity fires the hooks in `.agents/hooks.json`.
+Cursor and VS Code + Copilot are described from their documentation. Every other row was checked by
+running the tool against an installed workbench, each with a control run that shows the difference:
+Gemini CLI 0.61.0, Antigravity 1.2.13, Grok Build 1.0.41, Codex 0.158.0 and Claude Code 2.1.283. Gemini
+CLI loads the workbench's settings — `AGENTS.md`, the skills and the guards — only in a trusted folder,
+so wiring it adds the workbench to `~/.gemini/trustedFolders.json`; `--skip-trust` does not load them,
+and a headless run elsewhere needs `GEMINI_CLI_TRUST_WORKSPACE=true`.
 
 ## What's in the box
 

@@ -4,6 +4,17 @@ A newer version of the template will ship better skills, refined standards, new 
 Pulling those in should never put your own work at risk. The installer is built around exactly that
 split: it refreshes the methodology layer and leaves your data alone.
 
+## Upgrading to v8.0.1
+
+Re-run the installer; nothing moves. Two things behave differently afterwards:
+
+- `/close` now runs `.agents/checks/check-scripts.sh` before it commits. A script you add or change
+  under `.agents/` must carry a test (`<name>.test.sh` or `.test.ts` beside it, or in a `tests/`
+  folder), and the test must run the script rather than `source` or `import` it. Scripts Contextium
+  shipped pass as long as you have not edited them; once you do, the script is yours, test included.
+- With Gemini CLI wired, the installer adds the workbench to `~/.gemini/trustedFolders.json`, because
+  Gemini reads `AGENTS.md` and runs the guards only in a trusted folder.
+
 ## Upgrading to v8.0.0
 
 v8.0.0 makes the install your workbench: one git repo that holds every project, its records and the
@@ -145,8 +156,11 @@ Inside the workbench, when Gemini CLI is wired, `.gemini/settings.json` becomes 
 `.agents/gemini-settings.json`. A settings file of your own already there is moved to
 `.agents/user-gemini-settings.json`, and every run merges it into `.agents/gemini-settings.json`, so it
 stays in force. (If `.agents/user-gemini-settings.json` already exists, the file is moved aside to
-`.gemini/settings.json.pre-link` instead, and the installer asks you to merge it by hand.) That Gemini
-CLI honors the project file and fires its guards is unverified.
+`.gemini/settings.json.pre-link` instead, and the installer asks you to merge it by hand.) Gemini CLI
+loads that file — `AGENTS.md`, the skills and the guards — only in a trusted folder, so wiring Gemini CLI
+also adds the workbench to `~/.gemini/trustedFolders.json`, keeping every folder already there, and
+`--drop-tool gemini` takes back that entry if the installer added it. `--skip-trust` does not load the
+settings; `GEMINI_CLI_TRUST_WORKSPACE=true` does.
 
 ### Sessions now land themselves
 

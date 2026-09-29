@@ -779,7 +779,7 @@ all_sudo_segments_readonly() {
   # are arranged in a way this parser cannot read. Fail closed.
   [ "${#segs[@]}" -eq 0 ] && return 1
 
-  for seg in "${segs[@]}"; do
+  for seg in ${segs[@]+"${segs[@]}"}; do
     # Drop the `sudo` token and its own flags to expose the real command.
     local inner
     inner=$(sed -E 's/^[[:space:]]*sudo([[:space:]]+-[a-zA-Z-]+)*[[:space:]]+//' <<<"$seg")

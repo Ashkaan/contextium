@@ -340,8 +340,8 @@ case "$type" in
     if [[ "$yaml_bad" -eq 1 ]]; then
       flag "agent frontmatter does not parse as YAML — every field is silently dropped at load (quote the value holding \`: \`, or fold it into a \`>-\` block): $path"
     fi
-    flag_unknown_keys "$path" "agent" "${AGENT_KNOWN_FIELDS[@]}"
-    for field in "${AGENT_REQUIRED_FIELDS[@]}"; do
+    flag_unknown_keys "$path" "agent" ${AGENT_KNOWN_FIELDS[@]+"${AGENT_KNOWN_FIELDS[@]}"}
+    for field in ${AGENT_REQUIRED_FIELDS[@]+"${AGENT_REQUIRED_FIELDS[@]}"}; do
       grep -qE "^${field}:" <<<"$frontmatter" \
         || flag "agent frontmatter missing required field \`${field}:\` (per references/agent.md): $path"
     done

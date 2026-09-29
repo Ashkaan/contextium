@@ -54,6 +54,7 @@
 #   .agents/skills/close/scripts/write-root.sh   (writes the ledger)
 #   .agents/checks/check-decision-records.sh     (run before each commit)
 #   .agents/checks/check-integration-manifest.sh (run before each commit, when present)
+#   .agents/checks/check-scripts.sh              (run before each commit)
 #   .agents/checks/check-skills.sh               (run before each commit)
 #   .agents/checks/check-secrets.sh              (run before each commit, when present)
 #   .agents/checks/check-standards-refs.sh       (run before each commit, when present)
@@ -335,6 +336,24 @@ changed_integration_manifests() {
   return "${rc}"
 }
 
+# The same question for scripts: a file check-scripts.sh would scan — under
+# .agents/, with one of its five extensions — changed since <base>. `*.test.*`
+# files count, and DELETED paths count: removing a script's only test is
+# exactly the change the checker must see (the same reasoning as
+# changed_skill_tree below), and a deleted script whose test survives is the
+# checker's to judge, not this predicate's to wave through.
+changed_scripts() {
+  local wt="$1" base="$2" p
+  while IFS= read -r -d '' p; do
+    [[ "${p}" =~ ^\.agents/.*\.(sh|ts|mjs|js|py)$ ]] || continue
+    return 0
+  done < <(
+    git -C "${wt}" diff -z --name-only --no-renames "${base}" 2>/dev/null
+    git -C "${wt}" ls-files -z --others --exclude-standard 2>/dev/null
+  )
+  return 1
+}
+
 # The skills tree's own gate. `.agents/checks/check-skills.sh` checks the tree
 # at `.agents/skills/` of the workbench, and scans by FOLDER: any
 # path under `.agents/skills/<folder>/` changed since <base> — a SKILL.md, a state/
@@ -431,7 +450,8 @@ removal_is_deferred() {
     || { [ -n "${DR_CHECK_WT}" ] && [ "$1" = "${DR_CHECK_WT}" ]; } \
     || { [ -n "${IM_CHECK_WT}" ] && [ "$1" = "${IM_CHECK_WT}" ]; } \
     || { [ -n "${SEC_CHECK_WT}" ] && [ "$1" = "${SEC_CHECK_WT}" ]; } \
-    || { [ -n "${STD_CHECK_WT}" ] && [ "$1" = "${STD_CHECK_WT}" ]; }
+    || { [ -n "${STD_CHECK_WT}" ] && [ "$1" = "${STD_CHECK_WT}" ]; } \
+    || { [ -n "${SC_CHECK_WT}" ] && [ "$1" = "${SC_CHECK_WT}" ]; }
 }
 
 # register_roadmap_merge <worktree> — wire roadmap-merge.sh into this repo's
@@ -624,6 +644,16 @@ land_one() {
     refuse_on_check "${IM_CHECK}" "${WT}" "${DR_BASE}" "integration manifest"
   elif changed_integration_manifests "${WT}" "${DR_BASE}"; then
     echo "  note: integration manifests changed in ${WT}; no ${IM_CHECK_REL} to check them"
+  fi
+
+  # THE SCRIPT-TESTS GATE: check-scripts.sh, over the scripts this worktree
+  # changed — every one must carry a paired test, and a program's test must run
+  # it rather than import it. Same shape and reasons as the two gates above;
+  # every repo is asked, and one with no .agents/ has nothing for it to check.
+  if [ -n "${SC_CHECK}" ]; then
+    refuse_on_check "${SC_CHECK}" "${WT}" "${DR_BASE}" "script tests"
+  elif changed_scripts "${WT}" "${DR_BASE}"; then
+    not_closed "scripts changed in ${WT}, but no worktree this thread owns holds ${SC_CHECK_REL} — run write-root.sh on the workbench checkout, then close again"
   fi
 
   # THE SKILL-MANIFEST GATE: .agents/checks/check-skills.sh, over the skill folders
@@ -938,6 +968,9 @@ SEC_CHECK=""
 SEC_CHECK_WT=""
 STD_CHECK=""
 STD_CHECK_WT=""
+SC_CHECK_REL=".agents/checks/check-scripts.sh"
+SC_CHECK=""
+SC_CHECK_WT=""
 for line in ${LEDGER_LINES[@]+"${LEDGER_LINES[@]}"}; do
   IFS=$'\t' read -r _DR_WT _ _ <<<"${line}"
   [ -n "${_DR_WT:-}" ] || continue
@@ -956,6 +989,10 @@ for line in ${LEDGER_LINES[@]+"${LEDGER_LINES[@]}"}; do
   if [ -z "${STD_CHECK}" ] && [ -f "${_DR_WT}/.agents/checks/check-standards-refs.sh" ]; then
     STD_CHECK="${_DR_WT}/.agents/checks/check-standards-refs.sh"
     STD_CHECK_WT="${_DR_WT}"
+  fi
+  if [ -z "${SC_CHECK}" ] && [ -f "${_DR_WT}/${SC_CHECK_REL}" ]; then
+    SC_CHECK="${_DR_WT}/${SC_CHECK_REL}"
+    SC_CHECK_WT="${_DR_WT}"
   fi
 done
 
@@ -982,6 +1019,27 @@ JOURNAL_LANDED=""
 
 while IFS=$'\t' read -r SHARED SHA; do
   [ -n "${SHARED:-}" ] || continue
+  # A RETIRED REPO. The ledger keeps every repo the thread ever landed in, so a
+  # thread that closed into a repo since merged into another still lists a
+  # checkout that no longer exists, and every later close of that thread would
+  # refuse on it. A merge that keeps the history accounts for the landing: it
+  # passes when its SHA is an ancestor of a surviving repo's trunk, and is
+  # refused when it is on none.
+  if ! git -C "${SHARED}" rev-parse --git-dir >/dev/null 2>&1; then
+    FOUND=""
+    while IFS=$'\t' read -r OTHER _; do
+      [ -n "${OTHER:-}" ] && [ "${OTHER}" != "${SHARED}" ] || continue
+      O_TRUNK="$(trunk_of "${OTHER}")" || continue
+      git -C "${OTHER}" fetch -q origin "${O_TRUNK}" 2>/dev/null || continue
+      if git -C "${OTHER}" merge-base --is-ancestor "${SHA}" "origin/${O_TRUNK}" 2>/dev/null; then
+        FOUND="${OTHER}"
+        break
+      fi
+    done <"${LANDED}"
+    [ -n "${FOUND}" ] || not_closed "${SHARED} is gone and ${SHA} is on no surviving repo's trunk"
+    [ "${VERBOSE}" = 1 ] && echo "$(basename "${SHARED}")  ${SHA}  retired, ancestor-of-$(basename "${FOUND}")"
+    continue
+  fi
   CHK_TRUNK="$(trunk_of "${SHARED}")" \
     || not_closed "no trunk branch in ${SHARED} to check against"
   git -C "${SHARED}" fetch -q origin "${CHK_TRUNK}" 2>/dev/null \
@@ -1063,7 +1121,7 @@ done
 # Everything above is done, the checks have passed and the marker is written,
 # so nothing left to do needs a sibling script. Only builtins and git below.
 if [ "${#DEFERRED_REMOVALS[@]}" -gt 0 ]; then
-  for entry in "${DEFERRED_REMOVALS[@]}"; do
+  for entry in ${DEFERRED_REMOVALS[@]+"${DEFERRED_REMOVALS[@]}"}; do
     IFS=$'\t' read -r _WT _SHARED _BRANCH <<<"${entry}"
     remove_worktree "${_WT}" "${_SHARED}" "${_BRANCH}"
   done

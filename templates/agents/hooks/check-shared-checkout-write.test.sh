@@ -382,6 +382,30 @@ git -C "$RECORDS" -c user.name=t -c user.email=t@t commit -q -m link-fixture
 bash_refuses "rm of a TRACKED symlink inside a guarded checkout still refuses" \
   "rm $RECORDS/tracked-self-link"
 
+
+# ── A write that reaches no guarded checkout creates nothing ──────────────
+#
+# thread.sh --id records a session (a cache entry per thread) as a side effect.
+# The guard used to ask it before looking at where the write lands, so every
+# `2>/dev/null` made a session entry. It is asked only once a target is inside
+# a guarded checkout.
+TH_LOG="$FIX/thread-calls.log"
+LOGGING_TH="$FIX/logging-thread.sh"
+printf '#!/usr/bin/env bash\necho "$*" >> "%s"\nprintf %%s thread-1\n' "$TH_LOG" > "$LOGGING_TH"
+chmod +x "$LOGGING_TH"
+thread_calls() {      # <command> — how many times the hook asked thread.sh
+  : > "$TH_LOG"
+  jq -nc --arg c "$1" --arg d "$FIX" '{tool_name: "Bash", tool_input: {command: $c}, cwd: $d}' \
+    | CHECK_SHARED_WRITE_THREAD_SCRIPT="$LOGGING_TH" bash "$HOOK" >/dev/null 2>&1
+  wc -l < "$TH_LOG" | tr -d ' '
+}
+expect 0 "2>/dev/null asks nothing of the session"        "$(thread_calls "grep x /etc/hosts 2>/dev/null")"
+expect 0 "> /dev/null asks nothing of the session"        "$(thread_calls "echo x > /dev/null")"
+expect 0 ">/dev/stderr asks nothing of the session"       "$(thread_calls "echo x >/dev/stderr")"
+expect 0 ">/dev/stdout asks nothing of the session"       "$(thread_calls "echo x >/dev/stdout")"
+expect 0 "a write outside every checkout asks nothing"    "$(thread_calls "echo x > $FIX/scratch/out.txt")"
+expect 1 "a write into the shared checkout still asks"    "$(thread_calls "echo x > $SKILLS/f")"
+
 # ── Degrading, and failing open ──────────────────────────────────────────
 # write-root.sh that never answers: the hook still REFUSES, and does it inside
 # the bound rather than hanging the session for the duration of the flock.

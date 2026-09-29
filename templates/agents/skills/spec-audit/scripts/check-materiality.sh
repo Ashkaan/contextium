@@ -73,13 +73,21 @@ git_read_failed() { # git_read_failed <subcommand> <exit>
 }
 
 # The ref itself resolves, or the repo has no commits yet (an unborn HEAD, where
-# every file is new). Anything else is a failed read.
+# every file is new). "Unborn" is claimed only when the repo is readable and
+# HEAD is merely missing: `rev-parse --verify -q HEAD` exits 1 for a missing
+# ref and 128 for an error, and only the 1 counts. Anything else is a failed
+# read.
 UNBORN=0
-if ! git rev-parse --verify --quiet "${GIT_REF}^{tree}" >/dev/null; then
-  if [ "$GIT_REF" = HEAD ] && git symbolic-ref -q HEAD >/dev/null && ! git rev-parse --verify --quiet HEAD >/dev/null; then
+_rc=0
+git rev-parse --verify --quiet "${GIT_REF}^{tree}" >/dev/null || _rc=$?
+if [ "$_rc" -ne 0 ]; then
+  _gd_rc=0; git rev-parse --git-dir >/dev/null 2>&1 || _gd_rc=$?
+  _head_rc=0; git rev-parse --verify --quiet HEAD >/dev/null 2>&1 || _head_rc=$?
+  if [ "$GIT_REF" = HEAD ] && [ "$_gd_rc" -eq 0 ] && [ "$_head_rc" -eq 1 ] \
+     && git symbolic-ref -q HEAD >/dev/null; then
     UNBORN=1
   else
-    git_read_failed rev-parse 128
+    git_read_failed rev-parse "$_rc"
   fi
 fi
 # at_ref <path>: 0 when git-ref has it, 1 when it does not; a git error stops.

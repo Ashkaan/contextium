@@ -150,8 +150,8 @@ bash .agents/checks/check-harness-config-links.sh
 
 In T3 Code, add the workbench as a project, start a thread, and type `$project`. T3 Code can give each
 thread its own worktree, and the skills adopt it. In the other tools, open the workbench and run
-`/project` (in Codex, `$project`). Gemini CLI and Grok Build load project skills only in a folder you
-have trusted.
+`/project` (in Codex, `$project`). Gemini CLI and Grok Build load a project's files only in a folder
+you have trusted; for Gemini CLI the installer adds the workbench to `~/.gemini/trustedFolders.json`.
 
 A session that starts in the main checkout instead of a worktree gets one on its first write, placed
 where your tool keeps its own. The shared checkout is where every session's work lands, so nothing is

@@ -71,6 +71,7 @@ mkfix() {             # prints the sandbox root
       {matcher: "run_shell_command", hooks: [{type: "command", command: $i}, {type: "command", command: $w}]},
       {matcher: "write_file|replace", hooks: [{type: "command", command: $w}]}]}}' >"$r/.agents/gemini-settings.json"
   ln -s ../.agents/gemini-settings.json "$r/.gemini/settings.json"
+  jq -n --arg k "$r" '{($k): "TRUST_FOLDER"}' >"$h/.gemini/trustedFolders.json"
   ln -s "$r/.agents/hooks/claude-hooks.json" "$h/.grok/hooks/contextium.json"
   jq -n --arg i "bash hooks/check-host-infra-safety.sh" --arg w "bash hooks/check-shared-checkout-write.sh" '{
     "host-infra-safety": {PreToolUse: [{matcher: "run_command", hooks: [{type: "command", command: $i}]}]},
@@ -107,6 +108,13 @@ F="$(mkfix)"; rm -r "$F/repo/.agents/agents"; run "$F"
 check "a dangling link" 1 "$RC"
 says "…is named dangling" "DANGLING" "$OUT"
 
+# A wired Gemini CLI that does not trust the workbench loads none of it.
+F="$(mkfix)"; echo '{}' >"$F/home/.gemini/trustedFolders.json"; run "$F"
+check "Gemini CLI not trusting the workbench is not ready" 1 "$RC"
+says "…and says so" "does not trust" "$OUT"
+F="$(mkfix)"; jq -n --arg k "$F/repo" '{($k): "DO_NOT_TRUST"}' >"$F/home/.gemini/trustedFolders.json"; run "$F"
+check "an entry that says anything but TRUST_FOLDER is not trust" 1 "$RC"
+says "…and says so" "does not trust" "$OUT"
 F="$(mkfix)"; rm "$F/home/.gemini/config/skills"; run "$F"
 check "a missing link" 1 "$RC"
 says "…is named missing" "is missing" "$OUT"
@@ -167,6 +175,14 @@ check "tools= without claude or antigravity: their links and guards are not aske
 F="$(mkfix)"; printf 'harness=claude\nagent=claude\ntools=claude\n' >"$F/repo/.agents/harness"
 rm "$F/home/.claude/agents"; run "$F"
 check "tools= naming claude still asks for its links" 1 "$RC"
+
+# A tool tools= does not name: a kept (customized) manifest or a foreign link
+# of it is not checked, since the installer no longer wires that tool.
+F="$(mkfix)"; printf 'harness=claude\nagent=claude\ntools=claude codex gemini\n' >"$F/repo/.agents/harness"
+echo '{"mine": true}' >"$F/repo/.agents/hooks.json"
+rm "$F/home/.gemini/config/skills" "$F/home/.grok/hooks/contextium.json"; ln -s "$F/repo/elsewhere.json" "$F/home/.grok/hooks/contextium.json"
+run "$F"
+check "a dropped Antigravity's kept manifest and a foreign Grok link are not asked about" 0 "$RC"
 
 F="$(mkfix)"; rm "$F/repo/.agents/hooks.json"; run "$F"
 check "no Antigravity manifest is a workbench that does not use Antigravity, not drift" 0 "$RC"

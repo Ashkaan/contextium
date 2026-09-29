@@ -131,7 +131,7 @@ cmd_stamp() {
   fi
 
   : > "$codes"
-  for png in "${shots[@]}"; do
+  for png in ${shots[@]+"${shots[@]}"}; do
     local code w h ink rc
     code="$(new_code)"
     if [[ "$stamper" == "playwright" ]]; then

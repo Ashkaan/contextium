@@ -15,7 +15,10 @@
 #   .agents/skills/qa/scripts/lib.sh
 #
 # Usage:  a11y.sh --url <base> --pages "<route ...>" [--viewports W,W,W]
+#                 [--auth-op-item <id> --auth-id-field F --auth-secret-field F]
+#                 [--auth-act-as <email>]   # the same auth screenshot.sh sends
 # Exit:   0 ran (advisory — never fails on violations); 2 usage;
+#         3 no page could be graded (every route errored or answered 4xx/5xx);
 #         8 axe deps unavailable / install failed.
 
 set -euo pipefail
@@ -26,17 +29,29 @@ source "$SCRIPT_DIR/lib.sh"
 
 CACHE_DIR="$HOME/.local/lib/qa-a11y"
 URL="" PAGES="" VIEWPORTS="1440"
+AUTH_OP_ITEM="" AUTH_ID_FIELD="client_id" AUTH_SECRET_FIELD="client_secret" AUTH_ACT_AS=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --url) URL="${2:-}"; shift 2 ;;
     --pages) PAGES="${2:-}"; shift 2 ;;
     --viewports) VIEWPORTS="${2:-}"; shift 2 ;;
+    --auth-op-item) AUTH_OP_ITEM="${2:-}"; shift 2 ;;
+    --auth-id-field) AUTH_ID_FIELD="${2:-client_id}"; shift 2 ;;
+    --auth-secret-field) AUTH_SECRET_FIELD="${2:-client_secret}"; shift 2 ;;
+    --auth-act-as) AUTH_ACT_AS="${2:-}"; shift 2 ;;
     *) qa_err "a11y: unknown flag: $1"; exit 2 ;;
   esac
 done
 
 [[ -n "$URL" ]] || { qa_err "usage: a11y.sh --url U --pages '...'"; exit 2; }
+# Without the probe token a gated portal answers its login wall, and axe would
+# grade that page as the portal's (see screenshot.sh for the same headers).
+if [[ -n "$AUTH_OP_ITEM" ]] && ! qa_resolve_cf_access "$AUTH_OP_ITEM" "$AUTH_ID_FIELD" "$AUTH_SECRET_FIELD"; then
+  qa_err "a11y: --auth-op-item set but service token unresolved from 1Password item $AUTH_OP_ITEM"
+  exit 2
+fi
+export QA_CF_ACCESS_ID="${QA_CF_ACCESS_ID:-}" QA_CF_ACCESS_SECRET="${QA_CF_ACCESS_SECRET:-}" QA_ACT_AS="$AUTH_ACT_AS"
 PAGES="$(qa_resolve_pages "$PAGES" "")"
 
 # ── install axe deps off-repo on first use ───────────────────────────
@@ -96,15 +111,26 @@ const [base, pagesCsv, viewportsCsv] = process.argv.slice(1);
 const pages = pagesCsv.split(/\s+/).filter(Boolean);
 const widths = viewportsCsv.split(",").map((w) => parseInt(w.trim(), 10)).filter(Boolean);
 
+const cfId = process.env.QA_CF_ACCESS_ID || "";
+const cfSecret = process.env.QA_CF_ACCESS_SECRET || "";
+const actAs = process.env.QA_ACT_AS || "";
+const extraHTTPHeaders = cfId && cfSecret
+  ? { "CF-Access-Client-Id": cfId, "CF-Access-Client-Secret": cfSecret, ...(actAs ? { "X-Portal-Act-As": actAs } : {}) }
+  : undefined;
+
 const browser = await chromium.launch();
+let graded = 0;
 for (const route of pages) {
   for (const width of widths) {
-    const ctx = await browser.newContext({ viewport: { width, height: 1600 } });
+    const ctx = await browser.newContext({ viewport: { width, height: 1600 }, extraHTTPHeaders });
     const page = await ctx.newPage();
     const url = base.replace(/\/$/, "") + (route.startsWith("/") ? route : "/" + route);
     try {
-      await page.goto(url, { waitUntil: "networkidle", timeout: 30000 });
+      const resp = await page.goto(url, { waitUntil: "networkidle", timeout: 30000 });
+      const status = resp ? resp.status() : 0;
+      if (status >= 400) { process.stdout.write(`a11y ${route} @${width}: error — HTTP ${status}, not the page; not graded\n`); await ctx.close(); continue; }
       const results = await new AxeBuilder({ page }).analyze();
+      graded++;
       const n = results.violations.length;
       const ids = results.violations.map((v) => v.id).join(", ");
       process.stdout.write(`a11y ${route} @${width}: ${n} violation(s)${ids ? " [" + ids + "]" : ""}\n`);
@@ -115,6 +141,9 @@ for (const route of pages) {
   }
 }
 await browser.close();
-' "$URL" "$PAGES" "$VIEWPORTS" )
+// Advisory about violations, never about coverage: a run that graded nothing
+// measured nothing, and must not read as a clean one.
+if (graded === 0) { process.stderr.write("a11y: no page could be graded\n"); process.exit(3); }
+' "$URL" "$PAGES" "$VIEWPORTS" ) || exit $?  # explicit: bash 3.2 (macOS) does not stop on a failed ( … ) under set -e here
 
 echo "qa: a11y is advisory (~57% WCAG coverage) — not a hard gate" >&2

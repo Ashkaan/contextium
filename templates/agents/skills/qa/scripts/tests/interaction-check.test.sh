@@ -230,6 +230,25 @@ if grep -q '"POST /api/save' "$SERVER_LOG"; then
 else
   ok "no POST reached the server"
 fi
+
+# A page that moves to another origin a moment after it loads (a script
+# redirect to a sign-in page) is unloadable too — checked after it settles.
+mkdir -p "$SITE/late"
+cat >"$SITE/late/index.html" <<HTML
+<!doctype html><html><body><main><p>Checking your session…</p>
+<script>setTimeout(() => { location.href = "http://localhost:$PORT/good/"; }, 300);</script>
+</main></body></html>
+HTML
+RC=0; OUT="$(bash "$SCRIPT" --url "http://127.0.0.1:$PORT" --pages "/late/" 2>&1)" || RC=$?
+if [[ "$RC" == 1 ]]; then ok "a late redirect off-origin is unloadable"; else bad "a late redirect off-origin is unloadable — got rc=$RC"; fi
+if grep -q 'off-origin' <<<"$OUT"; then ok "…and says where it went"; else bad "…and says where it went — output: $OUT"; fi
+
+# A route that answers 404 is unloadable (exit 1), never a clean page: its text
+# would otherwise pass every check.
+RC=0; OUT="$(bash "$SCRIPT" --url "http://127.0.0.1:$PORT" --pages "/no-such-page.html" 2>&1)" || RC=$?
+if [[ "$RC" == 1 ]]; then ok "a 404 route is unloadable, not clean"; else bad "a 404 route is unloadable, not clean — got rc=$RC"; fi
+if grep -q 'HTTP 404' <<<"$OUT"; then ok "…and names the status"; else bad "…and names the status — output: $OUT"; fi
+
 if grep -q '"GET /good/' "$SERVER_LOG"; then ok "the log is being read (the page GETs are in it)"; else bad "server log is empty — the check above proves nothing"; fi
 
 echo "interaction-check.test.sh: $pass passed, $fail failed"

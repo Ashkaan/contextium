@@ -14,6 +14,16 @@
 #   .agents/skills/qa/scripts/detect-app.sh
 
 set -uo pipefail
+# `timeout` is GNU coreutils, absent on stock macOS. perl stands in, and like
+# GNU timeout it runs the command in its own process group and kills the whole
+# group at the deadline: a child left alive would hold the output pipe open.
+tmo() {
+  if command -v timeout >/dev/null 2>&1; then timeout "$@"; return; fi
+  perl -e 'my $t = shift; my $p = fork; die "fork: $!" unless defined $p;
+    if (!$p) { setpgrp(0, 0); exec @ARGV or exit 127 }
+    $SIG{ALRM} = sub { kill "KILL", -$p; exit 124 }; alarm $t; waitpid($p, 0);
+    exit($? & 127 ? 128 + ($? & 127) : $? >> 8)' "$@"
+}
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TARGETS="${SCRIPT_DIR}/../qa-targets.sh"
@@ -261,14 +271,14 @@ printf 'import { leaf } from "../../../../packages/chain/hop09"\nexport const de
 git -C "$RD" add apps packages
 git -C "$RD" commit -qm init
 
-out="$(timeout 120 bash "$TARGETS" --repo "$RD" packages/chain/hop00.ts 2>/dev/null)"
+out="$(tmo 120 bash "$TARGETS" --repo "$RD" packages/chain/hop00.ts 2>/dev/null)"
 check_eq "a ten-hop chain still reaches the app" "$RD/apps/web/portal" "$out"
 
 # A cycle must terminate rather than walk forever.
 printf 'export { Button } from "./button"\nimport "./cycle"\n' >"$RH/packages/ui/index.ts"
 printf 'import "./index"\nexport const cycle = 1\n' >"$RH/packages/ui/cycle.ts"
 rc=0
-out="$(timeout 60 bash "$TARGETS" --repo "$RH" packages/ui/button.ts 2>/dev/null)" || rc=$?
+out="$(tmo 60 bash "$TARGETS" --repo "$RH" packages/ui/button.ts 2>/dev/null)" || rc=$?
 check_rc "a circular import graph terminates" 0 "$rc"
 check_has "and still reaches the app" "$RH/apps/web/portal" "$out"
 

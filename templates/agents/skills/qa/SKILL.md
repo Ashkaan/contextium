@@ -12,7 +12,7 @@ metadata:
 - **`/implement` REQUIRES this, and will not close without it.** `/implement` phase-4.8 runs `scripts/qa-targets.sh` over its diff. Every web target it prints gets a full `/qa` — impeccable on `@latest` (step-2.6), its fixes (step-2.7), screenshots, sight-check, fresh-context visual review — and `validate.sh --require-qa` then refuses the close until each one has a marker for the tree that is about to ship. "Fully" is not a posture here, it is the gate's definition: a `/qa` that stopped after impeccable writes no marker, and the session does not close. `scripts/mark-qa-done.sh --tree <sha>` writes that marker, only at step-6-teardown, only after the review passed — never by hand, and never early.
 - **The automatic trigger is `/implement`, not a hook.** Phase 4.8 runs `validate.sh --phase qa-list` and `--require-qa`, so a session that changed a web app cannot close without a finished `/qa`. Invoking `/qa` by hand is the manual override.
 - **Tools install on first use; a missing tool is a skip, never a pass.** Playwright and Chromium (`ensure-playwright.sh`), impeccable (`impeccable-detect.sh`, which also upgrades it when a newer version is published) and the axe packages for `--a11y` install the first time they are needed — nothing at install time. When one cannot be installed (offline, no npm, `QA_NO_INSTALL=1`), the script prints `qa: skipped — Playwright unavailable (<reason>)` or `impeccable: detector unavailable — <reason>`; repeat that line to the user word for word and write no marker. The sight stamp uses ImageMagick (`magick`) when installed and Playwright otherwise, so it needs nothing extra. Node 22.18+ is assumed (it runs `gen-design-md.ts` directly).
-- **A design authority that contains no design is a P1, not a pass.** `/qa` delegates the entire look question to the app's own `DESIGN.md` — correct — but a delegated file can hold no design. `gen-design-md.ts` writes a token inventory on a repo's first run, the four design-system checks run against it, and the result is clean forever; that is how a portal passes `/qa` while its owner finds it plainly bad. `design-authority.sh` (step-2.5) now raises the missing system as the run's first finding, and `system-drift.sh` (step-2.6b) counts how far the source has drifted from whatever the app DID declare. Neither adds a design opinion to this skill: the rubric still prescribes no type ramp, palette or spacing scale.
+- **A design authority that contains no design is a P1, not a pass.** `/qa` delegates the entire look question to the app's own `DESIGN.md` — correct — but a delegated file can hold no design. `gen-design-md.ts` writes a token inventory on a repo's first run, the `design-system-*` checks run against it, and the result is clean forever; that is how a portal passes `/qa` while its owner finds it plainly bad. `design-authority.sh` (step-2.5) now raises the missing system as the run's first finding, and `system-drift.sh` (step-2.6b) counts how far the source has drifted from whatever the app DID declare. Neither adds a design opinion to this skill: the rubric still prescribes no type ramp, palette or spacing scale.
 - **Evidence, not assertion.** The deliverable is the manifest (page x viewport -> path, bytes, http-status) + the fresh-context findings, NOT "looks good." Give the agent a runnable check, and show the evidence.
 - **The builder does not grade itself.** `step-4-fresh-review` dispatches a fresh-context subagent (in Claude Code, the `Task` tool; elsewhere, the harness's subagent or a new session) that Reads the PNGs and checks geometry — never inline-QA in this orchestrator. Hot-context self-review produces motivated reasoning.
 - **Zero-config — no `.qa.json`.** Routes come from whichever file-based routing dirs the repo actually has — `src/pages/`, `pages/`, `app/`, `src/app/` (`discover-routes.sh`); the live URL from `--live-url`, or the Cloudflare Pages registry when wrangler's credentials are set. `DESIGN.md` is the only per-repo file the QA process involves, and `/qa` commits it itself (step-2.5-design-md).
@@ -74,17 +74,17 @@ fi
 
 **`/qa` is zero-config — every repo runs with no per-repo config file.** Astro / Vite / static targets get convention defaults. For `--live`, `--live-url <url>` (or `QA_LIVE_URL`) names the deployed site; without it, `serve.sh` resolves the URL from a Cloudflare Pages registry lookup (`qa_derive_live_url_from_cf` in `lib.sh`, using wrangler's `CLOUDFLARE_API_TOKEN` + `CLOUDFLARE_ACCOUNT_ID`) that matches the repo against each project's `source.config.repo_name` and returns that project's custom domain — cached 6h at `/tmp/qa-cf-pages-cache.json`. That is a lookup in an authoritative registry, not inference from the directory name; the two genuinely differ (a repo named `site-web` deploying to `example.com`), which is why the heuristic would be wrong and the API is not. A site behind Cloudflare Access gets a service token when you name its 1Password item in `QA_ACCESS_OP_ITEM` (or set `QA_CF_ACCESS_ID` / `QA_CF_ACCESS_SECRET`). The only per-repo declaration `/qa` ever reads is a `qa:*` script in `package.json` for the non-convention types (`node-server`, `cli`, `render`); a CF-deployed Astro app needs nothing. Build/serve failures halt with the log tail. If detection returned `render`/`cli`, skip to `step-5b-render`/`step-5-cli`.
 
-**No local KV seed.** A `--before` build of a KV-backed portal renders empty/no-data states by design. For data-correctness QA of those portals, use `--live` (real KV) or read production KV directly (§ Cloudflare portal recipe).
+**No local data seed.** A `--before` build of a portal that reads a remote store renders empty/no-data states by design. For data-correctness QA of those portals, use `--live` (real data) or read the production store directly (§ Cloudflare portal recipe).
 
-For an `astro-cf` target, serve.sh tries `wrangler pages dev` first (real CF/KV bindings) and, if workerd won't boot, automatically falls back to `astro dev` (Vite, serves source, **no** CF bindings — `QA_LABEL` says so). The fallback server renders layout faithfully but has no production data; verify real portal DATA via KV, not this server (§ Cloudflare portal recipe).
+For an `astro-cf` target, serve.sh tries `wrangler pages dev` first (real CF bindings) and, if workerd won't boot, automatically falls back to `astro dev` (Vite, serves source, **no** CF bindings — `QA_LABEL` says so). The fallback server renders layout faithfully but has no production data; verify real DATA against the production store directly, not this server (§ Cloudflare portal recipe).
 
 ## step-2.5-design-md
 
-`DESIGN.md` is impeccable's token allowlist — the file that arms the four `design-system-*` checks. Each of `colors` / `typography` / `rounded` independently gates its own check; an absent section makes that check pass everything. Without any `DESIGN.md` the design-system layer is structurally off, and a clean result means "not checked," not "conformant."
+`DESIGN.md` is impeccable's token allowlist — the file that arms the `design-system-*` checks impeccable 4.1.0 emits: `design-system-color`, `design-system-radius`, `design-system-font-size` and `design-system-font`, armed by `colors`, `rounded`, the `fontSize` and the `fontFamily` of the `typography` entries (measured against page fixtures and a real portal's built stylesheet). Each section independently gates its own check; an absent section makes that check pass everything. Without any `DESIGN.md` the design-system layer is structurally off, and a clean result means "not checked," not "conformant."
 
-**And nothing else checks that the delegated authority contains a design.** That is the hole, and it is worth stating precisely because the delegation itself is correct. `/qa` hands the whole question of what an app should look like to the app's own `DESIGN.md` — right, because every app gets a fresh design and a globally prescribed look gets in the way. But `gen-design-md.ts` writes that file on a repo's first run as a token inventory whose creative direction is, in its own words, "intentionally omitted": no type ramp, no spacing scale, no control sizes, no field or focus anatomy, no empty state. So an auto-generated stub becomes the baseline, the four design-system checks run against nothing, and the run reports clean forever: a clean `/qa`, on a portal its owner finds plainly bad.
+**And nothing else checks that the delegated authority contains a design.** That is the hole, and it is worth stating precisely because the delegation itself is correct. `/qa` hands the whole question of what an app should look like to the app's own `DESIGN.md` — right, because every app gets a fresh design and a globally prescribed look gets in the way. But `gen-design-md.ts` writes that file on a repo's first run as a token inventory whose creative direction is, in its own words, "intentionally omitted": no type ramp, no spacing scale, no control sizes, no field or focus anatomy, no empty state. So an auto-generated stub becomes the baseline, the design-system checks run against nothing, and the run reports clean forever: a clean `/qa`, on a portal its owner finds plainly bad.
 
-The frontmatter follows the published DESIGN.md format (`google-labs-code/design.md`), which impeccable reads; `npx @google/design.md lint DESIGN.md` checks a file against it, and a token map outside its five keys (`colors`, `typography`, `rounded`, `spacing`, `components`) is ignored by that tooling.
+The frontmatter follows the published DESIGN.md format (`google-labs-code/design.md`), which impeccable reads; `npx @google/design.md lint DESIGN.md` checks a file against it, and a token map outside its five keys (`colors`, `typography`, `rounded`, `spacing`, `components`) is ignored by that tooling. A `spacing` map or a `components` section changes nothing impeccable reports (probed against page fixtures); those sections serve the published schema and `system-drift.sh`, which reads `spacing` and `components.control-*` heights when the older `spacingScale`/`controlHeights` keys are absent.
 
 If the repo has no `DESIGN.md`, generate one from the tokens already in the repo. Token extraction is data, not judgment, so it's a script, not an LLM pass — ONE file, no `.impeccable/` sidecar:
 
@@ -176,8 +176,8 @@ a fact about the source rather than an opinion about design:
 |---|---|
 | Type sizes not in the declared ramp | the `fontSize` of each named `typography` entry (the published DESIGN.md shape); `typography.scale` or `typeScale` still read in older files |
 | Colours not in the declared palette | `colors` |
-| Control heights not in the declared set | `controlHeights` |
-| Class recipes matching no declared variant for their role | `componentVariants` |
+| Control heights not in the declared set | `controlHeights`, or `components.control-*` heights in the published shape |
+| Class recipes matching no declared variant for their role | `componentVariants`, or `<role>-<variant>` component entries (`button-ghost`) in the published shape |
 | Native controls rendering the platform widget | always |
 
 **One finding per distinct off-scale VALUE**, carrying its occurrence count and
@@ -226,10 +226,13 @@ bash "$S/system-drift.sh" "${QA_WORKTREE:-$TARGET}"
 # serve.sh's own shots dir.
 # On --live with QA_ACCESS_OP_ITEM set, serve.sh emits that op-item (QA_AUTH_*),
 # so screenshot.sh resolves + sends CF-Access headers — 200 on a gated site,
-# harmless extra headers on an ungated one:
+# harmless extra headers on an ungated one. On an app whose wrangler config
+# sets PROBE_ACTS_AS it also emits QA_AUTH_ACT_AS: the token alone is a machine
+# there, and the act-as header is what makes it the person the app names.
 AUTH=(); [ -n "${QA_AUTH_OP_ITEM:-}" ] && AUTH=(--auth-op-item "$QA_AUTH_OP_ITEM" --auth-id-field "$QA_AUTH_ID_FIELD" --auth-secret-field "$QA_AUTH_SECRET_FIELD")
+[ -n "${QA_AUTH_ACT_AS:-}" ] && AUTH+=(--auth-act-as "$QA_AUTH_ACT_AS")
 bash "$S/screenshot.sh" --url "$QA_URL" --repo-slug "$QA_SLUG" --run-id "$RUN_ID" \
-  --pages "$PAGES" --viewports "${VIEWPORTS:-1440,820,390}" --app "$TARGET" "${AUTH[@]}"
+  --pages "$PAGES" --viewports "${VIEWPORTS:-1440,820,390}" --app "$TARGET" ${AUTH[@]+"${AUTH[@]}"}
 ```
 
 Prints the manifest table (route · width · path · bytes · http-status). Label the block with `QA_LABEL` (`working tree` / `HEAD worktree` / `live URL <url>`) so the user knows which revision they're seeing.
@@ -276,7 +279,7 @@ Still animating under that flag is a P1 accessibility failure.
 
 ```bash
 bash "$S/screenshot.sh" --url "$QA_URL" --repo-slug "$QA_SLUG" --run-id "$RUN_ID-rm" \
-  --pages "$PAGES" --viewports 1440 --reduced-motion --app "$TARGET" "${AUTH[@]}"
+  --pages "$PAGES" --viewports 1440 --reduced-motion --app "$TARGET" ${AUTH[@]+"${AUTH[@]}"}
 ```
 
 ## step-3.7-interaction
@@ -287,7 +290,7 @@ fixed in this run). Each page is loaded once with its data held, then every
 visible button is pressed on a fresh load with everything that could write held.
 
 ```bash
-bash "$S/interaction-check.sh" --url "$QA_URL" --pages "$PAGES" --repo "$TARGET" "${AUTH[@]}"
+bash "$S/interaction-check.sh" --url "$QA_URL" --pages "$PAGES" --repo "$TARGET" ${AUTH[@]+"${AUTH[@]}"}
 ```
 
 Each `INTERACTION <route> <kind> <detail>` line is a **P1 finding**, fixed in
@@ -329,7 +332,7 @@ so `mark-qa-done.sh --tree` refuses, and the report says the check was skipped.
 Only with `--a11y`:
 
 ```bash
-bash "$S/a11y.sh" --url "$QA_URL" --pages "$PAGES" --viewports "${VIEWPORTS:-1440}"
+bash "$S/a11y.sh" --url "$QA_URL" --pages "$PAGES" --viewports "${VIEWPORTS:-1440}" ${AUTH[@]+"${AUTH[@]}"}
 ```
 
 Per-page axe violation counts. Advisory (~57% WCAG coverage) — report it, never block on it.
@@ -456,15 +459,17 @@ The PNG(s) under `$QA_OUT` ARE the screenshots — no serve, no `screenshot.sh`.
 
 ## Cloudflare portal recipe
 
-A Cloudflare Pages site behind Cloudflare Access is not a dead end. Three doors, pick by the question:
+A Cloudflare-hosted site behind Cloudflare Access is not a dead end. Three doors, pick by the question:
 
 | Question | Door |
 |---|---|
-| Is the DATA / logic right? | Read production KV directly — `npx wrangler kv key get <key> --namespace-id <id> --remote`. No server, no browser. Beats a screenshot for data-correctness. |
+| Is the DATA / logic right? | Read the production store directly — e.g. `npx wrangler d1 execute <db> --remote --command "<sql>"`, or `npx wrangler kv key get <key> --namespace-id <id> --remote`. No server, no browser. Beats a screenshot for data-correctness. |
 | Does the live page RENDER right? | `/qa <site> --live` with an Access service token: name its 1Password item in `QA_ACCESS_OP_ITEM` (or set `QA_CF_ACCESS_ID` / `QA_CF_ACCESS_SECRET`). The Access app needs a Service Auth policy for that token; then the gated URL returns 200 (headers resolved inside `screenshot.sh`, never on stdout). |
-| Pre-commit layout of uncommitted edits? | `--before`; astro-cf auto-falls-back to `astro dev` if workerd won't boot. No CF bindings on the fallback, so pair it with the KV read above for data. |
+| Pre-commit layout of uncommitted edits? | `--before`; astro-cf auto-falls-back to `astro dev` if workerd won't boot. No CF bindings on the fallback, so pair it with the data read above. |
 
-Never conclude a portal fix is "unverifiable locally" — that conflates *your tool's* browser access with the open KV + service-token doors.
+**Walking a page as a person.** Some apps treat a service token alone as a MACHINE and answer every page with "service tokens cannot access this page". If the app's wrangler config declares `PROBE_ACTS_AS = "<client id> <email>"`, the app treats the token plus an `X-Portal-Act-As: <that email>` header as that person. `serve.sh --live` reads the declaration (`qa_probe_acts_as` in `lib.sh`), finds a Worker's URL through the Workers custom-domain registry, and emits `QA_AUTH_ACT_AS`; pass it as `--auth-act-as` to `screenshot.sh`, `interaction-check.sh` and `a11y.sh`. An app that declares nothing gets no header.
+
+Never conclude a portal fix is "unverifiable locally" — that conflates *your tool's* browser access with the open database and service-token doors. And never hand a live check to the user as "needs your sign-in" before sending the act-as header: with a service token and `--auth-act-as` the page is reachable without them.
 
 ## step-6-teardown
 
@@ -497,7 +502,7 @@ That measurement is exactly why the `/implement` gate could not reuse this key a
 
 ### Example 1 — before-commit QA of a portal's projects page
 
-`/qa apps/web/portal /projects --before`. step-0 resolves the portal's directory, run-id stamped. step-1 detects `astro-cf` (no config read); the explicit `/projects` arg overrides route discovery. step-2 builds the working tree and serves on :8813 (no seed — a KV-backed portal renders empty states in `--before`; use `--live` or a KV read for data). step-3 shoots projects at 1440/820/390 -> manifest printed. step-4 dispatches the fresh-context reviewer. step-6 tears down the owned server.
+`/qa apps/web/portal /projects --before`. step-0 resolves the portal's directory, run-id stamped. step-1 detects `astro-cf` (no config read); the explicit `/projects` arg overrides route discovery. step-2 builds the working tree and serves on :8813 (no seed — a portal that reads a remote store renders empty states in `--before`; use `--live` or a direct data read). step-3 shoots projects at 1440/820/390 -> manifest printed. step-4 dispatches the fresh-context reviewer. step-6 tears down the owned server.
 
 ### Example 2 — after-commit, multi-page, keep server up
 
@@ -519,10 +524,12 @@ That measurement is exactly why the `/implement` gate could not reuse this key a
 | `qa: BLANK CAPTURES` (exit 8) | the shot is (near-)uniform — almost always sections that fade in on scroll, since a `fullPage` shot does not scroll | the capture now scroll-walks the page and forces `[data-animate]`/`[data-aos]`/`.reveal`/`.fade-in`/`.animate-on-scroll` visible before shooting; if a site hides content under some OTHER selector, add it to that rule in `scripts/screenshot.sh`. A genuinely near-empty page (bare 404, one-line confirmation) is the false positive — re-run with `QA_INK_FLOOR=0`. Never review a shot the gate rejected: a reviewer handed a white image critiques the whitespace and returns confident findings about nothing. |
 | blank screenshots that survive the gate | SPA needs a wait/selector | the Node capture uses `networkidle`; add a mask or raise the timeout |
 | `qa: IDENTICAL SHOTS` (exit 6) | every route rendered the same image — auth wall, dead client routing, or a catch-all | `curl -sI <url>/<route> \| head -3` to see the redirect. On `--live`, attach an Access service token (§ Cloudflare portal recipe) — otherwise `--before` bypasses the gate. Never review the shots as-is. |
+| `qa: UNSUCCESSFUL RESPONSES` (exit 9) | a route answered 4xx/5xx or not at all — a gated app's machine 403 carries a full page of ink, so the blank and identical-shot gates cannot see it | a 403 on a gated app: pass `--auth-act-as` (the "service tokens cannot access this page" row below); anything else: fix the route. Never review the shots |
 | `qa: REDIRECTED OFF-ORIGIN` (exit 7) | navigation landed on a different origin (CF Access / Google sign-in) — catches the single-page case exit 6 structurally cannot | Attach an Access service token (§ Cloudflare portal recipe), or use `--before`. |
 | `qa: skipped — Playwright unavailable (<reason>)` (exit 7) | no Playwright could be found or installed — offline, no npm, or `QA_NO_INSTALL=1` | report the skip, never a pass. Fix the reason (network, npm) and re-run; `bash .agents/skills/qa/scripts/ensure-playwright.sh` installs it on its own |
 | `impeccable: detector unavailable — …` | impeccable is missing and could not be installed, or it crashed | report it as not checked; `npm install -g impeccable@latest` by hand, then re-run step-2.6 |
-| `--live` refused | no `--live-url`, and no CF Pages project matched the repo name (or no Cloudflare credentials) | pass `--live-url <url>`, or use `--before` to build + serve the working tree (the URL is never inferred) |
-| auth-gated `--live` shows a login redirect | no Access service token was sent, or the Access app has no Service Auth policy for it | § Cloudflare portal recipe. If you need the DATA not the pixels, read KV directly instead. |
-| `wrangler pages dev` won't boot (workerd error) | sandbox can't start the Workers runtime | serve.sh auto-falls-back to `astro dev` (label says "no CF bindings"); verify data via KV read, not the fallback server |
+| `--live` refused | no `--live-url`, no CF Pages project matched the repo name, and no Workers custom domain serves the Worker its wrangler config names (or no Cloudflare credentials) | pass `--live-url <url>`, or use `--before` to build + serve the working tree (the URL is never inferred) |
+| a gated app's page shows "service tokens cannot access this page" (or an API says a person is required) | the token reached the app as a MACHINE: no `X-Portal-Act-As` was sent | the target's wrangler config has no `PROBE_ACTS_AS`, or the run bypassed `serve.sh --live`. Pass `--auth-act-as <the email PROBE_ACTS_AS names>` to `screenshot.sh` / `interaction-check.sh`; a sign-in is never the fix |
+| auth-gated `--live` shows a login redirect | no Access service token was sent, or the Access app has no Service Auth policy for it | § Cloudflare portal recipe. If you need the DATA not the pixels, read the store directly instead. |
+| `wrangler pages dev` won't boot (workerd error) | sandbox can't start the Workers runtime | serve.sh auto-falls-back to `astro dev` (label says "no CF bindings"); verify data with a direct read, not the fallback server |
 | `render` command wrote no PNGs | the `qa:render` script didn't write to `$QA_OUT` | it MUST write its PNG(s) to `$QA_OUT` (exported by step-5b); fix the script's output path |

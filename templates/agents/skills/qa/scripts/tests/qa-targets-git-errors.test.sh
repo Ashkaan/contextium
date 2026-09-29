@@ -77,6 +77,13 @@ astro "$U/apps/web/other"
 echo "edit" >>"$U/apps/web/site/src/pages/index.astro"
 t "no commit: staged, unstaged and untracked apps are all listed" "0 $U/apps/web/other $U/apps/web/site" \
   "$(PATH="$TMP/shim:$PATH" bash "$TARGETS" --repo "$U" >"$TMP/out" 2>"$TMP/err"; echo "$? $(tr '\n' ' ' <"$TMP/out" | sed 's/ $//')")"
+# An app edited only in the working tree and never staged: `git add -N`
+# (intent to add) puts its paths in the index with no content, so the staged
+# read and `ls-files --others` both skip them — only the unstaged read sees it.
+astro "$U/apps/web/intent"
+git -C "$U" add -N apps/web/intent
+t "no commit: an app only in the working tree (never staged) is listed" "1" \
+  "$(PATH="$TMP/shim:$PATH" bash "$TARGETS" --repo "$U" 2>/dev/null | grep -cxF "$U/apps/web/intent")"
 t "no commit: a failed unstaged read is exit 2" "2" \
   "$(PATH="$TMP/shim:$PATH" FAIL_GIT=diff bash "$TARGETS" --repo "$U" >/dev/null 2>&1; echo $?)"
 

@@ -11,7 +11,7 @@ sits outside a block, so a re-vendor is a three-way diff against this commit.
 |---|---|---|---|---|
 | `spec.md` | `templates/spec-template.md` | v1.0.10 | `b5d97b41a3ad703800179eab0e711c1d7173422e` | `header` (Type, Complexity, Systems Affected, Roadmap; `## Clarifications`), `behavior`, `boundaries`, `acceptance` |
 | `plan.md` | `templates/plan-template.md` | v1.0.10 | `b5d97b41a3ad703800179eab0e711c1d7173422e` | `simplest-shape`, `inputs-outputs` (with data sourcing), `constitution`, `patterns`, `failure-modes`, `validation` |
-| `tasks.md` | `templates/tasks-template.md` | v1.0.10 | `b5d97b41a3ad703800179eab0e711c1d7173422e` | `tests-required` (top, and once per user story), `task-lines` |
+| `tasks.md` | `templates/tasks-template.md` | v1.0.10 | `b5d97b41a3ad703800179eab0e711c1d7173422e` | `tests-required` (top, and once per user story), `live-walk`, `task-lines` |
 | `research.md` | `templates/commands/plan.md:114-135`, Phase 0; its entry format is lines 130-133 | v1.0.10 | `b5d97b41a3ad703800179eab0e711c1d7173422e` | `sources`, `decision-records`. Not a file upstream, so there is nothing to diff; the Phase 0 steps and the `Decision` / `Rationale` / `Alternatives considered` fields are spec-kit's words |
 
 Not adopted: `constitution-template.md` (AGENTS.md and its Standards section

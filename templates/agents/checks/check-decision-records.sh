@@ -239,9 +239,9 @@ for f in ${targets[@]+"${targets[@]}"}; do
     while IFS= read -r -d '' s; do siblings+=("$s"); done \
       < <(find "$dir" -maxdepth 1 -type f -name "${num}-*.md" -print0 | sort -z)
     if [[ ${#siblings[@]} -gt 1 ]]; then
-      for s in "${siblings[@]}"; do
+      for s in ${siblings[@]+"${siblings[@]}"}; do
         others=()
-        for o in "${siblings[@]}"; do
+        for o in ${siblings[@]+"${siblings[@]}"}; do
           [[ "$o" != "$s" ]] && others+=("$(basename "$o")")
         done
         violation "${dir}/$(basename "$s")" f "number $num is also used by ${others[*]} in the same folder"

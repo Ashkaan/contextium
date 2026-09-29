@@ -158,7 +158,10 @@ harness_row() {
 db_row() {
   local sql="$1"
   shift
-  node -e '
+  # Node 22 warns on stderr when node:sqlite loads, and callers capture this
+  # script's stderr with its answer (`$(thread.sh --id 2>&1)`); the flag exists
+  # on every Node that has node:sqlite (22.5+).
+  node --disable-warning=ExperimentalWarning -e '
 const { DatabaseSync } = require("node:sqlite");
 const [dbPath, sql, ...params] = process.argv.slice(1);
 let db;

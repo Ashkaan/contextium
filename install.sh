@@ -36,7 +36,7 @@ set -euo pipefail
 
 # --- Constants ---
 
-VERSION="v8.0.0"
+VERSION="v8.0.1"
 
 # The tools the installer knows, in menu order. The first is the recommended one.
 HARNESSES="t3 claude codex cursor vscode gemini antigravity grok"
@@ -731,7 +731,8 @@ write_harness_file() {
 # file from before that line was written has the set read off disk instead:
 # its harness= and agent=, and each tool whose wiring is there (Gemini CLI's
 # settings, Antigravity's manifest, Grok Build's and Codex's links to this
-# workbench's manifest, Claude Code's settings naming its hooks). No file: none.
+# workbench's manifest, Claude Code's settings naming its hooks) — links and
+# merged entries only, never a file's presence. No file: none.
 recorded_tools() {
   local f="$TARGET/.agents/harness" line t="" k
   [ -f "$f" ] || return 0
@@ -743,13 +744,17 @@ recorded_tools() {
     k="$(harness_key "$k")"
     [ -z "$k" ] || t="$t $k"
   done
-  if [ -e "$TARGET/.agents/gemini-settings.json" ] ||
-     [ "$(readlink "$TARGET/.gemini/settings.json" 2>/dev/null)" = "../.agents/gemini-settings.json" ]; then
-    t="$t gemini"
+  # Links only: v8.0.0 shipped .agents/hooks.json and gemini-settings.json for
+  # every tool, so a file's presence says nothing about what was wired.
+  [ "$(readlink "$TARGET/.gemini/settings.json" 2>/dev/null)" != "../.agents/gemini-settings.json" ] || t="$t gemini"
+  if [ "$(readlink "$HOME/.agents/skills" 2>/dev/null)" = "$TARGET/.agents/skills" ] &&
+     [ "$(readlink "$HOME/.gemini/config/skills" 2>/dev/null)" = "$HOME/.agents/skills" ]; then
+    t="$t antigravity"
   fi
-  [ ! -e "$TARGET/.agents/hooks.json" ] || t="$t antigravity"
   [ "$(readlink "$HOME/.grok/hooks/contextium.json" 2>/dev/null)" != "$TARGET/.agents/hooks/claude-hooks.json" ] || t="$t grok"
-  [ "$(readlink "$HOME/.codex/hooks.json" 2>/dev/null)" != "$TARGET/.agents/hooks/claude-hooks.json" ] || t="$t codex"
+  case "$(readlink "$HOME/.codex/hooks.json" 2>/dev/null)" in
+    "$TARGET/.agents/hooks/claude-hooks.json" | "$TARGET/.agents/codex-hooks.json") t="$t codex" ;;
+  esac
   ! grep -qF "$TARGET/.agents/hooks/" "$HOME/.claude/settings.json" 2>/dev/null || t="$t claude"
   printf '%s\n' "$t"
 }
@@ -924,7 +929,12 @@ wire_hooks() {
   # manifest whether or not Codex was picked this time: migrate_v7_layout
   # removes that file, and a dangling link runs no guard at all.
   if [ -L "$codex" ] && [ "$(readlink "$codex")" = "$TARGET/.agents/codex-hooks.json" ]; then
-    home_link "$codex" "$manifest"
+    if [ "$WIRE_CODEX" = "1" ]; then
+      home_link "$codex" "$manifest"
+    else
+      rm -f "$codex"
+      ok "removed $codex (Codex is not among this workbench's tools)"
+    fi
   fi
   if [ "$WIRE_GROK" = "1" ]; then
     home_link "$HOME/.grok/hooks/contextium.json" "$manifest"
@@ -996,6 +1006,57 @@ wire_gemini() {
     fi
   fi
   home_link "$f" "../.agents/gemini-settings.json"
+  trust_gemini_folder
+}
+
+# Gemini CLI loads a folder's .gemini/settings.json — AGENTS.md as context, the
+# guards — only when the folder is trusted, and `--skip-trust` does not help: it
+# takes effect after the settings have been read. So wiring Gemini CLI trusts
+# the workbench in ~/.gemini/trustedFolders.json, keeping every other entry.
+# An entry the installer added is recorded (GEMINI_TRUST_OURS), so --drop-tool
+# gemini takes back that one and never a folder the user had trusted.
+GEMINI_TRUST_OURS=0
+trust_gemini_folder() {
+  local f="$HOME/.gemini/trustedFolders.json" tmp
+  if grep -qxF "gemini-trust	$TARGET" "$TARGET/$HARNESS_FILES_MANIFEST" 2>/dev/null; then
+    GEMINI_TRUST_OURS=1
+  fi
+  if ! command -v jq >/dev/null 2>&1; then
+    err "jq is not installed, so Gemini CLI was not told to trust this workbench. Add this entry to ~/.gemini/trustedFolders.json:"
+    err "  \"$TARGET\": \"TRUST_FOLDER\""
+    return 0
+  fi
+  mkdir -p "$HOME/.gemini"
+  [ -f "$f" ] || printf '{}\n' >"$f"
+  if ! jq -e 'type == "object"' "$f" >/dev/null 2>&1; then
+    err "Left $f alone: it is not a JSON object. Add \"$TARGET\": \"TRUST_FOLDER\" to it by hand."
+    return 0
+  fi
+  if jq -e --arg k "$TARGET" 'has($k)' "$f" >/dev/null 2>&1; then
+    if ! jq -e --arg k "$TARGET" '.[$k] == "TRUST_FOLDER"' "$f" >/dev/null 2>&1; then
+      err "Left your entry for this workbench in $f as it is: it says $(jq -c --arg k "$TARGET" '.[$k]' "$f"), not \"TRUST_FOLDER\"."
+      err "  Gemini CLI loads none of AGENTS.md, the skills or the guards until it does."
+    fi
+    return 0
+  fi
+  tmp="$(mktemp)"
+  jq --arg k "$TARGET" '. + {($k): "TRUST_FOLDER"}' "$f" >"$tmp" && cat "$tmp" >"$f"
+  rm -f "$tmp"
+  GEMINI_TRUST_OURS=1
+  ok "trusted this workbench for Gemini CLI in ~/.gemini/trustedFolders.json"
+}
+
+# Take back the trust entry the installer added (recorded in the manifest), and
+# only while it still says TRUST_FOLDER.
+untrust_gemini_folder() {
+  local f="$HOME/.gemini/trustedFolders.json" tmp
+  grep -qxF "gemini-trust	$TARGET" "$TARGET/$HARNESS_FILES_MANIFEST" 2>/dev/null || return 0
+  [ -f "$f" ] && command -v jq >/dev/null 2>&1 || return 0
+  jq -e --arg k "$TARGET" '.[$k] == "TRUST_FOLDER"' "$f" >/dev/null 2>&1 || return 0
+  tmp="$(mktemp)"
+  jq --arg k "$TARGET" 'del(.[$k])' "$f" >"$tmp" && cat "$tmp" >"$f"
+  rm -f "$tmp"
+  ok "removed this workbench from ~/.gemini/trustedFolders.json"
 }
 
 # land.sh commits and pushes, so the workbench is a git repo with an origin.
@@ -1065,26 +1126,35 @@ ensure_origin() {
 # Gemini CLI's .gemini/settings.json link to it goes with it.
 # Args: $1=file name under .agents/ $2=1 when picked $3=the harness, as named
 HARNESS_FILES_MANIFEST=".agents/.contextium-manifest"
+INSTALLER_WROTE=""
 harness_file() {
-  local name="$1" picked="$2" label="$3" f="$TARGET/.agents/$1" rel=".agents/$1" sum
+  local name="$1" picked="$2" label="$3" f="$TARGET/.agents/$1" rel=".agents/$1" sum rendered
   if [ "$picked" = "1" ]; then
     cp "$SCRIPT_DIR/templates/agents/$name" "$f"
+    INSTALLER_WROTE="$INSTALLER_WROTE $name"
     return 0
+  fi
+  # Gemini CLI's link goes whatever happens to the file: a kept, customized
+  # file must not stay the settings a dropped tool loads.
+  if [ "$name" = "gemini-settings.json" ] && [ -L "$TARGET/.gemini/settings.json" ] &&
+     [ "$(readlink "$TARGET/.gemini/settings.json")" = "../.agents/gemini-settings.json" ]; then
+    rm -f "$TARGET/.gemini/settings.json"
+    rmdir "$TARGET/.gemini" 2>/dev/null || true
   fi
   [ -f "$f" ] || return 0
   sum="$(cksum <"$f" | awk '{print $1, $2}')"
+  # Ours: the checksum an earlier run recorded, or the template as shipped, or
+  # (for a file an earlier release rendered) the template rendered for here.
+  rendered="$(mktemp)"
+  sed "s|__WORKBENCH__|$(printf '%s' "$TARGET" | sed -e 's/[\\&|]/\\&/g')|g" "$SCRIPT_DIR/templates/agents/$name" >"$rendered"
   if grep -qxF "${rel}	${sum}" "$TARGET/$HARNESS_FILES_MANIFEST" 2>/dev/null ||
-     cmp -s "$f" "$SCRIPT_DIR/templates/agents/$name"; then
+     cmp -s "$f" "$SCRIPT_DIR/templates/agents/$name" || cmp -s "$f" "$rendered"; then
     rm -f "$f"
-    if [ "$name" = "gemini-settings.json" ] && [ -L "$TARGET/.gemini/settings.json" ] &&
-       [ "$(readlink "$TARGET/.gemini/settings.json")" = "../.agents/gemini-settings.json" ]; then
-      rm -f "$TARGET/.gemini/settings.json"
-      rmdir "$TARGET/.gemini" 2>/dev/null || true
-    fi
-    ok "removed ${rel}: ${label} was dropped"
+    ok "removed ${rel}: ${label} is not among this workbench's tools"
   else
-    err "kept ${rel} — you changed it. ${label} was dropped, so nothing reads it; delete it when you no longer need it."
+    err "kept ${rel} — you changed it. ${label} is not among this workbench's tools, so nothing reads it; delete it when you no longer need it."
   fi
+  rm -f "$rendered"
 }
 
 # Strip every entry an earlier run merged (its command starts `: contextium;`)
@@ -1137,6 +1207,7 @@ unwire_dropped_tools() {
       codex)
         if [ -L "$HOME/.codex/hooks.json" ]; then
           unlink_if_ours "$HOME/.codex/hooks.json" "$manifest"
+          unlink_if_ours "$HOME/.codex/hooks.json" "$TARGET/.agents/codex-hooks.json"
         else
           strip_hooks_from "$HOME/.codex/hooks.json"
         fi
@@ -1149,6 +1220,7 @@ unwire_dropped_tools() {
         unlink_if_ours "$HOME/.claude/agents" "$TARGET/.agents/agents"
         unlink_if_ours "$HOME/.claude/output-styles" "$TARGET/.agents/output-styles"
         ;;
+      gemini) untrust_gemini_folder ;;
       antigravity)
         # Only Antigravity reads ~/.gemini/config/skills.
         if [ "$(readlink "$HOME/.agents/skills" 2>/dev/null)" = "$TARGET/.agents/skills" ]; then
@@ -1164,11 +1236,17 @@ record_harness_files() {
   local name f
   {
     printf '# Written by the Contextium installer: the per-harness files it left in .agents/.\n'
-    for name in hooks.json gemini-settings.json; do
+    # Only what this run wrote: a file kept because the user changed it is
+    # theirs, and recording it would make the next run delete their edits.
+    for name in $INSTALLER_WROTE; do
       f="$TARGET/.agents/$name"
       [ -f "$f" ] || continue
       printf '%s\t%s\n' ".agents/$name" "$(cksum <"$f" | awk '{print $1, $2}')"
     done
+    # The Gemini CLI trust entry, when the installer added it.
+    if [ "$WIRE_GEMINI" = "1" ] && [ "$GEMINI_TRUST_OURS" = "1" ]; then
+      printf 'gemini-trust\t%s\n' "$TARGET"
+    fi
   } >"$TARGET/$HARNESS_FILES_MANIFEST"
 }
 
@@ -1686,6 +1764,25 @@ else
 fi
 printf '\n'
 
+# A tool named this run cannot be dropped in the same run: the harness would
+# stay wired while the record said otherwise.
+NAMED_TOOLS="$HARNESS"
+[ "$HARNESS" != "t3" ] || NAMED_TOOLS="$NAMED_TOOLS $T3_AGENTS"
+for t in $EXTRA_WIRE; do NAMED_TOOLS="$NAMED_TOOLS $(harness_key "$t")"; done
+for t in $DROP_TOOLS; do
+  if [ -z "$(harness_key "$t")" ]; then
+    err "Unknown tool '$t' for --drop-tool (one of: $HARNESSES)."
+    exit 1
+  fi
+  case " $NAMED_TOOLS " in
+    *" $(harness_key "$t") "*)
+      err "Cannot drop $t: this run wires it (harness=$HARNESS${T3_AGENTS:+, agents: $T3_AGENTS})."
+      err "  Pick the tool you drive the workbench with now: --harness <name> (and --agents for T3 Code), then --drop-tool $t."
+      exit 1
+      ;;
+  esac
+done
+
 # Anything the choice needs that is not installed: offered, never forced.
 offer_install "$HARNESS"
 for a in $T3_AGENTS; do offer_install "$a"; done
@@ -1853,7 +1950,7 @@ case "$HARNESS" in
   codex)       printf '%s\n' "Run ${BOLD}cd ${TARGET} && codex${NC}, then ${BOLD}\$project${NC} (Codex names skills with \$)." ;;
   cursor)      printf '%s\n' "Open ${BOLD}${TARGET}${NC} in ${BOLD}Cursor${NC} and run ${BOLD}/project${NC} in the agent." ;;
   vscode)      printf '%s\n' "Open ${BOLD}${TARGET}${NC} in ${BOLD}VS Code${NC} and run ${BOLD}/project${NC} in Copilot chat (agent mode)." ;;
-  gemini)      printf '%s\n' "Run ${BOLD}cd ${TARGET} && gemini${NC}, then ${BOLD}/project${NC}. Trust the folder when asked: workspace skills load only in a trusted one." ;;
+  gemini)      printf '%s\n' "Run ${BOLD}cd ${TARGET} && gemini${NC}, then ${BOLD}/project${NC}. The folder is trusted in ~/.gemini/trustedFolders.json: trust controls whether Gemini CLI loads AGENTS.md and the guards (and the skills). A headless run in another trust setup needs ${BOLD}GEMINI_CLI_TRUST_WORKSPACE=true${NC}; --skip-trust does not load them." ;;
   antigravity) printf '%s\n' "Run ${BOLD}cd ${TARGET} && agy${NC}, then ${BOLD}/project${NC}." ;;
   grok)        printf '%s\n' "Run ${BOLD}cd ${TARGET} && grok --trust${NC}, then ${BOLD}/project${NC}. Grok loads AGENTS.md and project skills only in a trusted folder." ;;
 esac

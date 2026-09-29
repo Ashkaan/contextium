@@ -12,6 +12,7 @@
 # Usage:
 #   interaction-check.sh --url <base> --pages "<route ...>" [--repo <target-dir>]
 #                        [--auth-op-item <id> --auth-id-field F --auth-secret-field F]
+#                        [--auth-act-as <email>]   # X-Portal-Act-As, beside the token
 #
 # With --repo, a clean run (exit 0) writes the stamp mark-qa-done.sh --tree
 # refuses to mark a served app without: $QA_DONE_DIR/interaction-<slug>-<tree>,
@@ -32,7 +33,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$SCRIPT_DIR/lib.sh"
 
 URL="" PAGES="" REPO=""
-AUTH_OP_ITEM="" AUTH_ID_FIELD="client_id" AUTH_SECRET_FIELD="client_secret"
+AUTH_OP_ITEM="" AUTH_ID_FIELD="client_id" AUTH_SECRET_FIELD="client_secret" AUTH_ACT_AS=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -42,6 +43,7 @@ while [[ $# -gt 0 ]]; do
     --auth-op-item) AUTH_OP_ITEM="${2:-}"; shift 2 ;;
     --auth-id-field) AUTH_ID_FIELD="${2:-client_id}"; shift 2 ;;
     --auth-secret-field) AUTH_SECRET_FIELD="${2:-client_secret}"; shift 2 ;;
+    --auth-act-as) AUTH_ACT_AS="${2:-}"; shift 2 ;;
     *) qa_err "interaction-check: unknown flag: $1"; exit 2 ;;
   esac
 done
@@ -53,6 +55,7 @@ if [[ -n "$AUTH_OP_ITEM" ]] && ! qa_resolve_cf_access "$AUTH_OP_ITEM" "$AUTH_ID_
   exit 2
 fi
 export QA_CF_ACCESS_ID="${QA_CF_ACCESS_ID:-}" QA_CF_ACCESS_SECRET="${QA_CF_ACCESS_SECRET:-}"
+export QA_ACT_AS="$AUTH_ACT_AS"
 
 NODE_MODULES="$(qa_playwright_node_modules "$REPO" || true)"
 if [[ -z "$NODE_MODULES" ]]; then

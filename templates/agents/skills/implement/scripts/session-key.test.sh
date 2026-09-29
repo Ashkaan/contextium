@@ -115,15 +115,17 @@ done
 # key stopped there, three live sessions would share one marker name and one
 # worktree — the index-sharing this whole mechanism exists to end, reintroduced
 # by its own key function.
-declare -A seen_keys=()
+# One "<key><TAB><raw>" line per id seen: bash 3.2 (macOS) has no associative arrays.
+seen_keys=""
 collision=""
 for raw in "a_b" "a__b" "a*b" "a-b" "a?b" "a[b]" "A_B" "a_B" "a.b" "a/b"; do
   k="$(key "$raw")"
-  if [[ -n "${seen_keys[$k]:-}" ]]; then
-    collision="'$raw' and '${seen_keys[$k]}' both map to '$k'"
+  prev="$(printf '%s' "$seen_keys" | awk -F'\t' -v k="$k" '$1 == k { print $2; exit }')"
+  if [[ -n "$prev" ]]; then
+    collision="'$raw' and '$prev' both map to '$k'"
     break
   fi
-  seen_keys[$k]="$raw"
+  seen_keys="$seen_keys$k"$'\t'"$raw"$'\n'
 done
 [[ -z "$collision" ]] && ok "distinct raw ids produce distinct keys" \
   || no "distinct raw ids produce distinct keys" "$collision"

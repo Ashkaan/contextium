@@ -713,12 +713,12 @@ if [[ -n "$REPO_ROOT" && -d "$REPO_ROOT/journal" ]]; then
   while IFS= read -r _j; do real_journals+=("$_j"); done \
     < <(find "$REPO_ROOT/journal" -mindepth 2 -name '*.md' -not -name '0000-*' | sort | tail -30)
   if [[ ${#real_journals[@]} -gt 0 ]]; then
-    if bash "$CHECK" "${real_journals[@]}" > /dev/null 2>&1; then
+    if bash "$CHECK" ${real_journals[@]+"${real_journals[@]}"} > /dev/null 2>&1; then
       echo "ok: last ${#real_journals[@]} real journals pass"
       pass=$((pass + 1))
     else
       echo "FAIL: real journals tripped the check:" >&2
-      bash "$CHECK" "${real_journals[@]}" >&2 || true
+      bash "$CHECK" ${real_journals[@]+"${real_journals[@]}"} >&2 || true
       fail=$((fail + 1))
     fi
   fi

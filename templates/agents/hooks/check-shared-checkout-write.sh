@@ -397,7 +397,7 @@ scan_segment() {
       # directory to create. Otherwise the destination is the last operand, and
       # `ln -s target` with no link name creates it in the current directory.
       if [[ ${#dest_flag[@]} -gt 0 ]]; then
-        for w in "${dest_flag[@]}"; do add_target "${w}"; done
+        for w in ${dest_flag[@]+"${dest_flag[@]}"}; do add_target "${w}"; done
       elif [[ "${verb}" == install ]] \
         && printf '%s\n' ${words[@]+"${words[@]}"} \
           | grep -qE '^(-[A-Za-z]*d|--directory)$'; then
@@ -647,9 +647,20 @@ TARGETS="$(printf '%s' "${TARGETS}" | sed '/^$/d')"
 # ── No thread, no isolation to offer ──────────────────────────────────────
 #
 # A plain terminal has no worktree to be sent to, and write-root.sh exits 2 in
-# that case by design. Refusing here would leave such a session unable to write
-# anywhere at all.
-bash "${THREAD}" --id >/dev/null 2>&1 || exit 0
+# that case by design. Refusing there would leave such a session unable to
+# write anywhere at all.
+#
+# Asked only once a target is INSIDE a guarded checkout, never up front:
+# `thread.sh --id` records the session in the cache as it answers, so asking it
+# for every command with a redirect — `2>/dev/null` included — left a session
+# entry behind for writes that reach no checkout at all.
+IN_THREAD=""
+in_thread() {
+  if [[ -z "${IN_THREAD}" ]]; then
+    if bash "${THREAD}" --id >/dev/null 2>&1; then IN_THREAD=1; else IN_THREAD=0; fi
+  fi
+  [[ "${IN_THREAD}" == 1 ]]
+}
 
 # ── The guarded checkout ──────────────────────────────────────────────────
 #
@@ -723,6 +734,7 @@ while IFS= read -r TARGET; do
         if [[ "${VERB}" == rm ]] && untracked_only "${ROOT}" "${TARGET}"; then
           continue
         fi
+        in_thread || exit 0
         refuse "${TARGET}" "${ROOT}"
         ;;
     esac

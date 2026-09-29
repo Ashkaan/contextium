@@ -74,7 +74,9 @@ HERE="${HARNESS_LINKS_REPO:-$(git rev-parse --show-toplevel)}"
 # fine, and so is a file of the user's own, into which the installer merged the
 # guards instead of linking — the Codex case); `tool:<name>` (required while
 # the workbench's .agents/harness `tools=` line names <name>, and not asked for
-# when it does not; with no tools= line, required as before).
+# when it does not; with no tools= line, required as before). An optional kind
+# may carry `:<name>` too: then it is not asked for at all while tools= leaves
+# that tool out — a kept file or a foreign link of a dropped tool is not ours.
 #
 # ORDER IS LOAD-BEARING for --fix: two rows point at another link rather than
 # at the workbench, and --fix refuses a target that does not exist yet.
@@ -86,9 +88,9 @@ IFS= read -r -d '' LINKS <<ROWS || true
 ${H}/.agents/skills	${MAIN}/.agents/skills	required
 ${H}/.claude/agents	${MAIN}/.agents/agents	tool:claude
 ${H}/.claude/output-styles	${MAIN}/.agents/output-styles	tool:claude
-${H}/.codex/hooks.json	${MAIN}/.agents/hooks/claude-hooks.json	optional-file
-${H}/.grok/hooks/contextium.json	${MAIN}/.agents/hooks/claude-hooks.json	optional
-${HERE}/.gemini/settings.json	${HERE}/.agents/gemini-settings.json	optional
+${H}/.codex/hooks.json	${MAIN}/.agents/hooks/claude-hooks.json	optional-file:codex
+${H}/.grok/hooks/contextium.json	${MAIN}/.agents/hooks/claude-hooks.json	optional:grok
+${HERE}/.gemini/settings.json	${HERE}/.agents/gemini-settings.json	optional:gemini
 ${H}/.claude/skills	${H}/.agents/skills	tool:claude
 ${H}/.gemini/config/skills	${H}/.agents/skills	tool:antigravity
 ROWS
@@ -181,6 +183,10 @@ while IFS=$'\t' read -r link target kind; do
     tool:*)
       tool_wired "${kind#tool:}" || continue
       kind=required
+      ;;
+    *:*)
+      tool_wired "${kind#*:}" || continue
+      kind="${kind%%:*}"
       ;;
   esac
   if [[ "$kind" != required && ! -e "$link" && ! -L "$link" ]]; then
@@ -322,12 +328,12 @@ else
   # Each manifest is asserted where its harness is wired: Claude Code's where
   # ~/.claude exists and tools= (if recorded) names it, Codex's and Grok Build's where their hooks file exists,
   # Gemini CLI's where this checkout's .gemini/settings.json exists, and
-  # Antigravity's where .agents/hooks.json exists (the installer ships it only
-  # while Antigravity is picked).
+  # Antigravity's where .agents/hooks.json exists — each only while tools= (if
+  # recorded) names the tool: a file kept after --drop-tool is the user's.
   if [[ -d "${H}/.claude" ]] && tool_wired claude; then
     check_manifest "Claude Code" claude "${H}/.claude/settings.json" "$CLAUDE_WANT"
   fi
-  if [[ -e "${H}/.codex/hooks.json" ]]; then
+  if [[ -e "${H}/.codex/hooks.json" ]] && tool_wired codex; then
     check_manifest "Codex" claude "${H}/.codex/hooks.json" "$CLAUDE_WANT apply_patch:${WRITE}"
     # Codex throws a manifest away whole when it carries any top-level key
     # besides `hooks` or `description` — both guards stop running there, with
@@ -339,13 +345,23 @@ else
     description, so both guards stop running there."
     fi
   fi
-  if [[ -e "${H}/.grok/hooks/contextium.json" ]]; then
+  if [[ -e "${H}/.grok/hooks/contextium.json" ]] && tool_wired grok; then
     check_manifest "Grok Build" claude "${H}/.grok/hooks/contextium.json" "$GROK_WANT"
   fi
-  if [[ -e "${HERE}/.gemini/settings.json" ]]; then
+  if [[ -e "${HERE}/.gemini/settings.json" ]] && tool_wired gemini; then
     check_manifest "Gemini CLI" gemini "${HERE}/.gemini/settings.json" "$GEMINI_WANT"
+    # Gemini CLI reads .gemini/settings.json — AGENTS.md, the skills, the
+    # guards — only in a trusted folder, so an untrusted workbench is not ready
+    # however right the manifest is.
+    # A box with no ~/.gemini has no Gemini CLI to trust anything; that is not drift.
+    trust="${H}/.gemini/trustedFolders.json"
+    if [[ -d "${H}/.gemini" ]] && ! jq -e --arg k "$HERE" '.[$k] == "TRUST_FOLDER"' "$trust" >/dev/null 2>&1; then
+      err "Error: Gemini CLI does not trust ${HERE}
+    ${trust} needs \"${HERE}\": \"TRUST_FOLDER\" — without it Gemini CLI loads
+    none of AGENTS.md, the skills or the guards. Re-run install.sh, or add it by hand."
+    fi
   fi
-  if [[ -e "${HERE}/.agents/hooks.json" ]]; then
+  if [[ -e "${HERE}/.agents/hooks.json" ]] && tool_wired antigravity; then
     check_manifest "Antigravity" agy "${HERE}/.agents/hooks.json" \
       "run_command:${INFRA} run_command:${WRITE} write_to_file:${WRITE} replace_file_content:${WRITE}"
   fi

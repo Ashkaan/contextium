@@ -213,15 +213,17 @@ the session can close.
 Before each commit, `land.sh` runs the workbench checks over what the session changed:
 `check-decision-records.sh`, `check-skills.sh` on any skill folder that moved,
 `check-integration-manifest.sh` on any integration README that moved (its front matter, against the
-schema in `integrations/README.md`), `check-secrets.sh` and `check-standards-refs.sh` from
-`.agents/checks/`, and the journal checker from the close skill. A
+schema in `integrations/README.md`), `check-scripts.sh` on any script under `.agents/` that moved
+(it must carry a test, and the test must run it rather than import it; a script Contextium shipped
+passes until you edit it, since its tests live in the Contextium repo), `check-secrets.sh` and
+`check-standards-refs.sh` from `.agents/checks/`, and the journal checker from the close skill. A
 violation refuses the close with every failing line printed. This replaces the git hooks earlier
 versions shipped: a hook only fires in a clone whose hooks path points at it, and these run on every
 landing because landing is the only way work reaches the trunk.
 
 Before each tool call, in the tools where they are wired (Claude Code, Codex, Grok Build, Gemini CLI
-and Antigravity), two guards run. That they fire in Gemini CLI and Antigravity is unverified: their
-wiring follows Gemini CLI's package source and strings in Antigravity's binary. `check-shared-checkout-write.sh` refuses an edit, or a shell command that writes, into the
+and Antigravity), two guards run — probed firing in each, against a control run without the wiring
+(Gemini CLI only in a trusted folder, which the installer sets up). `check-shared-checkout-write.sh` refuses an edit, or a shell command that writes, into the
 shared checkout, and names the session's worktree to write to instead. `check-host-infra-safety.sh`
 refuses commands that change shared host infrastructure — `sudo` over `ssh`, writes under `/etc/`,
 network and service changes — and commands that would kill the session running them. Both are wired

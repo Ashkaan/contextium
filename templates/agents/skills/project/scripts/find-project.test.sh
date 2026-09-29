@@ -16,10 +16,10 @@ unset CLAUDE_SESSION_ID CLAUDE_CODE_SESSION_ID
 cd "$tmp" || exit 1
 run() { bash "$SUT" "$@" 2>&1; }
 
-# With no projects/ folder the scan's `find` fails under `set -euo pipefail` and
-# the script exits 1 printing nothing — the vendored behavior, pinned here so a
-# change to it is deliberate. Every install seeds projects/, so it is rare.
-t "no projects folder at all: nothing printed, exit 1" "|rc=1" "$(bash "$SUT" checkout-flow 2>/dev/null; echo "|rc=$?")"
+# With no projects/ folder there is no project to find: NOT_FOUND, exit 0,
+# like any other miss (the caller parses stdout), and nothing on stderr.
+t "no projects folder at all: NOT_FOUND, exit 0" "NOT_FOUND|rc=0" "$(bash "$SUT" checkout-flow 2>/dev/null | tr -d '\n'; printf '|rc=%s' "${PIPESTATUS[0]}")"
+t "no projects folder at all: quiet on stderr" "" "$(bash "$SUT" checkout-flow 2>&1 >/dev/null)"
 
 mkdir -p projects/web/2026-01-10_checkout-flow projects/web/2026-02-01_checkout-retries \
   projects/data/2026-01-05_sync-engine projects/web/2026-03-01_sync-engine

@@ -51,8 +51,8 @@ fi
 # Lowercase, then collapse every run of characters outside [a-z0-9-] into a
 # single `-`. Doing it as one squeeze (rather than replace-then-collapse) keeps
 # `a__b` and `a_b` mapping to the same `a-b`.
-key="${raw,,}"
-key="$(printf '%s' "$key" | tr -cs 'a-z0-9-' '-')"
+# `tr` rather than `${raw,,}`, which bash 3.2 (macOS) does not have.
+key="$(printf '%s' "$raw" | tr '[:upper:]' '[:lower:]' | tr -cs 'a-z0-9-' '-')"
 
 # Collapse runs of `-` introduced by the squeeze meeting literal hyphens
 # (`a_-_b` → `a---b` → `a-b`), then strip the ends.

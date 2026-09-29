@@ -22,6 +22,15 @@ expected output. When the work calls a model, add an eval task too: a fixture
 and a pass bar, re-run whenever the prompt changes.
 
 <!-- /contextium -->
+<!-- contextium: live-walk -->
+**Live walk**: a task that proves the work on a deployed surface names the
+identity that runs it, and it is one an agent holds — a service token, an API
+key, a test account the session can use — never "signed in as you in the
+browser", which hands you a step the session could have run. A task names a
+person's sign-in only when no agent identity exists for that surface, and then
+it says so.
+
+<!-- /contextium -->
 **Organization**: Tasks are grouped by user story to enable independent implementation and testing of each story.
 
 ## Format: `[ID] [P?] [Story] Description`

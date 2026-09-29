@@ -260,21 +260,21 @@ fi
 if [[ "$shard_rows_seen" -eq 1 ]]; then
   next_shards=()
   if [[ ${#inflight[@]} -gt 0 ]]; then
-    next_shards=("${inflight[@]}")
+    next_shards=(${inflight[@]+"${inflight[@]}"})
   elif [[ ${#planned[@]} -gt 0 ]]; then
-    next_shards=("${planned[@]}")
+    next_shards=(${planned[@]+"${planned[@]}"})
   fi
   if [[ ${#next_shards[@]} -gt 0 ]]; then
-    printf '%s\n' "${next_shards[@]}" | sort | while IFS= read -r shard; do
+    printf '%s\n' ${next_shards[@]+"${next_shards[@]}"} | sort | while IFS= read -r shard; do
       printf '/implement %s %s\n' "$slug" "$shard"
     done
-    for shard in "${blocked_shards[@]}"; do
+    for shard in ${blocked_shards[@]+"${blocked_shards[@]}"}; do
       printf '# %s %s is blocked — see its row in ## Shard Status\n' "$slug" "$shard"
     done
     exit 0
   fi
   if [[ ${#blocked_shards[@]} -gt 0 ]]; then
-    for shard in "${blocked_shards[@]}"; do
+    for shard in ${blocked_shards[@]+"${blocked_shards[@]}"}; do
       printf '# %s %s is blocked — see its row in ## Shard Status\n' "$slug" "$shard"
     done
     exit 0
@@ -287,7 +287,7 @@ fi
 if [[ ${#unreported[@]} -gt 0 ]]; then
   if [[ "$is_sharded" -eq 1 ]]; then
     # One line per pending shard (sorted for stable output).
-    printf '%s\n' "${unreported[@]}" | sort | while IFS= read -r shard; do
+    printf '%s\n' ${unreported[@]+"${unreported[@]}"} | sort | while IFS= read -r shard; do
       printf '/implement %s %s\n' "$slug" "$shard"
     done
   else

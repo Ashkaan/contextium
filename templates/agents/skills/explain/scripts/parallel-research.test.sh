@@ -5,6 +5,16 @@
 # failure, on a timeout and on bad input. Stub CLIs on PATH stand in for the
 # real ones; a fixture panel pins which vendor sits in which seat.
 set -uo pipefail
+# `timeout` is GNU coreutils, absent on stock macOS. perl stands in, and like
+# GNU timeout it runs the command in its own process group and kills the whole
+# group at the deadline: a child left alive would hold the output pipe open.
+tmo() {
+  if command -v timeout >/dev/null 2>&1; then timeout "$@"; return; fi
+  perl -e 'my $t = shift; my $p = fork; die "fork: $!" unless defined $p;
+    if (!$p) { setpgrp(0, 0); exec @ARGV or exit 127 }
+    $SIG{ALRM} = sub { kill "KILL", -$p; exit 124 }; alarm $t; waitpid($p, 0);
+    exit($? & 127 ? 128 + ($? & 127) : $? >> 8)' "$@"
+}
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SUT="$HERE/parallel-research.sh"
@@ -150,7 +160,7 @@ lacks "…and can search the web" "$(tr '\n' ' ' <"$TMP/grok-argv" 2>/dev/null)"
 if [[ -z "${PR_GUARD_NESTED:-}" ]]; then
   guard="$(mktemp -d "${TMPDIR:-/tmp}/pr-guard.XXXXXX")"
   printf '#!/bin/sh\necho "$*" >>"%s/rm.log"\n' "$guard" >"$guard/rm"; chmod +x "$guard/rm"
-  ( PR_GUARD_NESTED=1 PATH="$guard:$PATH" TMPDIR="$guard/no-such-dir" timeout 60 "$BASH" "$HERE/parallel-research.test.sh" >/dev/null 2>&1 ); grc=$?
+  ( PR_GUARD_NESTED=1 PATH="$guard:$PATH" TMPDIR="$guard/no-such-dir" tmo 60 "$BASH" "$HERE/parallel-research.test.sh" >/dev/null 2>&1 ); grc=$?
   rc_is "an unusable TMPDIR stops the suite" "$([ "$grc" -ne 0 ] && echo stopped || echo ran)" stopped
   lacks "…before any rm is issued" "$(cat "$guard/rm.log" 2>/dev/null)" "/bin"
   /bin/rm -rf "$guard"

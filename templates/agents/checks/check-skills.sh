@@ -487,7 +487,7 @@ check_skill() {
   done < <(grep -noE '[^[:space:]"'"'"'`()<>[]*state/[^[:space:]"'"'"'`()<>[]*' "${dir}/SKILL.md" || true)
 }
 
-for t in "${targets[@]}"; do
+for t in ${targets[@]+"${targets[@]}"}; do
   if [ ! -d "${t}" ]; then
     err "$(basename "${t}"): no such folder ${t}"
     violations=$((violations + 1))

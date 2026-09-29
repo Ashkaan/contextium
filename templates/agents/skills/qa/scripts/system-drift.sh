@@ -126,7 +126,7 @@ elements() {
   # whitespace, so a path containing a space became two unreadable fragments
   # that the scanner skipped in silence — and a control in that file then passed
   # by never having been looked at.
-  node "$HERE/element-scan.mjs" "$1" "${FILES[@]}"
+  node "$HERE/element-scan.mjs" "$1" ${FILES[@]+"${FILES[@]}"}
 }
 
 # rel PATH — the path as the reader will look for it.
@@ -154,7 +154,7 @@ to_px() {
 set_of_px() {
   local out="|" v px
   IFS='|' read -ra _vals <<<"${1:-}"
-  for v in "${_vals[@]}"; do
+  for v in ${_vals[@]+"${_vals[@]}"}; do
     px="$(to_px "$v")" && out+="${px}|"
   done
   printf '%s' "$out"
@@ -202,7 +202,7 @@ group_and_report() {
 if [ -n "${TYPE_SCALE:-}" ]; then
   RAMP="$(set_of_px "$TYPE_SCALE")"
   : >"$TMP/type"
-  grep -Hn -E 'text-\[[0-9.]+(px|rem)\]|font-size:[[:space:]]*[0-9.]+(px|rem)' "${FILES[@]}" 2>/dev/null \
+  grep -Hn -E 'text-\[[0-9.]+(px|rem)\]|font-size:[[:space:]]*[0-9.]+(px|rem)' ${FILES[@]+"${FILES[@]}"} 2>/dev/null \
   | while IFS= read -r hit; do
       loc="${hit%%:*}"; rest="${hit#*:}"; line="${rest%%:*}"; raw="${rest#*:}"
       is_comment "$raw" && continue
@@ -224,7 +224,7 @@ if [ -n "${COLORS:-}" ]; then
   norm_colors="|$(printf '%s' "$COLORS" | tr '[:upper:]' '[:lower:]' | tr -d ' ')|"
   : >"$TMP/color"
   PALETTE='\b(bg|text|border|ring|fill|stroke|from|via|to|decoration|outline|shadow|accent|caret|divide|placeholder)-(slate|gray|grey|zinc|neutral|stone|red|orange|amber|yellow|lime|green|emerald|teal|cyan|sky|blue|indigo|violet|purple|fuchsia|pink|rose)-[0-9]{2,3}\b'
-  grep -Hn -E "$PALETTE" "${FILES[@]}" 2>/dev/null \
+  grep -Hn -E "$PALETTE" ${FILES[@]+"${FILES[@]}"} 2>/dev/null \
   | while IFS= read -r hit; do
       loc="${hit%%:*}"; rest="${hit#*:}"; line="${rest%%:*}"; raw="${rest#*:}"
       is_comment "$raw" && continue
@@ -233,7 +233,7 @@ if [ -n "${COLORS:-}" ]; then
       done
     done >>"$TMP/color"
   LITERAL='#[0-9a-fA-F]{3,8}\b|rgba?\([^)]*\)|hsla?\([^)]*\)'
-  grep -Hn -E "$LITERAL" "${FILES[@]}" 2>/dev/null \
+  grep -Hn -E "$LITERAL" ${FILES[@]+"${FILES[@]}"} 2>/dev/null \
   | while IFS= read -r hit; do
       loc="${hit%%:*}"; rest="${hit#*:}"; line="${rest%%:*}"; raw="${rest#*:}"
       is_comment "$raw" && continue

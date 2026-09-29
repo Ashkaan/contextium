@@ -137,7 +137,7 @@ if [ "${MODE}" = thread ] && [ -z "${TID}" ]; then
   if [ -n "${WORKBENCH_THREAD_ID:-}" ]; then
     KNOWN=1
   elif [ -f "${DB}" ]; then
-    node -e '
+    node --disable-warning=ExperimentalWarning -e '
 const { DatabaseSync } = require("node:sqlite");
 let db;
 try { db = new DatabaseSync(process.argv[1], { readOnly: true }); } catch { process.exit(0); }
@@ -161,7 +161,9 @@ if [ "${MODE}" = thread ]; then ARGS=("${TID}" "${FULL}"); else ARGS=("${SINCE}"
 
 # shellcheck disable=SC2016  # the JS below must reach node unexpanded —
 # bash interpolating `$` inside it is the bug, not the quoting.
-node -e '
+# Node 22 warns on stderr when node:sqlite loads; the flag, on every Node that
+# has node:sqlite (22.5+), keeps the report free of it.
+node --disable-warning=ExperimentalWarning -e '
 const { DatabaseSync } = require("node:sqlite");
 // thread mode: <db> thread <thread id> <full 0|1>
 // window mode: <db> window <since> <until>
@@ -410,4 +412,4 @@ for (const entry of said(null)) {
 process.stdout.write(
   JSON.stringify({ since: arg1, until: arg2, threads: [...threads.values()] }) + "\n",
 );
-' "${DB}" "${MODE}" "${ARGS[@]}"
+' "${DB}" "${MODE}" ${ARGS[@]+"${ARGS[@]}"}

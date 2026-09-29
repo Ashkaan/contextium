@@ -101,7 +101,7 @@ printf '%s\t%s\t%s\n' "${WT}" "${TMP}/shared" "t3/${TID}" >"${LEDGER}"
 printf '%s\t%s\t%s\n' "${PRODWT}" "${TMP}/prodshared" "t3/${TID}" >>"${LEDGER}"
 printf '%s\t%s\t%s\n' "${TMP}/deleted-worktree" "${TMP}/x" "t3/${TID}" >>"${LEDGER}"
 
-run() { OUT="$(env "${E[@]}" bash "${SCRIPT}" 2>&1)"; RC=$?; }
+run() { OUT="$(env ${E[@]+"${E[@]}"} bash "${SCRIPT}" 2>&1)"; RC=$?; }
 
 # ── Nothing changed yet: every app is at origin/main ───────────────────────
 
@@ -256,7 +256,7 @@ git -C "${CLEAN}" add -A && git -C "${CLEAN}" commit -q -m fixed && git -C "${CL
 # ── Past the cap the importers are named, not run ──────────────────────────
 
 echo "export const w = 4;" >>"${CLEAN}/integrations/komodo/komodo.ts"
-OUT="$(env "${E[@]}" VERIFY_IMPORTER_CAP=1 bash "${SCRIPT}" 2>&1)"; RC=$?
+OUT="$(env ${E[@]+"${E[@]}"} VERIFY_IMPORTER_CAP=1 bash "${SCRIPT}" 2>&1)"; RC=$?
 is "past the cap the close still exits 0" "${RC}" "0"
 has "the apps are named rather than run" "${OUT}" "past the cap"
 hasnt "and none of them is reported ok" "${OUT}" "ok health/green"
@@ -508,7 +508,7 @@ rm -f "${SK}/cpd/scratch.md"
 # every run of this file, spent proving nothing.
 git -C "${WBCLEAN}" checkout -q -- . 2>/dev/null
 echo "// touched" >"${SK}/slow/scratch.md"
-OUT="$(env "${E[@]}" VERIFY_SKILLS_TIMEOUT=1 bash "${SCRIPT}" 2>&1)"; RC=$?
+OUT="$(env ${E[@]+"${E[@]}"} VERIFY_SKILLS_TIMEOUT=1 bash "${SCRIPT}" 2>&1)"; RC=$?
 is "a suite past the timeout fails the close" "${RC}" "1"
 has "and is reported as a timeout, not a generic red" "${OUT}" \
   "FAIL .agents/skills/slow .agents/skills/slow/slow.test.sh — timed out after 1s"
@@ -517,7 +517,7 @@ rm -f "${SK}/slow/scratch.md"
 # The same bound where no timeout(1) exists (stock macOS): the watchdog.
 git -C "${WBCLEAN}" checkout -q -- . 2>/dev/null
 echo "// touched" >"${SK}/slow/scratch.md"
-OUT="$(env "${E[@]}" VERIFY_SKILLS_TIMEOUT=1 VERIFY_WATCHDOG=1 bash "${SCRIPT}" 2>&1)"; RC=$?
+OUT="$(env ${E[@]+"${E[@]}"} VERIFY_SKILLS_TIMEOUT=1 VERIFY_WATCHDOG=1 bash "${SCRIPT}" 2>&1)"; RC=$?
 is "without timeout(1) a hung suite still fails the close" "${RC}" "1"
 has "…as a timeout" "${OUT}" "FAIL .agents/skills/slow .agents/skills/slow/slow.test.sh — timed out after 1s"
 rm -f "${SK}/slow/scratch.md"
@@ -673,7 +673,7 @@ suite "trapper/trap.test.sh" 'trap "exit 0" TERM; sleep 30'
 git -C "${WBCLEAN}" add -- .agents/skills/trapper && git -C "${WBCLEAN}" commit -q -m trapper \
   && git -C "${WBCLEAN}" push -q origin main
 echo "// touched" >"${SK}/trapper/scratch.md"
-OUT="$(env "${E[@]}" VERIFY_SKILLS_TIMEOUT=1 bash "${SCRIPT}" 2>&1)"; RC=$?
+OUT="$(env ${E[@]+"${E[@]}"} VERIFY_SKILLS_TIMEOUT=1 bash "${SCRIPT}" 2>&1)"; RC=$?
 is "a suite that traps the kill and exits 0 still fails the close" "${RC}" "1"
 has "and is still reported as a timeout" "${OUT}" \
   "FAIL .agents/skills/trapper .agents/skills/trapper/trap.test.sh — timed out after 1s"

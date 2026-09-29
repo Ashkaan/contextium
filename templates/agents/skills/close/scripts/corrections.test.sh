@@ -95,9 +95,9 @@ addAct(other, "user-input.resolved", { requestId: "r9", answers: {
 
 E=("T3CODE_HOME=${T3}" "HOME=${TMP}/home" "WORKBENCH_THREAD_ID=${TID}")
 
-OUT="$(env "${E[@]}" bash "${SCRIPT}" 2>&1)"
+OUT="$(env ${E[@]+"${E[@]}"} bash "${SCRIPT}" 2>&1)"
 RC=$?
-FULL="$(env "${E[@]}" bash "${SCRIPT}" --full 2>&1)"
+FULL="$(env ${E[@]+"${E[@]}"} bash "${SCRIPT}" --full 2>&1)"
 
 is "exits 0" "${RC}" "0"
 
@@ -280,7 +280,7 @@ add(F, "user", "a thread T3 no longer has a row for", "2026-09-22T13:00:00.000Z"
 
 # No WORKBENCH_THREAD_ID: window mode must never ask thread.sh for one.
 WE_=("T3CODE_HOME=${W3}" "HOME=${TMP}/home")
-WIN="$(env "${WE_[@]}" bash "${SCRIPT}" --since 2026-09-22T00:00:00Z --until 2026-09-23T00:00:00Z --json 2>&1)"
+WIN="$(env ${WE_[@]+"${WE_[@]}"} bash "${SCRIPT}" --since 2026-09-22T00:00:00Z --until 2026-09-23T00:00:00Z --json 2>&1)"
 WIN_RC=$?
 is "window mode exits 0 with no thread to resolve" "${WIN_RC}" "0"
 
@@ -329,7 +329,7 @@ is "an answer pairs with the assistant turn that asked" "$(q 'j.threads[2].items
 
 # ── Window mode usage: all three flags or none ─────────────────────────────
 
-usage_rc() { env "${WE_[@]}" bash "${SCRIPT}" "$@" >/dev/null 2>&1; echo $?; }
+usage_rc() { env ${WE_[@]+"${WE_[@]}"} bash "${SCRIPT}" "$@" >/dev/null 2>&1; echo $?; }
 is "--since without --until exits 2" "$(usage_rc --since 2026-09-22T00:00:00Z --json)" "2"
 is "--until without --since exits 2" "$(usage_rc --until 2026-09-22T00:00:00Z --json)" "2"
 is "a window without --json exits 2" \
@@ -337,20 +337,20 @@ is "a window without --json exits 2" \
 is "--json without a window exits 2" "$(usage_rc --json)" "2"
 is "--full does not ride along with a window" \
   "$(usage_rc --since 2026-09-22T00:00:00Z --until 2026-09-23T00:00:00Z --json --full)" "2"
-USAGE_ERR="$(env "${WE_[@]}" bash "${SCRIPT}" --since x --json 2>&1)"
+USAGE_ERR="$(env ${WE_[@]+"${WE_[@]}"} bash "${SCRIPT}" --since x --json 2>&1)"
 has "a usage error prints the usage" "${USAGE_ERR}" "--since <iso> --until <iso> --json"
-BADDATE="$(env "${WE_[@]}" bash "${SCRIPT}" --since yesterday --until 2026-09-23T00:00:00Z --json 2>&1)"
+BADDATE="$(env ${WE_[@]+"${WE_[@]}"} bash "${SCRIPT}" --since yesterday --until 2026-09-23T00:00:00Z --json 2>&1)"
 BADDATE_RC=$?
 is "a bound that is not a date exits 2" "${BADDATE_RC}" "2"
 has "…naming the bound" "${BADDATE}" "--since is not a date: yesterday"
-REVERSED="$(env "${WE_[@]}" bash "${SCRIPT}" --since 2026-09-23T00:00:00Z --until 2026-09-22T00:00:00Z --json 2>&1)"
+REVERSED="$(env ${WE_[@]+"${WE_[@]}"} bash "${SCRIPT}" --since 2026-09-23T00:00:00Z --until 2026-09-22T00:00:00Z --json 2>&1)"
 REVERSED_RC=$?
 is "a reversed window exits 2 rather than reading as silence" "${REVERSED_RC}" "2"
 has "…saying which way round" "${REVERSED}" "--since must be before --until"
 EMPTY_RC=0
-env "${WE_[@]}" bash "${SCRIPT}" --since 2026-09-22T00:00:00Z --until 2026-09-22T00:00:00Z --json > /dev/null 2>&1 || EMPTY_RC=$?
+env ${WE_[@]+"${WE_[@]}"} bash "${SCRIPT}" --since 2026-09-22T00:00:00Z --until 2026-09-22T00:00:00Z --json > /dev/null 2>&1 || EMPTY_RC=$?
 is "an empty window (since = until) exits 2" "${EMPTY_RC}" "2"
-FEB30="$(env "${WE_[@]}" bash "${SCRIPT}" --since 2026-02-30T00:00:00Z --until 2026-03-05T00:00:00Z --json 2>&1)"
+FEB30="$(env ${WE_[@]+"${WE_[@]}"} bash "${SCRIPT}" --since 2026-02-30T00:00:00Z --until 2026-03-05T00:00:00Z --json 2>&1)"
 FEB30_RC=$?
 is "a day that does not exist (Feb 30) exits 2 rather than becoming March 2" "${FEB30_RC}" "2"
 has "…naming the bound" "${FEB30}" "--since is not a date: 2026-02-30"

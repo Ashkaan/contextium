@@ -170,7 +170,7 @@ if [[ ${#code_files[@]} -eq 0 ]]; then
   pass "lint (0 files)"
 elif [[ ! -f "$LAYER1" ]]; then
   warn "lint missing — no layer-1.sh at $LAYER1"
-elif lint_out=$(printf '%s\n' "${code_files[@]}" \
+elif lint_out=$(printf '%s\n' ${code_files[@]+"${code_files[@]}"} \
     | CLAUDE_PROJECT_DIR="$REPO_DIR" bash "$LAYER1" 2>&1); then
   # A step layer-1 skipped (the package declares no lint or typecheck) is not a
   # step that passed: say which, and do not call the change linted.
@@ -197,7 +197,7 @@ if [[ ${#sh_files[@]} -eq 0 ]]; then
 elif ! command -v shellcheck >/dev/null 2>&1; then
   warn "shellcheck missing — skip"
 else
-  if sc_out=$(shellcheck "${sh_files[@]}" </dev/null 2>&1); then
+  if sc_out=$(shellcheck ${sh_files[@]+"${sh_files[@]}"} </dev/null 2>&1); then
     pass "shellcheck (${#sh_files[@]} files)"
   else
     fail "shellcheck (${#sh_files[@]} files) — see stderr"
@@ -224,12 +224,12 @@ else
   refs_ready=1
   cp "$(git rev-parse --path-format=absolute --git-path index)" "$refs_idx" 2>/dev/null || refs_ready=0
   if [[ "$refs_ready" -eq 1 && ${#untracked[@]} -gt 0 ]]; then
-    GIT_INDEX_FILE="$refs_idx" git add -N -- "${untracked[@]}" 2>/dev/null || refs_ready=0
+    GIT_INDEX_FILE="$refs_idx" git add -N -- ${untracked[@]+"${untracked[@]}"} 2>/dev/null || refs_ready=0
   fi
   if [[ "$refs_ready" -eq 0 ]]; then
     rm -f "$refs_idx"
     fail "standards-refs — could not prepare the files for the checker (git failed)"
-  elif refs_out=$(GIT_INDEX_FILE="$refs_idx" bash "$refs_script" "${present_files[@]}" </dev/null 2>&1); then
+  elif refs_out=$(GIT_INDEX_FILE="$refs_idx" bash "$refs_script" ${present_files[@]+"${present_files[@]}"} </dev/null 2>&1); then
     rm -f "$refs_idx"
     pass "standards-refs (0 dangling)"
   else
@@ -247,7 +247,7 @@ if [[ ${#changed_files[@]} -eq 0 ]]; then
 elif [[ ! -f "$peers_script" ]]; then
   warn "find-peers.sh missing"
 else
-  if peers_out=$(bash "$peers_script" "${changed_files[@]}" </dev/null 2>&1); then
+  if peers_out=$(bash "$peers_script" ${changed_files[@]+"${changed_files[@]}"} </dev/null 2>&1); then
     # Default mode is warn-only: it exits 0 and names each left-behind peer on
     # a `PEER:` line. Swallowing those printed a clean sweep over a class fix
     # that was not finished.

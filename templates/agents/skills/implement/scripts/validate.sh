@@ -479,7 +479,7 @@ if [[ "$PHASE" == "qa-list" ]]; then
   # answered "skipped-not-web" for a change that was all pixels.
   targets_args=(--repo "$REPO_DIR")
   [[ -n "$BASE" ]] && targets_args+=(--base "$BASE")
-  targets="$(bash "$QA_TARGETS_SH" "${targets_args[@]}")" || targets_rc=$?
+  targets="$(bash "$QA_TARGETS_SH" ${targets_args[@]+"${targets_args[@]}"})" || targets_rc=$?
   if [[ "$targets_rc" -ne 0 ]]; then
     err "validate: the QA target enumerator failed (exit ${targets_rc}). HALT —"
     err "a detector failure must never read as 'no UI changed'."

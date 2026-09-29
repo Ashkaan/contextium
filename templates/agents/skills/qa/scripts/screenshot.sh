@@ -16,13 +16,16 @@
 #   screenshot.sh --url <base> --repo-slug <slug> --run-id <id>
 #                 --pages "<route ...>" --viewports "W,W,W" [--masks "sel,sel"]
 #                 [--app <target-dir>]   the app's own Playwright is tried first
+#                 [--auth-op-item <id> --auth-id-field F --auth-secret-field F]
+#                 [--auth-act-as <email>]   # X-Portal-Act-As, beside the token
 # Output: PNGs + manifest.json under /tmp/qa-shots/<slug>/<run-id>/, and a
 #         manifest table on stdout (route · width · path · bytes · status).
 #         Plus motion/ — an animation manifest and a frame burst per route.
 # Exit:   0 ok; 2 usage; 6 identical shots across routes; 7 Playwright
 #         unavailable (stderr carries `qa: skipped — Playwright unavailable
 #         (<reason>)` — a skip, never a pass), and separately an off-origin
-#         redirect; 8 a capture came back blank (see the BLANK GATE at the bottom).
+#         redirect; 8 a capture came back blank (see the BLANK GATE at the
+#         bottom); 9 a route answered 4xx/5xx or not at all (the STATUS GATE).
 #
 # ── Why this captures the MOTION site, not the reduced-motion one ─────────────
 # `reducedMotion: "reduce"` looks like a determinism setting and is not one: it
@@ -47,9 +50,9 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck disable=SC1091  # sibling source, resolved at runtime
 source "$SCRIPT_DIR/lib.sh"
 
-SHOTS_ROOT="/tmp/qa-shots"
+SHOTS_ROOT="${QA_SHOTS_ROOT:-/tmp/qa-shots}"
 URL="" SLUG="" RUN_ID="" PAGES="" VIEWPORTS="1440,820,390" MASKS="" APP=""
-AUTH_OP_ITEM="" AUTH_ID_FIELD="client_id" AUTH_SECRET_FIELD="client_secret"
+AUTH_OP_ITEM="" AUTH_ID_FIELD="client_id" AUTH_SECRET_FIELD="client_secret" AUTH_ACT_AS=""
 # Motion capture is ON by default and has to stay that way to be worth anything:
 # an opt-in motion check is a motion check nobody runs.
 REDUCED_MOTION="no-preference" CAPTURE_MOTION="1"
@@ -68,6 +71,7 @@ while [[ $# -gt 0 ]]; do
     --auth-op-item) AUTH_OP_ITEM="${2:-}"; shift 2 ;;
     --auth-id-field) AUTH_ID_FIELD="${2:-client_id}"; shift 2 ;;
     --auth-secret-field) AUTH_SECRET_FIELD="${2:-client_secret}"; shift 2 ;;
+    --auth-act-as) AUTH_ACT_AS="${2:-}"; shift 2 ;;
     *) qa_err "screenshot: unknown flag: $1"; exit 2 ;;
   esac
 done
@@ -81,6 +85,9 @@ if [[ -n "$AUTH_OP_ITEM" ]] && ! qa_resolve_cf_access "$AUTH_OP_ITEM" "$AUTH_ID_
   exit 2
 fi
 export QA_CF_ACCESS_ID="${QA_CF_ACCESS_ID:-}" QA_CF_ACCESS_SECRET="${QA_CF_ACCESS_SECRET:-}"
+# The person the probe acts as on a portal that declares PROBE_ACTS_AS
+# (lib.sh `qa_probe_acts_as`); without it every page there is a machine's 403.
+export QA_ACT_AS="$AUTH_ACT_AS"
 
 [[ -n "$URL" && -n "$SLUG" && -n "$RUN_ID" ]] \
   || { qa_err "usage: screenshot.sh --url U --repo-slug S --run-id R --pages '...'"; exit 2; }
@@ -128,8 +135,11 @@ const slugRoute = (r) => {
 // returns 200 instead of a login redirect.
 const cfId = process.env.QA_CF_ACCESS_ID || "";
 const cfSecret = process.env.QA_CF_ACCESS_SECRET || "";
+// X-Portal-Act-As makes the probe the person the portal pairs it with
+// (PROBE_ACTS_AS); it means nothing without the token, so it only rides with it.
+const actAs = process.env.QA_ACT_AS || "";
 const extraHTTPHeaders = cfId && cfSecret
-  ? { "CF-Access-Client-Id": cfId, "CF-Access-Client-Secret": cfSecret }
+  ? { "CF-Access-Client-Id": cfId, "CF-Access-Client-Secret": cfSecret, ...(actAs ? { "X-Portal-Act-As": actAs } : {}) }
   : undefined;
 
 const browser = await chromium.launch();
@@ -377,6 +387,23 @@ if (collisions.length > 0) {
   );
   process.exit(6);
 }
+// STATUS GATE. A route that answered 4xx/5xx, or never answered, is not the
+// page: an answer like "Service tokens cannot access this page" is a 403 with a
+// full-ink body, so it clears the blank gate and, alone, the identical-shots
+// gate too. A route that IS an error page may answer its own code
+// (/404 with 404, /500 with 500) and nothing else: a 403 there is still a wall.
+const expectedError = (route) => { const m = /^\/?(404|500)(\.html)?\/?$/.exec(route); return m ? Number(m[1]) : null; };
+const failedStatus = manifest.filter((m) => (m.status < 200 || m.status >= 400) && m.status !== expectedError(m.route));
+if (failedStatus.length > 0) {
+  process.stderr.write("\nqa: UNSUCCESSFUL RESPONSES — these shots are not the pages\n");
+  for (const m of failedStatus) process.stderr.write(`  ${m.route} @${m.width}: HTTP ${m.status === -1 ? "no response" : m.status}\n`);
+  process.stderr.write(
+    "  A 403 on a gated portal usually means the probe reached it as a MACHINE: pass\n" +
+    "  --auth-act-as <the email its wrangler PROBE_ACTS_AS names> (serve.sh --live\n" +
+    "  emits it as QA_AUTH_ACT_AS). Asking a person to sign in is not the fix.\n",
+  );
+  process.exit(9);
+}
 // BLANK GATE. Placed last so a run that is also off-origin or colliding reports
 // the more specific cause first. `ink === null` means the measurement itself
 // failed and is NOT counted — an unmeasured shot must not read as a blank one.
@@ -410,6 +437,6 @@ if (blanks.length > 0) {
   );
   process.exit(8);
 }
-' "$URL" "$PAGES" "$VIEWPORTS" "$MASKS" "$OUT_DIR" )
+' "$URL" "$PAGES" "$VIEWPORTS" "$MASKS" "$OUT_DIR" ) || exit $?  # explicit: bash 3.2 (macOS) does not stop on a failed ( … ) under set -e here
 
 echo "qa: shots + manifest → $OUT_DIR"

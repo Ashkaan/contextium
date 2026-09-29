@@ -88,14 +88,22 @@ function parserRoots() {
 
 // Resolve a package under one of the roots and import it. Returns the module
 // namespace with a CJS default unwrapped, or null when no root holds it.
-async function loadPackage(pkg) {
+// `unusable(mod)` names why a loaded package cannot serve (or returns null);
+// such a root is warned about and the next one tried.
+async function loadPackage(pkg, unusable = (_mod) => null) {
   for (const root of parserRoots()) {
     if (!existsSync(path.join(root, pkg))) continue;
     try {
       const req = createRequire(path.join(root, "__blast-radius-resolver__.cjs"));
       const entry = req.resolve(pkg);
-      const mod = await import(pathToFileURL(entry).href);
-      return mod?.default ?? mod;
+      const imported = await import(pathToFileURL(entry).href);
+      const mod = imported?.default ?? imported;
+      const why = unusable(mod);
+      if (why) {
+        warnings.push(`blast-radius-symbols: ${pkg} under ${root} ${why}`);
+        continue;
+      }
+      return mod;
     } catch (err) {
       warnings.push(`blast-radius-symbols: ${pkg} under ${root} failed to load: ${err.message}`);
     }
@@ -121,7 +129,16 @@ function bashGrammarPath() {
 
 let tsModule;
 async function tsCollector() {
-  if (tsModule === undefined) tsModule = await loadPackage("typescript");
+  // TypeScript 7 (the native port) ships `typescript` without the compiler
+  // API; loaded blindly, it produced no symbols and no word about why. Such a
+  // root is skipped for the next one, and with none left, the regex walk.
+  if (tsModule === undefined) {
+    tsModule = await loadPackage("typescript", (mod) =>
+      typeof mod?.createSourceFile === "function"
+        ? null
+        : `is typescript ${mod?.version ?? "(unknown version)"}, which has no createSourceFile (TypeScript 7 dropped the compiler API) — install typescript@5`,
+    );
+  }
   if (!tsModule) return null;
   const ts = tsModule;
   return (filePath, text) => {
@@ -424,7 +441,7 @@ if (collectorNames.ts === "regex" || collectorNames.sh === "regex") {
     const roots = parserRoots();
     warnings.push(
       `parsers looked in: ${roots.length ? roots.join(", ") : "(no roots: BLAST_RADIUS_PARSER_ROOTS is empty)"}; ` +
-        "install them with `npm i -g typescript web-tree-sitter tree-sitter-bash` " +
+        "install them with `npm i -g typescript@5 web-tree-sitter tree-sitter-bash` " +
         "(Node's global node_modules), or into the workbench's own node_modules",
     );
   }

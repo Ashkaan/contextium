@@ -659,6 +659,89 @@ check_has "a quoted JSX literal is still found" "native <input type=date>" "$out
 check_lacks "a variable named fileType is not a file input" "type=file" "$out"
 check_eq "exactly one native finding" 1 "$(grep -c 'native-widget' <<<"$out")"
 
+# ── 29. Control heights in the published shape arm the control measure ────
+# The schema has no `controlHeights` key: a control's height lives on a
+# `components` entry. Only entries named `control-*` count — an app may
+# declare `person-row: 64px`, and a row height is not a control height.
+REPO="$(new_repo components-controls)"
+cat >"$REPO/DESIGN.md" <<'YAML'
+---
+name: Fixture
+colors:
+  ink: "#101010"
+typography:
+  body:
+    fontSize: "1rem"
+spacing:
+  s4: "4px"
+  s8: "8px"
+rounded:
+  sm: "6px"
+components:
+  control-sm:
+    height: "2rem"
+  control-md:
+    height: "2.25rem"
+  person-row:
+    height: "64px"
+---
+
+# Design System: Fixture
+
+## Controls
+Two heights.
+YAML
+cat >"$REPO/src/app.tsx" <<'TSX'
+export const App = () => (
+  <div>
+    <button className="h-9">declared control height</button>
+    <button className="h-11">not declared</button>
+    <button className="h-16">declared only by a row, which is not a control</button>
+  </div>
+);
+TSX
+out="$(bash "$DRIFT" "$REPO" 2>&1)"
+check_has "a components control set arms the measure" "control-height  h-11" "$out"
+check_lacks "and a declared control height is not drift" "control-height  h-9" "$out"
+check_has "a non-control component height does not join the set" "control-height  h-16" "$out"
+
+# ── 30. The reader reads the published keys when the older ones are absent ─
+fm="$(node "$SCRIPT_DIR/../design-frontmatter.mjs" "$REPO")"
+check_has "a spacing map arms the spacing scale" "SPACING_SCALE=4px|8px" "$fm"
+check_has "and control-* heights arm the control set" "CONTROL_HEIGHTS=2rem|2.25rem" "$fm"
+
+# ── 31. Variants derive from <role>-<variant> component names ─────────────
+# `componentVariants` is not a schema key either; the schema's way to say a
+# button has a ghost variant is an entry named `button-ghost`.
+REPO="$(new_repo components-variants)"
+cat >"$REPO/DESIGN.md" <<'YAML'
+---
+name: Fixture
+colors:
+  ink: "#101010"
+typography:
+  body:
+    fontSize: "1rem"
+components:
+  button-default:
+    backgroundColor: "{colors.ink}"
+  button-ghost:
+    textColor: "{colors.ink}"
+---
+
+# Design System: Fixture
+
+## Controls
+Two button variants.
+YAML
+cat >"$REPO/src/app.tsx" <<'TSX'
+export const App = () => <button className="px-2">raw</button>;
+TSX
+fm="$(node "$SCRIPT_DIR/../design-frontmatter.mjs" "$REPO")"
+check_has "variants derive from component names" "VARIANTS_BUTTON=default|ghost" "$fm"
+out="$(bash "$DRIFT" "$REPO" 2>&1)"
+check_has "and arm the recipe measure" "unmapped-recipe" "$out"
+
 echo
 echo "system-drift.test.sh: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

@@ -79,7 +79,10 @@ function scalar(raw) {
       break;
     }
   }
-  return raw.slice(0, cut).trim().replace(/^["']|["']$/g, "");
+  return raw
+    .slice(0, cut)
+    .trim()
+    .replace(/^["']|["']$/g, "");
 }
 
 const tree = {};
@@ -190,9 +193,9 @@ function splitInline(body) {
       continue;
     }
     if (c === '"' || c === "'") quote = c;
-    else if (c === "(" || c === "[") (depth++, (buf += c));
-    else if (c === ")" || c === "]") (depth--, (buf += c));
-    else if (c === "," && depth === 0) (out.push(buf.trim()), (buf = ""));
+    else if (c === "(" || c === "[") depth++, (buf += c);
+    else if (c === ")" || c === "]") depth--, (buf += c);
+    else if (c === "," && depth === 0) out.push(buf.trim()), (buf = "");
     else buf += c;
   }
   if (buf.trim()) out.push(buf.trim());
@@ -207,6 +210,36 @@ function entryFontSizes(typography) {
   return sizes.length ? sizes : undefined;
 }
 
+// The published schema has no `controlHeights` key: a control's height is the
+// `height` of a `components` entry. Only entries named `control-*` count — an
+// app may declare `person-row: 64px`, and a row or card height is not a
+// control height.
+function controlHeights(components) {
+  if (!components || typeof components !== "object") return undefined;
+  const heights = Object.entries(components)
+    .filter(
+      ([name, entry]) =>
+        name.startsWith("control-") && entry && typeof entry === "object" && entry.height !== undefined,
+    )
+    .map(([, entry]) => entry.height);
+  return heights.length ? heights : undefined;
+}
+
+// Nor has it a `componentVariants` key: a variant is an entry named
+// `<role>-<variant>` (`button-ghost`). A two-word role groups under its first
+// word (`status-pill-success` lands in `status`), which measure 4 ignores — it
+// reads only BUTTON, INPUT, SELECT, TEXTAREA and TABLE.
+function variantsByRole(components) {
+  if (!components || typeof components !== "object") return undefined;
+  const roles = {};
+  for (const name of Object.keys(components)) {
+    const dash = name.indexOf("-");
+    if (dash <= 0 || dash === name.length - 1) continue;
+    (roles[name.slice(0, dash)] ??= []).push(name.slice(dash + 1));
+  }
+  return Object.keys(roles).length ? roles : undefined;
+}
+
 function emit(name, node) {
   const list = values(node).filter(Boolean);
   if (list.length) process.stdout.write(`${name}=${list.join("|")}\n`);
@@ -218,15 +251,23 @@ function emit(name, node) {
 // fact, so whichever is present wins and neither is required.
 // A file in the published DESIGN.md shape has neither: its ramp is the fontSize
 // of each named typography entry, so that is the last fallback.
+// The same rule covers the other three: `spacing` is the published key and
+// `spacingScale` the older one; a control height's home in the schema is a
+// `components` entry's `height`; a variant's home is an entry named
+// `<role>-<variant>`. The older key is read first each time — a file that
+// declared both would be two copies of one fact, so neither is required and
+// the old key wins.
 emit("TYPE_SCALE", tree.typography?.scale ?? tree.typeScale ?? entryFontSizes(tree.typography));
 emit("COLORS", tree.colors);
-emit("SPACING_SCALE", tree.spacingScale);
+emit("SPACING_SCALE", tree.spacingScale ?? tree.spacing);
 emit("RADIUS_SCALE", tree.radiusScale ?? tree.rounded);
-emit("CONTROL_HEIGHTS", tree.controlHeights);
-if (tree.componentVariants && typeof tree.componentVariants === "object") {
-  for (const [role, v] of Object.entries(tree.componentVariants)) {
+emit("CONTROL_HEIGHTS", tree.controlHeights ?? controlHeights(tree.components));
+const variants = tree.componentVariants ?? variantsByRole(tree.components);
+if (variants && typeof variants === "object") {
+  for (const [role, v] of Object.entries(variants)) {
     const list = values(v);
-    if (list.length) process.stdout.write(`VARIANTS_${role.toUpperCase().replace(/[^A-Z0-9]/g, "_")}=${list.join("|")}\n`);
+    if (list.length)
+      process.stdout.write(`VARIANTS_${role.toUpperCase().replace(/[^A-Z0-9]/g, "_")}=${list.join("|")}\n`);
   }
 }
 process.exit(0);

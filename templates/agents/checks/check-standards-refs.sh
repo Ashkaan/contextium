@@ -89,11 +89,11 @@ if [[ $found -eq 0 ]]; then
 fi
 
 grep_args=(-n -I -F -e "Standards $ARROW " -e "@rule:")
-[[ $cached -eq 1 ]] && grep_args=(--cached "${grep_args[@]}")
+[[ $cached -eq 1 ]] && grep_args=(--cached ${grep_args[@]+"${grep_args[@]}"})
 # git grep exits 1 for "no match", which is a clean answer; anything above 1 is
 # a grep that did not happen.
 grep_rc=0
-git grep "${grep_args[@]}" -- "$@" >"$TMP/hits" 2>"$TMP/grep.err" || grep_rc=$?
+git grep ${grep_args[@]+"${grep_args[@]}"} -- "$@" >"$TMP/hits" 2>"$TMP/grep.err" || grep_rc=$?
 if [[ $grep_rc -gt 1 ]]; then
   err "check-standards-refs: git grep failed: $(cat "$TMP/grep.err")"
   exit 2

@@ -182,11 +182,14 @@ export interface DiscoveryResult {
   projects: ProjectMeta[];
   /** Folders that looked like a project and produced no row. */
   discoveryDrops: number;
+  /** The warning behind each drop — what `/project` names on its first line. */
+  dropped: string[];
 }
 
 function discoverProjects(projectsDir: string): DiscoveryResult {
   const projects: ProjectMeta[] = [];
   const warnings: string[] = [];
+  const dropped: string[] = [];
   let discoveryDrops = 0;
 
   let domains: string[];
@@ -214,6 +217,7 @@ function discoverProjects(projectsDir: string): DiscoveryResult {
       // recorded here.
       warnings.push(`${domain}: cannot list domain directory`);
       discoveryDrops += 1;
+      dropped.push(`${domain}: cannot list domain directory`);
       continue;
     }
 
@@ -228,6 +232,7 @@ function discoverProjects(projectsDir: string): DiscoveryResult {
         // dropped out of the index with nothing counting it.
         warnings.push(`${domain}/${dirName}: README unreadable`);
         discoveryDrops += 1;
+        dropped.push(`${domain}/${dirName}: README unreadable`);
         continue;
       }
 
@@ -235,6 +240,7 @@ function discoverProjects(projectsDir: string): DiscoveryResult {
       if (!fm) {
         warnings.push(`${domain}/${dirName}: no frontmatter`);
         discoveryDrops += 1;
+        dropped.push(`${domain}/${dirName}: no frontmatter`);
         continue;
       }
 
@@ -242,6 +248,7 @@ function discoverProjects(projectsDir: string): DiscoveryResult {
       if (!status) {
         warnings.push(`${domain}/${dirName}: missing status`);
         discoveryDrops += 1;
+        dropped.push(`${domain}/${dirName}: missing status`);
         continue;
       }
 
@@ -255,6 +262,7 @@ function discoverProjects(projectsDir: string): DiscoveryResult {
       if (!["active", "blocked", "monitor", "completed"].includes(normalizedStatus)) {
         warnings.push(`${domain}/${dirName}: unknown status '${status}'`);
         discoveryDrops += 1;
+        dropped.push(`${domain}/${dirName}: unknown status '${status}'`);
         continue;
       }
 
@@ -295,7 +303,7 @@ function discoverProjects(projectsDir: string): DiscoveryResult {
     for (const w of warnings) console.error(`  - ${w}`);
   }
 
-  return { projects, discoveryDrops };
+  return { projects, discoveryDrops, dropped };
 }
 
 // ── Sort: priority desc, then domain alphabetical, then created newest first ──
@@ -555,13 +563,36 @@ export function refuseOutWithDrops(outputPath: string, discoveryDrops: number): 
   return `--out ${outputPath}: refused, ${discoveryDrops} project(s) could not be read (see the warnings above); the file was left as it was`;
 }
 
+/** The first line of the `--compact` view when discovery dropped projects, or
+ *  null. The view is what `/project` shows, so a project that could not be read
+ *  is named there rather than silently absent; the run then exits non-zero. */
+export function compactDropLine(discoveryDrops: number, dropped: string[] = []): string | null {
+  if (discoveryDrops === 0) return null;
+  const named = dropped.length > 0 ? `: ${dropped.join("; ")}` : " — see the warnings on stderr";
+  return `**${discoveryDrops} project(s) could not be read and are missing below${named}.**`;
+}
+
 function main(): void {
   const argv = process.argv.slice(2);
-  const { projects, discoveryDrops } = discoverProjects(projectsDirPath());
+  const { projects, discoveryDrops, dropped } = discoverProjects(projectsDirPath());
 
   // --compact: slim stdout view for the /project skill (working-tree freshness).
+  // A drop is named on the view's first line and fails the run.
   if (argv.includes("--compact")) {
-    process.stdout.write(buildCompact(buildIndexData(projects, discoveryDrops)));
+    // A project can also be read and still not render: buildIndexData rejects a
+    // row that fails the index's schema (an empty next:, say). That is a drop
+    // too, named on the same line, or the project vanishes from /project while
+    // the run reports success. Rows are matched by linkPath, one per folder:
+    // two projects may share a name.
+    const data = buildIndexData(projects, discoveryDrops);
+    const shown = new Set([...data.active, ...data.blocked, ...data.monitor].map((r) => r.linkPath));
+    const rejected = projects
+      .filter((p) => (ACTIVE_STATUSES as readonly string[]).includes(p.status) && !shown.has(p.linkPath))
+      .map((p) => `${p.linkPath}: its row does not render (check next:, description and priority)`);
+    const dropLine = compactDropLine(discoveryDrops + rejected.length, [...dropped, ...rejected]);
+    if (dropLine) process.stdout.write(`${dropLine}\n\n`);
+    process.stdout.write(buildCompact(data));
+    if (dropLine) process.exitCode = 1;
     return;
   }
 

@@ -140,7 +140,7 @@ walk_app_router() {
       # shellcheck disable=SC2206  # deliberate word-split on the path separator
       local segs=($dir)
       IFS="$IFS_SAVE"
-      for seg in "${segs[@]}"; do
+      for seg in ${segs[@]+"${segs[@]}"}; do
         case "$seg" in
           # Dynamic: no param value to pick — never emit a literal `[id]` path.
           *"["*) skip="dynamic"; break ;;
@@ -196,4 +196,4 @@ if [[ ${#routes[@]} -eq 0 ]]; then
   exit 4
 fi
 
-printf '%s\n' "${routes[@]}" | sort -u
+printf '%s\n' ${routes[@]+"${routes[@]}"} | sort -u

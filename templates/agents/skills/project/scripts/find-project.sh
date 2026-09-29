@@ -15,7 +15,8 @@
 #   NOT_FOUND                                → no match
 #   NOT_FOUND:nearest: <slug1>, <slug2>, ... → no exact match; suggestions
 #
-# Exit code: 0 always — caller parses stdout.
+# Exit code: 0 always — caller parses stdout. An unknown domain or a missing
+# projects/ folder is NOT_FOUND, not a failure.
 
 set -euo pipefail
 
@@ -33,7 +34,7 @@ INPUT="${1:?slug required}"
 if [[ "$INPUT" == */* ]]; then
   DOMAIN="${INPUT%%/*}"
   SLUG="${INPUT##*/}"
-  MATCH=$(find "projects/${DOMAIN}" -maxdepth 1 -type d -name "*_${SLUG}" 2>/dev/null | head -1)
+  MATCH=$(find "projects/${DOMAIN}" -maxdepth 1 -type d -name "*_${SLUG}" 2>/dev/null | head -1 || true)
   if [ -n "$MATCH" ]; then
     echo "PATH:${MATCH}"
     exit 0
@@ -43,7 +44,7 @@ if [[ "$INPUT" == */* ]]; then
 fi
 
 # Bare slug: scan all domains
-MATCH=$(find projects -maxdepth 2 -type d -name "*_${INPUT}" 2>/dev/null | head -1)
+MATCH=$(find projects -maxdepth 2 -type d -name "*_${INPUT}" 2>/dev/null | head -1 || true)
 
 if [ -n "$MATCH" ]; then
   echo "PATH:${MATCH}"

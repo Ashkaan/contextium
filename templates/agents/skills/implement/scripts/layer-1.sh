@@ -66,7 +66,7 @@ pkg_of() {
   done
 }
 
-PKGS="$(for f in "${files[@]}"; do pkg_of "$f"; done | LC_ALL=C sort -u)"
+PKGS="$(for f in ${files[@]+"${files[@]}"}; do pkg_of "$f"; done | LC_ALL=C sort -u)"
 if [[ -z "$PKGS" ]]; then
   echo "PASS: layer-1 (no package in scope)"
   exit 0

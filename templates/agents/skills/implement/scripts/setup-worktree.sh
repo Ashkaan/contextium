@@ -438,7 +438,7 @@ if worktree_exists; then
 
   if (( ${#foreign_markers[@]} > 0 )); then
     err "BLOCKED: worktree $worktree_dir is already claimed by another session:"
-    for m in "${foreign_markers[@]}"; do
+    for m in ${foreign_markers[@]+"${foreign_markers[@]}"}; do
       err "  $(basename "$m")"
     done
     err ""

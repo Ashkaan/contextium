@@ -34,7 +34,7 @@ it reads any code, so it is the cheapest place to prevent a wrong assumption.
 | `AGENTS.md` | this file — a link to `.agents/AGENTS.md` |
 | `.agents/skills/` | the skills, each with its scripts and the templates it writes; `review/` is the reviewer chain |
 | `.agents/agents/` | the agent prompts the skills dispatch in a fresh context |
-| `.agents/checks/` | the checks `land.sh` runs before it commits: decision records, skills, integration manifests, standards citations, secrets |
+| `.agents/checks/` | the checks `land.sh` runs before it commits: decision records, skills, integration manifests, script tests, standards citations, secrets |
 | `.agents/hooks/` | the pre-tool guards: no host change without asking, no write into the shared checkout |
 | `.agents/generators/` | the index generators for `apps/`, `integrations/`, `projects/` |
 | `.agents/output-styles/` | Claude Code output styles `/author` writes, reached through `~/.claude/output-styles` |
@@ -194,7 +194,10 @@ whole.
   names the thing the test claims. A test that has never failed is not evidence: it may be asserting
   against a field the code never reads, or against the arguments a function was called with rather
   than what it produced. Any app that calls a model carries an eval suite and re-runs it when its
-  prompt moves.
+  prompt moves. A script's test runs it as a program — `bash x.sh`, `node x.ts`, never `source` or
+  `import` — so the test survives the script changing language, and
+  `.agents/checks/check-scripts.sh` refuses a close that changes a script under `.agents/` without
+  a paired test.
 - **One fact, one file.** A rule, a step definition, a wire format or a schema lives in exactly one
   place and is referenced from everywhere else, never mirrored as prose.
 - **A decision that would be expensive to reverse gets a record** in the narrowest `decisions/`

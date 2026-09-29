@@ -240,5 +240,21 @@ fresh="$(mktemp -d "${TMPDIR:-/tmp}/cm-unborn.XXXXXX")"
 t "a repo with no commits yet: a spec is new, not a read failure" "material:new-file|0" "$(cat "$fresh/out")|$rc"
 rm -rf "$fresh"
 
+# A ref that fails to resolve is "unborn" ONLY when the repo is readable and
+# HEAD is merely missing (`rev-parse --verify -q HEAD` exit 1). A rev-parse that
+# errors (exit 128) is a failed read, never "every file is new".
+cat >"$fakegit/git" <<EOF
+#!/usr/bin/env bash
+for a in "\$@"; do
+  if [ "\$a" = "\${FAKE_GIT_FAIL:-}" ]; then echo "fatal: simulated \$a failure" >&2; exit 128; fi
+done
+exec "$realgit" "\$@"
+EOF
+chmod +x "$fakegit/git"
+rc=0; out="$(PATH="$fakegit:$PATH" FAKE_GIT_FAIL=--verify bash "$SUT" lean.spec.md 2>/dev/null)" || rc=$?
+t "a rev-parse that errors is a read failure, not an unborn repo" "material:git-read-failed|1" "$out|$rc"
+rc=0; out="$(PATH="$fakegit:$PATH" FAKE_GIT_FAIL=--verify bash "$SUT" specs/001-a 2>/dev/null)" || rc=$?
+t "…in a folder too" "material:git-read-failed|1" "$out|$rc"
+
 echo "check-materiality.test.sh: $pass passed, $fail failed"
 [[ $fail -eq 0 ]]

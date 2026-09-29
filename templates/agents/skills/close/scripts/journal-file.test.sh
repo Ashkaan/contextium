@@ -96,7 +96,7 @@ ins.run(tid2, "p", "U", "t3code/b-title", wt2, "2026-09-14T03:15:51.803Z", "x", 
 SCRIPT="${T3_WT}/.agents/skills/close/scripts/journal-file.sh"
 
 E=("HOME=${FAKE_HOME}" "T3CODE_HOME=${T3}")
-run() { OUT="$(cd "${T3_WT}" && env "${E[@]}" bash "${SCRIPT}" "$@" 2>&1)"; RC=$?; }
+run() { OUT="$(cd "${T3_WT}" && env ${E[@]+"${E[@]}"} bash "${SCRIPT}" "$@" 2>&1)"; RC=$?; }
 
 # ── The name ───────────────────────────────────────────────────────────────
 #
@@ -229,7 +229,7 @@ is "resume still uses the repaired journal" "${OUT}" "${CHECK_PATH}"
 # runs out of the shared code checkout — the path the `~/.agents/skills` link
 # resolves to — so the code repo is a satellite it creates on first write.
 
-run2() { OUT="$(cd "${T3_WT2}" && env "${E[@]}" bash "${CODE}/.agents/skills/close/scripts/journal-file.sh" "$@" 2>&1)"; RC=$?; }
+run2() { OUT="$(cd "${T3_WT2}" && env ${E[@]+"${E[@]}"} bash "${CODE}/.agents/skills/close/scripts/journal-file.sh" "$@" 2>&1)"; RC=$?; }
 
 run2 "landed then removed"
 LANDED="${OUT}"

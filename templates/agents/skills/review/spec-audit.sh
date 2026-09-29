@@ -117,7 +117,7 @@ if [[ -d "$SPEC_FILE" ]]; then
       [[ -n "$_c" ]] && _design+=("${_c#"$SPEC_FILE"/}")
     done < <(printf '%s\n' "$_contracts" | sort)
   fi
-  for _f in "${_design[@]}"; do
+  for _f in ${_design[@]+"${_design[@]}"}; do
     if ! _body=$(cat "$SPEC_FILE/$_f"); then
       err "Error: cannot read $SPEC_FILE/$_f — refusing to audit a partial design"
       exit 2
@@ -131,7 +131,9 @@ fi
 ROUND_INSTRUCTIONS=""
 if [[ -n "$PUSHBACK_FILE" ]]; then
   PUSHBACK_CONTENTS=$(cat "$PUSHBACK_FILE")
-  ROUND_INSTRUCTIONS=$(cat <<EOF
+  # A heredoc read, not $(cat <<…): bash 3.2 (macOS) miscounts quotes and
+  # parentheses in a heredoc inside $( ) and fails to parse the file.
+  IFS= read -r -d '' ROUND_INSTRUCTIONS <<EOF || true
 
 ROUND 2 — Claude has responded to your prior findings. For each item below,
 either CONCEDE (Claude's pushback is valid; the finding should be dropped) or
@@ -154,9 +156,11 @@ indistinguishable from a crash and would otherwise read as consensus.
 CLAUDE'S PUSHBACKS:
 $PUSHBACK_CONTENTS
 EOF
-)
+  ROUND_INSTRUCTIONS="${ROUND_INSTRUCTIONS%$'\n'}"
 else
-  ROUND_INSTRUCTIONS=$(cat <<'EOF'
+  # A heredoc read, not $(cat <<…): bash 3.2 (macOS) miscounts quotes and
+  # parentheses in a heredoc inside $( ) and fails to parse the file.
+  IFS= read -r -d '' ROUND_INSTRUCTIONS <<'EOF' || true
 
 ROUND 1 — Adversarial review of the SPEC below. Find design flaws BEFORE code
 is written.
@@ -225,10 +229,12 @@ rather than a pass. Never emit an empty response.
 
 Be concise. No prose introduction. No summary at the end. Just findings.
 EOF
-)
+  ROUND_INSTRUCTIONS="${ROUND_INSTRUCTIONS%$'\n'}"
 fi
 
-PROMPT=$(cat <<EOF
+# A heredoc read, not $(cat <<…): bash 3.2 (macOS) miscounts quotes and
+# parentheses in a heredoc inside $( ) and fails to parse the file.
+IFS= read -r -d '' PROMPT <<EOF || true
 You are an adversarial reviewer of an app SPEC. You're reviewing a SPEC, not
 code. The repo conventions you must hold the SPEC to are documented in
 AGENTS.md, section Standards (data is fetched and judgment is prompted, read
@@ -241,7 +247,7 @@ $ROUND_INSTRUCTIONS
 SPEC CONTENTS:
 $SPEC_CONTENTS
 EOF
-)
+PROMPT="${PROMPT%$'\n'}"
 
 # ── Invoke ────────────────────────────────────────────────────────────
 

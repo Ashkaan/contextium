@@ -38,9 +38,7 @@ const FORCE = args.includes("--force");
 const PRINT = args.includes("--print");
 const MARK_EXISTING = args.includes("--mark-existing");
 if (!repo) {
-  process.stderr.write(
-    "usage: gen-design-md.ts <repo-path> [--force] [--print] | --mark-existing <repo-path>\n",
-  );
+  process.stderr.write("usage: gen-design-md.ts <repo-path> [--force] [--print] | --mark-existing <repo-path>\n");
   process.exit(2);
 }
 
@@ -53,7 +51,8 @@ const STUB_MARKER = "design-authority: generated-stub";
  * frontmatter says. A hand-written design system does not describe itself as
  * omitting its own creative direction.
  */
-const GENERATED_FINGERPRINT = "Sections it could not infer (creative direction, elevation philosophy) are intentionally omitted";
+const GENERATED_FINGERPRINT =
+  "Sections it could not infer (creative direction, elevation philosophy) are intentionally omitted";
 
 if (MARK_EXISTING) {
   if (!existsSync(designPath)) {
@@ -166,10 +165,52 @@ function addRadius(slug: string, val: string): void {
   if (!slug || !LEN_VAL.test(val) || /var\(/.test(val)) return;
   if (!radii.has(slug)) radii.set(slug, val);
 }
+// A captured font-family value ends where the CSS value ends, which the regex
+// cannot tell from inside an HTML attribute: `style="font-family:Inter"
+// data-x="foo"` has no `;` or `>` before the next attribute. The rule is the
+// quote: a quote that follows a comma or whitespace (or starts the value)
+// OPENS a family name and its pair is kept verbatim, spaces and all; a quote
+// that follows any other character, spaces aside, CLOSES the attribute and
+// ends the value. A backslash escape inside a quoted family is kept.
+// Outside quotes, a formatter's line wrap collapses to one space.
+function cssFontValue(raw: string): string {
+  let out = "";
+  let open: string | null = null;
+  for (let i = 0; i < raw.length; i++) {
+    const c = raw[i];
+    if (open) {
+      // A CSS escape (`\"`) is part of the family, not its end.
+      if (c === "\\" && i + 1 < raw.length) {
+        out += c + raw[++i];
+        continue;
+      }
+      out += c;
+      if (c === open) open = null;
+      continue;
+    }
+    // In a plain JS string the attribute's closing quote arrives escaped
+    // (`style=\"font-family:Arial\"`); the backslash is the boundary, not a
+    // character of the family.
+    if (c === "\\" && (raw[i + 1] === '"' || raw[i + 1] === "'")) break;
+    if (c === '"' || c === "'") {
+      const prev = out.trimEnd().at(-1);
+      if (prev !== undefined && prev !== ",") break;
+      open = c;
+      out += c;
+      continue;
+    }
+    if (/\s/.test(c)) {
+      if (out !== "" && !/\s/.test(out.at(-1) ?? "")) out += " ";
+      continue;
+    }
+    out += c;
+  }
+  return out.trim().replace(/;$/, "");
+}
 function addFont(role: string, stack: string): void {
   // Keep quotes inside the stack intact — a family like 'Lexend Deca' is valid
-  // and stripping the outer quote corrupts it. Only trim + drop a trailing ;.
-  stack = stack.trim().replace(/;$/, "");
+  // and stripping the outer quote corrupts it.
+  stack = cssFontValue(stack);
   const first = stack.split(",")[0]?.replace(/["']/g, "").trim();
   if (!first || /^(inherit|initial|unset|var\()/.test(first)) return;
   // Reject values that are sizes, not families — a `--font-size-*` token or a
@@ -222,8 +263,12 @@ for (const f of files) {
   // radii — both --radius-<name>: 4px and the bare shadcn --radius: 0.625rem
   for (const m of txt.matchAll(/--(?:radius|rounded)-([a-z0-9-]+)\s*:\s*([^;]+);/gi)) addRadius(m[1], m[2]);
   for (const m of txt.matchAll(/--radius\s*:\s*([^;]+);/gi)) addRadius("base", m[1]);
-  // font-family declarations -> collect distinct stacks as roles
-  for (const m of txt.matchAll(/font-family\s*:\s*([^;{}]+)[;}]/gi)) addFont("_stack" + fonts.size, m[1]);
+  // font-family declarations -> collect distinct stacks as roles. A stack never
+  // holds `>` or a backtick, so they end the value too: inside an HTML template
+  // string the next `;` can be lines away, which is how one generated stub got
+  // 200 characters of email markup as its body font. A newline does NOT end
+  // it — a formatter wraps a long stack after a comma.
+  for (const m of txt.matchAll(/font-family\s*:\s*([^;{}>`]+)[;}>`]/gi)) addFont("_stack" + fonts.size, m[1]);
   // --font-<role>: stack  (the (?!size-) lookahead keeps --font-size-* out of fonts)
   for (const m of txt.matchAll(/--font-(?!size-)([a-z0-9-]+)\s*:\s*([^;]+);/gi)) addFont(m[1], m[2]);
   // declared font-size tokens: --text-sm / --font-size-lg / --fs-base: 0.875rem

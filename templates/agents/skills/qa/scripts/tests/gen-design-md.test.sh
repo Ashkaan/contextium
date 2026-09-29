@@ -152,6 +152,100 @@ check_has "carrying its fontSize" '    fontSize: "14px"' "$body6"
 fm="$(node "${SCRIPT_DIR}/../design-frontmatter.mjs" "$REPO6")"
 check_has "and the drift reader still arms the type ramp from it" "TYPE_SCALE=14px|20px" "$fm"
 
+# ── 5c. A font-family inside an HTML template string is the stack, no more ─
+# A real site's stub carried 200 characters of email markup as its body font:
+# the scan stopped at the next `;`, which was lines later, and kept the
+# attribute quote before the tag's `>`.
+REPO7="$TMP/template-string"
+mkdir -p "$REPO7"
+cat >"$REPO7/theme.css" <<'CSS'
+:root { --color-navy: #10274A; }
+CSS
+cat >"$REPO7/notify.ts" <<'TS'
+const html = `<div style="background:#F7F8FA;padding:28px 0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif">` +
+    `<table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr><td align="center">` +
+    `</td></tr></table></div>`;
+export { html };
+TS
+node "$GEN" "$REPO7" >/dev/null 2>&1
+fam="$(grep -m1 'fontFamily:' "$REPO7/DESIGN.md")"
+expected="    fontFamily: \"-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif\""
+check_eq "a template-string font stack is the stack and nothing else" "$expected" "$fam"
+
+# ── 5d. A stack wrapped across lines is still the whole stack ──────────────
+# A formatter breaks a long stack after a comma; a newline is not the end of
+# the value.
+REPO8="$TMP/wrapped-stack"
+mkdir -p "$REPO8"
+cat >"$REPO8/theme.css" <<'CSS'
+:root { --color-navy: #10274A; }
+body {
+  font-family:
+    "Inter",
+    system-ui,
+    sans-serif;
+}
+CSS
+node "$GEN" "$REPO8" >/dev/null 2>&1
+fam8="$(grep -m1 'fontFamily:' "$REPO8/DESIGN.md")"
+check_has "a wrapped stack keeps every family" 'system-ui, sans-serif"' "$fam8"
+check_lacks "and does not end at the first line break" '"Inter","' "$fam8"
+
+# ── 5e. The value ends at an attribute's closing quote, not inside a family ─
+# `style="font-family:Inter" data-x="foo"` has no `;` and no `>` before the
+# next attribute; the quote after `Inter` closes the attribute, while the quote
+# that opens 'Segoe UI' (after a comma) does not. Whitespace inside a quoted
+# family is the family's own.
+REPO9="$TMP/attribute-tail"
+mkdir -p "$REPO9"
+cat >"$REPO9/theme.css" <<'CSS'
+:root { --color-navy: #10274A; }
+h1 { font-family: "Two  Spaces", serif; }
+CSS
+cat >"$REPO9/notify.ts" <<'TS'
+const html = `<div style="font-family:Inter" data-x="foo">hi</div>`;
+export { html };
+TS
+node "$GEN" "$REPO9" >/dev/null 2>&1
+body9="$(cat "$REPO9/DESIGN.md")"
+check_has "an attribute after the stack is not part of it" '    fontFamily: "Inter"' "$body9"
+check_lacks "and no other attribute leaks in" 'data-x' "$body9"
+check_has "whitespace inside a quoted family is kept" 'fontFamily: "\"Two  Spaces\", serif"' "$body9"
+
+# ── 5f. An escaped quote is part of the family; a quote after trailing space closes ─
+REPO10="$TMP/escaped-quote"
+mkdir -p "$REPO10"
+cat >"$REPO10/theme.css" <<'CSS'
+:root { --color-navy: #10274A; }
+h1 { font-family: "Franklin \"Gothic\"", serif; }
+CSS
+node "$GEN" "$REPO10" >/dev/null 2>&1
+check_has "an escaped quote inside a family does not end the value" 'serif"' "$(grep -m1 'fontFamily:' "$REPO10/DESIGN.md")"
+REPO11="$TMP/trailing-space-attribute"
+mkdir -p "$REPO11"
+cat >"$REPO11/theme.css" <<'CSS'
+:root { --color-navy: #10274A; }
+CSS
+cat >"$REPO11/notify.ts" <<'TS'
+const html = `<div style="font-family:Arial " data-x="foo">hi</div>`;
+export { html };
+TS
+node "$GEN" "$REPO11" >/dev/null 2>&1
+check_eq "a closing quote after trailing space ends the value" '    fontFamily: "Arial"' "$(grep -m1 'fontFamily:' "$REPO11/DESIGN.md")"
+
+# ── 5g. An escaped attribute quote in a plain JS string ends the value too ─
+REPO12="$TMP/escaped-attribute-quote"
+mkdir -p "$REPO12"
+cat >"$REPO12/theme.css" <<'CSS'
+:root { --color-navy: #10274A; }
+CSS
+cat >"$REPO12/notify.ts" <<'TS'
+const html = "<div style=\"font-family:Arial\">hi</div>";
+export { html };
+TS
+node "$GEN" "$REPO12" >/dev/null 2>&1
+check_eq "a backslash-escaped closing quote ends the value without the backslash" '    fontFamily: "Arial"' "$(grep -m1 'fontFamily:' "$REPO12/DESIGN.md")"
+
 # ── 6. No tokens at all is still a distinct outcome ───────────────────────
 REPO5="$TMP/empty"
 mkdir -p "$REPO5"

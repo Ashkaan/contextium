@@ -323,7 +323,7 @@ git -C "$R" diff >"$TMP/arrow-body.diff"
 
 with_parser="$(BLAST_RADIUS_PARSER_ROOTS="" bash "$PACK" --repo "$R" --diff-file "$TMP/arrow-body.diff" src/a.ts 2>"$TMP/fallback.err")"
 check_has "a missing parser WARNs on stderr" "falling back to regex" "$(cat "$TMP/fallback.err")"
-check_has "…and says how to install the parser" "npm i -g typescript web-tree-sitter tree-sitter-bash" "$(cat "$TMP/fallback.err")"
+check_has "…and says how to install the parser" "npm i -g typescript@5 web-tree-sitter tree-sitter-bash" "$(cat "$TMP/fallback.err")"
 check_has "…and where it looked" "looked in:" "$(cat "$TMP/fallback.err")"
 check_has "a missing parser still prints the import graph" "imported-by:" "$with_parser"
 check_has "and still names the file" "src/a.ts" "$with_parser"

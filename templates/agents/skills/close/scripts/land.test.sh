@@ -30,7 +30,7 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LAND="${HERE}/land.sh"
 WRITE_ROOT="${HERE}/write-root.sh"
 
-ROOT="$(mktemp -d)"
+ROOT="$(mktemp -d)" || exit 1
 PASS=0
 FAIL=0
 
@@ -88,6 +88,17 @@ fixture() {
       mkdir -p "${S}/code/.agents/skills/close/scripts"
       find "${HERE}" -maxdepth 1 -name '*.sh' ! -name '*.test.sh' \
         -exec cp {} "${S}/code/.agents/skills/close/scripts/" \;
+      # The script-tests checker, as a stub that passes everything, seeded ON
+      # THE TRUNK: the copies above and the checker stubs the cases commit are
+      # scripts under .agents/, and without a resolvable checker land.sh
+      # refuses any close that changes one. Case 18 overwrites it with a
+      # strict stub; `FIXTURE_SC_STUB=none` leaves it out for the rows that
+      # need no checker in any worktree.
+      if [ "${FIXTURE_SC_STUB:-}" != none ]; then
+        mkdir -p "${S}/code/.agents/checks"
+        printf '#!/usr/bin/env bash\necho "OK — stub"\n' \
+          >"${S}/code/.agents/checks/check-scripts.sh"
+      fi
       git -C "${S}/code" add .agents
     fi
     git -C "${S}/${repo}" commit -q -m seed
@@ -123,12 +134,12 @@ ins.run(t2, "p", "two", "t3code/two", w2, a2, "x", null);
 ' "${S}/t3home/userdata/state.sqlite" "${TID1}" "${WT1}" "${at1}" "${TID2}" "${WT2}" "${at2}"
 
   ENV1=("HOME=${HOME_DIR}" "T3CODE_HOME=${S}/t3home" "LAND_PUSH_SLEEP=0")
-  ENV2=("${ENV1[@]}")
+  ENV2=(${ENV1[@]+"${ENV1[@]}"})
 }
 
 # Run a command as thread N, from that thread's own T3 worktree.
-as1() { (cd "${WT1}" && env "${ENV1[@]}" "$@"); }
-as2() { (cd "${WT2}" && env "${ENV2[@]}" "$@"); }
+as1() { (cd "${WT1}" && env ${ENV1[@]+"${ENV1[@]}"} "$@"); }
+as2() { (cd "${WT2}" && env ${ENV2[@]+"${ENV2[@]}"} "$@"); }
 
 # Allocate a journal path as thread N — through the copy of journal-file.sh in
 # THAT thread's worktree, which is how a session runs it. The real copy under
@@ -275,7 +286,7 @@ J1="$(jf1 "same slug")"
 J2="$(jf2 "same slug")"
 is "both threads pick the same path" "$(basename "${J1}")" "$(basename "${J2}")"
 is "…which is the unsuffixed one" "$(basename "${J1}")" "2015-same-slug.md"
-is "…in the thread's OWN worktree, where the records live since R13" \
+is "…in the thread's OWN worktree, where the records live" \
   "${J1}" "${WT1}/journal/2026-09-13/2015-same-slug.md"
 entry() {  # entry <path> <slug> <body>
   cat >"$1" <<ENTRY
@@ -498,8 +509,8 @@ OUT="$(AWAIT_STUB_RC=3 AWAIT_STUB_LINE="deploy: failed (run_bad)" \
 isnt "a failed deploy run does NOT close" "$?" "0"
 has "…and names the run" "${OUT}" "deploy: failed (run_bad)"
 
-# A RUN IS OWED ONLY WHEN THE LANDED DIFF CAN DEPLOY SOMETHING. Since R13 every
-# journal close is a workbench push — the records are in this repo — so a
+# A RUN IS OWED ONLY WHEN THE LANDED DIFF CAN DEPLOY SOMETHING. Every journal
+# close is a workbench push — the records are in this repo — so a
 # close that wrote only a journal entry would otherwise wait on a run the
 # Worker never starts. The Worker starts one only for a path under a prefix in
 # `deployable-prefixes.json`, and this script reads the SAME list — out of the
@@ -507,12 +518,11 @@ has "…and names the run" "${OUT}" "deploy: failed (run_bad)"
 # the diff since the trunk it left matches. Anything it cannot read (no list
 # at that sha, unparseable JSON) polls, as before: never skip on an unknown.
 
-# The journal-only close, R36's not-owed case: the entry is allocated by
+# The journal-only close, the not-owed case: the entry is allocated by
 # journal-file.sh into this thread's own worktree, the landed diff touches
 # `journal/` and nothing under `apps/`, `integrations/` or `packages/`, so the
-# close says no run was owed and never asks the poller. Until R13 the same
-# session pushed a records repo with no poller at all and printed no deploy
-# line; now the line is there, and it says why nothing was waited for.
+# close says no run was owed and never asks the poller, and its deploy line
+# says why nothing was waited for.
 fixture c6d
 write_await_stub
 write_prefix_list '["apps/", "integrations/", "packages/"]'
@@ -708,9 +718,8 @@ is "another thread's marker is not this one's" "$(as2 bash "${LAND}" --gate)" "n
 echo
 echo "── Case 9: landing the worktree the scripts run from ────────────────"
 #
-# The 2026-09-14 incident, reproduced. The scripts live in a repo this thread
-# holds as a SATELLITE — since R13 that is workbench itself, for a thread T3
-# opened on a product repo — so the script-bearing worktree is in the ledger
+# The scripts live in a repo this thread holds as a SATELLITE — the workbench
+# itself, for a thread T3 opened on a product repo — so the script-bearing worktree is in the ledger
 # and is removed by the landing; here it sits AHEAD of T3's own worktree.
 # Landing it removed the directory holding thread.sh; every later lookup then
 # returned empty, and the T3-worktree guard, which compared against that empty
@@ -743,7 +752,7 @@ is "the script's own worktree is first in the ledger" \
   "$(head -1 "${LEDGER9}" | cut -f1)" "${SATDIR}"
 
 T3_BRANCH_BEFORE="$(git -C "${WT1}" rev-parse --abbrev-ref HEAD)"
-OUT="$(cd "${WT1}" && env "${ENV1[@]}" bash "${SATDIR}/.agents/skills/close/scripts/land.sh" "thread one" 2>&1)"
+OUT="$(cd "${WT1}" && env ${ENV1[@]+"${ENV1[@]}"} bash "${SATDIR}/.agents/skills/close/scripts/land.sh" "thread one" 2>&1)"
 RC=$?
 
 is "the close lands" "${RC}" "0"
@@ -1029,7 +1038,7 @@ is "a close carrying a clean record lands" "$?" "0"
 is "and the record is on main" "$(on_main "${CODE}" decisions/0001-good.md)" "yes"
 
 # 3. A changed record with no checker anywhere in the ledger is refused, not
-#    skipped — the silent `[ -f ]` failure R23 recorded against the deploy check.
+#    skipped — a silent `[ -f ]` would land the record unchecked.
 dr_fixture c12c
 mkdir -p "${WT1}/projects/x/decisions"
 echo "fine" >"${WT1}/projects/x/decisions/0001-a.md"
@@ -1370,12 +1379,12 @@ echo "── Case 16: a session outside T3 that started in the main checkout ─
 # worktree to keep.
 fixture c16
 NOT3=("HOME=${HOME_DIR}" "T3CODE_HOME=${S}/no-t3" "LAND_PUSH_SLEEP=0" "CONTEXTIUM_SESSION=cc-16")
-J16="$(cd "${CODE}" && env "${NOT3[@]}" bash "${CODE}/.agents/skills/close/scripts/journal-file.sh" "outside t3")"
+J16="$(cd "${CODE}" && env ${NOT3[@]+"${NOT3[@]}"} bash "${CODE}/.agents/skills/close/scripts/journal-file.sh" "outside t3")"
 case "${J16}" in "${HOME_DIR}/.cache/workbench/worktrees/"*/cc-16/journal/*) ok "the entry goes in a worktree made for the session" ;; *) bad "outside-T3 journal path: ${J16}" ;; esac
 entry "${J16}" "outside-t3" "a session outside T3"
 W16="${J16%%/journal/*}"
 echo "work" >"${W16}/work.txt"
-OUT="$(cd "${CODE}" && env "${NOT3[@]}" bash "${CODE}/.agents/skills/close/scripts/land.sh" "outside t3" 2>&1)"
+OUT="$(cd "${CODE}" && env ${NOT3[@]+"${NOT3[@]}"} bash "${CODE}/.agents/skills/close/scripts/land.sh" "outside t3" 2>&1)"
 is "it lands" "$?" "0"
 is "…with its work on main" "$(on_main "${CODE}" work.txt)" "yes"
 is "…and the worktree the close made is removed" "$([ -d "${W16}" ] && echo kept || echo removed)" "removed"
@@ -1521,6 +1530,141 @@ OUT="$(as1 env PATH="${S}/failst:${PATH}" bash "${LAND}" "thread one" 2>&1)"
 is "a failed status read stops the close" "$?" "3"
 has "…saying so" "${OUT}" "NOT CLOSED: could not read the status of ${WT1}"
 hasnt "…and prints no proof line" "${OUT}" "closing this tab loses nothing"
+
+echo
+echo "── Case 15: a repo retired into another still lists in the ledger ───"
+
+# A repo merged into the workbench with its history, its checkout removed. A
+# thread that had landed there before still carries that line, and the next
+# close must account for the SHA on the surviving trunk, not refuse.
+fixture c15
+git init -q --bare -b main "${S}/origins/land-$$-c15-lib.git"
+LIB="${S}/land-$$-c15-lib"
+git init -q -b main "${LIB}"
+git -C "${LIB}" config user.email t@example.com
+git -C "${LIB}" config user.name tester
+echo "record" >"${LIB}/record.md"
+git -C "${LIB}" add record.md && git -C "${LIB}" commit -q -m "lib record"
+LIB_SHA="$(git -C "${LIB}" rev-parse HEAD)"
+git -C "${CODE}" fetch -q "${LIB}" main
+git -C "${CODE}" merge -q --allow-unrelated-histories --no-edit FETCH_HEAD
+git -C "${CODE}" push -q origin main
+git -C "${WT1}" fetch -q origin main && git -C "${WT1}" merge -q --ff-only origin/main
+rm -rf "${LIB}"
+
+echo "one" >"${WT1}/one.txt"
+OUT="$(as1 bash "${LAND}" "thread one" 2>&1)"
+is "thread one lands before the stale line exists" "$?" "0"
+LANDED_FILE="${HOME_DIR}/.cache/workbench/threads/${TID1}/landed"
+printf '%s\t%s\n' "${LIB}" "${LIB_SHA}" >>"${LANDED_FILE}"
+OUT="$(as1 bash "${LAND}" --check --verbose 2>&1)"
+is "--check passes when a retired repo's SHA is on a surviving trunk" "$?" "0"
+has "…and says where it found it" "${OUT}" "retired, ancestor-of-land-$$-c15-code"
+
+printf '%s\t%s\n' "${LIB}" "0123456789abcdef0123456789abcdef01234567" >>"${LANDED_FILE}"
+OUT="$(as1 bash "${LAND}" --check 2>&1)"
+is "--check refuses a retired repo's SHA that is on no surviving trunk" "$?" "3"
+has "…naming the repo and the SHA" "${OUT}" \
+  "${LIB} is gone and 0123456789abcdef0123456789abcdef01234567 is on no surviving repo's trunk"
+
+echo
+echo "── Case 18: the script-tests gate ───────────────────────────────────"
+
+# A pre-commit checker resolved from the ledger like the decision-record one.
+# What is tested is that land.sh finds it, runs it with --since before the
+# commit and honours its verdict; the parts themselves are check-scripts.test.sh's.
+# The strict stub goes ON THE TRUNK before the case's own change, because the
+# stub is itself a script under the checker's roots with no test beside it.
+sc_stub() {
+  mkdir -p "$1/.agents/checks"
+  cat >"$1/.agents/checks/check-scripts.sh" <<'STUB'
+#!/usr/bin/env bash
+base=HEAD
+if [ "${1:-}" = "--since" ]; then
+  base="$(git merge-base HEAD "$2" 2>/dev/null)" || { echo "stub: no merge base with $2" >&2; exit 2; }
+fi
+rc=0
+while read -r f; do
+  [ -f "$f" ] || continue
+  case "$f" in *.test.*) continue ;; esac
+  stem="$(basename "$f")"; stem="${stem%.*}"
+  if ! ls "$(dirname "$f")/$stem".test.* >/dev/null 2>&1; then
+    echo "$f: (a) stub rejects it" >&2; rc=1
+  fi
+done < <( { git diff --name-only "$base"; git ls-files --others --exclude-standard; } \
+  | grep -E '^\.agents/.*\.(sh|ts|mjs|js|py)$')
+[ "$rc" = 0 ] && echo "OK — stub"
+exit "$rc"
+STUB
+  git -C "$1" add -A && git -C "$1" commit -q -m "script checker"
+  git -C "$1" push -q origin HEAD:main
+}
+
+# 1. A script with no test is refused with every violation printed, nothing committed.
+fixture c18a
+sc_stub "${WT1}"
+mkdir -p "${WT1}/.agents/skills/y/scripts"
+echo "echo new" >"${WT1}/.agents/skills/y/scripts/new.sh"
+echo "process.argv" >"${WT1}/.agents/skills/y/scripts/other.ts"
+OUT="$(as1 bash "${LAND}" "thread one" 2>&1)"
+is "a script with no test exits 3" "$?" "3"
+has "naming the check's first violation" "${OUT}" \
+  "NOT CLOSED: script tests rejected in ${WT1}: .agents/skills/y/scripts/new.sh: (a) stub rejects it"
+has "…and printing every other violation too" "${OUT}" ".agents/skills/y/scripts/other.ts: (a) stub rejects it"
+is "…and it did not reach main" "$(on_main "${CODE}" .agents/skills/y/scripts/new.sh)" "no"
+
+# 2. The same script COMMITTED before the close is still measured from the trunk.
+fixture c18b
+sc_stub "${WT1}"
+mkdir -p "${WT1}/.agents/skills/y/scripts"
+echo "echo new" >"${WT1}/.agents/skills/y/scripts/new.sh"
+git -C "${WT1}" add -A && git -C "${WT1}" commit -q -m "a script without a test, committed early"
+OUT="$(as1 bash "${LAND}" "thread one" 2>&1)"
+is "an untested script committed before the close exits 3" "$?" "3"
+has "…naming it" "${OUT}" ".agents/skills/y/scripts/new.sh: (a) stub rejects it"
+
+# 3. The same script with its test beside it lands.
+fixture c18c
+sc_stub "${WT1}"
+mkdir -p "${WT1}/.agents/skills/y/scripts"
+echo "echo new" >"${WT1}/.agents/skills/y/scripts/new.sh"
+echo "bash new.sh" >"${WT1}/.agents/skills/y/scripts/new.test.sh"
+OUT="$(as1 bash "${LAND}" "thread one" 2>&1)"
+is "a close carrying a tested script lands" "$?" "0"
+is "and the script is on main" "$(on_main "${CODE}" .agents/skills/y/scripts/new.sh)" "yes"
+
+# 4. A changed script with no checker in any ledger worktree is refused, not skipped.
+FIXTURE_SC_STUB=none fixture c18d
+mkdir -p "${WT1}/.agents/skills/y/scripts"
+echo "echo new" >"${WT1}/.agents/skills/y/scripts/new.sh"
+echo "bash new.sh" >"${WT1}/.agents/skills/y/scripts/new.test.sh"
+OUT="$(as1 bash "${LAND}" "thread one" 2>&1)"
+is "a script with no resolvable checker exits 3" "$?" "3"
+has "saying no worktree holds the checker" "${OUT}" \
+  "scripts changed in ${WT1}, but no worktree this thread owns holds .agents/checks/check-scripts.sh"
+
+#    Removing a script's only TEST is a changed script too: the deleted path
+#    selects the gate, so a worktree without the checker is refused for it.
+FIXTURE_SC_STUB=none fixture c18e
+mkdir -p "${WT1}/.agents/skills/y/scripts"
+echo "echo old" >"${WT1}/.agents/skills/y/scripts/old.sh"
+echo "bash old.sh" >"${WT1}/.agents/skills/y/scripts/old.test.sh"
+git -C "${WT1}" add -A && git -C "${WT1}" commit -q -m "old with its test"
+git -C "${WT1}" push -q origin HEAD:main
+rm "${WT1}/.agents/skills/y/scripts/old.test.sh"
+OUT="$(as1 bash "${LAND}" "thread one" 2>&1)"
+is "deleting a script's only test with no checker exits 3" "$?" "3"
+has "…for want of the checker" "${OUT}" "scripts changed in ${WT1}, but no worktree this thread owns holds"
+
+#    No checker and no script changed: a journal entry and a record land.
+FIXTURE_SC_STUB=none fixture c18f
+mkdir -p "${WT1}/journal/2026-09-29" "${WT1}/projects/x"
+echo "entry" >"${WT1}/journal/2026-09-29/1200-x.md"
+echo "record" >"${WT1}/projects/x/README.md"
+mkdir -p "${WT1}/docs"
+echo "prose" >"${WT1}/docs/notes.sh"   # a .sh outside .agents/ is not one
+OUT="$(as1 bash "${LAND}" "thread one" 2>&1)"
+is "a close that changes no script under .agents/ needs no checker" "$?" "0"
 
 echo
 echo "land.test.sh: ${PASS} passed, ${FAIL} failed"

@@ -77,6 +77,17 @@ t "a generator whose last line is not Completed is refused" \
 stub '"x\n"); process.exit(7'
 t "a failing generator's exit status is passed through" "7" "$(CONTEXT_CODE_REPO="$tmp" CONTEXT_WRITE_ROOT="$tmp" bash "$SUT" >/dev/null 2>&1; echo $?)"
 
+# A failure whose output is not a partial render shows nothing on stdout.
+stub '"Error: something broke\n"); process.exit(3'
+t "a failure that is not a partial render prints no index" "" \
+  "$(CONTEXT_CODE_REPO="$tmp" CONTEXT_WRITE_ROOT="$tmp" bash "$SUT" 2>/dev/null)"
+
+# A generator that fails after rendering (an unreadable project) still shows
+# what it rendered, its warning first, on stdout.
+stub '"**1 project(s) could not be read and are missing below: web/broken: no frontmatter.**\n\n**Active — 1**\n"); process.exit(1'
+t "a partial render is still shown, warning first" "**1 project(s) could not be read and are missing below: web/broken: no frontmatter.**" \
+  "$(CONTEXT_CODE_REPO="$tmp" CONTEXT_WRITE_ROOT="$tmp" bash "$SUT" 2>/dev/null | head -n 1)"
+
 stub "$INDEX"
 # A copy of the script beside a check-staleness.sh that fails: the scan reads
 # the same root as the index, so its failure is simulated at the scan itself.

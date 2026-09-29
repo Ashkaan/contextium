@@ -92,7 +92,7 @@ U=(-u CLAUDE_CODE_SESSION_ID -u CLAUDE_SESSION_ID -u CONTEXTIUM_SESSION -u CONTE
 
 run() {  # run <cwd> <args...> — prints output, sets RC
   local cwd="$1"; shift
-  OUT="$(cd "${cwd}" && env "${U[@]}" "${E[@]}" bash "${SCRIPT}" "$@" 2>&1)"
+  OUT="$(cd "${cwd}" && env ${U[@]+"${U[@]}"} ${E[@]+"${E[@]}"} bash "${SCRIPT}" "$@" 2>&1)"
   RC=$?
 }
 
@@ -181,9 +181,9 @@ DUPSAT="${OUT}"
 # ── Concurrency: two first calls, one worktree ─────────────────────────────
 
 CONC="$(mkrepo conc)"
-(cd "${T3_WT}" && env "${U[@]}" "${E[@]}" bash "${SCRIPT}" "${CONC}" >"${TMP}/c1" 2>&1) &
+(cd "${T3_WT}" && env ${U[@]+"${U[@]}"} ${E[@]+"${E[@]}"} bash "${SCRIPT}" "${CONC}" >"${TMP}/c1" 2>&1) &
 P1=$!
-(cd "${T3_WT}" && env "${U[@]}" "${E[@]}" bash "${SCRIPT}" "${CONC}" >"${TMP}/c2" 2>&1) &
+(cd "${T3_WT}" && env ${U[@]+"${U[@]}"} ${E[@]+"${E[@]}"} bash "${SCRIPT}" "${CONC}" >"${TMP}/c2" 2>&1) &
 P2=$!
 wait "${P1}"; R1=$?
 wait "${P2}"; R2=$?
@@ -210,7 +210,7 @@ LOST_SHA="$(git -C "${DUPSAT}" rev-parse HEAD)"
 rm -rf "${DUPSAT}"
 git -C "${DUP}" worktree prune
 
-RECLAIM_OUT="$(cd "${T3_WT}" && env "${U[@]}" "${E[@]}" bash "${SCRIPT}" "${DUP}" \
+RECLAIM_OUT="$(cd "${T3_WT}" && env ${U[@]+"${U[@]}"} ${E[@]+"${E[@]}"} bash "${SCRIPT}" "${DUP}" \
   2>"${TMP}/reclaim.err")"
 is "a crashed close's worktree is recreated at the same path" "${RECLAIM_OUT}" "${DUPSAT}"
 has "and the reclaim is announced on stderr" "$(cat "${TMP}/reclaim.err")" \
@@ -218,7 +218,7 @@ has "and the reclaim is announced on stderr" "$(cat "${TMP}/reclaim.err")" \
 is "and its unlanded commit is still there" \
   "$(git -C "${DUPSAT}" rev-parse HEAD)" "${LOST_SHA}"
 
-RECLAIM_MSG="$(cd "${T3_WT}" && env "${U[@]}" "${E[@]}" bash "${SCRIPT}" "${DUP}" 2>&1 >/dev/null)"
+RECLAIM_MSG="$(cd "${T3_WT}" && env ${U[@]+"${U[@]}"} ${E[@]+"${E[@]}"} bash "${SCRIPT}" "${DUP}" 2>&1 >/dev/null)"
 is "a reclaim that is now a plain hit is silent" "${RECLAIM_MSG}" ""
 
 # ── A repo with no TRUNK cannot be landed, so it is refused ────────────────
@@ -276,23 +276,23 @@ has "and says so" "${OUT}" "no such directory"
 
 # ── Outside T3: the harness's session, or a generated one ─────────────────
 
-OUTSIDE="$(cd "${LIB}" && env "${U[@]}" "HOME=${FAKE_HOME}" "T3CODE_HOME=${TMP}/nowhere" \
+OUTSIDE="$(cd "${LIB}" && env ${U[@]+"${U[@]}"} "HOME=${FAKE_HOME}" "T3CODE_HOME=${TMP}/nowhere" \
   bash "${SCRIPT}" "${LIB}" 2>/dev/null)"
 OUTSIDE_RC=$?
 is "outside T3 with no session id, the resolver still answers" "${OUTSIDE_RC}" "0"
 has "…with a worktree under ~/.cache/workbench for a generated session" "${OUTSIDE}" "${FAKE_HOME}/.cache/workbench/worktrees/"
 has "…on a session/ branch" "$(git -C "${OUTSIDE}" rev-parse --abbrev-ref HEAD 2>/dev/null)" "session/session-"
-AGAIN="$(cd "${LIB}" && env "${U[@]}" "HOME=${FAKE_HOME}" "T3CODE_HOME=${TMP}/nowhere" bash "${SCRIPT}" "${LIB}" 2>/dev/null)"
+AGAIN="$(cd "${LIB}" && env ${U[@]+"${U[@]}"} "HOME=${FAKE_HOME}" "T3CODE_HOME=${TMP}/nowhere" bash "${SCRIPT}" "${LIB}" 2>/dev/null)"
 is "…and the same worktree on the next call" "${AGAIN}" "${OUTSIDE}"
 
-CLAUDE_WT="$(cd "${LIB}" && env "${U[@]}" "HOME=${FAKE_HOME}" "T3CODE_HOME=${TMP}/nowhere" \
+CLAUDE_WT="$(cd "${LIB}" && env ${U[@]+"${U[@]}"} "HOME=${FAKE_HOME}" "T3CODE_HOME=${TMP}/nowhere" \
   CONTEXTIUM_SESSION=cc-9 CONTEXTIUM_HARNESS=claude bash "${SCRIPT}" "${LIB}" 2>/dev/null)"
 is "a recorded harness puts it where that harness keeps worktrees" "${CLAUDE_WT}" "${LIB}/.claude/worktrees/cc-9"
 is "…on that harness's branch name" "$(git -C "${CLAUDE_WT}" rev-parse --abbrev-ref HEAD 2>/dev/null)" "worktree-cc-9"
 
 # ── The override is what makes a plain terminal usable ─────────────────────
 
-PLAIN="$(cd "${LIB}" && env "${U[@]}" "${E[@]}" "WORKBENCH_THREAD_ID=${TID}" \
+PLAIN="$(cd "${LIB}" && env ${U[@]+"${U[@]}"} ${E[@]+"${E[@]}"} "WORKBENCH_THREAD_ID=${TID}" \
   bash "${SCRIPT}" "${LIB}" 2>&1)"
 is "WORKBENCH_THREAD_ID reaches the same satellite from a plain shell" \
   "${PLAIN}" "${LIBSAT}"

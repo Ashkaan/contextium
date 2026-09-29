@@ -79,7 +79,7 @@ echo "# $cmd_display"
 
 rc=0
 if [[ ${#pathspec[@]} -gt 0 ]]; then
-  out="$(git grep -nE --untracked "$PATTERN" -- "${pathspec[@]}" 2>&1)" || rc=$?
+  out="$(git grep -nE --untracked "$PATTERN" -- ${pathspec[@]+"${pathspec[@]}"} 2>&1)" || rc=$?
 else
   out="$(git grep -nE --untracked "$PATTERN" 2>&1)" || rc=$?
 fi

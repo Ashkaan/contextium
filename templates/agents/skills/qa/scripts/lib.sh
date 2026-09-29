@@ -102,36 +102,19 @@ qa_change_hash() {
 # source rather than assuming, and keeps `/qa --live` usable in a repo that has
 # never been configured.
 #
-# Cached for 6h at /tmp/qa-cf-pages-cache.json — the project list changes on the
-# order of months, and the whole point is to stay fast enough to sit in the
-# default path.
+# Cached for 6h at /tmp/qa-cf-pages-cache.json (QA_CF_PAGES_CACHE overrides) —
+# the project list changes on the order of months, and the whole point is to
+# stay fast enough to sit in the default path.
 #
-# Credentials are wrangler's own: CLOUDFLARE_API_TOKEN (Pages read) and
-# CLOUDFLARE_ACCOUNT_ID. Without them there is no registry to ask, and this
-# returns 1 — the caller then needs --live-url, never a guessed URL.
+# Credentials are wrangler's own: CLOUDFLARE_API_TOKEN (Pages and Workers read)
+# and CLOUDFLARE_ACCOUNT_ID (qa_cf_registry_refresh). Without them there is no
+# registry to ask, and this returns 1 — the caller then needs --live-url, never
+# a guessed URL.
 qa_derive_live_url_from_cf() {
   local repo_name="$1"
-  local cache="/tmp/qa-cf-pages-cache.json"
-  local account="${CLOUDFLARE_ACCOUNT_ID:-}"
-
-  if [[ ! -s "$cache" ]] || [[ -n "$(find "$cache" -mmin +360 2>/dev/null)" ]]; then
-    local token="${CLOUDFLARE_API_TOKEN:-}"
-    [[ -n "$token" && -n "$account" ]] || return 1
-    # Write to a per-run sibling, then rename into place. `curl -o "$cache"`
-    # truncated the shared file in place, so a second session reading it
-    # mid-download parsed half a JSON document, found no match, and resolved the
-    # wrong live URL. rename(2) is atomic within a filesystem, so a concurrent
-    # reader sees either the old complete file or the new one, never a partial.
-    local tmp
-    tmp="$(mktemp "${cache}.XXXXXX")" || return 1
-    if ! curl -sf -m 15 -H "Authorization: Bearer $token" \
-        "https://api.cloudflare.com/client/v4/accounts/${account}/pages/projects" \
-        -o "$tmp" 2>/dev/null; then
-      rm -f "$tmp"
-      return 1
-    fi
-    mv -f "$tmp" "$cache" || { rm -f "$tmp"; return 1; }
-  fi
+  local cache="${QA_CF_PAGES_CACHE:-/tmp/qa-cf-pages-cache.json}"
+  qa_cf_registry_refresh "$cache" "pages/projects" \
+    '(.name | type) == "string" and ((.domains // []) | type) == "array" and all((.domains // [])[]; type == "string" and length > 0)' || return 1
 
   local url
   # No top-level `return` here — that is a SyntaxError in `node -e`, and with
@@ -251,6 +234,179 @@ qa_resolve_cf_access() {
   QA_CF_ACCESS_SECRET="$(op item get "$item" --vault "$vault" --fields "$secret_field" --reveal 2>/dev/null || true)"
   export QA_CF_ACCESS_ID QA_CF_ACCESS_SECRET
   [[ -n "$QA_CF_ACCESS_ID" && -n "$QA_CF_ACCESS_SECRET" ]]
+}
+
+# qa_cf_registry_refresh CACHE PATH ENTRY — keep CACHE a good copy of the account's
+# GET /client/v4/accounts/<id>/<PATH>, refreshed every 6h. A refresh writes a
+# per-run sibling and renames it into place only when the answer says
+# `"success": true` with a `result` list whose every entry satisfies the jq
+# predicate ENTRY, so a concurrent reader never sees a half-written file and an
+# error body never replaces a good one. A failed refresh keeps the last good
+# copy: the registry changes on the order of months, and a live run must not
+# lose its URL to a network blip. Returns 1 when no usable copy exists, and
+# when wrangler's CLOUDFLARE_API_TOKEN / CLOUDFLARE_ACCOUNT_ID are not set —
+# without them this is not the user's account to ask about.
+qa_cf_registry_refresh() {
+  local cache="$1" path="$2" entry="$3"
+  local account="${CLOUDFLARE_ACCOUNT_ID:-}" token="${CLOUDFLARE_API_TOKEN:-}"
+  [[ -n "$account" && -n "$token" ]] || return 1
+  local good=".success == true and (.result | type) == \"array\" and all(.result[]; $entry)"
+  if [[ ! -s "$cache" ]] || [[ -n "$(find "$cache" -mmin +360 2>/dev/null)" ]]; then
+    local tmp
+    if tmp="$(mktemp "${cache}.XXXXXX")"; then
+      if curl -sf -m 15 -H "Authorization: Bearer $token" \
+          "https://api.cloudflare.com/client/v4/accounts/${account}/${path}" -o "$tmp" 2>/dev/null \
+        && jq -e "$good" "$tmp" >/dev/null 2>&1; then
+        mv -f "$tmp" "$cache" || rm -f "$tmp"
+      else
+        rm -f "$tmp"
+      fi
+    fi
+  fi
+  [[ -s "$cache" ]] && jq -e "$good" "$cache" >/dev/null 2>&1
+}
+
+# qa_wrangler_config REPO_DIR — the repo's wrangler config as JSON on stdout
+# (wrangler.jsonc/json with comments and trailing commas removed, as wrangler
+# itself accepts them), or nothing. wrangler.toml is read by the callers below.
+qa_wrangler_config() {
+  local repo="$1" f
+  for f in wrangler.jsonc wrangler.json; do
+    [[ -f "$repo/$f" ]] || continue
+    # shellcheck disable=SC2016  # a JavaScript program; nothing in it is bash
+    node -e '
+      const src = require("fs").readFileSync(process.argv[1], "utf8");
+      // Drop // and /* */ comments outside strings, then trailing commas.
+      let out = "", i = 0, str = false;
+      while (i < src.length) {
+        const c = src[i], n = src[i + 1];
+        if (str) { out += c; if (c === "\\") { out += n ?? ""; i += 2; continue; } if (c === "\"") str = false; i++; continue; }
+        if (c === "\"") { str = true; out += c; i++; continue; }
+        if (c === "/" && n === "/") { while (i < src.length && src[i] !== "\n") i++; continue; }
+        if (c === "/" && n === "*") { i += 2; while (i < src.length && !(src[i] === "*" && src[i + 1] === "/")) i++; i += 2; continue; }
+        if (c === ",") {
+          // A trailing comma: the next thing past whitespace and comments closes the list or object.
+          let j = i + 1;
+          for (;;) {
+            while (j < src.length && /\s/.test(src[j])) j++;
+            if (src[j] === "/" && src[j + 1] === "/") { while (j < src.length && src[j] !== "\n") j++; continue; }
+            if (src[j] === "/" && src[j + 1] === "*") { j += 2; while (j < src.length && !(src[j] === "*" && src[j + 1] === "/")) j++; j += 2; continue; }
+            break;
+          }
+          if (src[j] === "}" || src[j] === "]") { i++; continue; }
+        }
+        out += c; i++;
+      }
+      try { process.stdout.write(JSON.stringify(JSON.parse(out))); }
+      catch (e) { process.stderr.write(`qa: ${process.argv[1]} is not valid JSON(C): ${e.message}\n`); process.exit(2); }
+    ' "$repo/$f"
+    return $?
+  done
+  return 0
+}
+
+# qa_wrangler_name REPO_DIR — the Worker name the repo's wrangler config
+# declares at top level (wrangler.toml's `name =` before any [table], or the
+# JSON config's top-level "name"), or nothing.
+# qa_toml_value — the value of the first `key = <string>` line on stdin: a basic
+# "string" (\" and \\ unescaped) or a literal 'string' (taken as written). TOML
+# allows both, and a reader that knows only one reads the other as missing.
+qa_toml_value() {
+  local line
+  # A last line with no newline makes `read` fail and still fills $line.
+  IFS= read -r line || [[ -n "$line" ]] || return 0
+  # The kind of string is the quote that OPENS the value, not any quote on the
+  # line: "o'brien@…" is a basic string with an apostrophe in it.
+  local value="${line#*=}"
+  value="${value#"${value%%[![:space:]]*}"}"
+  case "$value" in
+    \'*) printf '%s\n' "$value" | sed -nE "s/^'([^']*)'.*/\\1/p" ;;
+    \"*) printf '%s\n' "$value" \
+           | sed -nE "s/^\"((\\\\.|[^\"\\\\])*)\".*/\\1/p" \
+           | sed -E 's/\\(["\\])/\1/g' ;;
+  esac
+}
+
+qa_wrangler_name() {
+  local repo="$1"
+  if [[ -f "$repo/wrangler.toml" ]]; then
+    awk '/^[[:space:]]*\[/{exit} /^[[:space:]]*name[[:space:]]*=/{print; exit}' "$repo/wrangler.toml" | qa_toml_value
+    return 0
+  fi
+  qa_wrangler_config "$repo" | jq -r '.name // empty' 2>/dev/null
+  return 0
+}
+
+# qa_wrangler_routes REPO_DIR — the route patterns the config declares, one per
+# line, in order (the canonical hostname first, when the repo lists several).
+qa_wrangler_routes() {
+  local repo="$1"
+  if [[ -f "$repo/wrangler.toml" ]]; then
+    # `pattern = …` inside a route table, or a top-level `route = "…"` string.
+    grep -vE '^[[:space:]]*#' "$repo/wrangler.toml" \
+      | grep -oE "(pattern|^[[:space:]]*route)[[:space:]]*=[[:space:]]*(\"[^\"]+\"|'[^']+')" \
+      | while IFS= read -r l; do printf '%s\n' "$l" | qa_toml_value; done
+    return 0
+  fi
+  qa_wrangler_config "$repo" | jq -r '[.route // empty] + (.routes // []) | .[] | if type == "string" then . else .pattern end' 2>/dev/null
+  return 0
+}
+
+# qa_derive_live_url_from_workers REPO_DIR — the live URL of a Worker-deployed
+# app: a production custom domain Cloudflare's Workers registry
+# (GET /accounts/<id>/workers/domains) maps to the Worker name the repo
+# declares. The Pages lookup above cannot see a Worker at all, so without this
+# `/qa --live` refuses every Worker-served site with "no Cloudflare Pages
+# project". Same registry-lookup rule: the repo says which Worker it deploys, Cloudflare
+# says which hostnames serve it. When several do, the one the repo declares
+# first wins (the others are usually redirects, which the off-origin gate then
+# rejects); several with none declared is ambiguous and returns nothing rather
+# than a guess. Cached at QA_CF_WORKERS_DOMAINS_CACHE.
+qa_derive_live_url_from_workers() {
+  local repo="$1" name hosts host route
+  name="$(qa_wrangler_name "$repo")"
+  [[ -n "$name" ]] || return 1
+  local cache="${QA_CF_WORKERS_DOMAINS_CACHE:-/tmp/qa-cf-workers-domains.json}"
+  qa_cf_registry_refresh "$cache" "workers/domains" \
+    '(.hostname | type) == "string" and (.hostname | length) > 0 and (.service | type) == "string" and (.service | length) > 0' || return 1
+  hosts="$(jq -r --arg s "$name" '.result[]? | select(.service == $s and (.environment // "production") == "production") | .hostname' "$cache" 2>/dev/null)"
+  [[ -n "$hosts" ]] || return 1
+  while IFS= read -r route; do
+    route="${route%%/*}"
+    if grep -qxF "$route" <<<"$hosts"; then host="$route"; break; fi
+  done < <(qa_wrangler_routes "$repo")
+  if [[ -z "${host:-}" ]]; then
+    if [[ "$(grep -c . <<<"$hosts")" -eq 1 ]]; then
+      host="$hosts"
+    else
+      qa_err "qa: Worker $name has several custom domains and its wrangler config names none of them: $(tr '\n' ' ' <<<"$hosts")"
+      return 1
+    fi
+  fi
+  printf 'https://%s\n' "$host"
+}
+
+# qa_probe_acts_as REPO_DIR — the person the target's wrangler config lets the
+# Access service token act as, lower-cased, or nothing. The config's
+# `PROBE_ACTS_AS = "<client id> <email>"` is the app's own declaration, for an
+# app that treats a service token alone as a MACHINE (every page answers
+# "service tokens cannot access this page") but treats the same token plus
+# `X-Portal-Act-As: <that email>` as that person on every page and write. Apps
+# that declare nothing get no header: this is inert unless the app opts in.
+# The email is not a secret, so it travels on argv as `--auth-act-as`. Only an
+# active line counts: a commented-out value would name the wrong person, and
+# such an app answers a wrong act-as with 401.
+qa_probe_acts_as() {
+  local repo="$1" value="" email
+  if [[ -f "$repo/wrangler.toml" ]]; then
+    value="$(grep -E '^[[:space:]]*PROBE_ACTS_AS[[:space:]]*=' "$repo/wrangler.toml" | qa_toml_value)"
+  else
+    value="$(qa_wrangler_config "$repo" | jq -r '.vars.PROBE_ACTS_AS // empty' 2>/dev/null)"
+  fi
+  [[ -n "$value" ]] || return 0
+  email="$(awk '{print $2}' <<<"$value" | tr '[:upper:]' '[:lower:]')"
+  [[ "$email" == *@*.* ]] && printf '%s\n' "$email"
+  return 0
 }
 
 # qa_interaction_stamp_path REPO_DIR TREE — where interaction-check.sh records a

@@ -24,7 +24,7 @@ assert() {
   shift 4
   local out code
   out="$(cd "${cwd}" && env -u CLAUDE_CODE_SESSION_ID -u CLAUDE_SESSION_ID -u CONTEXTIUM_SESSION \
-    "$@" bash "${SCRIPT}" "${EXTRA_ARGS[@]}" 2>&1)"
+    "$@" bash "${SCRIPT}" ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"} 2>&1)"
   code=$?
   if [ "${code}" != "${want_code}" ]; then
     echo "FAIL ${name}: exit ${code}, wanted ${want_code} — ${out}"
@@ -81,28 +81,52 @@ ENV_OK=("HOME=${FAKE_HOME}" "T3CODE_HOME=${T3}")
 # ── The database path: the shell stands in the thread's T3 worktree ─────────
 
 EXTRA_ARGS=()
-assert "db hit prints the thread id" 0 "${TID_A}" "${WT_A}" "${ENV_OK[@]}"
+assert "db hit prints the thread id" 0 "${TID_A}" "${WT_A}" ${ENV_OK[@]+"${ENV_OK[@]}"}
+
+# Node 22 prints an ExperimentalWarning to stderr when node:sqlite loads, and
+# every caller reads the id as `$(thread.sh --id 2>&1)`: a warning there
+# became part of the id, and a branch named `session/(node:111) Experimental…`
+# refused. The id must be the whole output on such a Node. The stand-in warns
+# exactly as Node 22 does, unless the run turns the warning off.
+WARN_BIN="${TMP}/warn-bin"
+mkdir -p "${WARN_BIN}"
+REAL_NODE="$(command -v node)"
+cat >"${WARN_BIN}/node" <<STUB
+#!/usr/bin/env bash
+case " \$* " in
+  *" --disable-warning=ExperimentalWarning "*) ;;
+  *) echo "(node:111) ExperimentalWarning: SQLite is an experimental feature and might change at any time" >&2 ;;
+esac
+exec "${REAL_NODE}" "\$@"
+STUB
+chmod +x "${WARN_BIN}/node"
+OUT_WARN="$(cd "${WT_A}" && env ${ENV_OK[@]+"${ENV_OK[@]}"} PATH="${WARN_BIN}:${PATH}" bash "${SCRIPT}" --id 2>&1)"
+if [ "${OUT_WARN}" = "${TID_A}" ]; then
+  PASS=$((PASS + 1)); echo "ok   --id 2>&1 is the id alone on a Node that warns about node:sqlite"
+else
+  FAIL=$((FAIL + 1)); echo "FAIL --id 2>&1 on a warning Node: '${OUT_WARN}'"
+fi
 
 EXTRA_ARGS=(--branch)
-assert "db hit prints T3's own branch name" 0 "t3code/some-title" "${WT_A}" "${ENV_OK[@]}"
+assert "db hit prints T3's own branch name" 0 "t3code/some-title" "${WT_A}" ${ENV_OK[@]+"${ENV_OK[@]}"}
 
 EXTRA_ARGS=(--worktree)
-assert "db hit prints the worktree path" 0 "${WT_A}" "${WT_A}" "${ENV_OK[@]}"
+assert "db hit prints the worktree path" 0 "${WT_A}" "${WT_A}" ${ENV_OK[@]+"${ENV_OK[@]}"}
 
 EXTRA_ARGS=(--started)
-assert "db hit prints created_at as stored" 0 "2026-09-14T03:15:51.803Z" "${WT_A}" "${ENV_OK[@]}"
+assert "db hit prints created_at as stored" 0 "2026-09-14T03:15:51.803Z" "${WT_A}" ${ENV_OK[@]+"${ENV_OK[@]}"}
 
 # 03:15 UTC on the 14th is 20:15 on the 13th in Los Angeles — the case the
 # journal's "file by session start, not close time" rule turns on.
 EXTRA_ARGS=(--started --local)
-assert "started --local converts to local HHMM" 0 "2015" "${WT_A}" "${ENV_OK[@]}" TZ=America/Los_Angeles
+assert "started --local converts to local HHMM" 0 "2015" "${WT_A}" ${ENV_OK[@]+"${ENV_OK[@]}"} TZ=America/Los_Angeles
 EXTRA_ARGS=(--started --local-day)
-assert "started --local-day is the local date" 0 "2026-09-13" "${WT_A}" "${ENV_OK[@]}" TZ=America/Los_Angeles
+assert "started --local-day is the local date" 0 "2026-09-13" "${WT_A}" ${ENV_OK[@]+"${ENV_OK[@]}"} TZ=America/Los_Angeles
 EXTRA_ARGS=(--started --la)
-assert "--la is still accepted" 0 "0315" "${WT_A}" "${ENV_OK[@]}" TZ=UTC
+assert "--la is still accepted" 0 "0315" "${WT_A}" ${ENV_OK[@]+"${ENV_OK[@]}"} TZ=UTC
 
 EXTRA_ARGS=()
-assert "a second thread matches its own row" 0 "${TID_B}" "${WT_B}" "${ENV_OK[@]}"
+assert "a second thread matches its own row" 0 "${TID_B}" "${WT_B}" ${ENV_OK[@]+"${ENV_OK[@]}"}
 
 # ── The ledger path: the shell stands in a satellite ────────────────────────
 
@@ -114,12 +138,12 @@ mkdir -p "${LEDGER_A}"
 printf '%s\t%s\t%s\n' "${SAT}" "${TMP}/shared" "t3/${TID_A}" >"${LEDGER_A}/worktrees"
 
 EXTRA_ARGS=()
-assert "satellite resolves through the ledger" 0 "${TID_A}" "${SAT}" "${ENV_OK[@]}"
+assert "satellite resolves through the ledger" 0 "${TID_A}" "${SAT}" ${ENV_OK[@]+"${ENV_OK[@]}"}
 
 # From the satellite the branch still comes from the db row, not from the
 # ledger's `t3/<id>` — they are different branches and only one is T3's.
 EXTRA_ARGS=(--branch)
-assert "satellite still reports T3's branch" 0 "t3code/some-title" "${SAT}" "${ENV_OK[@]}"
+assert "satellite still reports T3's branch" 0 "t3code/some-title" "${SAT}" ${ENV_OK[@]+"${ENV_OK[@]}"}
 
 # ── Two ledgers claiming one path is corruption, not a coin toss ────────────
 
@@ -128,18 +152,18 @@ mkdir -p "${LEDGER_B}"
 printf '%s\t%s\t%s\n' "${SAT}" "${TMP}/shared" "t3/${TID_B}" >"${LEDGER_B}/worktrees"
 
 EXTRA_ARGS=()
-assert "two ledgers claiming one path is ambiguous" 2 "ambiguous" "${SAT}" "${ENV_OK[@]}"
+assert "two ledgers claiming one path is ambiguous" 2 "ambiguous" "${SAT}" ${ENV_OK[@]+"${ENV_OK[@]}"}
 rm -rf "${LEDGER_B}"
 
 # ── No thread at all ────────────────────────────────────────────────────────
 
 EXTRA_ARGS=()
 assert "a git repo T3 never heard of gets a generated session" 0 "session-" \
-  "${NOT_A_THREAD}" "${ENV_OK[@]}"
+  "${NOT_A_THREAD}" ${ENV_OK[@]+"${ENV_OK[@]}"}
 
 # The deleted-thread row names that same path. If `deleted_at is null` were
 # missing from the query this case would pass an id back instead of refusing.
-OUT_DEL="$(cd "${NOT_A_THREAD}" && env "${ENV_OK[@]}" bash "${SCRIPT}" 2>&1)"
+OUT_DEL="$(cd "${NOT_A_THREAD}" && env ${ENV_OK[@]+"${ENV_OK[@]}"} bash "${SCRIPT}" 2>&1)"
 case "${OUT_DEL}" in
   *dddddddd*) echo "FAIL deleted thread matched"; FAIL=$((FAIL + 1)) ;;
   *) PASS=$((PASS + 1)); echo "ok   a deleted thread does not match its old path" ;;
@@ -147,12 +171,12 @@ esac
 
 EXTRA_ARGS=()
 assert "outside any git repo there is no thread" 2 "not in a thread" \
-  "${TMP}" "${ENV_OK[@]}"
+  "${TMP}" ${ENV_OK[@]+"${ENV_OK[@]}"}
 
 # ── Outside T3: the harness's session ───────────────────────────────────────
 
 NO_T3=("HOME=${FAKE_HOME}" "T3CODE_HOME=${TMP}/nowhere")
-run() { (cd "$1" && shift && env -u CLAUDE_CODE_SESSION_ID -u CLAUDE_SESSION_ID -u CONTEXTIUM_SESSION "${NO_T3[@]}" "$@" bash "${SCRIPT}" "${ARGS[@]}" 2>&1); }
+run() { (cd "$1" && shift && env -u CLAUDE_CODE_SESSION_ID -u CLAUDE_SESSION_ID -u CONTEXTIUM_SESSION ${NO_T3[@]+"${NO_T3[@]}"} "$@" bash "${SCRIPT}" ${ARGS[@]+"${ARGS[@]}"} 2>&1); }
 ARGS=(); GEN1="$(run "${WT_A}")"
 case "${GEN1}" in session-*) PASS=$((PASS + 1)); echo "ok   no T3 and no session id: an id is generated" ;; *) FAIL=$((FAIL + 1)); echo "FAIL generated id: ${GEN1}" ;; esac
 ARGS=(); GEN2="$(run "${WT_A}")"
@@ -192,16 +216,16 @@ assert "WORKBENCH_THREAD_ID answers --id with no db at all" 0 "forced-id" \
 
 EXTRA_ARGS=(--branch)
 assert "WORKBENCH_THREAD_ID still reads the row for --branch" 0 "t3code/some-title" \
-  "${TMP}" "${ENV_OK[@]}" "WORKBENCH_THREAD_ID=${TID_A}"
+  "${TMP}" ${ENV_OK[@]+"${ENV_OK[@]}"} "WORKBENCH_THREAD_ID=${TID_A}"
 
 EXTRA_ARGS=(--branch)
 assert "an override naming no row is refused, not guessed" 2 "no thread" \
-  "${TMP}" "${ENV_OK[@]}" "WORKBENCH_THREAD_ID=no-such-thread"
+  "${TMP}" ${ENV_OK[@]+"${ENV_OK[@]}"} "WORKBENCH_THREAD_ID=no-such-thread"
 
 # ── Usage ───────────────────────────────────────────────────────────────────
 
 EXTRA_ARGS=(--nonsense)
-assert "an unknown flag is refused" 2 "usage:" "${WT_A}" "${ENV_OK[@]}"
+assert "an unknown flag is refused" 2 "usage:" "${WT_A}" ${ENV_OK[@]+"${ENV_OK[@]}"}
 
 echo
 echo "thread.test.sh: ${PASS} passed, ${FAIL} failed"

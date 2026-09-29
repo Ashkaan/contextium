@@ -426,6 +426,83 @@ sed -i.bak '/^tools=/d' "$T/.agents/harness" && rm -f "$T/.agents/harness.bak"
 there "with no tools= line, the Gemini CLI files on disk count as wired" .agents/gemini-settings.json
 is "…and the set is recorded from then on" "$(sed -n 's/^tools=//p' "$T/.agents/harness")" "gemini claude"
 
+# A v8.0.0 workbench shipped both per-harness files for every tool, so their
+# presence proves nothing: only a link, or harness=, says a tool was wired.
+fresh --harness claude
+cp "$HERE/templates/agents/hooks.json" "$T/.agents/hooks.json"
+sed "s|__WORKBENCH__|$T|g" "$HERE/templates/agents/gemini-settings.json" >"$T/.agents/gemini-settings.json"
+sed -i.bak '/^tools=/d' "$T/.agents/harness" && rm -f "$T/.agents/harness.bak"
+"$BASH" "$HERE/install.sh" "$T" --yes --no-integrations --harness claude >"$TMP/out" 2>&1
+is "with no tools= line, shipped-for-everyone files do not count as wired" "$(sed -n 's/^tools=//p' "$T/.agents/harness")" "claude"
+gone "…so the untouched Antigravity manifest goes" .agents/hooks.json
+gone "…and the untouched Gemini CLI settings (as rendered for this workbench) go" .agents/gemini-settings.json
+
+# A customized file kept after --drop-tool is the user's from then on.
+fresh --harness antigravity
+echo '{"mine": true}' >"$T/.agents/hooks.json"
+"$BASH" "$HERE/install.sh" "$T" --yes --no-integrations --harness claude --drop-tool antigravity >"$TMP/out" 2>&1
+"$BASH" "$HERE/install.sh" "$T" --yes --no-integrations --harness claude >"$TMP/out" 2>&1
+is "a kept customized manifest survives the runs after the drop" "$(cat "$T/.agents/hooks.json" 2>/dev/null)" '{"mine": true}'
+
+fresh --harness gemini
+jq '. + {ui: {theme: "mine"}}' "$T/.agents/gemini-settings.json" >"$TMP/g.json" && cp "$TMP/g.json" "$T/.agents/gemini-settings.json"
+"$BASH" "$HERE/install.sh" "$T" --yes --no-integrations --harness claude --drop-tool gemini >"$TMP/out" 2>&1
+there "dropping Gemini CLI keeps customized settings" .agents/gemini-settings.json
+if [[ ! -L "$T/.gemini/settings.json" ]]; then ok; else bad "…but takes away the .gemini/settings.json link, so Gemini CLI no longer loads them"; fi
+
+# Codex linked by the layout before .agents/hooks/claude-hooks.json.
+fresh --harness codex
+cp "$T/.agents/hooks/claude-hooks.json" "$T/.agents/codex-hooks.json"
+rm "$H/.codex/hooks.json"; ln -s "$T/.agents/codex-hooks.json" "$H/.codex/hooks.json"
+"$BASH" "$HERE/install.sh" "$T" --yes --no-integrations --harness claude --drop-tool codex >"$TMP/out" 2>&1
+if [[ ! -e "$H/.codex/hooks.json" && ! -L "$H/.codex/hooks.json" ]]; then ok; else bad "--drop-tool codex removes a link to the older .agents/codex-hooks.json too"; fi
+
+# The harness you drive the workbench with cannot be dropped in the same run.
+fresh --harness gemini
+"$BASH" "$HERE/install.sh" "$T" --yes --no-integrations --drop-tool gemini >"$TMP/out" 2>&1
+is "dropping the harness itself is refused" "$?" "1"
+has_out "…with how to pick another" "--harness"
+there "…and nothing is removed" .agents/gemini-settings.json
+"$BASH" "$HERE/install.sh" "$T" --yes --no-integrations --harness claude --drop-tool bogus >"$TMP/out" 2>&1
+is "an unknown --drop-tool name is refused" "$?" "1"
+
+# Gemini CLI reads .gemini/settings.json (AGENTS.md, the guards) only in a
+# trusted folder, so wiring it trusts the workbench — and dropping it takes back
+# only the entry the installer added.
+n=$((n + 1)); T="$TMP/t$n"; H="$TMP/h$n"; mkdir -p "$T" "$H/.gemini"; export HOME="$H"
+git -C "$T" init -q
+echo '{"/somewhere/else": "TRUST_FOLDER"}' >"$H/.gemini/trustedFolders.json"
+"$BASH" "$HERE/install.sh" "$T" --yes --no-integrations --harness gemini >"$TMP/out" 2>&1
+is "wiring Gemini CLI trusts the workbench folder" "$(jq -r --arg k "$T" '.[$k]' "$H/.gemini/trustedFolders.json")" "TRUST_FOLDER"
+is "…keeping the folders already trusted" "$(jq -r '.["/somewhere/else"]' "$H/.gemini/trustedFolders.json")" "TRUST_FOLDER"
+has_out "the closing message says trust gates AGENTS.md and the guards" "AGENTS.md and the guards"
+has_out "…and names the variable headless runs need" "GEMINI_CLI_TRUST_WORKSPACE=true"
+"$BASH" "$HERE/install.sh" "$T" --yes --no-integrations --harness claude --drop-tool gemini >"$TMP/out" 2>&1
+is "--drop-tool gemini takes back the entry the installer added" "$(jq -r --arg k "$T" '.[$k] // "none"' "$H/.gemini/trustedFolders.json")" "none"
+is "…and only that one" "$(jq -r '.["/somewhere/else"]' "$H/.gemini/trustedFolders.json")" "TRUST_FOLDER"
+
+n=$((n + 1)); T="$TMP/t$n"; H="$TMP/h$n"; mkdir -p "$T" "$H/.gemini"; export HOME="$H"
+git -C "$T" init -q
+jq -n --arg k "$T" '{($k): "TRUST_FOLDER"}' >"$H/.gemini/trustedFolders.json"
+"$BASH" "$HERE/install.sh" "$T" --yes --no-integrations --harness gemini >"$TMP/out" 2>&1
+"$BASH" "$HERE/install.sh" "$T" --yes --no-integrations --harness claude --drop-tool gemini >"$TMP/out" 2>&1
+is "a folder the user had trusted before the install stays trusted after the drop" "$(jq -r --arg k "$T" '.[$k]' "$H/.gemini/trustedFolders.json")" "TRUST_FOLDER"
+
+# An entry the user set to something else is left alone — and the install is
+# not called ready, because Gemini CLI then loads none of the workbench.
+n=$((n + 1)); T="$TMP/t$n"; H="$TMP/h$n"; mkdir -p "$T" "$H/.gemini"; export HOME="$H"
+git -C "$T" init -q
+jq -n --arg k "$T" '{($k): "DO_NOT_TRUST"}' >"$H/.gemini/trustedFolders.json"
+"$BASH" "$HERE/install.sh" "$T" --yes --no-integrations --harness gemini >"$TMP/out" 2>&1
+is "a user's DO_NOT_TRUST entry is left as it is" "$(jq -r --arg k "$T" '.[$k]' "$H/.gemini/trustedFolders.json")" "DO_NOT_TRUST"
+has_out "…the conflict is named" 'not "TRUST_FOLDER"'
+has_out "…and the install is not called ready" "not ready"
+
+n=$((n + 1)); T="$TMP/t$n"; H="$TMP/h$n"; mkdir -p "$T" "$H"; export HOME="$H"
+git -C "$T" init -q
+PATH="$STUB:$NOJQ" "$BASH" "$HERE/install.sh" "$T" --yes --no-integrations --harness gemini >"$TMP/out" 2>&1
+has_out "without jq, the exact trustedFolders.json line is printed" "\"$T\": \"TRUST_FOLDER\""
+
 fresh --harness vscode
 is "VS Code's agent is copilot" "$(sed -n 's/^agent=//p' "$T/.agents/harness")" "copilot"
 has_out "VS Code has no one-line install, so it says where to get it" "code.visualstudio.com/download"

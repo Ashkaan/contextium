@@ -168,4 +168,4 @@ if [[ ${#matches[@]} -eq 0 ]]; then
   exit 1
 fi
 
-printf '%s\n' "${matches[@]}" | sort
+printf '%s\n' ${matches[@]+"${matches[@]}"} | sort

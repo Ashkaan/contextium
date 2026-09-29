@@ -164,7 +164,7 @@ scan_target() {
 
 issues=()
 
-for journal_path in "${files[@]}"; do
+for journal_path in ${files[@]+"${files[@]}"}; do
   journal="$(scan_target "$journal_path")"
   [[ -f "$journal" ]] || continue
 
@@ -361,7 +361,7 @@ done
 if [[ ${#issues[@]} -gt 0 ]]; then
   echo "" >&2
   echo "JOURNAL ENTRY GATE FAILED — the entry does not follow close/references/journal-entry.md:" >&2
-  printf '  %s\n' "${issues[@]}" >&2
+  printf '  %s\n' ${issues[@]+"${issues[@]}"} >&2
   echo "" >&2
   echo "Fix (do NOT delete the other session's content — it is someone else's close):" >&2
   echo "  0. Slug/heading disagreement: make the front matter's 'slug:' and the first" >&2

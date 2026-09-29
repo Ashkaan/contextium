@@ -103,7 +103,7 @@ if [[ "${1:-}" == "--verify-sweep" ]]; then
   record_excludes=(':!knowledge' ':!journal' ':!projects/**/*.md')
 
   _rc=0
-  sweep_hits=$(git grep -nE -e "$sweep_regex" -- "$@" "${record_excludes[@]}") || _rc=$?
+  sweep_hits=$(git grep -nE -e "$sweep_regex" -- "$@" ${record_excludes[@]+"${record_excludes[@]}"}) || _rc=$?
   [[ "$_rc" -le 1 ]] || git_failed grep "$_rc"
 
   if [[ -n "$sweep_hits" ]]; then
@@ -143,7 +143,7 @@ if [[ "${1:-}" == "--verify-sweep" ]]; then
 
   broad_excludes=()
   file_excludes=()
-  for spec in "$@" "${record_excludes[@]}"; do
+  for spec in "$@" ${record_excludes[@]+"${record_excludes[@]}"}; do
     case "$spec" in
       ':!'*) bare=${spec#:!} ;;
       ':^'*) bare=${spec#:^} ;;
@@ -170,7 +170,7 @@ if [[ "${1:-}" == "--verify-sweep" ]]; then
   runnable_re='^[^:]+\.(ts|tsx|mts|cts|js|jsx|mjs|cjs|sh|bash|py|rb):'
 
   hidden=""
-  for bare in "${broad_excludes[@]}"; do
+  for bare in ${broad_excludes[@]+"${broad_excludes[@]}"}; do
     _rc=0
     bare_hits=$(git grep -nE -e "$sweep_regex" \
       -- "$bare" ${file_excludes[@]+"${file_excludes[@]}"}) || _rc=$?
@@ -224,7 +224,7 @@ if [[ ${#changed[@]} -eq 0 ]]; then
 fi
 
 # The changed set, as a newline list: bash 3.2 has no associative arrays.
-changed_set="$(printf '%s\n' "${changed[@]}")"
+changed_set="$(printf '%s\n' ${changed[@]+"${changed[@]}"})"
 changed_set_has() { printf '%s\n' "$changed_set" | grep -qxF -- "$1"; }
 
 warn_count=0
@@ -253,8 +253,8 @@ read_frontmatter_peers() {
       # Nested form: metadata:\n  peers: "a b" — one scalar, split on spaces.
       if (match($0, /^metadata:[[:space:]]*$/)) { in_metadata = 1; in_peers = 0; next }
       if (in_metadata) {
-        if (match($0, /^[[:space:]]+peers:[[:space:]]*(.*)$/, m)) {
-          val = m[1]
+        if ($0 ~ /^[[:space:]]+peers:/) {
+          val = $0; sub(/^[[:space:]]+peers:[[:space:]]*/, "", val)
           gsub(/^[[:space:]]+|[[:space:]]+$/, "", val)
           gsub(/^["'"'"']|["'"'"']$/, "", val)
           n = split(val, parts, /[[:space:]]+/)
@@ -265,8 +265,9 @@ read_frontmatter_peers() {
         in_metadata = 0
       }
       # Inline array form: peers: [a, b, c]
-      if (match($0, /^peers:[[:space:]]*\[([^\]]*)\]/, m)) {
-        n = split(m[1], parts, /[[:space:]]*,[[:space:]]*/)
+      if ($0 ~ /^peers:[[:space:]]*\[[^]]*\]/) {
+        inner = $0; sub(/^peers:[[:space:]]*\[/, "", inner); sub(/\].*$/, "", inner)
+        n = split(inner, parts, /[[:space:]]*,[[:space:]]*/)
         for (i = 1; i <= n; i++) {
           gsub(/^[[:space:]]+|[[:space:]]+$/, "", parts[i])
           gsub(/^["'"'"']|["'"'"']$/, "", parts[i])
@@ -278,8 +279,8 @@ read_frontmatter_peers() {
       # Block form: peers:\n  - path
       if (match($0, /^peers:[[:space:]]*$/)) { in_peers = 1; next }
       if (in_peers) {
-        if (match($0, /^[[:space:]]+-[[:space:]]+(.+)$/, m)) {
-          item = m[1]
+        if ($0 ~ /^[[:space:]]+-[[:space:]]+./) {
+          item = $0; sub(/^[[:space:]]+-[[:space:]]+/, "", item)
           gsub(/^[[:space:]]+|[[:space:]]+$/, "", item)
           gsub(/^["'"'"']|["'"'"']$/, "", item)
           if (item != "") print item
@@ -313,8 +314,8 @@ read_sh_comment_peers() {
     NR > 30 { exit }
     {
       # Single-line form: # peers: a, b, c
-      if (match($0, /^[[:space:]]*#[[:space:]]*peers:[[:space:]]*(.+)$/, m)) {
-        rhs = m[1]
+      if ($0 ~ /^[[:space:]]*#[[:space:]]*peers:[[:space:]]*./) {
+        rhs = $0; sub(/^[[:space:]]*#[[:space:]]*peers:[[:space:]]*/, "", rhs)
         gsub(/^\[|\][[:space:]]*$/, "", rhs)
         n = split(rhs, parts, /[[:space:]]*,[[:space:]]*/)
         for (i = 1; i <= n; i++) {
@@ -332,8 +333,8 @@ read_sh_comment_peers() {
       }
       if (in_peers) {
         # Block continuation: #   - path
-        if (match($0, /^[[:space:]]*#[[:space:]]+-[[:space:]]+(.+)$/, m)) {
-          item = m[1]
+        if ($0 ~ /^[[:space:]]*#[[:space:]]+-[[:space:]]+./) {
+          item = $0; sub(/^[[:space:]]*#[[:space:]]+-[[:space:]]+/, "", item)
           gsub(/^[[:space:]]+|[[:space:]]+$/, "", item)
           gsub(/^["'"'"']|["'"'"']$/, "", item)
           if (item != "") print item
@@ -366,8 +367,8 @@ read_ts_comment_peers() {
     NR > 30 { exit }
     {
       # Single-line form: // peers: a, b, c
-      if (match($0, /^[[:space:]]*\/\/[[:space:]]*peers:[[:space:]]*(.+)$/, m)) {
-        rhs = m[1]
+      if ($0 ~ /^[[:space:]]*\/\/[[:space:]]*peers:[[:space:]]*./) {
+        rhs = $0; sub(/^[[:space:]]*\/\/[[:space:]]*peers:[[:space:]]*/, "", rhs)
         # Strip leading [ and trailing ] if present
         gsub(/^\[|\][[:space:]]*$/, "", rhs)
         n = split(rhs, parts, /[[:space:]]*,[[:space:]]*/)
@@ -386,8 +387,8 @@ read_ts_comment_peers() {
       }
       if (in_peers) {
         # Block continuation: //   - path
-        if (match($0, /^[[:space:]]*\/\/[[:space:]]+-[[:space:]]+(.+)$/, m)) {
-          item = m[1]
+        if ($0 ~ /^[[:space:]]*\/\/[[:space:]]+-[[:space:]]+./) {
+          item = $0; sub(/^[[:space:]]*\/\/[[:space:]]+-[[:space:]]+/, "", item)
           gsub(/^[[:space:]]+|[[:space:]]+$/, "", item)
           gsub(/^["'"'"']|["'"'"']$/, "", item)
           if (item != "") print item
@@ -470,7 +471,7 @@ removed_tokens() {
   )
 }
 
-for file in "${changed[@]}"; do
+for file in ${changed[@]+"${changed[@]}"}; do
   # Skip deleted files — a peer sweep only applies to adds/edits.
   [[ -e "$REPO_ROOT/$file" ]] || continue
 
@@ -484,7 +485,7 @@ for file in "${changed[@]}"; do
   # are read where they are and can never be "changed in this diff".
   live_peers=()
   live_paths=()
-  for peer in "${file_peers[@]}"; do
+  for peer in ${file_peers[@]+"${file_peers[@]}"}; do
     [[ -z "$peer" ]] && continue
     # shellcheck disable=SC2088  # the literal two characters are the pattern
     case "$peer" in

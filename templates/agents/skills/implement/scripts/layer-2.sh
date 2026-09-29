@@ -132,7 +132,7 @@ while IFS= read -r unit; do
     echo "PASS: layer-2 $label (no tests in scope)"
     continue
   fi
-  run_tests_in_place "$label" "${unit_tests[@]}"
+  run_tests_in_place "$label" ${unit_tests[@]+"${unit_tests[@]}"}
 done <<<"$UNITS"
 
 [[ $any_fail -eq 0 ]]

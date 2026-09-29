@@ -641,7 +641,9 @@ fi
 
 # ── Prompt ────────────────────────────────────────────────────────────
 
-PROMPT=$(cat <<EOF
+# A heredoc read, not $(cat <<…): bash 3.2 (macOS) miscounts quotes and
+# parentheses in a heredoc inside $( ) and fails to parse the file.
+IFS= read -r -d '' PROMPT <<EOF || true
 You are an adversarial reviewer of freshly-written code in a small repo where
 every caller is the owner's own code. You are reviewing CODE, not a SPEC. Assume things were missed and
 find them. Do not confirm the work is good; find what is wrong. You have
@@ -709,7 +711,7 @@ ${ROUND_NOTE}
 
 ${SUBJECT}
 EOF
-)
+PROMPT="${PROMPT%$'\n'}"
 
 # ── Invoke ────────────────────────────────────────────────────────────
 

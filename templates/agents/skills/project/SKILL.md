@@ -248,6 +248,7 @@ Ask the user — a numbered list, recommendation first; in Claude Code, `AskUser
 - **The recommendation goes first**, labelled `(Recommended)`, with a one-line description saying what picking it means for the build. A free-text answer is always available and is recorded verbatim.
 - **At most 4 questions per round**, and only genuinely independent ones batched together. A decision whose sensible answer depends on another MUST wait for the next round — that is the "one branch at a time" discipline, preserved without paying a turn per question.
 - **Name the thing in plain English** per `AGENTS.md` § Working preferences — the question is read by someone who does not have the repo open.
+- **Make the options tell apart.** Each option says what the user would see differently afterwards, and the question gives one concrete case where the options produce different results. If no such case can be named, the choice fails § 1's filter and is adopted, not asked. Plain words alone do not do this: "they seem the same to me" is the answer a grill question gets when its options differ only in wording.
 
 #### 3. Stop
 

@@ -64,8 +64,12 @@ const BUTTONS = "button, [role=button], input[type=submit], input[type=button]";
 
 const cfId = process.env.QA_CF_ACCESS_ID || "";
 const cfSecret = process.env.QA_CF_ACCESS_SECRET || "";
+// The person the probe acts as on a portal that declares PROBE_ACTS_AS; only with the token.
+const actAs = process.env.QA_ACT_AS || "";
 const extraHTTPHeaders =
-  cfId && cfSecret ? { "CF-Access-Client-Id": cfId, "CF-Access-Client-Secret": cfSecret } : undefined;
+  cfId && cfSecret
+    ? { "CF-Access-Client-Id": cfId, "CF-Access-Client-Secret": cfSecret, ...(actAs ? { "X-Portal-Act-As": actAs } : {}) }
+    : undefined;
 
 const isData = (req) => ["fetch", "xhr"].includes(req.resourceType());
 
@@ -125,6 +129,26 @@ async function newPage() {
   return { ctx, page };
 }
 
+// A page that answered 4xx/5xx, or landed on another origin (a sign-in wall),
+// is not the page: its text would pass every check below and stamp a clean
+// run. screenshot.sh's STATUS and OFF-ORIGIN gates refuse the same two cases.
+async function gotoChecked(page, url) {
+  const resp = await page.goto(url, { waitUntil: "domcontentloaded", timeout: NAV_TIMEOUT_MS });
+  const status = resp ? resp.status() : 0;
+  if (status === 0 || status >= 400) throw new Error(`HTTP ${status || "no response"} from ${url}`);
+  const landed = new URL(page.url()).origin;
+  if (landed !== new URL(url).origin) throw new Error(`redirected off-origin to ${landed}`);
+  return resp;
+}
+
+// Where the page ended up once it had time to move: a script redirect to a
+// sign-in page on another origin runs after DOMContentLoaded, so the check in
+// gotoChecked alone would pass it. Called again after the page settles.
+function assertLanded(page, url) {
+  const landed = new URL(page.url()).origin;
+  if (landed !== new URL(url).origin) throw new Error(`redirected off-origin to ${landed}`);
+}
+
 const firstLine = (err) =>
   String(err?.message ?? err)
     .split("\n")[0]
@@ -134,8 +158,9 @@ async function blankWhileLoading(route, url) {
   const { ctx, page } = await newPage();
   try {
     await page.route("**/*", (r) => (isData(r.request()) ? undefined : r.continue()));
-    await page.goto(url, { waitUntil: "domcontentloaded", timeout: NAV_TIMEOUT_MS });
+    await gotoChecked(page, url);
     await page.waitForTimeout(BLANK_AFTER_MS);
+    assertLanded(page, url);
     const shown = await page.evaluate(() => {
       const visible = (el) => {
         const r = el.getBoundingClientRect();
@@ -196,8 +221,9 @@ async function settle(page) {
 async function noFeedback(route, url) {
   const { ctx, page } = await newPage();
   try {
-    await page.goto(url, { waitUntil: "domcontentloaded", timeout: NAV_TIMEOUT_MS });
+    await gotoChecked(page, url);
     await settle(page);
+    assertLanded(page, url);
     const all = await page.locator(BUTTONS).evaluateAll((els) =>
       els.map((el) => {
         const r = el.getBoundingClientRect();
@@ -243,8 +269,9 @@ async function noFeedback(route, url) {
     for (const { label, index } of eligible.slice(0, MAX_BUTTONS)) {
       try {
         await page.unroute("**/*", hold).catch(() => {});
-        await page.goto(url, { waitUntil: "domcontentloaded", timeout: NAV_TIMEOUT_MS });
+        await gotoChecked(page, url);
         await settle(page);
+        assertLanded(page, url);
         const button = page.locator(BUTTONS).nth(index);
         await button.hover({ timeout: 2_000 });
         await page.waitForTimeout(HOVER_SETTLE_MS);

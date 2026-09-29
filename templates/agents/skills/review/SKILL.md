@@ -39,7 +39,7 @@ holds every folder here to.
 - **The parsers** `blast-radius-symbols.mjs` uses — `web-tree-sitter`,
   `tree-sitter-bash`, `typescript` — are declared in `package.json` here and
   found in the workbench's own `node_modules`, then Node's global one
-  (`npm i -g typescript web-tree-sitter tree-sitter-bash`). Without them the
+  (`npm i -g typescript@5 web-tree-sitter tree-sitter-bash`). Without them the
   packer warns and falls back to a regex walk.
 
 ## Tests and the eval

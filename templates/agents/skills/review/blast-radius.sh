@@ -153,7 +153,7 @@ if [[ -n "$FILES_FILE" ]]; then
   fi
 fi
 if [[ ${#ARG_FILES[@]} -gt 0 ]]; then
-  printf '%s\n' "${ARG_FILES[@]}" >>"$RAW_LIST"
+  printf '%s\n' ${ARG_FILES[@]+"${ARG_FILES[@]}"} >>"$RAW_LIST"
 fi
 
 # Only the three languages the symbol side can parse, only files that still
@@ -261,7 +261,7 @@ BYTES_DIR="$TMP/bytes"
 mkdir -p "$BYTES_DIR"
 
 idx=0
-for f in "${FILES[@]}"; do
+for f in ${FILES[@]+"${FILES[@]}"}; do
   idx=$((idx + 1))
   slug="$(slug_for "$f")"
   lang="ts"
@@ -398,14 +398,14 @@ importers_of() {
   local hits rc=0
   if [[ "$target" == *.sh ]]; then
     hits=$(git grep -l --untracked -E -e "(^|[[:space:];&|])(\.|source)[[:space:]]+[^[:space:]]*/?${base}\.sh" \
-      -- . "${RECORD_EXCLUDES[@]}" 2>/dev/null) || rc=$?
+      -- . ${RECORD_EXCLUDES[@]+"${RECORD_EXCLUDES[@]}"} 2>/dev/null) || rc=$?
     [[ "$rc" -le 1 ]] || grep_failed "$rc" "the scripts sourcing $target"
     printf '%s\n' "$hits" | grep -vxF "$target" | grep -v '^$' || true
     return 0
   fi
 
   hits=$(git grep -l --untracked -E -e "['\"][^'\"]*${base}(\.(js|jsx|ts|tsx|mjs|cjs))?['\"]" \
-    -- . "${RECORD_EXCLUDES[@]}" 2>/dev/null) || rc=$?
+    -- . ${RECORD_EXCLUDES[@]+"${RECORD_EXCLUDES[@]}"} 2>/dev/null) || rc=$?
   [[ "$rc" -le 1 ]] || grep_failed "$rc" "the files importing $target"
 
   # Candidates first (one grep), then resolution per candidate (no grep).
@@ -447,7 +447,7 @@ imports_of() {
     [[ -n "$spec" ]] || continue
     resolved="$(resolve_spec "$f" "$spec")"
     [[ -n "$resolved" ]] || continue
-    for e in "${exts[@]}"; do
+    for e in ${exts[@]+"${exts[@]}"}; do
       cand="${resolved}${e}"
       if [[ -f "$REPO/$cand" ]]; then
         printf '%s\n' "$cand"
@@ -462,7 +462,7 @@ callers_of() {
   # A word match as a fixed string: `\b` is not in every git's regex build
   # (macOS), and a `$` in a JavaScript identifier stays literal.
   local out rc=0
-  out=$(git grep -n --untracked -w -F -e "${symbol}" -- . "${RECORD_EXCLUDES[@]}" 2>/dev/null) || rc=$?
+  out=$(git grep -n --untracked -w -F -e "${symbol}" -- . ${RECORD_EXCLUDES[@]+"${RECORD_EXCLUDES[@]}"} 2>/dev/null) || rc=$?
   [[ "$rc" -le 1 ]] || grep_failed "$rc" "the callers of $symbol"
   printf '%s\n' "$out" | awk -F: -v skip="$defining" 'NF && $1 != skip { print $1 ":" $2 }' || true
 }
@@ -470,7 +470,7 @@ callers_of() {
 # ── Emit ──────────────────────────────────────────────────────────────
 
 CHANGED_SET="$TMP/changed-set"
-printf '%s\n' "${FILES[@]}" | sort -u >"$CHANGED_SET"
+printf '%s\n' ${FILES[@]+"${FILES[@]}"} | sort -u >"$CHANGED_SET"
 
 BODY="$TMP/body"
 : >"$BODY"
@@ -479,7 +479,7 @@ symbol_budget="$MAX_SYMBOLS"
 truncated_symbols=0
 truncated_callers=0
 
-for f in "${FILES[@]}"; do
+for f in ${FILES[@]+"${FILES[@]}"}; do
   section="$TMP/section"
   : >"$section"
 
@@ -487,13 +487,13 @@ for f in "${FILES[@]}"; do
   imported_by=(); while IFS= read -r _l; do imported_by+=("$_l"); done < <(importers_of "$f" | sort -u)
   if [[ ${#imported_by[@]} -gt 0 ]]; then
     printf '  imported-by:\n' >>"$section"
-    printf '    %s\n' "${imported_by[@]}" >>"$section"
+    printf '    %s\n' ${imported_by[@]+"${imported_by[@]}"} >>"$section"
   fi
 
   imports=(); while IFS= read -r _l; do imports+=("$_l"); done < <(imports_of "$f" | sort -u | grep -vxF -f "$CHANGED_SET" || true)
   if [[ ${#imports[@]} -gt 0 ]]; then
     printf '  imports (not in this change):\n' >>"$section"
-    printf '    %s\n' "${imports[@]}" >>"$section"
+    printf '    %s\n' ${imports[@]+"${imports[@]}"} >>"$section"
   fi
 
   syms=(); while IFS= read -r _l; do syms+=("$_l"); done < <(symbols_for "$f" | sort -u)
@@ -515,7 +515,7 @@ for f in "${FILES[@]}"; do
       calls=("${calls[@]:0:$MAX_CALLERS}")
     fi
     sym_lines="${sym_lines}    ${s} — callers:"$'\n'
-    for c in "${calls[@]}"; do
+    for c in ${calls[@]+"${calls[@]}"}; do
       sym_lines="${sym_lines}      ${c}"$'\n'
     done
   done

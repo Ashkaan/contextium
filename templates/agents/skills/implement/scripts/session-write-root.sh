@@ -364,7 +364,7 @@ fi
 
 if (( ${#matches[@]} > 1 )); then
   err "${#matches[@]} worktrees claim session $SESSION_KEY:"
-  for m in "${matches[@]}"; do err "  $m"; done
+  for m in ${matches[@]+"${matches[@]}"}; do err "  $m"; done
   err "Not guessing which is yours. Remove the stale marker(s), then retry."
   exit 1
 fi

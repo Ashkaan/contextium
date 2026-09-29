@@ -258,7 +258,7 @@ dispatch_one() {  # dispatch_one <prompt_file> <vendor> <model>
       fi
       run_with_timeout "$TIMEOUT_S" grok -p "$prompt_body" ${mflag[@]+"${mflag[@]}"} --output-format plain \
         --verbatim --no-plan \
-        --permission-mode bypassPermissions "${gscope[@]}" \
+        --permission-mode bypassPermissions ${gscope[@]+"${gscope[@]}"} \
         --reasoning-effort medium \
         --system-prompt-override "$gsys" \
         >"$outf" 2>"$errf" </dev/null || rc=$?

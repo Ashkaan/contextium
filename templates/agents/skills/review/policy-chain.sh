@@ -342,7 +342,7 @@ _policy_chain_run_grok() {
   _policy_chain_timeout "$secs" "$bin" --prompt-file "$prompt_file" ${model[@]+"${model[@]}"} \
     --output-format json --verbatim --no-plan \
     --reasoning-effort high --system-prompt-override "$sysprompt" \
-    "${scope[@]}" \
+    ${scope[@]+"${scope[@]}"} \
     >"$raw" 2>"${POLICY_CHAIN_TMP}/slot.err" || rc=$?
   if [[ "$rc" -ne 0 ]]; then
     rm -f "$raw"

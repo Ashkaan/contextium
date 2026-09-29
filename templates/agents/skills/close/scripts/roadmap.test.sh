@@ -228,7 +228,7 @@ t "…and no temp file is left" "" "$(find "$d" -name 'ROADMAP.md.*')"
 
 # Many writers at once: every row's update survives
 rows=(); for i in $(seq 1 12); do rows+=("| R$i | f$i | i | s | — | planned | — |"); done
-d="$(mk par "${rows[@]}")"
+d="$(mk par ${rows[@]+"${rows[@]}"})"
 for i in $(seq 1 12); do bash "$SUT" "$d" --set "R$i" in-progress & done; wait
 t "parallel --set loses no row" "12" "$(grep -c '| in-progress |' "$d/ROADMAP.md")"
 

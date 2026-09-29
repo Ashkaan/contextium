@@ -90,7 +90,7 @@ emit_prompt() {
   } > "$prompt_file"
 }
 
-for role in "${ROLES[@]}"; do
+for role in ${ROLES[@]+"${ROLES[@]}"}; do
   emit_prompt "$role"
 done
 

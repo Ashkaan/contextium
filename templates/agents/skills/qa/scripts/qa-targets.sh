@@ -185,7 +185,7 @@ else
   : >"$RAW"
 fi
 if [[ ${#ARG_FILES[@]} -gt 0 ]]; then
-  printf '%s\n' "${ARG_FILES[@]}" >>"$RAW"
+  printf '%s\n' ${ARG_FILES[@]+"${ARG_FILES[@]}"} >>"$RAW"
 fi
 
 # A DELETED path is kept. Removing a page, a component or a stylesheet changes
@@ -260,7 +260,7 @@ web_target_for() {
 
 TARGETS=()
 ORPHANS=()
-for f in "${CHANGED[@]}"; do
+for f in ${CHANGED[@]+"${CHANGED[@]}"}; do
   t="$(web_target_for "$f")"
   if [[ -n "$t" ]]; then
     TARGETS+=("$t")
@@ -390,7 +390,7 @@ done
 
 while [[ ${#frontier[@]} -gt 0 ]]; do
   next=()
-  for f in "${frontier[@]}"; do
+  for f in ${frontier[@]+"${frontier[@]}"}; do
     importers_of "$f" >"$IMPORTERS"
     while IFS= read -r importer; do
       [[ -n "$importer" ]] || continue
@@ -410,4 +410,4 @@ while [[ ${#frontier[@]} -gt 0 ]]; do
 done
 
 [[ ${#TARGETS[@]} -eq 0 ]] && exit 0
-printf '%s\n' "${TARGETS[@]}" | sort -u
+printf '%s\n' ${TARGETS[@]+"${TARGETS[@]}"} | sort -u
