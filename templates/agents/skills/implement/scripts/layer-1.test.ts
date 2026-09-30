@@ -187,6 +187,20 @@ test("case5d unparseable-makefile-fails-not-skips", { skip: noMake }, () => {
   assert.doesNotMatch(r.out, /WARN: layer-1 lint \(tools\/(bad|noinc)\)/, `…never a skipped WARN: ${r.all}`);
 });
 
+// A $(warning …) whose text holds `*** ` is still a warning: only a line ending
+// in make's `.  Stop.` is fatal, and the targets it declares run.
+test("case5e a-warning-with-stars-is-not-a-parse-error", { skip: noMake }, () => {
+  const repo = makeRepo();
+  mkdirSync(join(repo, "tools/warn"), { recursive: true });
+  writeFileSync(
+    join(repo, "tools/warn/Makefile"),
+    "x := $(warning *** optional tool unavailable)\nlint:\n\t@true\ntypecheck:\n\t@true\n",
+  );
+  const r = run("tools/warn/a.go", { repo });
+  assert.equal(r.rc, 0, `a warning failed the step: ${r.all}`);
+  assert.ok(r.out.includes("PASS: layer-1 lint (tools/warn)"), `the declared lint target did not run: ${r.all}`);
+});
+
 // ── Case 6: markdown and records select no package; a deleted file still does ──
 test("case6 records-select-nothing-deleted-selects-its-package", { skip: noNpm }, () => {
   const repo = makeRepo();

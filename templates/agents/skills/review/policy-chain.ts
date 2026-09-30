@@ -394,6 +394,9 @@ function emit(file: string, sink: ChainSink): void {
 // and the grace as a backstop: it closes the caller's end of the pipes, and
 // that run is 124 too.
 const CAP_KILL_GRACE_MS = 3000;
+// The watchdog is a Node process of its own: its start-up precedes the cap's
+// clock, so a call is measured as overrunning only past cap + this.
+const CAP_STARTUP_MS = 500;
 const CAP_BACKSTOP_MS = 2000;
 const CAP_WATCHDOG = `
 const { spawn } = require("node:child_process");
@@ -445,13 +448,19 @@ export function spawnCapped(
   args: string[],
   opts: SpawnSyncOptions = {},
 ): SpawnSyncReturns<string | Buffer> {
+  const start = Date.now();
   const r = spawnSync(
     process.execPath,
     ["-e", CAP_WATCHDOG, "--", String(capMs), String(CAP_KILL_GRACE_MS), bin, ...args],
     { timeout: capMs + CAP_KILL_GRACE_MS + CAP_BACKSTOP_MS, ...opts },
   );
   const code = (r.error as NodeJS.ErrnoException | undefined)?.code;
-  return code === "ETIMEDOUT" ? { ...r, status: 124, signal: null, error: undefined } : r;
+  // A descendant that left the process group is out of the watchdog's reach and
+  // can hold a captured pipe after the group is empty, so the call returns only
+  // when it lets go. A call that outlived its cap by more than the watchdog's own
+  // start-up timed out, whatever status the leader left behind.
+  const overran = Date.now() - start > capMs + CAP_STARTUP_MS;
+  return code === "ETIMEDOUT" || overran ? { ...r, status: 124, signal: null, error: undefined } : r;
 }
 
 // `<bin> …` under a per-slot wall clock (spawnCapped), stdin/stdout/stderr

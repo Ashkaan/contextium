@@ -331,6 +331,23 @@ test("7d — a slot that ignores TERM is KILLed at the cap, with what it started
 // the watchdog stood down on the leader's exit, so `sleep 3 &` held the caller
 // three seconds and came back as a success, and a descendant that never exits
 // held it forever.
+// A descendant that LEFT the group (a new session) is out of the watchdog's reach, and
+// it can hold the captured pipe after the group is empty. The call then returns
+// only when that descendant lets go — past the cap — and it must still read as
+// the timeout it was, never as the leader's exit 0.
+test("7f — a descendant that left the group and held the pipe past the cap reads as 124", () => {
+  const start = Date.now();
+  // A detached child is a new session on Linux and macOS alike (there is no
+  // setsid(1) on macOS); it inherits the pipes and exits after a second.
+  const detach = "require('node:child_process').spawn('sleep', ['1'], { detached: true, stdio: 'inherit' }).unref()";
+  const r = spawnCapped(100, process.execPath, ["-e", detach], {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  const ms = Date.now() - start;
+  assert.equal(r.status, 124, `a 100ms cap returned status ${r.status} after ${ms}ms`);
+});
+
 test("7e — the cap outlives the leader: a descendant holding the stream is stopped at it", () => {
   const alive = (pid: number): boolean => {
     try {

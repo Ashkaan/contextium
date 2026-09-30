@@ -111,6 +111,14 @@ test("case4b make-multi-target-and-included-test", { skip: noMake }, () => {
 // make still prints a database after a parse error, holding none of the
 // Makefile's targets, so a syntax error above `test:` read as a package with
 // no test target and no test files: "no tests in scope", a pass.
+test("case4d a-warning-with-stars-is-not-a-parse-error", { skip: noMake }, () => {
+  const repo = makeRepo();
+  write(join(repo, "tools/warn/Makefile"), "x := $(warning *** optional tool unavailable)\ntest:\n\t@true\n");
+  const r = run("tools/warn/main.go", { repo });
+  assert.equal(r.rc, 0, `a warning failed the step: ${r.all}`);
+  assert.ok(r.out.includes("PASS: layer-2 tools/warn"), `the declared test target did not run: ${r.all}`);
+});
+
 test("case4c unparseable-makefile-fails-not-no-tests", { skip: noMake }, () => {
   const repo = makeRepo();
   write(join(repo, "tools/bad/Makefile"), "oops this is not make\ntest:\n\t@true\n");

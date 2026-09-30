@@ -142,8 +142,9 @@ function declaresScript(pkg: string, name: string): boolean {
  * database even after a parse error (a syntax error, a missing include, an
  * `$(error)`), holding none of the file's targets, so that database is never
  * used: `broken` carries make's own error lines and the step FAILs with them.
- * make's `*** ` lines are its errors; the one it always prints — no rule for
- * the `.DEFAULT` goal — is the ordinary case, and its warnings carry no `***`.
+ * make's fatal errors are the `*** ` lines ending `.  Stop.`; the one it always
+ * prints — no rule for the `.DEFAULT` goal — is the ordinary case. A warning can
+ * carry `*** ` in its own text (`$(warning *** …)`) and never ends in `Stop.`.
  */
 interface MakeDb {
   targets: Set<string>;
@@ -170,7 +171,7 @@ function makeTargets(pkg: string): MakeDb {
     ? ""
     : (r.stderr ?? "")
         .split("\n")
-        .filter((l) => l.includes("*** ") && !/No rule to make target [`']\.DEFAULT'/.test(l))
+        .filter((l) => /\*\*\* .*\.\s+Stop\.$/.test(l) && !/No rule to make target [`']\.DEFAULT'/.test(l))
         .join("\n");
   if (broken !== "") {
     const db = { targets, broken };

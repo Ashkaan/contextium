@@ -188,6 +188,16 @@ const ROWS: [string, string, string, "ok" | "violation", string][] = [
     "violation",
     "Description exceeds 1024 character limit (1025 chars)",
   ],
+  // A tab past the indent is text; one before the indent is reached is not
+  // indentation YAML allows (strictyaml: ScannerError).
+  [
+    "a tab past a block's indent is text the length counts",
+    "alpha",
+    `name: alpha\ndescription: |2-\n  ${"x".repeat(1022)}\n    \t`,
+    "violation",
+    "Description exceeds 1024 character limit (1026 chars)",
+  ],
+  ["a tab before a block's indent is invalid YAML", "alpha", "name: alpha\ndescription: |2-\n  xxxxxxxxxx\n \t\n  y", "violation", "Invalid YAML in frontmatter"],
   ["a line under the block's indent is invalid YAML", "alpha", "name: alpha\ndescription: >\n    aaa\n  bbb", "violation", "Invalid YAML in frontmatter"],
   ["a line under an indentation indicator is invalid YAML", "alpha", "name: alpha\ndescription: >4\n  text", "violation", "Invalid YAML in frontmatter"],
   // Names are Unicode letters and digits, NFKC-normalized, as the validator reads them.

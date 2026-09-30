@@ -203,8 +203,13 @@ function blockValue(header: string, raw: string[]): { value: string; bad: boolea
     }
     indent = Math.max(1, widest, i < raw.length ? lead(raw[i] ?? "") : 0);
   }
-  // A break line: blank once up to `indent` spaces are consumed.
-  const isBreak = (l: string): boolean => /^[ \t]*$/.test(l) && !(lead(l) > indent && !l.includes("\t"));
+  // A break line: nothing left once up to `indent` spaces are consumed. Past the
+  // indent, spaces and tabs alike are text; a tab met before the indent is not
+  // indentation, and ends the block (a line the caller reports as invalid).
+  const isBreak = (l: string): boolean => {
+    const spaces = lead(l);
+    return spaces >= indent ? l.slice(indent) === "" : l.slice(spaces) === "";
+  };
   const skipBreaks = (): void => {
     while (i < raw.length && isBreak(raw[i] ?? "")) {
       i++;
