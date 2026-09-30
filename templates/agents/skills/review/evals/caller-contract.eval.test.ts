@@ -186,10 +186,17 @@ test("4. the rerun, no reviewer answers", () => {
 });
 
 test("5. the fixture is rebuilt fresh each run and cleaned up", () => {
-  const dir = process.env.TMPDIR || "/tmp";
-  const scratch = (): number => readdirSync(dir).filter((n) => /^caller-contract-eval-(?!test-)/.test(n)).length;
-  const before = scratch();
-  run("--pack-only");
-  const after = scratch();
-  t("the scratch repo is removed on exit", before, after);
+  // A temp folder of this test's own: counted in the shared one, another
+  // suite's eval run making or removing its scratch repo moved the count.
+  const dir = mkdtempSync(join(tmp, "own-tmpdir-"));
+  const scratch = (): string[] => readdirSync(dir).filter((n) => /^caller-contract-eval-/.test(n));
+  const saved = ENV.TMPDIR;
+  ENV.TMPDIR = dir;
+  try {
+    run("--pack-only");
+  } finally {
+    if (saved === undefined) delete ENV.TMPDIR;
+    else ENV.TMPDIR = saved;
+  }
+  t("the scratch repo is removed on exit", "", scratch().join(" "));
 });
