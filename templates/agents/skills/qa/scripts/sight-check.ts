@@ -30,6 +30,7 @@
 //   .agents/skills/qa/SKILL.md            (step-4-fresh-review, step-4.5-fix-reverify)
 //   .agents/skills/qa/scripts/screenshot.ts
 //   .agents/skills/qa/scripts/sight-stamp.ts
+//   .agents/skills/qa/scripts/sight-validate.ts (the chain's shape test for that fallback)
 //   .agents/skills/qa/scripts/lib.ts
 //   .agents/skills/qa/scripts/tests/sight-check.test.ts
 //   .agents/skills/qa/scripts/tests/sight-check-playwright.test.ts
@@ -123,10 +124,14 @@ async function main(): Promise<void> {
   ROUTE AROUND IT — run the review through the review chain instead of a
   subagent whose image Read is dead. The brief names the PNG paths to open:
 
+    POLICY_CHAIN_GROK_TOOLS=read_file \\
+    POLICY_CHAIN_VALIDATOR=.agents/skills/qa/scripts/sight-validate.ts \\
+    QA_SIGHT_CODES=<codes> \\
     node --experimental-strip-types .agents/skills/review/policy-review.ts adversarial-review \\
       <run-dir>/manifest.json <brief.txt>   > <response>.txt
 
-  Then verify THAT response with this same gate. Max ${ROUTER_IMAGE_MAX} images per
+  read_file lets Grok open the PNGs; the validator passes over any vendor
+  whose answer lacks the codes. Then verify THAT response with this same gate. Max ${ROUTER_IMAGE_MAX} images per
   call — batch larger runs. The brief must still carry the rubric and the
   "transcribe the QA SIGHT CODE" instruction, and it must NEVER carry the codes.
 `);
@@ -178,7 +183,9 @@ async function main(): Promise<void> {
     if (!onPath("magick")) {
       pwNodeModules = qaPlaywrightNodeModules();
       if (pwNodeModules === undefined) {
-        err("sight-check.ts: neither ImageMagick nor Playwright is available — cannot stamp, so sight cannot be proven.");
+        err(
+          "sight-check.ts: neither ImageMagick nor Playwright is available — cannot stamp, so sight cannot be proven.",
+        );
         err("sight-check.ts: HALT rather than dispatch an unverifiable review.");
         exit(3);
       }

@@ -9,7 +9,7 @@
 // Run: node --test --experimental-strip-types .agents/hooks/lib/paths.test.ts
 
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
@@ -20,14 +20,25 @@ const T = realpathSync(mkdtempSync(join(tmpdir(), "paths-test-")));
 after(() => rmSync(T, { recursive: true, force: true }));
 
 /** Source paths.sh in a fresh bash and run `script`; args reach it as $1…. */
-function sh(script: string, args: string[] = [], cwd?: string): { rc: number | null; out: string } {
+function sh(script: string, args: string[] = [], cwd?: string, env: NodeJS.ProcessEnv = {}): { rc: number | null; out: string } {
   const r = spawnSync("bash", ["-c", `set -uo pipefail; . "$LIB"; ${script}`, "paths-test", ...args], {
     cwd,
     encoding: "utf8",
-    env: { ...process.env, LIB },
+    env: { ...process.env, LIB, ...env },
   });
   return { rc: r.status, out: r.stdout.replace(/\n$/, "") };
 }
+
+// A PATH whose `timeout` and `gtimeout` are not coreutils (as on a stock macOS,
+// or busybox), so run_bounded takes its own watcher — the branch a machine
+// with GNU coreutils would otherwise never run here.
+const NO_TIMEOUT = join(T, "no-timeout-bin");
+mkdirSync(NO_TIMEOUT);
+for (const t of ["timeout", "gtimeout"]) {
+  writeFileSync(join(NO_TIMEOUT, t), "#!/bin/sh\nexit 1\n");
+  chmodSync(join(NO_TIMEOUT, t), 0o755);
+}
+const WATCHER = { PATH: `${NO_TIMEOUT}:${process.env.PATH ?? ""}` };
 const canon = (p: string, cwd?: string): string => sh('canon_missing "$1"', [p], cwd).out;
 
 mkdirSync(join(T, "real/sub"), { recursive: true });
@@ -92,4 +103,22 @@ test("run_bounded: a stopped command's own children do not hold its output open"
 test("run_bounded: a command within its limit keeps its own exit code and output", () => {
   assert.equal(sh(`rc=0; run_bounded 5 sh -c 'exit 3' || rc=$?; echo "$rc"`).out, "3");
   assert.equal(sh("run_bounded 5 echo hi").out, "hi");
+});
+
+// The same rows through the watcher. The one that matters most: a command that
+// ends at once returns at once, even read through $(…) — the watcher's sleep
+// must not hold the caller's pipe open until the limit.
+test("run_bounded without a coreutils timeout: a quick command returns at once, through $(…) too", () => {
+  const start = Date.now();
+  const r = sh('out="$(run_bounded 5 echo hi)"; printf "%s" "$out"', [], undefined, WATCHER);
+  const took = Date.now() - start;
+  assert.equal(r.out, "hi");
+  assert.ok(took < 2500, `a quick command returned after ${took} ms, not at once`);
+});
+
+test("run_bounded without a coreutils timeout: exit code kept, 124 at the limit", () => {
+  assert.equal(sh(`rc=0; run_bounded 5 sh -c 'exit 3' || rc=$?; echo "$rc"`, [], undefined, WATCHER).out, "3");
+  const start = Date.now();
+  const r = sh(`out="$(run_bounded 1 sh -c 'sleep 5; echo late' 2>/dev/null)" || rc=$?; printf '%s:%s' "\${rc:-0}" "$out"`, [], undefined, WATCHER);
+  assert.equal(`${Date.now() - start < 4000}:${r.out}`, "true:124:");
 });

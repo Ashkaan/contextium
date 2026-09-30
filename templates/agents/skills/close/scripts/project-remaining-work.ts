@@ -119,7 +119,7 @@ async function main(): Promise<void> {
   // may still hold a shard this session's tree has already marked closed. An
   // absolute path is honoured as given.
   if (!projectDir.startsWith("/") && projectDir.startsWith("projects/")) {
-    const root = sibling(`${SCRIPT_DIR}/../../implement/scripts/session-write-root.ts`, [], "ignore").out;
+    const root = sibling(`${SCRIPT_DIR}/../../implement/scripts/session-write-root.ts`, ["--no-create"], "ignore").out;
     if (root !== "" && isDir(`${root}/${projectDir}`)) projectDir = `${root}/${projectDir}`;
   }
   if (!isDir(projectDir)) {

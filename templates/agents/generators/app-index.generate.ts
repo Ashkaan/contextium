@@ -3,7 +3,7 @@
 // Usage: node .agents/generators/app-index.generate.ts [--out /path/to/output.md]
 
 import { readdirSync, readFileSync, writeFileSync } from "fs";
-import { join } from "path";
+import { dirname, join, relative, resolve, sep } from "path";
 import { parseFrontmatter } from "./parse_frontmatter.ts";
 import { oneLineCell } from "./table_cell.ts";
 import { repoRoot } from "./repo_root.ts";
@@ -29,7 +29,11 @@ function appDomain(dirName: string): string {
   return dirName.includes("/") ? dirName.split("/")[0] : "";
 }
 
-const SKIP_DIRS = new Set([".git"]);
+// Not apps: installed dependencies (a bundle's `npm install` puts node_modules/
+// beside its members) and dot-folders (.git, tool caches).
+function isSkipped(name: string): boolean {
+  return name === "node_modules" || name.startsWith(".");
+}
 
 // ── Types ────────────────────────────────────────────────────────────
 
@@ -96,7 +100,7 @@ function discoverApps(appsDir: string): { apps: AppMeta[]; drops: number } {
   let entries: string[];
   try {
     entries = readdirSync(appsDir, { withFileTypes: true })
-      .filter((d) => d.isDirectory() && !SKIP_DIRS.has(d.name))
+      .filter((d) => d.isDirectory() && !isSkipped(d.name))
       .map((d) => d.name);
   } catch {
     console.error(`Error: cannot read ${appsDir}`);
@@ -109,7 +113,7 @@ function discoverApps(appsDir: string): { apps: AppMeta[]; drops: number } {
       let members: string[] = [];
       try {
         members = readdirSync(join(appsDir, dirName), { withFileTypes: true })
-          .filter((d) => d.isDirectory())
+          .filter((d) => d.isDirectory() && !isSkipped(d.name))
           .map((d) => d.name);
       } catch {
         // Its member apps are unreadable, not absent: a drop, so the index is
@@ -148,12 +152,14 @@ function truncate(desc: string, max = 90): string {
 
 // ── Build markdown ───────────────────────────────────────────────────
 
-function buildTable(apps: AppMeta[]): string {
+// linkPrefix is apps/ as seen from the folder the index is written to ("" when
+// it is written into apps/ itself), so every link resolves from its file.
+function buildTable(apps: AppMeta[], linkPrefix: string): string {
   if (apps.length === 0) return "";
 
   const sorted = [...apps].sort((a, b) => a.dirName.localeCompare(b.dirName));
   const rows = sorted.map((a) => {
-    const link = `[${oneLineCell(a.name)}](${a.dirName}/)`;
+    const link = `[${oneLineCell(a.name)}](${linkPrefix}${a.dirName}/)`;
     const purpose = oneLineCell(truncate(a.description));
     return `| ${link} | ${purpose} | ${oneLineCell(a.schedule)} | ${oneLineCell(a.runtime)} |`;
   });
@@ -161,7 +167,7 @@ function buildTable(apps: AppMeta[]): string {
   return ["| App | Purpose | Schedule | Runtime |", "|-----|---------|----------|---------|", ...rows].join("\n");
 }
 
-function buildReadme(apps: AppMeta[]): string {
+function buildReadme(apps: AppMeta[], linkPrefix: string): string {
   const sections: string[] = [
     "# Apps",
     "",
@@ -183,19 +189,19 @@ function buildReadme(apps: AppMeta[]): string {
 
   if (domains.length === 0) {
     // All apps are flat (no domain folders) — render one untitled table.
-    sections.push(buildTable(flatApps));
+    sections.push(buildTable(flatApps, linkPrefix));
     sections.push("");
   } else {
     for (const domain of domains) {
       const domainApps = apps.filter((a) => appDomain(a.dirName) === domain);
       sections.push(`## ${domainLabel(domain)}`, "");
-      sections.push(buildTable(domainApps));
+      sections.push(buildTable(domainApps, linkPrefix));
       sections.push("");
     }
     // Mixed layout: flat apps that aren't under any domain folder.
     if (flatApps.length > 0) {
       sections.push("## Other", "");
-      sections.push(buildTable(flatApps));
+      sections.push(buildTable(flatApps, linkPrefix));
       sections.push("");
     }
   }
@@ -239,7 +245,10 @@ if (outputPath !== "-" && drops > 0) {
   process.exit(1);
 }
 
-const readme = buildReadme(apps);
+// stdout (`--out -`) is read as apps/README.md would be, so its links are relative to apps/.
+const linkBase = outputPath === "-" ? appsDir : dirname(resolve(outputPath));
+const toApps = relative(linkBase, appsDir).split(sep).join("/");
+const readme = buildReadme(apps, toApps ? `${toApps}/` : "");
 
 if (outputPath === "-") {
   process.stdout.write(readme);

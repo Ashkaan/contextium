@@ -126,7 +126,7 @@ import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { realpathSync } from "node:fs";
 import { exit, runToExit } from "../../packages/cli-exit/cli-exit.ts";
-import { policyRunChain, type ValidatorResult } from "./policy-chain.ts";
+import { policyRunChain, spawnCapped, type ValidatorResult } from "./policy-chain.ts";
 
 const err = (line: string): void => {
   process.stderr.write(`${line}\n`);
@@ -378,9 +378,10 @@ async function main(): Promise<void> {
     try {
       writeFileSync(`${dir}/files`, `${files}\n`);
       writeFileSync(`${dir}/diff`, `${diffText}\n`);
-      // The bound is spawnSync's own clock, not coreutils `timeout`, which a
-      // stock macOS does not ship; a packer killed by it reads as 124.
-      const r = spawnSync(
+      // The bound is policy-chain's spawnCapped, which KILLs a packer that
+      // ignores TERM; a packer it stops reads as 124.
+      const r = spawnCapped(
+        Math.max(1, Math.round(Number(BLAST_RADIUS_TIMEOUT_S) * 1000)) || 120_000,
         process.execPath,
         [
           "--experimental-strip-types",
@@ -401,17 +402,14 @@ async function main(): Promise<void> {
           encoding: "utf8",
           stdio: ["inherit", "pipe", "pipe"],
           maxBuffer: 1 << 30,
-          timeout: Math.max(1, Math.round(Number(BLAST_RADIUS_TIMEOUT_S) * 1000)) || 120_000,
-          killSignal: "SIGTERM",
         },
       );
-      const timedOut = (r.error as NodeJS.ErrnoException | undefined)?.code === "ETIMEDOUT";
-      rc = timedOut ? 124 : (r.status ?? 124);
-      pack = chomp(r.stdout ?? "");
+      rc = r.status ?? 124;
+      pack = chomp(String(r.stdout ?? ""));
       // Forward the packer's stderr BEFORE the temp dir goes. A parser that fell
       // back to regex, or a grammar that would not load, says so here and nowhere
       // else; dropping it makes a degraded pack indistinguishable from a good one.
-      for (const l of readLines(r.stderr ?? "")) err(l);
+      for (const l of readLines(String(r.stderr ?? ""))) err(l);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

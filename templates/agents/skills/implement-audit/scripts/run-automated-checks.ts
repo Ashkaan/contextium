@@ -23,6 +23,7 @@
 //
 // Output (stdout, one TAP-ish line per check):
 //   PASS: lint (3 files)
+//   WARN: lint (1 files in no package) — not linted or typechecked: bin/x.sh
 //   FAIL: shellcheck apps/foo/bar.sh:12 SC2086 quote to prevent globbing
 //   PASS: standards-refs (0 dangling)
 //   PASS: find-peers (0 left-behind)
@@ -285,16 +286,28 @@ async function main(): Promise<void> {
       env: { CLAUDE_PROJECT_DIR: REPO_DIR },
     });
     if (l.ok) {
-      // A step layer-1 skipped (the package declares no lint or typecheck) is not
-      // a step that passed: say which, and do not call the change linted.
+      // The lint line reports what layer-1 RAN, never its exit status alone. A
+      // step it skipped (a package that declares no lint or typecheck, a file no
+      // package owns) is not a step that passed: each is a WARN, and the change
+      // is called linted only when some package's lint actually ran.
+      const lines = l.out.split("\n");
       let skipped = 0;
-      for (const line of l.out.split("\n")) {
+      for (const line of lines) {
         if (!line.startsWith("WARN: layer-1 ")) continue;
         warn(line.slice("WARN: layer-1 ".length));
         skipped++;
       }
-      if (skipped === 0) pass(`lint (${code_files.length} files)`);
-      else pass(`lint (${code_files.length} files, ${skipped} step(s) skipped — see the WARN lines)`);
+      const linted = lines.filter((line) => line.startsWith("PASS: layer-1 lint (")).length;
+      if (linted > 0) {
+        if (skipped === 0) pass(`lint (${code_files.length} files)`);
+        else pass(`lint (${code_files.length} files, ${skipped} step(s) skipped — see the WARN lines)`);
+      } else if (skipped === 0) {
+        // Nothing linted and nothing skipped: only the records and prose layer-1
+        // selects no package for, which it says in so many words. Anything else
+        // is a layer-1 that ran no step and did not say why.
+        if (lines.includes("PASS: layer-1 (no package in scope)")) pass("lint (no package in scope)");
+        else warn("lint — layer-1 reported no lint step; nothing was linted");
+      }
     } else {
       fail(`lint (${code_files.length} files) — see stderr`);
       report(l.out, true);
@@ -378,7 +391,16 @@ async function main(): Promise<void> {
   } else if (!isFile(peers_script)) {
     warn("find-peers.ts missing");
   } else {
-    const p = runMerged(process.execPath, ["--experimental-strip-types", peers_script, ...changed_files]);
+    // From the session base, as every other check here: find-peers diffs each
+    // file it is handed against its base, and against HEAD a class fix the
+    // session had already COMMITTED showed no removal and read as "0 left-behind".
+    const p = runMerged(process.execPath, [
+      "--experimental-strip-types",
+      peers_script,
+      "--base",
+      SESSION_BASE,
+      ...changed_files,
+    ]);
     if (p.ok) {
       // Default mode is warn-only: it exits 0 and names each left-behind peer on
       // a `PEER:` line. Swallowing those printed a clean sweep over a class fix

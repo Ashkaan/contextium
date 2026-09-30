@@ -15,6 +15,7 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { createPublicKey, verify } from "node:crypto";
 import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { after, test } from "node:test";
@@ -23,6 +24,8 @@ import {
   cksum,
   qaAccessHeaders,
   qaAccessIssuer,
+  qaCfAccountCache,
+  qaD1Migrations,
   qaEnvCfAccess,
   qaIsGoodRegistry,
   qaLocalAccess,
@@ -151,7 +154,10 @@ test("QA_CF_ACCESS_ID / QA_CF_ACCESS_SECRET: a pair only when both are set", () 
     delete process.env.QA_CF_ACCESS_SECRET;
     assert.equal(qaEnvCfAccess(), undefined);
   } finally {
-    for (const [k, v] of [["QA_CF_ACCESS_ID", saved.id], ["QA_CF_ACCESS_SECRET", saved.secret]] as const) {
+    for (const [k, v] of [
+      ["QA_CF_ACCESS_ID", saved.id],
+      ["QA_CF_ACCESS_SECRET", saved.secret],
+    ] as const) {
       if (v === undefined) delete process.env[k];
       else process.env[k] = v;
     }
@@ -173,6 +179,45 @@ const repo = (name: string, file: string, text: string) => {
   return d;
 };
 
+test("D1 migrations from wrangler.toml: default and named dirs, remote, env blocks left out", () => {
+  const d = repo(
+    "d1toml",
+    "wrangler.toml",
+    [
+      'name = "w"',
+      "[[d1_databases]]",
+      'binding = "A_DB"',
+      'database_id = "id-a"',
+      "# [[d1_databases]] a comment is not a table",
+      "[[d1_databases]]",
+      "binding = 'B_DB'",
+      'migrations_dir = "db/b"',
+      "remote = true # reaches production",
+      "[[d1_databases]]",
+      'database_id = "no-binding"',
+      "[vars]",
+      'X = "1"',
+      "[[env.staging.d1_databases]]",
+      'binding = "STAGING_DB"',
+    ].join("\n"),
+  );
+  assert.deepEqual(qaD1Migrations(d), [
+    { binding: "A_DB", dir: "migrations", remote: false },
+    { binding: "B_DB", dir: "db/b", remote: true },
+  ]);
+});
+test("D1 migrations from wrangler.jsonc", () => {
+  const d = repo(
+    "d1jsonc",
+    "wrangler.jsonc",
+    '{ // a comment\n "d1_databases": [{ "binding": "A_DB", "migrations_dir": "sql", "remote": true }, { "database_id": "x" }, { "binding": "C" }], }',
+  );
+  assert.deepEqual(qaD1Migrations(d), [
+    { binding: "A_DB", dir: "sql", remote: true },
+    { binding: "C", dir: "migrations", remote: false },
+  ]);
+});
+test("no wrangler config → no D1 databases", () => assert.deepEqual(qaD1Migrations(join(LOCAL, "none")), []));
 test("a wrangler var: the first active line, not a commented one", () => {
   const d = repo("vars", "wrangler.toml", '[vars]\n# ACCESS_AUD = "old"\nACCESS_AUD = "a1,a2"\n');
   assert.equal(qaWranglerVar(d, "ACCESS_AUD"), "a1,a2");
@@ -225,17 +270,17 @@ test("the token file: none named, named and read, named but missing or empty", (
 test("the Access issuer comes from the account's organization, cached", async () => {
   const cache = join(LOCAL, "org.json");
   process.env.QA_CF_ACCESS_ORG_CACHE = cache;
-  writeFileSync(cache, '{"success":true,"result":{"auth_domain":"team.example.com"}}');
+  writeFileSync(qaCfAccountCache(cache), '{"success":true,"result":{"auth_domain":"team.example.com"}}');
   assert.equal(await qaAccessIssuer(), "https://team.example.com");
-  writeFileSync(cache, '{"success":true,"result":{"name":"no domain"}}');
-  chmodSync(cache, 0o644);
+  writeFileSync(qaCfAccountCache(cache), '{"success":true,"result":{"name":"no domain"}}');
+  chmodSync(qaCfAccountCache(cache), 0o644);
   assert.equal(await qaAccessIssuer(), undefined);
   delete process.env.QA_CF_ACCESS_ORG_CACHE;
 });
 test("without wrangler's credentials there is no issuer, even from a good cache", async () => {
   const cache = join(LOCAL, "org-nocreds.json");
   process.env.QA_CF_ACCESS_ORG_CACHE = cache;
-  writeFileSync(cache, '{"success":true,"result":{"auth_domain":"team.example.com"}}');
+  writeFileSync(qaCfAccountCache(cache), '{"success":true,"result":{"auth_domain":"team.example.com"}}');
   const saved = process.env.CLOUDFLARE_ACCOUNT_ID;
   delete process.env.CLOUDFLARE_ACCOUNT_ID;
   try {
@@ -246,10 +291,45 @@ test("without wrangler's credentials there is no issuer, even from a good cache"
   }
 });
 
+test("qaCfAccountCache: the account goes before the extension, path-safe", () => {
+  assert.equal(qaCfAccountCache("/tmp/qa-cf-pages-cache.json", "abc123"), "/tmp/qa-cf-pages-cache.abc123.json");
+  assert.equal(qaCfAccountCache("/tmp/cache", "abc123"), "/tmp/cache.abc123");
+  assert.equal(qaCfAccountCache("/tmp/c.json", "../x y"), "/tmp/c.___x_y.json");
+});
+// Each account answers for itself: a cache filled for one account is never read
+// for another, and switching back reads the first account's copy again.
+test("registry caches are kept per Cloudflare account", async () => {
+  const asked: string[] = [];
+  const api = createServer((q, s) => {
+    const account = /\/accounts\/([^/]+)\//.exec(q.url ?? "")?.[1] ?? "";
+    asked.push(account);
+    s.setHeader("content-type", "application/json");
+    s.end(JSON.stringify({ success: true, result: { auth_domain: `${account}.example.com` } }));
+  });
+  await new Promise<void>((done) => api.listen(0, "127.0.0.1", () => done()));
+  const addr = api.address();
+  const saved = { account: process.env.CLOUDFLARE_ACCOUNT_ID, api: process.env.QA_CF_API };
+  process.env.QA_CF_API = `http://127.0.0.1:${typeof addr === "object" && addr !== null ? addr.port : 0}`;
+  process.env.QA_CF_ACCESS_ORG_CACHE = join(LOCAL, "org-per-account.json");
+  try {
+    process.env.CLOUDFLARE_ACCOUNT_ID = "acct-a";
+    assert.equal(await qaAccessIssuer(), "https://acct-a.example.com");
+    process.env.CLOUDFLARE_ACCOUNT_ID = "acct-b";
+    assert.equal(await qaAccessIssuer(), "https://acct-b.example.com", "account b was answered from account a's cache");
+    process.env.CLOUDFLARE_ACCOUNT_ID = "acct-a";
+    assert.equal(await qaAccessIssuer(), "https://acct-a.example.com");
+    assert.deepEqual(asked, ["acct-a", "acct-b"], "a fresh per-account copy is not asked for again");
+  } finally {
+    process.env.CLOUDFLARE_ACCOUNT_ID = saved.account;
+    process.env.QA_CF_API = saved.api;
+    delete process.env.QA_CF_ACCESS_ORG_CACHE;
+    await new Promise<void>((done) => api.close(() => done()));
+  }
+});
 test("the object endpoint's cache never accepts a list answer", async () => {
   const cache = join(LOCAL, "org-list.json");
   process.env.QA_CF_ACCESS_ORG_CACHE = cache;
-  writeFileSync(cache, '{"success":true,"result":[{"auth_domain":"team.example.com"}]}');
+  writeFileSync(qaCfAccountCache(cache), '{"success":true,"result":[{"auth_domain":"team.example.com"}]}');
   assert.equal(await qaAccessIssuer(), undefined);
   delete process.env.QA_CF_ACCESS_ORG_CACHE;
 });

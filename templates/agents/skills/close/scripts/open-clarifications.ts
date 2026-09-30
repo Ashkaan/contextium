@@ -25,7 +25,7 @@
 //   .agents/skills/project/scripts/detect-stage.ts
 //   .agents/skills/close/scripts/next-implement-command.ts
 
-import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
+import { readFileSync, realpathSync, statSync } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { exit, runToExit } from "../../../packages/cli-exit/cli-exit.ts";
@@ -37,13 +37,6 @@ const err = (msg: string): void => {
 const isDir = (p: string): boolean => {
   try {
     return statSync(p).isDirectory();
-  } catch {
-    return false;
-  }
-};
-const isFile = (p: string): boolean => {
-  try {
-    return statSync(p).isFile();
   } catch {
     return false;
   }
@@ -104,12 +97,14 @@ async function main(): Promise<void> {
   let out = "";
   for (const name of ["spec.md", "plan.md", "tasks.md"]) {
     const f = `${folder}/${name}`;
-    if (!existsSync(f)) continue;
+    // Attempt the read and skip only a file that is not there. A stat-based
+    // check answered "absent" for a folder the reader cannot search (EACCES),
+    // and an unread file passed as one with no markers.
     let text: string;
     try {
-      if (!isFile(f)) throw new Error("not a file");
       text = readFileSync(f, "utf8");
-    } catch {
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code === "ENOENT") continue;
       process.stdout.write(out);
       err(`cannot read ${f}`);
       exit(2);

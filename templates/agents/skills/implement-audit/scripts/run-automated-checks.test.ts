@@ -55,7 +55,7 @@ const which = (name: string): string =>
  * and exits <code>. It records its argv at <path>.args, its stdin at
  * <path>.stdin and the CLAUDE_PROJECT_DIR it saw at <path>.env.
  */
-function mkstub(path: string, code: number, msg = ""): void {
+function mkstub(path: string, code: number, msg = "", stdout = ""): void {
   mkdirSync(dirname(path), { recursive: true });
   const p = JSON.stringify(path);
   writeFileSync(
@@ -68,6 +68,7 @@ function mkstub(path: string, code: number, msg = ""): void {
       `writeFileSync(${p} + ".stdin", stdin);`,
       `writeFileSync(${p} + ".env", (process.env.CLAUDE_PROJECT_DIR ?? "") + "\\n");`,
       msg === "" ? "" : `process.stderr.write(${JSON.stringify(`${msg}\n`)});`,
+      stdout === "" ? "" : `process.stdout.write(${JSON.stringify(`${stdout}\n`)});`,
       `process.exit(${code});`,
       "",
     ].join("\n"),
@@ -130,8 +131,10 @@ function runScript(repo: string, fakebin: string, args: string[], lint = lintStu
   );
 }
 
-/** The lint stub every case uses unless it plants its own: exit <code>. */
-const setupFakeLint = (repo: string, code: number): void => mkstub(lintStub(repo), code);
+/** The lint stub every case uses unless it plants its own: exit <code>, and on
+ *  a pass the line layer-1 prints for a package it linted. */
+const setupFakeLint = (repo: string, code: number): void =>
+  mkstub(lintStub(repo), code, "", code === 0 ? "PASS: layer-1 lint ((root))" : "");
 /** A shellcheck shim exists, so the script doesn't WARN-skip. */
 function setupFakeTools(fakebin: string): void {
   mkdirSync(fakebin, { recursive: true });
@@ -371,6 +374,31 @@ test("case16 find-peers-read-from-skills-review", () => {
   assert.ok(!r.out.includes("old-path find-peers ran"), `the copy elsewhere ran: ${r.out}`);
 });
 
+// ── Case 16b: find-peers measures the change from the session base ──
+//
+// It is handed the session's files, and without the base it diffed each one
+// against HEAD — so a class fix the session had already COMMITTED showed no
+// removal at all and read as "0 left-behind".
+test("case16b find-peers-measured-from-the-session-base", () => {
+  const { repo, fakebin } = fixture();
+  mkdirSync(join(repo, ".agents/skills/review"), { recursive: true });
+  const argvLog = join(repo, "peers-argv");
+  writeFileSync(
+    join(repo, ".agents/skills/review/find-peers.ts"),
+    `require("node:fs").writeFileSync(${JSON.stringify(argvLog)}, JSON.stringify(process.argv.slice(2)));\n`,
+  );
+  writeFileSync(join(repo, ".git/info/exclude"), "peers-argv\n", { flag: "a" });
+  git(repo, "add", "-A");
+  git(repo, "commit", "-q", "-m", "plant find-peers");
+  const base = head(repo);
+  addChanges(repo, "ts");
+  git(repo, "commit", "-q", "-m", "the session's committed work");
+  const r = runScript(repo, fakebin, ["--session-base", base]);
+  assert.equal(r.rc, 0, `expected zero; got ${r.rc}: ${r.out}`);
+  const argv = existsSync(argvLog) ? JSON.parse(readFileSync(argvLog, "utf8")) : [];
+  assert.deepEqual(argv, ["--base", base, "foo.ts"], `find-peers was not handed the session base: ${r.out}`);
+});
+
 // ── Case 17: find-peers' left-behind warnings are surfaced, not swallowed ──
 test("case17 find-peers-warnings-surfaced", () => {
   const { repo, fakebin } = fixture();
@@ -406,7 +434,42 @@ test("case18 lint-skips-surfaced", () => {
     r.out.includes("WARN: lint (apps/a) — no lint script or make target; skipped"),
     `skip not surfaced: ${r.out}`,
   );
-  assert.ok(!r.out.split("\n").includes("PASS: lint (1 files)"), `still reported as linted: ${r.out}`);
+  assert.ok(!r.out.split("\n").some((l) => l.startsWith("PASS: lint")), `still reported as linted: ${r.out}`);
+});
+
+// ── Case 18b: a file no package owns is not certified linted ──
+//
+// The real layer-1 runs here: a standalone script is owned by no package, so
+// no lint ran over it, and the wrapper must say so rather than print
+// "PASS: lint (1 files)" over a checker that never ran.
+test("case18b code-outside-every-package-is-not-linted", () => {
+  const { repo, fakebin } = fixture(null);
+  const base = head(repo);
+  addChanges(repo, "sh");
+  const real = join(dirname(SCRIPT), "../../implement/scripts/layer-1.ts");
+  const r = runScript(repo, fakebin, ["--session-base", base], real);
+  assert.equal(r.rc, 0, `an unlinted file must not fail; got ${r.rc}: ${r.out}`);
+  assert.ok(
+    r.out.includes("WARN: lint (1 files in no package) — not linted or typechecked: foo.sh"),
+    `the unlinted file is not named: ${r.out}`,
+  );
+  assert.ok(!r.out.split("\n").some((l) => l.startsWith("PASS: lint")), `certified as linted: ${r.out}`);
+});
+
+// ── Case 18c: what layer-1 said decides the lint line, never its silence ──
+test("case18c lint-line-follows-what-layer-1-ran", () => {
+  const { repo, fakebin } = fixture(null);
+  mkdirSync(join(repo, "_lint"), { recursive: true });
+  const base = head(repo);
+  writeFileSync(join(repo, "journal.json"), "{}\n");
+  git(repo, "add", "-A");
+  writeFileSync(lintStub(repo), 'process.stdout.write("PASS: layer-1 (no package in scope)\\n");\n');
+  let r = runScript(repo, fakebin, ["--session-base", base]);
+  assert.ok(r.out.includes("PASS: lint (no package in scope)"), `records-only change misreported: ${r.out}`);
+  writeFileSync(lintStub(repo), "\n");
+  r = runScript(repo, fakebin, ["--session-base", base]);
+  assert.ok(r.out.includes("WARN: lint — layer-1 reported no lint step"), `a silent layer-1 passed: ${r.out}`);
+  assert.ok(!r.out.split("\n").some((l) => l.startsWith("PASS: lint")), `a silent layer-1 passed: ${r.out}`);
 });
 
 // ── Case 19: an untracked file is scanned for citations too ──

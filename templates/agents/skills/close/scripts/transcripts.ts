@@ -7,7 +7,7 @@
 // session file — whichever exists, first match wins:
 //
 //   claude  ~/.claude/projects/<dir>/<session>.jsonl — by CLAUDE_CODE_SESSION_ID
-//           when the shell has one (an id with no record is no record), else
+//           (or CLAUDE_SESSION_ID) when the shell has one (an id with no record is no record), else
 //           the newest one for this worktree or its main checkout. Claude
 //           Code names the folder after the directory, every character that is
 //           not a letter or digit turned into `-`.
@@ -28,11 +28,12 @@
 //     one `HH:MM <TAB> <first line>` row per turn, local time;
 //     --full prints the whole turn with newlines escaped as \n
 //
-// Env: CLAUDE_CONFIG_DIR (~/.claude), CODEX_HOME (~/.codex), CLAUDE_CODE_SESSION_ID,
-//      CODEX_THREAD_ID / CODEX_SESSION_ID.
+// Env: CLAUDE_CONFIG_DIR (~/.claude), CODEX_HOME (~/.codex), CLAUDE_CODE_SESSION_ID
+//      / CLAUDE_SESSION_ID, CODEX_THREAD_ID / CODEX_SESSION_ID.
 //
 // Exit: 0 rows on stdout (none is a normal outcome) · 2 no transcript found for
-//       this session, or bad usage. The file read goes to stderr.
+//       this session, or bad usage. The file read goes to stderr, and so does a
+//       count of records not in the shape read (skipped, never printed).
 //
 // peers:
 //   .agents/skills/close/scripts/transcripts.test.ts
@@ -176,79 +177,166 @@ const invocationOnly = (s: string): boolean => {
 // What a harness injects into a user turn, not what the user typed.
 const INJECTED =
   /^(<(system-reminder|command-name|command-message|command-args|local-command-std(out|err)|environment_context|user_instructions|INSTRUCTIONS)\b|# AGENTS\.md instructions|Caveat: The messages below)/;
-const clean = (text: unknown): string =>
-  String(text ?? "")
+const clean = (text: string): string =>
+  text
     .replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, "")
     .split("\n")
     .map((l) => l.trimEnd())
     .join("\n")
     .trim();
 
-// biome-ignore lint/suspicious/noExplicitAny: a transcript row is whatever the harness wrote
-type Row = any;
-const texts = (parts: unknown): string =>
-  Array.isArray(parts) ? parts.map((x: Row) => x?.text ?? "").join("\n") : "";
+// A transcript is another program's file, so every field read is checked for
+// the shape it is read as. A record that does not have it is COUNTED and
+// reported, never coerced: String() of an object is "[object Object]", and that
+// would be quoted in the journal as the user's words.
+const isObj = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
+const str = (v: unknown): string | null => (typeof v === "string" ? v : null);
 
-function turns(kind: "claude" | "codex", file: string): { at: string; text: string }[] {
-  const out: { at: string; text: string }[] = [];
-  const add = (at: unknown, raw: unknown): void => {
+/** The text of a content-part array, or null when it is not one. A part with no
+ *  `text` (an image, a file) adds nothing; a `text` that is not a string is malformed. */
+function partsText(parts: unknown): string | null {
+  if (!Array.isArray(parts)) return null;
+  const out: string[] = [];
+  for (const p of parts) {
+    if (!isObj(p)) return null;
+    if (p.text === undefined) continue;
+    if (typeof p.text !== "string") return null;
+    out.push(p.text);
+  }
+  return out.join("\n");
+}
+
+interface Turn {
+  at: string;
+  text: string;
+}
+
+// Which Codex record a turn came from. Newer Codex logs a typed turn as an
+// event AND as a response item; older Codex only as a response item, among the
+// instructions it injects. One rollout can hold both (a session resumed across
+// versions), so both are read, and a turn two records carry is printed once.
+type CodexKind = "event" | "item" | "response";
+const SAME_TURN_MS = 10_000;
+
+function turns(kind: "claude" | "codex", file: string): { rows: Turn[]; malformed: number } {
+  let malformed = 0;
+  const keep = (at: string, raw: string): Turn | null => {
     const text = clean(raw);
-    if (!text || INJECTED.test(text) || invocationOnly(text)) return;
-    out.push({ at: String(at ?? ""), text });
+    if (!text || INJECTED.test(text) || invocationOnly(text)) return null;
+    return { at, text };
   };
-  const rows: Row[] = readFileSync(file, "utf8")
-    .split("\n")
-    .filter(Boolean)
-    .map((l) => {
-      try {
-        return JSON.parse(l);
-      } catch {
-        return null;
-      }
-    })
-    .filter(Boolean);
-
-  if (kind === "claude") {
-    for (const r of rows) {
-      if (r.type !== "user" || r.isMeta || r.isSidechain) continue;
-      const c = r.message?.content;
-      if (typeof c === "string") {
-        add(r.timestamp, c);
-        continue;
-      }
-      if (!Array.isArray(c)) continue;
-      for (const part of c) {
-        if (part?.type === "text") add(r.timestamp, part.text);
-        else if (part?.type === "tool_result") {
-          const t = typeof part.content === "string" ? part.content : texts(part.content);
-          const m = /^User has answered your questions?:\s*([\s\S]*)$/.exec(t.trim());
-          if (m) add(r.timestamp, `[answered] ${m[1]}`);
-        }
-      }
-    }
-  } else {
-    // Newer Codex logs each typed turn as an event; older ones only as a
-    // response item, among the instructions it injects.
-    const events = rows.filter(
-      (r) =>
-        r.type === "event_msg" &&
-        (r.payload?.type === "user_message" ||
-          (r.payload?.type === "item_completed" && r.payload?.item?.type === "UserMessage")),
-    );
-    if (events.length) {
-      for (const r of events) {
-        if (r.payload.type === "user_message") add(r.timestamp, r.payload.message);
-        else add(r.timestamp, texts(r.payload.item.content));
-      }
-    } else {
-      for (const r of rows) {
-        const p = r.payload;
-        if (r.type !== "response_item" || p?.type !== "message" || p?.role !== "user") continue;
-        add(r.timestamp, texts(p.content));
-      }
+  const records: unknown[] = [];
+  for (const l of readFileSync(file, "utf8").split("\n")) {
+    if (!l) continue;
+    try {
+      records.push(JSON.parse(l));
+    } catch {
+      malformed++;
     }
   }
-  return out.sort((a, b) => a.at.localeCompare(b.at));
+
+  const out: Turn[] = [];
+  if (kind === "claude") {
+    for (const r of records) {
+      if (!isObj(r) || r.type !== "user" || r.isMeta || r.isSidechain) continue;
+      const at = str(r.timestamp) ?? "";
+      const c = isObj(r.message) ? r.message.content : undefined;
+      if (typeof c === "string") {
+        const t = keep(at, c);
+        if (t) out.push(t);
+        continue;
+      }
+      if (!Array.isArray(c)) {
+        malformed++;
+        continue;
+      }
+      let bad = false;
+      for (const part of c) {
+        if (!isObj(part)) {
+          bad = true;
+          continue;
+        }
+        if (part.type === "text") {
+          const text = str(part.text);
+          if (text === null) bad = true;
+          else {
+            const t = keep(at, text);
+            if (t) out.push(t);
+          }
+        } else if (part.type === "tool_result") {
+          if (part.content === undefined) continue;
+          const body = typeof part.content === "string" ? part.content : partsText(part.content);
+          if (body === null) {
+            bad = true;
+            continue;
+          }
+          const m = /^User has answered your questions?:\s*([\s\S]*)$/.exec(body.trim());
+          if (m) {
+            const t = keep(at, `[answered] ${m[1]}`);
+            if (t) out.push(t);
+          }
+        }
+      }
+      if (bad) malformed++;
+    }
+  } else {
+    const found: (Turn & { from: CodexKind })[] = [];
+    for (const r of records) {
+      if (!isObj(r) || !isObj(r.payload)) continue;
+      const p = r.payload;
+      const at = str(r.timestamp) ?? "";
+      let from: CodexKind;
+      let text: string | null;
+      if (r.type === "event_msg" && p.type === "user_message") {
+        from = "event";
+        text = str(p.message);
+      } else if (
+        r.type === "event_msg" &&
+        p.type === "item_completed" &&
+        isObj(p.item) &&
+        p.item.type === "UserMessage"
+      ) {
+        from = "item";
+        text = partsText(p.item.content);
+      } else if (r.type === "response_item" && p.type === "message" && p.role === "user") {
+        from = "response";
+        text = partsText(p.content);
+      } else continue;
+      if (text === null) {
+        malformed++;
+        continue;
+      }
+      const t = keep(at, text);
+      if (t) found.push({ ...t, from });
+    }
+    // Events first, then response items; a turn is dropped when a kept turn
+    // from a different record kind has the same text within SAME_TURN_MS, and
+    // each kept turn absorbs at most one record of each other kind — so the
+    // same words typed twice, minutes apart, stay two turns.
+    const order: CodexKind[] = ["event", "item", "response"];
+    const kept: (Turn & { from: CodexKind; absorbed: Set<CodexKind> })[] = [];
+    for (const from of order) {
+      for (const t of found.filter((x) => x.from === from)) {
+        const tt = Date.parse(t.at);
+        let best: (typeof kept)[number] | null = null;
+        let bestGap = Number.POSITIVE_INFINITY;
+        for (const k of kept) {
+          if (k.from === from || k.text !== t.text || k.absorbed.has(from)) continue;
+          const kt = Date.parse(k.at);
+          // Two unreadable times match on the text alone; one unreadable time is NaN, no match.
+          const gap = Number.isNaN(tt) && Number.isNaN(kt) ? 0 : Math.abs(tt - kt);
+          if (gap <= SAME_TURN_MS && gap < bestGap) {
+            best = k;
+            bestGap = gap;
+          }
+        }
+        if (best) best.absorbed.add(from);
+        else kept.push({ ...t, absorbed: new Set() });
+      }
+    }
+    for (const { at, text } of kept) out.push({ at, text });
+  }
+  return { rows: out.sort((a, b) => a.at.localeCompare(b.at)), malformed };
 }
 
 async function main(): Promise<void> {
@@ -264,7 +352,10 @@ async function main(): Promise<void> {
     } else fail("usage: transcripts.ts [--full] [--source claude|codex]");
   }
 
-  const g = spawnSync("git", ["rev-parse", "--show-toplevel"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
+  const g = spawnSync("git", ["rev-parse", "--show-toplevel"], {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "ignore"],
+  });
   const TOP = real(g.status === 0 && g.stdout.trim() !== "" ? g.stdout.trim() : process.cwd());
   const m = spawnSync("bash", [join(HERE, "write-root.sh"), "--main", "."], {
     encoding: "utf8",
@@ -285,7 +376,9 @@ async function main(): Promise<void> {
   // other harness's — either could be another session's words, quoted in the
   // journal as this user's. Only with no id at all is the newest record for this
   // tree the answer, Codex first (it records the directory it ran in).
-  const CL_ID = process.env.CLAUDE_CODE_SESSION_ID ?? "";
+  // CLAUDE_SESSION_ID is the name a caller passes Claude's id under; harness.sh
+  // reads it too, so a session holding only that name is still that session.
+  const CL_ID = process.env.CLAUDE_CODE_SESSION_ID || process.env.CLAUDE_SESSION_ID || "";
   const CX_ID = process.env.CODEX_THREAD_ID || process.env.CODEX_SESSION_ID || "";
   let kind: "claude" | "codex" | "" = "";
   let file: string | null = null;
@@ -312,9 +405,13 @@ async function main(): Promise<void> {
   }
   process.stderr.write(`corrections: source ${kind} (${file})\n`);
 
-  let rows: { at: string; text: string }[];
+  let rows: Turn[];
   try {
-    rows = turns(kind, file);
+    const got = turns(kind, file);
+    rows = got.rows;
+    if (got.malformed > 0) {
+      process.stderr.write(`corrections: skipped ${got.malformed} malformed record(s) in ${file}\n`);
+    }
   } catch {
     fail(`could not read ${file}`);
   }

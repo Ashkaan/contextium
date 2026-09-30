@@ -535,17 +535,21 @@ async function main(): Promise<void> {
   // `.agents/deploy/await-deploy-run.sh`, read from the worktree being landed
   // (it carries the landed tree) and else from the shared checkout. A repo
   // that opted in with no poller to confirm the deploy is NOT CLOSED too — an
-  // opt-in nobody can check is the silent case again.
+  // opt-in nobody can check is the silent case again. It runs IN the checkout
+  // that supplies it: a poller asks git or gh about its repo from where it
+  // stands, and started in the caller's directory a satellite's poller asked
+  // about the thread's own repo instead.
   const AWAIT_REL = ".agents/deploy/await-deploy-run.sh";
   const LIST_REL = ".agents/deployable-prefixes.json";
   const pollDeploy = (shared: string, sha: string, wt = ""): void => {
-    const AWAIT = wt && isFile(`${wt}/${AWAIT_REL}`) ? `${wt}/${AWAIT_REL}` : `${shared}/${AWAIT_REL}`;
+    const FROM = wt && isFile(`${wt}/${AWAIT_REL}`) ? wt : shared;
+    const AWAIT = `${FROM}/${AWAIT_REL}`;
     if (!isFile(AWAIT))
       notClosed(`deploy: ${shared} carries ${LIST_REL} but no ${AWAIT_REL} to confirm the deploy of ${sha}`);
     const logFd = openSync(DEPLOY_LOG, "a");
     let r: Run;
     try {
-      r = run("bash", [AWAIT, "--sha", sha], { out: "pipe", err: logFd });
+      r = run("bash", [AWAIT, "--sha", sha], { cwd: FROM, out: "pipe", err: logFd });
     } finally {
       closeSync(logFd);
     }
@@ -1084,17 +1088,20 @@ async function main(): Promise<void> {
     // committed is a credential leaked, whichever repo it lands in.
     if (SEC_CHECK) refuseOnCheck(SEC_CHECK, WT, DR_BASE, "secret scan");
 
+    const DIRTY = wtStatus(WT) !== "";
+    if (DIRTY && !git(WT, ["add", "-A"], { out: "inherit", err: "inherit" }).ok) notClosed(`could not stage ${WT}`);
+
     // THE STANDARDS GATE: every `§ Standards → <Name>` citation in the workbench
     // names a bullet that exists. Only the worktree that carries AGENTS.md's
-    // Standards — the one holding this checker — is asked; the checker reads the
-    // tracked tree, not a range.
-    if (STD_CHECK && WT === STD_CHECK_WT) refuseOnCheck(STD_CHECK, WT, DR_BASE, "standards citations", []);
+    // Standards — the one holding this checker — is asked; the checker reads
+    // git's view, not a range, so it runs AFTER staging and over the staged
+    // copies (`--cached`): run before `git add`, its `git grep` never saw a new
+    // file, and the file was then committed unchecked.
+    if (STD_CHECK && WT === STD_CHECK_WT)
+      refuseOnCheck(STD_CHECK, WT, DR_BASE, "standards citations", ["--cached"]);
 
-    if (wtStatus(WT) !== "") {
-      if (!git(WT, ["add", "-A"], { out: "inherit", err: "inherit" }).ok) notClosed(`could not stage ${WT}`);
-      if (!git(WT, ["commit", "-q", "-m", SUBJECT], { out: "inherit", err: "inherit" }).ok)
-        notClosed(`could not commit ${WT}`);
-    }
+    if (DIRTY && !git(WT, ["commit", "-q", "-m", SUBJECT], { out: "inherit", err: "inherit" }).ok)
+      notClosed(`could not commit ${WT}`);
 
     // THE JOURNAL NAME, RE-CHECKED. journal-file.ts already looked at the trunk,
     // but another thread may have landed the same name in the minutes since. Two

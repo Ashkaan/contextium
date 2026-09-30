@@ -4,6 +4,7 @@
 #   source harness.sh
 #   harness_name <repo>             the harness this repo was installed for
 #   harness_worktree_root <repo>    the folder a NEW session worktree goes under
+#   harness_repo_key <repo>         `<basename>-<8 hex of the path's sha1>`, one per checkout
 #   harness_worktree_branch <name>  the branch a new session worktree gets
 #   harness_session_id              this session's id, when the harness exports one
 #
@@ -31,15 +32,30 @@ harness_name() {
   printf '%s\n' "${h:-default}"
 }
 
-# harness_worktree_root <repo-main-checkout> — absolute folder, no trailing slash.
-# In-repo roots (claude, gemini) must be git-ignored; the installer adds them.
+# harness_repo_key <repo> — the basename so a human reading the folder can tell
+# what it is, the hash so two checkouts both called `dashboard` do not collide.
+harness_repo_key() {
+  local repo="${1%/}" h
+  if command -v sha1sum >/dev/null 2>&1; then
+    h="$(printf '%s' "$repo" | sha1sum)"
+  else
+    h="$(printf '%s' "$repo" | shasum -a 1)"
+  fi
+  printf '%s-%s\n' "$(basename "$repo")" "${h:0:8}"
+}
+
+# harness_worktree_root <repo-main-checkout> — absolute folder, no trailing slash,
+# and one per repo: a root every repo shares (CODEX_HOME's) gets the repo key,
+# or one session writing two repos was handed the first repo's worktree for the
+# second. In-repo roots (claude, gemini) must be git-ignored; the installer adds
+# them.
 harness_worktree_root() {
   local repo="${1%/}"
   case "$(harness_name "$repo")" in
     claude) printf '%s/.claude/worktrees\n' "$repo" ;;
     gemini) printf '%s/.gemini/worktrees\n' "$repo" ;;
     grok)   printf '%s/.grok/worktrees/%s\n' "$HOME" "$(basename "$repo")" ;;
-    codex)  printf '%s/worktrees\n' "${CODEX_HOME:-$HOME/.codex}" ;;
+    codex)  printf '%s/worktrees/%s\n' "${CODEX_HOME:-$HOME/.codex}" "$(harness_repo_key "$repo")" ;;
     # t3 (a main checkout opened in T3's local mode), cursor, vscode,
     # antigravity and anything unrecorded: beside the repo, not inside it — a
     # worktree inside the checkout is a second copy of every file the harness

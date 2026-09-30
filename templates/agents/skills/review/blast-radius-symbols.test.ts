@@ -20,7 +20,7 @@
 
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { after, test } from "node:test";
@@ -282,4 +282,36 @@ test("a typescript package without the compiler API", () => {
     "typescript",
     "an unusable typescript in an earlier root does not hide a usable one later",
   );
+});
+
+// ── npm's global root is a default parser root ───────────────────────────
+// `npm i -g` installs under `npm root -g`, which differs from Node's own
+// <prefix>/lib/node_modules whenever npm has a custom prefix (a user-level
+// prefix is the common way to avoid sudo). The install hint says `npm i -g`,
+// so the default roots must include where that command puts the packages.
+test("the default parser roots include npm's global root", () => {
+  const npmGlobal = path.join(tmp, "npm-global", "lib", "node_modules");
+  mkdirSync(npmGlobal, { recursive: true });
+  for (const p of PARSER_PKGS) symlinkSync(path.join(PARSER_ROOT, p), path.join(npmGlobal, p));
+  const bin = path.join(tmp, "fake-npm-bin");
+  mkdirSync(bin, { recursive: true });
+  const npm = path.join(bin, "npm");
+  writeFileSync(npm, `#!/bin/sh\n[ "$1 $2" = "root -g" ] && echo '${npmGlobal}' && exit 0\nexit 1\n`);
+  chmodSync(npm, 0o755);
+  const emptyRepo = mkdtempSync(path.join(tmp, "repo-"));
+  const env: Record<string, string | undefined> = {
+    ...process.env,
+    PATH: `${bin}:${process.env.PATH ?? ""}`,
+    BLAST_RADIUS_REPO_ROOT: emptyRepo,
+  };
+  delete env.BLAST_RADIUS_PARSER_ROOTS;
+  const r = spawnSync(process.execPath, ["--experimental-strip-types", "--disable-warning=ExperimentalWarning", SUT], {
+    encoding: "utf8",
+    input: tsReq("all"),
+    env,
+    timeout: 60_000,
+  });
+  const got = { rc: r.status, out: r.stdout, err: r.stderr };
+  assert.equal(got.rc, 0, got.err);
+  assert.equal(parser(got, "src/a.ts"), "typescript", "the typescript under `npm root -g` is found with no root set");
 });

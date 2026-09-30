@@ -123,9 +123,9 @@
 // by LOWERING POLICY_CHAIN_SLOT_TIMEOUT_S — never by wrapping the whole call in
 // its own `timeout`, which becomes a total-chain cap that kills the walk
 // mid-fallthrough, the exact behavior this design removes. Each slot runs under
-// spawnSync's own `timeout` rather than coreutils `timeout`, which a stock macOS
-// does not ship; a slot killed by it reports 124, the coreutils convention, so a
-// slot's 124 means the same thing on every host.
+// spawnCapped (below), which KILLs a slot that ignores TERM and whatever it
+// started; a slot it stops reports 124, the coreutils convention, so a slot's
+// 124 means the same thing on every host.
 //
 // The prompt arrives as a FILE and is piped on stdin, never on argv. A large
 // diff on argv dies `Argument list too long` (exit 126) on exactly the changes
@@ -139,7 +139,7 @@
 //
 // This file is the one place a review vendor's CLI is invoked from a script.
 
-import { spawnSync } from "node:child_process";
+import { type SpawnSyncOptions, type SpawnSyncReturns, spawnSync } from "node:child_process";
 import {
   accessSync,
   appendFileSync,
@@ -370,11 +370,74 @@ function emit(file: string, sink: ChainSink): void {
   if (b.length > 0 && b[b.length - 1] !== 0x0a) sink.out("\n");
 }
 
-// `<bin> …` under a per-slot wall clock, stdin/stdout/stderr wired to files.
-// The clock is spawnSync's own, not coreutils `timeout`: a stock macOS ships
-// neither `timeout` nor `gtimeout`, and a slot must still be capped there. The
-// exit status is the one coreutils would report: the child's, or 124 when the
-// clock ran out.
+// ── The per-command wall clock ─────────────────────────────────────────
+//
+// spawnCapped runs `<bin> <args…>` under a wall clock: at the cap, TERM to the
+// command's process group; once the group is empty, or CAP_KILL_GRACE_MS later,
+// KILL to whatever is left of it; status 124, the coreutils convention. It is a
+// small watchdog in a Node child, where coreutils `timeout` and spawnSync's own
+// `timeout` both fall short: macOS ships no `timeout`, the implementations
+// disagree on the status after a KILL (124 or 137), `timeout` without -k and
+// spawnSync both wait forever on a command that ignores TERM, and neither
+// reaches what the command started. A command that cannot be started is 127
+// (not found) or 126 (not runnable) with the reason on stderr, what a shell
+// reports. The watchdog forwards TERM, INT and HUP to the group, so a caller
+// that is itself stopped stops the command too. code-review.ts caps its packer
+// with it as well.
+const CAP_KILL_GRACE_MS = 3000;
+const CAP_WATCHDOG = `
+const { spawn } = require("node:child_process");
+const { constants } = require("node:os");
+const [capMs, graceMs, bin, ...args] = process.argv.slice(1);
+const child = spawn(bin, args, { stdio: "inherit", detached: true });
+const group = (sig) => {
+  try {
+    process.kill(-child.pid, sig);
+    return true;
+  } catch {
+    return false;
+  }
+};
+for (const sig of ["SIGTERM", "SIGINT", "SIGHUP"]) process.on(sig, () => group(sig));
+let timedOut = false;
+child.on("error", (e) => {
+  process.stderr.write(bin + ": " + e.message + "\\n");
+  process.exit(e.code === "ENOENT" ? 127 : 126);
+});
+child.on("exit", (code, signal) => {
+  if (timedOut) return;
+  clearTimeout(cap);
+  process.exit(code ?? 128 + (constants.signals[signal] ?? 0));
+});
+const cap = setTimeout(() => {
+  timedOut = true;
+  group("SIGTERM");
+  const t0 = Date.now();
+  const poll = setInterval(() => {
+    if (group(0) && Date.now() - t0 < Number(graceMs)) return;
+    clearInterval(poll);
+    group("SIGKILL");
+    process.exit(124);
+  }, 50);
+}, Number(capMs));
+`;
+
+export function spawnCapped(
+  capMs: number,
+  bin: string,
+  args: string[],
+  opts: SpawnSyncOptions = {},
+): SpawnSyncReturns<string | Buffer> {
+  return spawnSync(
+    process.execPath,
+    ["-e", CAP_WATCHDOG, "--", String(capMs), String(CAP_KILL_GRACE_MS), bin, ...args],
+    opts,
+  );
+}
+
+// `<bin> …` under a per-slot wall clock (spawnCapped), stdin/stdout/stderr
+// wired to files. The exit status is the one coreutils would report: the
+// child's, or 124 when the clock ran out.
 function runTimed(
   secs: string,
   bin: string,
@@ -387,8 +450,7 @@ function runTimed(
   const errFd = openSync(stderrFile, "w");
   try {
     const ms = Math.max(1, Math.round(Number(secs) * 1000)) || 900_000;
-    const r = spawnSync(bin, args, { stdio: [stdin, outFd, errFd], timeout: ms, killSignal: "SIGTERM" });
-    if ((r.error as NodeJS.ErrnoException | undefined)?.code === "ETIMEDOUT") return 124;
+    const r = spawnCapped(ms, bin, args, { stdio: [stdin, outFd, errFd] });
     if (r.error) {
       writeSync(errFd, `${bin}: ${r.error.message}\n`);
       return 126;
@@ -503,9 +565,7 @@ function runGrok(
     sink.err(
       "policy-chain: grok run was CANCELLED mid-agent-loop (stopReason=cancelled); output is partial narration, not an answer",
     );
-    sink.err(
-      "policy-chain: grok: a cancel most often means the permission mode regressed to dontAsk",
-    );
+    sink.err("policy-chain: grok: a cancel most often means the permission mode regressed to dontAsk");
     rmSync(raw, { force: true });
     return 1;
   }
@@ -776,7 +836,9 @@ function walk(
   // Vendors that were ALIVE but answered in the wrong shape (125, below) are not
   // unavailable, so they keep the re-ask path instead.
   if (!anySchemaReject && fallback === "fresh-context") {
-    e(`no independent vendor for '${taskKind}' — fall back to a fresh-context review, NOT independent (the row's fallback)`);
+    e(
+      `no independent vendor for '${taskKind}' — fall back to a fresh-context review, NOT independent (the row's fallback)`,
+    );
     return 3;
   }
   if (lastWasTimeout) return 124;

@@ -155,7 +155,8 @@ asked about before it is made. It holds:
 No `## Status`, `## Current Progress` or `## Next Steps` section is written: the
 roadmap replaced all three. Loose `*.spec.md` / `*-report.md` files are the
 legacy layout (an older project may also carry a `## Shard Status` table): the
-scripts read them, and nothing writes them.
+scripts read them and nothing creates them; the one write left is `/close`
+setting a finished shard's State cell to `closed`.
 
 ## Create (+ think flow)
 

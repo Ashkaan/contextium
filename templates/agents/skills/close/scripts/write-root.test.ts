@@ -391,6 +391,34 @@ test("a recorded harness puts the worktree where that harness keeps them", () =>
   assert.equal(git("-C", r.stdout, "rev-parse", "--abbrev-ref", "HEAD"), "worktree-cc-9", "…on that harness's branch name");
 });
 
+// Codex keeps every repo's worktrees under one CODEX_HOME. One session writing
+// two repos must get a worktree of EACH: keyed on the session alone, the second
+// repo's call found the first one's folder and handed it back, and the edits
+// meant for the second repo went into the first.
+test("a harness root shared by every repo still gives each repo its own worktree", () => {
+  const env = { ...NO_T3, CONTEXTIUM_SESSION: "cx-1", CONTEXTIUM_HARNESS: "codex", CODEX_HOME: join(TMP, "codex") };
+  const lib = run(LIB, [LIB], env);
+  assert.equal(lib.rc, 0, `codex, first repo: ${lib.out}`);
+  const code = run(LIB, [CODE], env);
+  assert.equal(code.rc, 0, `codex, second repo: ${code.out}`);
+  assert.notEqual(code.stdout, lib.stdout, "the second repo was handed the first repo's worktree");
+  assert.ok(code.stdout.startsWith(join(TMP, "codex/worktrees/")), `…still under CODEX_HOME: ${code.stdout}`);
+  const common = (wt: string): string => git("-C", wt, "rev-parse", "--path-format=absolute", "--git-common-dir");
+  assert.equal(common(code.stdout), common(CODE), "…and it is a worktree of the repo that was asked for");
+});
+
+// Grok's root is per basename, so two checkouts both called `lib` meet in one
+// folder. A folder already at the target that is not a worktree of the repo
+// asked for is refused, never handed back as that repo's worktree.
+test("a target folder that belongs to another repo is refused", () => {
+  const env = { ...NO_T3, CONTEXTIUM_SESSION: "gk-1", CONTEXTIUM_HARNESS: "grok" };
+  const lib = run(LIB, [LIB], env);
+  assert.equal(lib.rc, 0, `grok, first repo: ${lib.out}`);
+  const dup = run(LIB, [DUP], env);
+  assert.equal(dup.rc, 2, `a same-basename repo was handed ${dup.stdout}`);
+  assert.match(dup.out, /is not a worktree of/, "…and the refusal says why");
+});
+
 // ── The override is what makes a plain terminal usable ─────────────────────
 
 test("WORKBENCH_THREAD_ID reaches the same satellite from a plain shell", () => {

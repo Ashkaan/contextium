@@ -259,14 +259,12 @@ fi
 
 # ── A satellite for every other repo ───────────────────────────────────────
 #
-# `<basename>-<8 hex of the path's sha1>`: the basename so a human reading
-# ~/.cache can tell what it is, the hash so two checkouts both called
-# `dashboard` do not collide. The thread id is the full id for the same
-# reason — an 8-character prefix is shared by two threads sooner than it looks.
-sha1_8() {
-  if command -v sha1sum >/dev/null 2>&1; then sha1sum; else shasum -a 1; fi | cut -c1-8
-}
-KEY="$(basename "${SHARED}")-$(printf '%s' "${SHARED}" | sha1_8)"
+# `<basename>-<8 hex of the path's sha1>` (harness.sh harness_repo_key): the
+# basename so a human reading ~/.cache can tell what it is, the hash so two
+# checkouts both called `dashboard` do not collide. The thread id is the full id
+# for the same reason — an 8-character prefix is shared by two threads sooner
+# than it looks.
+KEY="$(harness_repo_key "${SHARED}")"
 TARGET="${HOME}/.cache/workbench/worktrees/${KEY}/${TID}"
 # A recorded harness puts the worktree where that harness keeps its own
 # (harness.sh), so its worktree tools see it; with none recorded, ~/.cache.
@@ -292,6 +290,11 @@ fi
 # Re-checked inside the lock: the loser of a race arrives here after the winner
 # has finished, and must print the winner's path rather than create a second.
 if [ -d "${TARGET}" ]; then
+  # …and it must be a worktree of THIS repo. A harness root keyed coarser than
+  # the checkout (grok's is per basename) can hold another repo's folder here,
+  # and handing that back sends this repo's edits into the other one.
+  [ "$(canonical_shared "${TARGET}" || true)" = "${SHARED}" ] \
+    || fail "${TARGET} exists and is not a worktree of ${SHARED}"
   ledger_add "${TARGET}" "${SHARED}" "${BRANCH}"
   printf '%s\n' "${TARGET}"
   exit 0

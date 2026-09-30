@@ -157,6 +157,7 @@ type Fact =
   | { tag: "K"; key: string } //                        a top-level key, once per occurrence
   | { tag: "V"; key: string; value: string } //         a scalar top-level value (block scalars folded)
   | { tag: "L"; key: string } //                        a top-level key whose value is a block list
+  | { tag: "N"; key: string } //                        a top-level key whose value is a block map
   | { tag: "M"; key: string; type: "str" | "list"; value: string } // a metadata entry
   | { tag: "MT"; type: string }; //                     metadata that is not a map
 
@@ -164,8 +165,53 @@ function trim(x: string): string {
   return x.replace(/^[ \t]+|[ \t]+$/g, "");
 }
 
+/** A block scalar header: `>` or `|`, a chomping and/or indentation indicator
+ *  in either order, and an optional ` #` comment. */
 function isBlock(v: string): boolean {
-  return /^[>|][+-]?[0-9]?$/.test(v);
+  return /^[>|]([+-][1-9]?|[1-9][+-]?)?([ \t]+#.*)?$/.test(v);
+}
+
+/**
+ * The value a block scalar carries, as YAML reads it: `|` keeps its line
+ * breaks, `>` folds adjacent lines into one space (a blank line is a break),
+ * and the chomping indicator decides the end — `-` no final newline, `+`
+ * every trailing one, neither exactly one. The validator counts that newline.
+ */
+function blockValue(header: string, raw: string[]): string {
+  const ind = header.replace(/[ \t]+#.*$/, "");
+  const chomp = ind.includes("-") ? "strip" : ind.includes("+") ? "keep" : "clip";
+  const first = raw.find((l) => !/^[ \t]*$/.test(l)) ?? "";
+  const indent = first.length - first.replace(/^[ \t]+/, "").length;
+  const lines = raw.map((l) => (/^[ \t]*$/.test(l) ? "" : l.slice(indent)));
+  let end = lines.length;
+  while (end > 0 && lines[end - 1] === "") end--;
+  const body = lines.slice(0, end);
+  const trailing = lines.length - end;
+  if (body.length === 0) return chomp === "keep" ? "\n".repeat(trailing) : "";
+  let out = "";
+  if (ind.startsWith("|")) out = body.join("\n");
+  else {
+    let blanks = 0;
+    let started = false;
+    for (const l of body) {
+      if (l === "") {
+        blanks++;
+        continue;
+      }
+      if (started) out += blanks > 0 ? "\n".repeat(blanks) : " ";
+      else out += "\n".repeat(blanks);
+      out += l;
+      started = true;
+      blanks = 0;
+    }
+  }
+  if (chomp === "strip") return out;
+  return chomp === "keep" ? `${out}\n${"\n".repeat(trailing)}` : `${out}\n`;
+}
+
+/** An indented line that opens a nested mapping entry: `key:` then a space or the end. */
+function isMapEntry(line: string): boolean {
+  return /^("[^"]*"|'[^']*'|[^'"#\s-][^#]*?|-[^\s][^#]*?)[ \t]*:([ \t]|$)/.test(line);
 }
 
 /**
@@ -175,7 +221,9 @@ function isBlock(v: string): boolean {
  * map under metadata, and a single-line `{k: v}` metadata map, which the
  * validator refuses but whose keys the local rule still reads. A quoted value
  * that never closes, or text after its closing quote, is reported — at the
- * top level and in a metadata value alike.
+ * top level and in a metadata value alike — and so is a plain value holding
+ * `: `, which YAML reads as a mapping. A top-level value that is a block list
+ * or a block map is reported as such (L, N), never as its text.
  */
 function parseFm(file: string): Fact[] {
   const facts: Fact[] = [];
@@ -187,7 +235,10 @@ function parseFm(file: string): Fact[] {
   let key = "";
   let val = "";
   let listy = false;
+  let mapped = false;
   let block = false;
+  let header = "";
+  let blines: string[] = [];
   let mkey = "";
   let mval = "";
   let mlisty = false;
@@ -220,9 +271,12 @@ function parseFm(file: string): Fact[] {
   const flush = (): void => {
     if (key === "") return;
     if (listy) facts.push({ tag: "L", key });
+    else if (mapped) facts.push({ tag: "N", key });
     else if (key !== "metadata") {
-      const ys = block ? { value: trim(val), state: "ok" } : yamlScalar(val);
-      if (ys.state === "open")
+      const ys = block ? { value: blockValue(header, blines), state: "ok" } : yamlScalar(val);
+      if (!block && ys.state === "ok" && !/^["']/.test(trim(val)) && /:([ \t]|$)/.test(ys.value))
+        facts.push({ tag: "E", message: `Invalid YAML in frontmatter: mapping values are not allowed here (in ${key})` });
+      else if (ys.state === "open")
         facts.push({
           tag: "E",
           message: `Invalid YAML in frontmatter: while scanning a quoted scalar in ${key}: found unexpected end of stream`,
@@ -235,7 +289,10 @@ function parseFm(file: string): Fact[] {
     key = "";
     val = "";
     listy = false;
+    mapped = false;
     block = false;
+    header = "";
+    blines = [];
   };
 
   if (lines.length === 0) {
@@ -255,7 +312,7 @@ function parseFm(file: string): Fact[] {
       break;
     }
     if (/^[ \t]*$/.test(raw)) {
-      if (block && key !== "") val = `${val} `;
+      if (block && key !== "") blines.push("");
       continue;
     }
     if (raw.startsWith("#")) continue;
@@ -287,6 +344,8 @@ function parseFm(file: string): Fact[] {
       }
       if (isBlock(rest)) {
         block = true;
+        header = rest;
+        blines = [];
         val = "";
       } else {
         block = false;
@@ -318,8 +377,19 @@ function parseFm(file: string): Fact[] {
       }
       continue;
     }
-    if (line.startsWith("- ") && !block) {
+    if (block) {
+      blines.push(raw);
+      continue;
+    }
+    if (line.startsWith("#") || listy || mapped) continue;
+    // Only the first indented line under an empty value opens a list or a map;
+    // after text it continues a plain scalar (where `: ` is then an error).
+    if (val === "" && (line === "-" || line.startsWith("- "))) {
       listy = true;
+      continue;
+    }
+    if (val === "" && isMapEntry(line)) {
+      mapped = true;
       continue;
     }
     val = val === "" ? line : `${val} ${line}`;
@@ -363,6 +433,7 @@ function builtinValidate(dir: string): string {
       let hasName = false;
       let hasDesc = false;
       let descList = false;
+      let compatNotString = false;
       for (const f of facts) {
         if (f.tag === "K") {
           if (seen.has(f.key)) errs.push(`Invalid YAML in frontmatter: duplicate key ${f.key}`);
@@ -379,14 +450,15 @@ function builtinValidate(dir: string): string {
             const n = charCount(f.value);
             if (n > 500) errs.push(`Compatibility exceeds 500 character limit (${n} chars)`);
           }
-        } else if (f.tag === "L") {
+        } else if (f.tag === "L" || f.tag === "N") {
+          // A list or a map where a string belongs.
           if (f.key === "name") {
             hasName = true;
             name = "";
           } else if (f.key === "description") {
             hasDesc = true;
             descList = true;
-          }
+          } else if (f.key === "compatibility") compatNotString = true;
         }
       }
       if (extra.length > 0) {
@@ -398,19 +470,20 @@ function builtinValidate(dir: string): string {
       }
       if (!hasName) {
         errs.push("Missing required field in frontmatter: name");
-      } else if (name === "") {
+      } else if (name.trim() === "") {
         errs.push("Field 'name' must be a non-empty string");
       } else {
-        const n = charCount(name);
-        if (n > 64) errs.push(`Skill name '${name}' exceeds 64 character limit (${n} chars)`);
-        else if (name !== name.toLowerCase()) errs.push(`Skill name '${name}' must be lowercase`);
-        else if (!/^[a-z0-9-]+$/.test(name))
-          errs.push(
-            `Skill name '${name}' contains invalid characters. Only letters, digits, and hyphens are allowed.`,
-          );
-        else if (name.startsWith("-") || name.endsWith("-")) errs.push("Skill name cannot start or end with a hyphen");
-        else if (name.includes("--")) errs.push("Skill name cannot contain consecutive hyphens");
-        else if (name !== folder) errs.push(`Directory name '${folder}' must match skill name '${name}'`);
+        // The validator's _validate_name: the name stripped and NFKC-normalized,
+        // letters and digits in any script, and every rule it breaks reported.
+        const nm = name.trim().normalize("NFKC");
+        const n = charCount(nm);
+        if (n > 64) errs.push(`Skill name '${nm}' exceeds 64 character limit (${n} chars)`);
+        if (nm !== nm.toLowerCase()) errs.push(`Skill name '${nm}' must be lowercase`);
+        if (nm.startsWith("-") || nm.endsWith("-")) errs.push("Skill name cannot start or end with a hyphen");
+        if (nm.includes("--")) errs.push("Skill name cannot contain consecutive hyphens");
+        if (![...nm].every((c) => c === "-" || /^[\p{L}\p{N}]$/u.test(c)))
+          errs.push(`Skill name '${nm}' contains invalid characters. Only letters, digits, and hyphens are allowed.`);
+        if (folder.normalize("NFKC") !== nm) errs.push(`Directory name '${folder}' must match skill name '${nm}'`);
       }
       if (!hasDesc) {
         errs.push("Missing required field in frontmatter: description");
@@ -420,6 +493,7 @@ function builtinValidate(dir: string): string {
         const n = charCount(desc);
         if (n > 1024) errs.push(`Description exceeds 1024 character limit (${n} chars)`);
       }
+      if (compatNotString) errs.push("Field 'compatibility' must be a string");
     }
   }
   if (errs.length === 0) return "";

@@ -8,7 +8,17 @@
 
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { after, test } from "node:test";
@@ -157,6 +167,34 @@ test("case6 integration-match", () => {
 test("case7 no-match-glob-fails", () =>
   assert.notEqual(runScript(makeRepo(), "--scope", "nothing/*.ts").rc, 0, "expected non-zero on no-match glob"));
 
+// ── Case 7b: a glob or path that names a DIRECTORY lists the files in it ──
+//
+// The layers take a FILE list and find each file's package from the file's
+// own folder upward. A bare directory line (`packages/lib`) started that walk
+// at its PARENT, missed the package it names, and lint, typecheck and tests
+// passed without running. So a directory match is expanded to its files here,
+// and a match that holds no file is no match.
+test("case7b directory-scope-lists-its-files", () => {
+  const repo = makeRepo();
+  mkdirSync(join(repo, "packages/lib/src"), { recursive: true });
+  mkdirSync(join(repo, "packages/empty"), { recursive: true });
+  writeFileSync(join(repo, "packages/lib/package.json"), '{"name":"lib"}\n');
+  writeFileSync(join(repo, "packages/lib/src/index.ts"), "export {};\n");
+  let r = runScript(repo, "--scope", "packages/lib");
+  assert.equal(r.rc, 0, `expected zero; got ${r.rc}: ${r.out}`);
+  let lines = r.out.split("\n").filter(Boolean);
+  assert.ok(lines.includes("packages/lib/src/index.ts"), `index.ts missing: ${r.out}`);
+  assert.equal(lines.includes("packages/lib"), false, `a bare directory line was emitted: ${r.out}`);
+  r = runScript(repo, "--scope", "packages/*");
+  lines = r.out.split("\n").filter(Boolean);
+  assert.deepEqual(
+    lines.filter((l) => !l.startsWith("packages/lib/")),
+    [],
+    `only packages/lib's files expected: ${r.out}`,
+  );
+  assert.notEqual(runScript(repo, "--scope", "packages/empty").rc, 0, "a directory holding no file matched");
+});
+
 // ── Case 8 (Fix B): CLAUDE_PROJECT_DIR unset but cwd inside a git repo →
 // resolve root via git rev-parse; apps/foo → emits 2 files (exit 0) ──
 test("case8 env-unset-in-repo-resolves-via-git", () => {
@@ -279,6 +317,41 @@ test("case12c projects-scope-resolves-code-by-subject", () => {
   const r = runScript(makeRepo(), "--scope", "projects/p");
   assert.equal(r.rc, 0, `expected zero; got ${r.rc}: ${r.out}`);
   assert.ok(r.out.includes("apps/foo/a.ts"), `missing apps/foo/a.ts: ${r.out}`);
+});
+
+// ── Case 12d: the project branch READS the write root; it never creates one ──
+//
+// A projects/ scope only looks the project up, so it asks the resolver with
+// --no-create: the default mode makes this session a worktree when it has none,
+// and a lookup must not bring one into being. A copy of this script runs beside
+// a stub resolver that records the arguments it was given.
+test("case12d projects-scope-asks-the-write-root-with-no-create", () => {
+  const repo = makeRepo();
+  const root = mktemp();
+  const bin = join(root, "skills/implement/scripts");
+  mkdirSync(bin, { recursive: true });
+  mkdirSync(join(root, "packages/cli-exit"), { recursive: true });
+  const here = dirname(fileURLToPath(import.meta.url));
+  copyFileSync(SCRIPT, join(bin, "resolve-scope.ts"));
+  copyFileSync(join(here, "../../../packages/cli-exit/cli-exit.ts"), join(root, "packages/cli-exit/cli-exit.ts"));
+  const argvLog = join(root, "argv.json");
+  writeFileSync(
+    join(bin, "session-write-root.ts"),
+    `import { writeFileSync } from "node:fs";\n` +
+      `writeFileSync(${JSON.stringify(argvLog)}, JSON.stringify(process.argv.slice(2)));\n` +
+      `process.stdout.write(${JSON.stringify(`${repo}\n`)});\n`,
+  );
+  const r = spawnSync(
+    process.execPath,
+    ["--experimental-strip-types", join(bin, "resolve-scope.ts"), "--scope", "projects/p"],
+    {
+      encoding: "utf8",
+      env: { ...process.env, CLAUDE_PROJECT_DIR: repo },
+      timeout: 60000,
+    },
+  );
+  assert.equal(r.status, 0, `expected zero; got ${r.status}: ${r.stdout}${r.stderr}`);
+  assert.deepEqual(JSON.parse(readFileSync(argvLog, "utf8")), ["--no-create"]);
 });
 
 // ── Case 13: a staged list larger than spawnSync's default 1 MiB is whole ──

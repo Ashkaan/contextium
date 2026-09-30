@@ -23,12 +23,15 @@
 // Usage:
 //   find-peers.ts                        # changed files (staged + unstaged)
 //   find-peers.ts file1 file2 ...        # only the given files
+//   find-peers.ts --base <rev> [file…]   # the change since <rev>, committed
+//                                        # or not (default: since HEAD)
 //   find-peers.ts --verify-sweep <regex> [-- <pathspec>...]
 //   find-peers.ts --peers <file>         # print the peers <file> declares
 //
 // Exit:
 //   default mode   — 0 (warn-only; warnings on stderr), or 2 when a git read
-//                    fails: a failed read is not "no changed files".
+//                    fails: a failed read is not "no changed files"; 2 for a
+//                    --base with no revision.
 //   --verify-sweep — 0 when the population is clean, 1 when matches remain,
 //                    2 on caller error (missing regex) or a failed git grep —
 //                    an error is never read as "no surviving match".
@@ -448,12 +451,27 @@ async function main(): Promise<void> {
   }
 
   // ── Mode 2: surface an undeclared one ──────────────────────────────────
+  //
+  // Measured from HEAD unless `--base <rev>` names where the change began. A
+  // caller whose session has already COMMITTED its work (run-automated-checks.ts,
+  // with the session base) needs that: from HEAD a committed class fix diffs
+  // to nothing, and a sweep left half-done read as "0 left-behind".
+  let base = "HEAD";
+  let files = argv;
+  if (files[0] === "--base") {
+    if (!files[1]) {
+      err("find-peers: --base needs a revision");
+      exit(2);
+    }
+    base = files[1];
+    files = files.slice(2);
+  }
 
   let changed: string[];
-  if (argv.length > 0) {
-    changed = argv;
+  if (files.length > 0) {
+    changed = files;
   } else {
-    const diff = git(["diff", "--name-only", "HEAD"]);
+    const diff = git(["diff", "--name-only", base]);
     if (diff.status !== 0) gitFailed("diff", diff.status);
     changed = diff.stdout.split("\n").filter((l) => l !== "");
   }
@@ -499,7 +517,7 @@ async function main(): Promise<void> {
     }
     if (livePeers.length === 0) continue;
 
-    const fileDiff = git(["diff", "-U0", "HEAD", "--", file]);
+    const fileDiff = git(["diff", "-U0", base, "--", file]);
     if (fileDiff.status !== 0) gitFailed("diff", fileDiff.status);
 
     for (const token of removedTokens(fileDiff.stdout)) {

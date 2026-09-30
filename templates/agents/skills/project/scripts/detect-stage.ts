@@ -93,7 +93,7 @@ const CLOSE_SCRIPTS = process.env.CONTEXTIUM_CLOSE_SCRIPTS || join(SCRIPT_DIR, "
 function enterWriteRoot(): void {
   const r = spawnSync(
     process.execPath,
-    ["--experimental-strip-types", join(SCRIPT_DIR, "../../implement/scripts/session-write-root.ts")],
+    ["--experimental-strip-types", join(SCRIPT_DIR, "../../implement/scripts/session-write-root.ts"), "--no-create"],
     { encoding: "utf8", stdio: ["inherit", "pipe", "inherit"] },
   );
   if (r.status !== 0) exit(1);

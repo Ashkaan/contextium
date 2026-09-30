@@ -217,10 +217,12 @@ fail, because type errors mask runtime errors), then layer 2 (each package's own
 tests: its `test` script or make target, else its `*.test.ts` under
 `node --test`), then layer 3 (the `.agents/checks/` land.ts runs, as a dry run,
 advisory). A package that declares no lint or typecheck is a WARN line, not a
-FAIL. `scripts/resolve-scope.ts` turns the
+FAIL, and so is a code file that no package owns: nothing lints it, and the
+line names it. `scripts/resolve-scope.ts` turns the
 scope argument into the file list (blank → staged files; `apps/<name>` or a bare
 name matching `apps/*` → that app; `integrations/<name>` → that integration;
-`projects/<path>` → that project; anything else → glob expansion).
+`projects/<path>` → that project; anything else → glob expansion, a directory
+listed as the files in it).
 
 A **table** of layers used to live here, and it was a suggestion. It listed the
 code review as "layer 4", BEFORE the E2E row — so a review that came back clean

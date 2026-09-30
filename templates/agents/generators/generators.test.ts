@@ -45,6 +45,14 @@ test("parseFrontmatter: a quoted value followed by a comment loses the quotes an
   assert.equal(fm('project: "unclosed')?.project, '"unclosed');
 });
 
+test("parseFrontmatter: a folded scalar is literal text, so a # in it is not a comment", () => {
+  const fm = (body: string) => parseFrontmatter(`---\n${body}\n---\n`);
+  assert.equal(fm("next: >-\n  Fix parsing of # headings\n  in READMEs")?.next, "Fix parsing of # headings in READMEs");
+  assert.equal(fm('d: >-\n  "whole"')?.d, '"whole"');
+  assert.equal(fm("d: >- # why\n  a\n  b")?.d, "a b");
+  assert.equal(fm("d: > # why\n  a")?.d, "a");
+});
+
 test("parseFrontmatter: YAML escapes are decoded once the closing quote is found", () => {
   const fm = (body: string) => parseFrontmatter(`---\n${body}\n---\n`);
   assert.equal(fm('p: "a\\\\b"')?.p, "a\\b");
@@ -196,10 +204,73 @@ test("app-index: a value with a line break and a pipe stays one table cell", () 
 
 test("integration-index: --out <file> writes when every integration was read", () => {
   const root = integrationFixture();
-  const out = join(root, "index.md");
+  const out = join(root, "integrations", "index.md");
   const r = runIntegrationIndex(root, ["--out", out]);
   assert.equal(r.status, 0);
   assert.match(readFileSync(out, "utf8"), /\[Demo\]\(demo\/\)/);
+});
+
+// A link in the index is relative to the file it is written to, not to
+// integrations/: an index at the repo root links integrations/demo/.
+test("integration-index: --out outside integrations/ links each integration from where the file is", () => {
+  const root = integrationFixture();
+  const out = join(root, "index.md");
+  const r = runIntegrationIndex(root, ["--out", out]);
+  assert.equal(r.status, 0, r.stderr);
+  const text = readFileSync(out, "utf8");
+  assert.match(text, /\[Demo\]\(integrations\/demo\/\)/);
+  assert.match(text, /\[AGENTS\.md\]\(AGENTS\.md\)/);
+});
+
+function runAppIndex(root: string, args: string[] = []) {
+  return spawnSync(
+    process.execPath,
+    ["--experimental-strip-types", "--no-warnings", join(root, ".agents", "generators", "app-index.generate.ts"), ...args],
+    { encoding: "utf8" },
+  );
+}
+
+test("app-index: --out outside apps/ links each app from where the file is", () => {
+  const root = integrationFixture();
+  mkdirSync(join(root, "apps", "demo"), { recursive: true });
+  writeFileSync(join(root, "apps", "demo", "README.md"), "---\nname: demo\ndescription: A demo app\n---\n# demo\n");
+  mkdirSync(join(root, "docs"), { recursive: true });
+  const out = join(root, "docs", "apps.md");
+  const r = runAppIndex(root, ["--out", out]);
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(readFileSync(out, "utf8"), /\[demo\]\(\.\.\/apps\/demo\/\)/);
+});
+
+// Installing a bundle's dependencies creates node_modules/ beside its member
+// apps (and a flat workspace may put one at apps/node_modules/); neither, nor a
+// dot-folder, is an app.
+test("app-index: node_modules and dot-folders are not apps, at the top or inside a domain bundle", () => {
+  const root = integrationFixture();
+  mkdirSync(join(root, "apps", "demo"), { recursive: true });
+  writeFileSync(join(root, "apps", "demo", "README.md"), "---\nname: demo\ndescription: A demo app\n---\n# demo\n");
+  const bundle = join(root, "apps", "media");
+  mkdirSync(join(bundle, "player"), { recursive: true });
+  writeFileSync(join(bundle, "trigger.config.ts"), "// trigger-domain-bundle: media\n");
+  writeFileSync(join(bundle, "player", "README.md"), "---\nname: player\ndescription: Plays\n---\n");
+  mkdirSync(join(bundle, "node_modules", "zod"), { recursive: true });
+  mkdirSync(join(bundle, ".turbo"), { recursive: true });
+  mkdirSync(join(root, "apps", "node_modules", "zod"), { recursive: true });
+  mkdirSync(join(root, "apps", ".cache"), { recursive: true });
+  const r = runAppIndex(root);
+  assert.equal(r.status, 0, r.stderr);
+  const text = readFileSync(join(root, "apps", "README.md"), "utf8");
+  assert.match(text, /\*\*Total: 2 apps\*\*/);
+  assert.doesNotMatch(r.stderr, /node_modules|\.turbo|\.cache/);
+});
+
+test("integration-index: node_modules and dot-folders are not integrations", () => {
+  const root = integrationFixture();
+  mkdirSync(join(root, "integrations", "node_modules", "zod"), { recursive: true });
+  mkdirSync(join(root, "integrations", ".cache"), { recursive: true });
+  const out = join(root, "integrations", "index.md");
+  const r = runIntegrationIndex(root, ["--out", out]);
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(readFileSync(out, "utf8"), /\*\*Total: 1 integrations\*\*/);
 });
 
 test("oneLineCell: whitespace collapses to one line and a pipe is escaped", () => {

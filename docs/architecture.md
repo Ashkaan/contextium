@@ -173,7 +173,7 @@ tool's worktree view shows it:
 |---|---|---|
 | `claude` | `<workbench>/.claude/worktrees/` | `worktree-<name>` |
 | `gemini` | `<workbench>/.gemini/worktrees/` | `session/<name>` |
-| `codex` | `~/.codex/worktrees/` (or `$CODEX_HOME/worktrees/`) | `session/<name>` |
+| `codex` | `~/.codex/worktrees/<repo-key>/` (or `$CODEX_HOME/worktrees/<repo-key>/`), where `<repo-key>` is the repo's folder name plus 8 hex of its path's hash, so two repos never share a folder | `session/<name>` |
 | `grok` | `~/.grok/worktrees/<workbench-name>/` | `session/<name>` |
 | `t3`, `cursor`, `vscode`, `antigravity` | `<workbench-parent>/<workbench-name>.worktrees/`, beside the repo | `session/<name>` |
 

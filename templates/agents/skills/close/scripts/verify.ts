@@ -499,13 +499,19 @@ function findSuites(dir: string, root: boolean, pattern: string): { rc: number; 
 const SIGNUM: Record<string, number> = { SIGHUP: 1, SIGINT: 2, SIGKILL: 9, SIGTERM: 15 };
 
 // Run one suite in `cwd` with stdout and stderr both in `log`, bounded by
-// `secs`; its exit status. The bound is a watchdog here, not timeout(1): stock
-// macOS has neither timeout nor gtimeout, and the clock in the caller — not
-// this status — decides "timed out" anyway. The suite runs as the leader of a
+// `secs`; its exit status. The bound is a watchdog here, not timeout(1):
+// timeout(1) signals the group once and exits with the leader, so a child that
+// ignores TERM outlived it; stock macOS has neither timeout nor gtimeout; and
+// the clock in the caller — not this status — decides "timed out" anyway. The suite runs as the leader of a
 // process group of its own, and the watchdog signals the GROUP, as timeout(1)
 // does: a suite's own children (the `sleep` a hung suite waits on) die with it
 // rather than outliving the close. TERM first; KILL five seconds later for a
 // suite that traps TERM and keeps going.
+//
+// The leader's exit does not end the cleanup. A leader that exits on TERM can
+// leave a child that ignores TERM; once TERM has gone out, the promise settles
+// only after the group is empty or the KILL has been sent — resolving on the
+// leader's exit cancelled the KILL, and that child outlived the close for good.
 function runBounded(argv: string[], cwd: string, log: string, secs: number): Promise<number> {
   const fd = openSync(log, "w");
   return new Promise((done) => {
@@ -513,7 +519,9 @@ function runBounded(argv: string[], cwd: string, log: string, secs: number): Pro
     let settled = false;
     let dog: ReturnType<typeof setTimeout> | undefined;
     let killer: ReturnType<typeof setTimeout> | undefined;
-    const finish = (rc: number): void => {
+    let exitRc: number | undefined;
+    let killSent = false;
+    const settle = (rc: number): void => {
       if (settled) return;
       settled = true;
       clearTimeout(dog);
@@ -522,21 +530,33 @@ function runBounded(argv: string[], cwd: string, log: string, secs: number): Pro
       done(rc);
     };
     const child = spawn(cmd ?? "", args, { cwd, stdio: ["ignore", fd, fd], detached: true });
-    const signal = (sig: NodeJS.Signals): void => {
+    const signal = (sig: NodeJS.Signals | 0): boolean => {
       try {
-        if (child.pid !== undefined) process.kill(-child.pid, sig);
+        if (child.pid === undefined) return false;
+        process.kill(-child.pid, sig);
+        return true;
       } catch {
-        // The group is already gone.
+        return false; // The group is already gone.
       }
     };
     child.on("error", () => {
       writeSync(fd, `${cmd ?? ""}: command not found\n`);
-      finish(127);
+      settle(127);
     });
-    child.on("exit", (code, sig) => finish(code ?? (sig ? 128 + (SIGNUM[sig] ?? 0) : 1)));
+    child.on("exit", (code, sig) => {
+      exitRc = code ?? (sig ? 128 + (SIGNUM[sig] ?? 0) : 1);
+      // TERM sent and the group still has members: the KILL is due, and the
+      // run settles when it has gone out.
+      if (killer !== undefined && !killSent && signal(0)) return;
+      settle(exitRc);
+    });
     dog = setTimeout(() => {
       signal("SIGTERM");
-      killer = setTimeout(() => signal("SIGKILL"), 5000);
+      killer = setTimeout(() => {
+        killSent = true;
+        signal("SIGKILL");
+        if (exitRc !== undefined) settle(exitRc);
+      }, 5000);
     }, secs * 1000);
   });
 }

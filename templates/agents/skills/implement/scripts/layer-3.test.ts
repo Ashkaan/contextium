@@ -9,8 +9,8 @@
 // peers: layer-3.ts
 
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
-import { cpSync, mkdtempSync, rmSync } from "node:fs";
+import { execFileSync, spawnSync } from "node:child_process";
+import { cpSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { after, test } from "node:test";
@@ -24,9 +24,13 @@ after(() => rmSync(TMP, { recursive: true, force: true }));
 let n = 0;
 const mktemp = (): string => mkdtempSync(join(TMP, `d${++n}-`));
 
-function run(args: string[], opts: { repo?: string; cwd?: string }): { rc: number; out: string; all: string } {
-  const env: NodeJS.ProcessEnv = { ...process.env };
+function run(
+  args: string[],
+  opts: { repo?: string; cwd?: string; env?: NodeJS.ProcessEnv },
+): { rc: number; out: string; all: string } {
+  const env: NodeJS.ProcessEnv = { ...process.env, ...opts.env };
   delete env.CLAUDE_PROJECT_DIR;
+  if (!opts.env?.LAYER3_EXPECTED_SINCE) delete env.LAYER3_EXPECTED_SINCE;
   if (opts.repo) env.CLAUDE_PROJECT_DIR = opts.repo;
   const r = spawnSync(process.execPath, ["--experimental-strip-types", SCRIPT, ...args], {
     encoding: "utf8",
@@ -52,6 +56,7 @@ test("case1 each-present-check-runs-and-is-reported", () => {
   assert.ok(r.out.includes("RAN: check-decision-records.ts → PASS"), `missing the passing RAN line: ${r.all}`);
   assert.ok(r.out.includes("RAN: check-secrets.ts → FAIL"), `missing the failing RAN line: ${r.all}`);
   assert.ok(r.out.includes("RAN: check-standards-refs.ts → PASS"), `standards refs not run over the tree: ${r.all}`);
+  assert.ok(r.out.includes("NOTE: layer-3 — no merge-base with the trunk"), `a HEAD fallback went unsaid: ${r.all}`);
   assert.equal(r.all.includes("check-skills.ts"), false, `an absent check was reported: ${r.all}`);
   assert.equal(r.all.includes("a key"), false, `a check's own output leaked: ${r.all}`);
 });
@@ -96,4 +101,33 @@ test("case6 unknown-flag-exits-1", () => {
   const r = run(["--bogus"], { repo });
   assert.equal(r.rc, 1, r.all);
   assert.ok(r.all.includes("unknown flag: --bogus"), r.all);
+});
+
+// ── Case 7: the change is measured from where the branch left the trunk ──
+//
+// land.ts runs these checks with `--since <merge-base HEAD origin/<trunk>>`, so
+// a record /implement already COMMITTED is checked. Measured from HEAD it is not
+// part of the change at all: the dry-run passed and the close refused it.
+test("case7 since-is-the-trunk-merge-base-like-land", () => {
+  const repo = makeRepo();
+  const origin = mktemp();
+  const git = (...a: string[]) => execFileSync("git", ["-C", repo, ...a], { encoding: "utf8" }).trim();
+  execFileSync("git", ["init", "-q", "--bare", "-b", "main", origin]);
+  git("init", "-q", "-b", "main");
+  git("config", "user.email", "t@t");
+  git("config", "user.name", "t");
+  writeFileSync(join(repo, "seed.txt"), "seed\n");
+  git("add", "seed.txt");
+  git("commit", "-qm", "seed");
+  git("remote", "add", "origin", origin);
+  git("push", "-q", "-u", "origin", "main");
+  git("remote", "set-head", "origin", "main");
+  const base = git("rev-parse", "HEAD");
+  git("checkout", "-q", "-b", "feature");
+  writeFileSync(join(repo, "record.md"), "committed\n");
+  git("add", "record.md");
+  git("commit", "-qm", "committed on the branch");
+  const r = run(["--scope", ""], { repo, env: { LAYER3_EXPECTED_SINCE: base } });
+  assert.equal(r.rc, 0, r.all);
+  assert.ok(r.out.includes("RAN: check-decision-records.ts → PASS"), `not measured from ${base}: ${r.all}`);
 });

@@ -111,3 +111,28 @@ test("a directory named spec.md exits 2", () => {
   assert.equal(r.rc, 2, "a directory named spec.md exits 2");
   assert.match(r.out, /cannot read/, "…and says so");
 });
+
+// A folder the reader cannot search: stat of spec.md fails with EACCES, not
+// ENOENT. Only a file that does not exist is skipped; this one might hold
+// every marker, so the run refuses rather than exiting 0 unread.
+test("a spec folder without search permission exits 2", (t) => {
+  const d = folder("nosearch", { "spec.md": "[NEEDS CLARIFICATION: hidden]\n" });
+  chmodSync(d, 0o600);
+  try {
+    let searchable = true;
+    try {
+      accessSync(join(d, "spec.md"), constants.R_OK);
+    } catch {
+      searchable = false;
+    }
+    if (searchable) {
+      t.skip("running as a user who can search a mode-600 folder");
+      return;
+    }
+    const r = sut(d);
+    assert.equal(r.rc, 2, "an unsearchable spec folder exits 2");
+    assert.match(r.out, /cannot read/, "…and says so");
+  } finally {
+    chmodSync(d, 0o755);
+  }
+});

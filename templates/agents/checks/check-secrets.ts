@@ -12,7 +12,7 @@
 // Exit: 0 clean · 1 a likely secret · 2 caller error
 
 import { spawnSync } from "node:child_process";
-import { readFileSync, statSync } from "node:fs";
+import { lstatSync, readFileSync, readlinkSync, type Stats } from "node:fs";
 import { exit, runToExit } from "../packages/cli-exit/cli-exit.ts";
 
 function git(args: string[]): { ok: boolean; out: string } {
@@ -31,12 +31,24 @@ function unreadable(what: string): never {
   exit(2);
 }
 
-function isFile(p: string): boolean {
+/** What git would commit for an untracked path: a regular file's bytes, a
+ *  symlink's target PATH (git stores the link, never what it points at, so a
+ *  link to a key outside the repo commits no key), and nothing for anything
+ *  else. lstat, so a link is never followed. */
+function committedBody(p: string): string | null {
+  let st: Stats;
   try {
-    return statSync(p).isFile();
+    st = lstatSync(p);
   } catch {
-    return false;
+    return null;
   }
+  try {
+    if (st.isSymbolicLink()) return readlinkSync(p);
+    if (st.isFile()) return readFileSync(p, "utf8");
+  } catch {
+    unreadable(p);
+  }
+  return null;
 }
 
 function main(): void {
@@ -61,13 +73,9 @@ function main(): void {
     const u = git(["ls-files", "-z", "--others", "--exclude-standard"]);
     if (!u.ok) unreadable("git ls-files");
     for (const f of u.out.split("\0")) {
-      if (!f || !isFile(f)) continue;
-      let body: string;
-      try {
-        body = readFileSync(f, "utf8");
-      } catch {
-        unreadable(f);
-      }
+      if (!f) continue;
+      const body = committedBody(f);
+      if (body === null) continue;
       diff += `\n${body.replace(/\n$/, "").split("\n").map((l) => `+${l}`).join("\n")}`;
     }
   } else {

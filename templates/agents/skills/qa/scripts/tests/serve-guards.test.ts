@@ -19,7 +19,8 @@
 
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { after, test } from "node:test";
@@ -102,7 +103,7 @@ test("live with --live-url → that URL, and no Access item named → none sent"
   const r = run(["up", "--repo", LIVE, "--mode", "live", "--run-id", "t4", "--live-url", "https://example.com"]);
   assert.equal(r.rc, 0, r.out);
   assert.match(r.stdout, /^QA_URL=https:\/\/example\.com$/m);
-  assert.match(r.stdout, /^QA_AUTH_OP_ITEM=$/m);
+  assert.match(r.stdout, /^QA_AUTH_OP_ITEM=''$/m);
 });
 test("QA_LIVE_URL + QA_ACCESS_OP_ITEM from the environment", () => {
   const r = run(["up", "--repo", LIVE, "--mode", "live", "--run-id", "t5"], {
@@ -112,6 +113,33 @@ test("QA_LIVE_URL + QA_ACCESS_OP_ITEM from the environment", () => {
   assert.equal(r.rc, 0, r.out);
   assert.match(r.stdout, /^QA_URL=https:\/\/example\.org$/m);
   assert.match(r.stdout, /^QA_AUTH_OP_ITEM=item123$/m);
+});
+
+// Every `serve.ts up` the SKILL runs passes the step-0 --live-url on: a live run
+// the user pointed at a URL must not fall back to the registry (and its
+// credentials) on first serve or on the step-2.7 rebuild.
+test("SKILL.md: every serve.ts up forwards LIVE_URL", () => {
+  const skill = readFileSync(join(dirname(SCRIPT), "..", "SKILL.md"), "utf8");
+  const ups = skill.split("\n").filter((l) => l.includes('serve.ts" up '));
+  assert.ok(ups.length >= 2, `found ${ups.length} serve.ts up lines`);
+  for (const line of ups) {
+    const r = spawnSync("bash", ["-c", `${line}\nprintf '%s' "$QA_URL"`], {
+      encoding: "utf8",
+      env: {
+        ...hermeticEnv(),
+        HOME: join(TMP, "home"),
+        PATH: `${BIN}:${process.env.PATH}`,
+        QA_CF_PAGES_CACHE: join(TMP, "pages.json"),
+        QA_CF_WORKERS_DOMAINS_CACHE: join(TMP, "workers.json"),
+        S: dirname(SCRIPT),
+        TARGET: LIVE,
+        MODE: "live",
+        RUN_ID: "t7",
+        LIVE_URL: "https://example.net",
+      },
+    });
+    assert.equal(r.stdout, "https://example.net", `${line}\n${r.stderr}`);
+  }
 });
 
 // ── port ownership without ss (macOS): the lsof path ──
@@ -172,12 +200,30 @@ test("lsof: our group owns the listener, another group does not", () => {
     false,
   );
 });
-test("neither ss nor lsof: a port reads free and no pid resolves", () => {
+// With neither tool, "free" is proven by binding the port, never assumed: a
+// foreign server on the port must read busy, or the run accepts it as its own.
+test("neither ss nor lsof: a held port reads busy, a quiet one free, and no pid resolves", async () => {
   lsof(false);
-  assert.equal(
-    underNoSs(() => qaPortFree(4242)),
-    true,
-  );
+  for (const host of ["127.0.0.1", "0.0.0.0"]) {
+    const held = createServer();
+    await new Promise<void>((done) => held.listen(0, host, () => done()));
+    const addr = held.address();
+    const port = typeof addr === "object" && addr !== null ? addr.port : 0;
+    try {
+      assert.equal(
+        underNoSs(() => qaPortFree(port)),
+        false,
+        `a listener on ${host}:${port} read as free`,
+      );
+    } finally {
+      await new Promise<void>((done) => held.close(() => done()));
+    }
+    assert.equal(
+      underNoSs(() => qaPortFree(port)),
+      true,
+      `${port} read busy after its listener closed`,
+    );
+  }
   assert.equal(
     underNoSs(() => qaPortOwnedBy(4242, LP)),
     false,

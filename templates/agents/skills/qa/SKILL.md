@@ -2,7 +2,7 @@
 name: qa
 description: See the real running product of any app in your workbench, find its design problems, fix them, and explain what changed. Use after a UI change, before/after committing, when asked to QA, screenshot, fix, or visually verify a web app, or to confirm a portal renders correctly at desktop/tablet/phone. CLI/library targets capture stdout instead of screenshots.
 metadata:
-  peers: ".agents/skills/qa/scripts/detect-app.ts .agents/skills/qa/scripts/discover-routes.ts .agents/skills/qa/scripts/serve.ts .agents/skills/qa/scripts/screenshot.ts .agents/skills/qa/scripts/sight-check.ts .agents/skills/qa/scripts/sight-stamp.ts .agents/skills/qa/scripts/a11y.ts .agents/skills/qa/scripts/gen-design-md.ts .agents/skills/qa/scripts/design-authority.ts .agents/skills/qa/scripts/design-frontmatter.ts .agents/skills/qa/scripts/element-scan.ts .agents/skills/qa/scripts/interaction-check.ts .agents/skills/qa/scripts/interaction-check.browser.ts .agents/skills/qa/scripts/system-drift.ts .agents/skills/qa/scripts/impeccable-detect.ts .agents/skills/qa/scripts/lib.ts .agents/skills/qa/scripts/ensure-playwright.ts .agents/skills/qa/scripts/mark-qa-done.ts .agents/skills/qa/scripts/qa-targets.ts .agents/skills/qa/scripts/import-map.ts .agents/skills/qa/references/review-rubric.md .agents/skills/review/policy-review.ts"
+  peers: ".agents/skills/qa/scripts/detect-app.ts .agents/skills/qa/scripts/discover-routes.ts .agents/skills/qa/scripts/serve.ts .agents/skills/qa/scripts/screenshot.ts .agents/skills/qa/scripts/sight-check.ts .agents/skills/qa/scripts/sight-stamp.ts .agents/skills/qa/scripts/sight-validate.ts .agents/skills/qa/scripts/a11y.ts .agents/skills/qa/scripts/gen-design-md.ts .agents/skills/qa/scripts/design-authority.ts .agents/skills/qa/scripts/design-frontmatter.ts .agents/skills/qa/scripts/element-scan.ts .agents/skills/qa/scripts/interaction-check.ts .agents/skills/qa/scripts/interaction-check.browser.ts .agents/skills/qa/scripts/system-drift.ts .agents/skills/qa/scripts/impeccable-detect.ts .agents/skills/qa/scripts/lib.ts .agents/skills/qa/scripts/ensure-playwright.ts .agents/skills/qa/scripts/mark-qa-done.ts .agents/skills/qa/scripts/qa-targets.ts .agents/skills/qa/scripts/import-map.ts .agents/skills/qa/references/review-rubric.md .agents/skills/review/policy-review.ts"
 ---
 
 # /qa — see the real running product
@@ -35,6 +35,7 @@ Args: `target` (an app directory — a repo, or an app folder inside one; defaul
 ```bash
 TARGET="${1:-$(git rev-parse --show-toplevel)}"   # resolve to an absolute directory
 RUN_ID="$(date +%Y%m%d-%H%M%S)-$$"
+LIVE_URL=""   # the --live-url <url> arg, when given; every `serve.ts up` below passes it on
 ```
 
 ## step-1-detect-and-discover
@@ -57,7 +58,7 @@ An undetectable type stops here. Surface the exact message; do NOT invent a comm
 ## step-2-serve
 
 ```bash
-eval "$(node --experimental-strip-types "$S/serve.ts" up --repo "$TARGET" --mode "$MODE" --run-id "$RUN_ID" | grep '^QA_')"
+eval "$(node --experimental-strip-types "$S/serve.ts" up --repo "$TARGET" --mode "$MODE" --run-id "$RUN_ID" ${LIVE_URL:+--live-url "$LIVE_URL"} | grep '^QA_')"
 # MODE = before|after|live. Captures QA_URL, QA_PORT, QA_LABEL, QA_RUNFILE,
 # QA_PID, and QA_PAGES (routes discovered from the served source).
 
@@ -72,9 +73,9 @@ fi
 
 `--before` serves the working tree; `--after` builds a clean `git worktree` of HEAD so uncommitted edits don't leak into the shot; `--live` hits the deployed URL and skips the build.
 
-**`/qa` is zero-config — every repo runs with no per-repo config file.** Astro / Vite / static targets get convention defaults. For `--live`, `--live-url <url>` (or `QA_LIVE_URL`) names the deployed site; without it, `serve.ts` resolves the URL from a Cloudflare Pages registry lookup (`qaDeriveLiveUrlFromCf` in `lib.ts`, using wrangler's `CLOUDFLARE_API_TOKEN` + `CLOUDFLARE_ACCOUNT_ID`) that matches the repo against each project's `source.config.repo_name` and returns that project's custom domain — cached 6h at `/tmp/qa-cf-pages-cache.json`. That is a lookup in an authoritative registry, not inference from the directory name; the two genuinely differ (a repo named `site-web` deploying to `example.com`), which is why the heuristic would be wrong and the API is not. A site behind Cloudflare Access gets a service token when you name its 1Password item in `QA_ACCESS_OP_ITEM` (or set `QA_CF_ACCESS_ID` / `QA_CF_ACCESS_SECRET`). The only per-repo declaration `/qa` ever reads is a `qa:*` script in `package.json` for the non-convention types (`node-server`, `cli`, `render`); a CF-deployed Astro app needs nothing. Build/serve failures halt with the log tail. If detection returned `render`/`cli`, skip to `step-5b-render`/`step-5-cli`.
+**`/qa` is zero-config — every repo runs with no per-repo config file.** Astro / Vite / static targets get convention defaults. For `--live`, `--live-url <url>` (or `QA_LIVE_URL`) names the deployed site; without it, `serve.ts` resolves the URL from a Cloudflare Pages registry lookup (`qaDeriveLiveUrlFromCf` in `lib.ts`, using wrangler's `CLOUDFLARE_API_TOKEN` + `CLOUDFLARE_ACCOUNT_ID`) that matches the repo against each project's `source.config.repo_name` and returns that project's custom domain — cached 6h per account at `/tmp/qa-cf-pages-cache.<account id>.json`. That is a lookup in an authoritative registry, not inference from the directory name; the two genuinely differ (a repo named `site-web` deploying to `example.com`), which is why the heuristic would be wrong and the API is not. A site behind Cloudflare Access gets a service token when you name its 1Password item in `QA_ACCESS_OP_ITEM` (or set `QA_CF_ACCESS_ID` / `QA_CF_ACCESS_SECRET`). The only per-repo declaration `/qa` ever reads is a `qa:*` script in `package.json` for the non-convention types (`node-server`, `cli`, `render`), plus an optional `qa:seed` for local D1 rows (below); a CF-deployed Astro app needs nothing. Build/serve failures halt with the log tail. If detection returned `render`/`cli`, skip to `step-5b-render`/`step-5-cli`.
 
-**No local data seed.** A `--before` build of a portal that reads a remote store renders empty/no-data states by design. For data-correctness QA of those portals, use `--live` (real data) or read the production store directly (§ Cloudflare portal recipe).
+**A local database gets the app's schema, never production's rows.** A Worker served by a Cloudflare runtime (`astro-cf`, `vite`) starts with EMPTY local D1 databases — no tables — so every query would fail "no such table" and every page would be a 500. On `--before`/`--after`, `serve.ts` applies each database's own migrations locally (`wrangler d1 migrations apply <binding> --local`, into the state dir the server persists to; `migrations_dir`, else `migrations/`) before it starts the server, so pages render their empty states. A database with no migrations dir is named on stderr and starts empty; a `remote` binding is named and left alone. If the app needs rows locally before it works at all — the role of the person signed in below, say — it declares a `qa:seed` script in its `package.json`; `serve.ts` runs it after the migrations with `QA_D1_PERSIST` (the state dir) and `QA_ACT_AS` (that person) set. Exit 8 means a migration or the seed failed. No production data is copied: for data-correctness QA use `--live` (real data) or read the production store directly (§ Cloudflare portal recipe).
 
 **A gated local Worker gets a signed-in person.** If the wrangler config of an `astro-cf` or `vite` target names `PROBE_ACTS_AS` and `ACCESS_AUD`, `serve.ts` on `--before`/`--after` stands in for Cloudflare Access. It signs a token for that person with a key made for the run, reading the issuer from the account's Access organization (so it needs wrangler's `CLOUDFLARE_API_TOKEN` + `CLOUDFLARE_ACCOUNT_ID`). It serves the matching key set on loopback beside the server and hands the Worker its URL as `ACCESS_JWKS_URL`, which such an app should trust only on a loopback request. It names the token's file as `QA_AUTH_JWT_FILE`, and the scripts below send it as `Cf-Access-Jwt-Assertion`. Exit 8 means the sign-in failed: a local server that answers every page with 401 is not a QA target. An app that declares neither key gets none of this.
 
@@ -164,11 +165,12 @@ SOURCE against the scales the app declared for itself — the half nobody was
 measuring.
 
 ```bash
-node --experimental-strip-types "$S/system-drift.ts" "${QA_WORKTREE:-$TARGET}"
+node --experimental-strip-types "$S/system-drift.ts" "${QA_SRC:-$TARGET}"
 ```
 
-**Against the source `serve.ts` BUILT**, not the working tree. `serve.ts --after`
-emits `QA_WORKTREE`; that is the revision that produced the screenshots, and
+**Against the source `serve.ts` BUILT**, not the working tree. `serve.ts` emits
+`QA_SRC`, the app directory it served (for `--after`, the same app inside its
+HEAD worktree); that is the revision that produced the screenshots, and
 scanning the working tree instead would report a fix made mid-run as if it had
 shipped.
 
@@ -215,9 +217,9 @@ Impeccable pinpoints each finding by rule + file + line. Fix them right there �
 
 ```bash
 node --experimental-strip-types "$S/serve.ts" down --runfile "$QA_RUNFILE"    # kill the pre-fix server before re-serving
-eval "$(node --experimental-strip-types "$S/serve.ts" up --repo "$TARGET" --mode "$MODE" --run-id "$RUN_ID" | grep '^QA_')"
+eval "$(node --experimental-strip-types "$S/serve.ts" up --repo "$TARGET" --mode "$MODE" --run-id "$RUN_ID" ${LIVE_URL:+--live-url "$LIVE_URL"} | grep '^QA_')"
 node --experimental-strip-types "$S/impeccable-detect.ts" "$TARGET" "$QA_URL" ${QA_AUTH_JWT_FILE:+--auth-jwt-file "$QA_AUTH_JWT_FILE"}
-node --experimental-strip-types "$S/system-drift.ts" "${QA_WORKTREE:-$TARGET}"
+node --experimental-strip-types "$S/system-drift.ts" "${QA_SRC:-$TARGET}"
 ```
 
 **All deterministic fixing happens here, before any AI looks, and the step-3 screenshots are taken from this rebuilt server** — never the pre-fix build. The fresh-eyes review is expensive and should spend its tokens only on judgment a rule can't make, not on tells impeccable already located and you already fixed.
@@ -438,16 +440,17 @@ node --experimental-strip-types "$S/sight-check.ts" verify --codes "$QA_SIGHT_CO
 
 Exit 0 prints `SIGHTED — n/n codes transcribed`. Exit 6 means the codes did not come back and the findings, however well-formed, were computed rather than seen. Exit 5 means no codes exist at all, so nothing about the reply is proven — absence is never a pass. **Either one HALTS the review. MUST NOT report a visual pass on an unverified reply**, and MUST NOT read past a "degraded"/"could not open the image" line in the reviewer's own text: that is exactly the line that gets read past.
 
-**When it fails, route around it — the fallback is the review chain on another vendor, not a retry.** `adversarial-review` puts the review on a different vendor from the author — the independence the review gate wants anyway. The brief names the PNG paths the reviewer must open.
+**When it fails, route around it — the fallback is the review chain on another vendor, not a retry.** `adversarial-review` puts the review on a different vendor from the author — the independence the review gate wants anyway. The brief names the PNG paths the reviewer must open. Two settings make the chain able to look, and both are load-bearing: `POLICY_CHAIN_GROK_TOOLS=read_file` lets Grok open the PNGs (its default path reads no local files and answers "cannot see", exit 0), and `POLICY_CHAIN_VALIDATOR` runs `sight-validate.ts` on every vendor's answer before the chain accepts it, so a vendor that did not see is passed over for the next one instead of ending the walk.
 
 ```bash
+POLICY_CHAIN_GROK_TOOLS=read_file POLICY_CHAIN_VALIDATOR="$S/sight-validate.ts" QA_SIGHT_CODES="$QA_SIGHT_CODES" \
 node --experimental-strip-types .agents/skills/review/policy-review.ts adversarial-review \
   "/tmp/qa-shots/$QA_SLUG/$RUN_ID/manifest.json" /tmp/qa-brief-$RUN_ID.txt \
   > /tmp/qa-review-$RUN_ID.txt
 node --experimental-strip-types "$S/sight-check.ts" verify --codes "$QA_SIGHT_CODES" --response /tmp/qa-review-$RUN_ID.txt
 ```
 
-The brief file carries the same text as the subagent brief above — rubric, sight-code instruction, design intent, and the absolute path of every PNG to open — and still never the codes. Max **8 images per call**; a bigger run is batched, and each batch's reply is verified against the same codes file. A vendor that cannot open an image cannot return the codes, so the same gate refuses its answer: when no reviewer in the chain can see, the review HALTS and the report says the visual review did not happen.
+The brief file carries the same text as the subagent brief above — rubric, sight-code instruction, design intent, and the absolute path of every PNG to open — and still never the codes. Max **8 images per call**; a bigger run is batched, and each batch is checked against a codes file holding only its own shots' rows (`grep` them out of `$QA_SIGHT_CODES`, and pass that file as `QA_SIGHT_CODES` to both commands). A vendor that cannot open an image cannot return the codes, so the same gate refuses its answer: when no reviewer in the chain can see, the chain exits non-zero with an empty reply, the review HALTS, and the report says the visual review did not happen.
 
 Apply taste to the findings (the subagent verifies structure, not whether a fix would look ridiculous). P2/P3 are reported, not blocking.
 
@@ -531,7 +534,7 @@ That measurement is exactly why the `/implement` gate could not reuse this key a
 
 ### Example 1 — before-commit QA of a portal's projects page
 
-`/qa apps/web/portal /projects --before`. step-0 resolves the portal's directory, run-id stamped. step-1 detects `astro-cf` (no config read); the explicit `/projects` arg overrides route discovery. step-2 builds the working tree and serves on :8813 (no seed — a portal that reads a remote store renders empty states in `--before`; use `--live` or a direct data read). step-3 shoots projects at 1440/820/390 -> manifest printed. step-4 dispatches the fresh-context reviewer. step-6 tears down the owned server.
+`/qa apps/web/portal /projects --before`. step-0 resolves the portal's directory, run-id stamped. step-1 detects `astro-cf` (no config read); the explicit `/projects` arg overrides route discovery. step-2 builds the working tree and serves on :8813 (its D1 databases get their migrations, not production's rows, so pages render empty states in `--before`; use `--live` or a direct data read for data). step-3 shoots projects at 1440/820/390 -> manifest printed. step-4 dispatches the fresh-context reviewer. step-6 tears down the owned server.
 
 ### Example 2 — after-commit, multi-page, keep server up
 

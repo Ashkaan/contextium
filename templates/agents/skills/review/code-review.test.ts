@@ -560,6 +560,23 @@ test("the pack fails open", () => {
   lacks("an empty pack leaves no heading", "BLAST RADIUS", SEEN_TEXT);
 });
 
+// ── The packer's cap holds against a packer that ignores TERM ─────────
+//
+// The cap is what keeps a stuck packer from holding the review; TERM alone
+// waited on one that ignored it for as long as it chose to run.
+test("a packer that ignores TERM is KILLed at its cap, and the review goes on", () => {
+  const STUCK = `${TMP}/stuck-packer.ts`;
+  writeFileSync(STUCK, 'process.on("SIGTERM", () => {});\nsetTimeout(() => {}, 12_000);\n');
+  const SNAP_STUCK = snapshot();
+  writeFileSync(`${REPO}/pack/api.ts`, "export function packedThing() {\n  return 7\n}\n");
+  const start = Date.now();
+  const r = packReview(["--since", SNAP_STUCK], STUCK, { CODE_REVIEW_BLAST_RADIUS_TIMEOUT_S: "1" });
+  const elapsed = (Date.now() - start) / 1000;
+  rcIs("a stuck packer still reviews", 0, r.rc);
+  has("a stuck packer is reported as a timeout", "packer timed out after 1s", r.err);
+  assert.ok(elapsed < 10, `a TERM-ignoring packer held the review ${elapsed}s past its 1s cap`);
+});
+
 // ── The range-mode pack gets ONE diff, not a concatenation ────────────
 //
 // The review body glues `base..head` onto `HEAD..working-tree`. For a file

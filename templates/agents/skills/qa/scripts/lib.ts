@@ -37,7 +37,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { homedir } from "node:os";
-import { basename, dirname, join, resolve } from "node:path";
+import { basename, dirname, extname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 /** Print to stderr (errors never pollute stdout pipelines). */
@@ -199,7 +199,8 @@ function isWorkersDomainEntry(e: unknown): boolean {
  * authoritative source rather than assuming, and keeps `/qa --live` usable in a
  * repo that has never been configured.
  *
- * Cached for 6h at /tmp/qa-cf-pages-cache.json (QA_CF_PAGES_CACHE overrides) —
+ * Cached for 6h at /tmp/qa-cf-pages-cache.<account>.json (QA_CF_PAGES_CACHE
+ * overrides the name the account is put into; qaCfAccountCache) —
  * the project list changes on the order of months, and the whole point is to
  * stay fast enough to sit in the default path.
  *
@@ -210,8 +211,9 @@ function isWorkersDomainEntry(e: unknown): boolean {
  */
 export async function qaDeriveLiveUrlFromCf(repoName: string): Promise<string | undefined> {
   const cache = process.env.QA_CF_PAGES_CACHE || "/tmp/qa-cf-pages-cache.json";
-  if (!(await qaCfRegistryRefresh(cache, "pages/projects", isPagesEntry))) return undefined;
-  const d = readJson(cache);
+  const file = await qaCfRegistryRefresh(cache, "pages/projects", isPagesEntry);
+  if (file === undefined) return undefined;
+  const d = readJson(file);
   if (!isRecord(d) || !Array.isArray(d.result)) return undefined;
   for (const p of d.result as PagesProject[]) {
     if (!isRecord(p)) continue;
@@ -429,28 +431,43 @@ export function qaIsGoodRegistry(
 }
 
 /**
- * Keep `cache` a good copy of the account's GET /client/v4/accounts/<id>/<path>,
- * refreshed every 6h. A refresh writes a per-run sibling and renames it into
- * place only when the answer says `"success": true` with a `result` list whose
+ * The file a registry cache named `cache` is kept in for Cloudflare account
+ * `account`: the account id goes before the extension
+ * (`/tmp/qa-cf-pages-cache.json` -> `/tmp/qa-cf-pages-cache.<account>.json`).
+ * Every account's registry is its own — its Pages projects, its Workers
+ * domains, its Access team domain — so one account's copy must never answer
+ * for another's after CLOUDFLARE_ACCOUNT_ID changes.
+ */
+export function qaCfAccountCache(cache: string, account = process.env.CLOUDFLARE_ACCOUNT_ID ?? ""): string {
+  const ext = extname(cache);
+  return `${cache.slice(0, cache.length - ext.length)}.${account.replace(/[^A-Za-z0-9_-]/g, "_")}${ext}`;
+}
+
+/**
+ * Keep a good copy of the account's GET /client/v4/accounts/<id>/<path> in the
+ * account's own file for `cache` (qaCfAccountCache), refreshed every 6h, and
+ * return that file — or undefined when there is no usable copy. A refresh
+ * writes a per-run sibling and renames it into place only when the answer says `"success": true` with a `result` list whose
  * every entry satisfies `entry` (or, with shape "object", for an endpoint
  * answering one object, a `result` object that does), so a concurrent reader never sees a
  * half-written file and an error body never replaces a good one. A failed
  * refresh keeps the last good copy: the registry changes on the order of
- * months, and a live run must not lose its URL to a network blip. False when
+ * months, and a live run must not lose its URL to a network blip. Undefined when
  * no usable copy exists, and when wrangler's CLOUDFLARE_API_TOKEN /
  * CLOUDFLARE_ACCOUNT_ID are not set — without them this is not the user's
  * account to ask about. QA_CF_API overrides the API base (tests point it at a
  * port nothing listens on).
  */
 export async function qaCfRegistryRefresh(
-  cache: string,
+  cacheName: string,
   path: string,
   entry: (e: unknown) => boolean,
   shape: "list" | "object" = "list",
-): Promise<boolean> {
+): Promise<string | undefined> {
   const account = process.env.CLOUDFLARE_ACCOUNT_ID ?? "";
   const token = process.env.CLOUDFLARE_API_TOKEN ?? "";
-  if (account === "" || token === "") return false;
+  if (account === "" || token === "") return undefined;
+  const cache = qaCfAccountCache(cacheName, account);
   const api = process.env.QA_CF_API || "https://api.cloudflare.com/client/v4";
   const size = (() => {
     try {
@@ -494,11 +511,11 @@ export async function qaCfRegistryRefresh(
     }
   }
   try {
-    if (statSync(cache).size === 0) return false;
+    if (statSync(cache).size === 0) return undefined;
   } catch {
-    return false;
+    return undefined;
   }
-  return qaIsGoodRegistry(readJson(cache), entry, shape);
+  return qaIsGoodRegistry(readJson(cache), entry, shape) ? cache : undefined;
 }
 
 /** `mktemp "<file>.XXXXXX"`: a new empty sibling, or undefined when none can be made. */
@@ -680,15 +697,16 @@ export function qaWranglerRoutes(repo: string): string[] {
  * Worker it deploys, Cloudflare says which hostnames serve it. When several do,
  * the one the repo declares first wins (the others are usually redirects, which
  * the off-origin gate then rejects); several with none declared is ambiguous
- * and returns nothing rather than a guess. Cached at
- * QA_CF_WORKERS_DOMAINS_CACHE.
+ * and returns nothing rather than a guess. Cached per account
+ * (qaCfAccountCache) under QA_CF_WORKERS_DOMAINS_CACHE.
  */
 export async function qaDeriveLiveUrlFromWorkers(repo: string): Promise<string | undefined> {
   const name = qaWranglerName(repo);
   if (name === "") return undefined;
   const cache = process.env.QA_CF_WORKERS_DOMAINS_CACHE || "/tmp/qa-cf-workers-domains.json";
-  if (!(await qaCfRegistryRefresh(cache, "workers/domains", isWorkersDomainEntry))) return undefined;
-  const d = readJson(cache);
+  const file = await qaCfRegistryRefresh(cache, "workers/domains", isWorkersDomainEntry);
+  if (file === undefined) return undefined;
+  const d = readJson(file);
   const result = isRecord(d) && Array.isArray(d.result) ? d.result : [];
   const hosts = result
     .filter(
@@ -758,6 +776,57 @@ export function qaWranglerVar(repo: string, key: string): string {
   return v === undefined || v === null || v === false ? "" : String(v);
 }
 
+/** One D1 database the wrangler config binds, and where its migrations live. */
+export interface QaD1Migrations {
+  binding: string;
+  /** The migrations directory, relative to the repo: `migrations_dir`, else wrangler's default `migrations`. */
+  dir: string;
+  /** A `remote` binding reaches production even from a local server. */
+  remote: boolean;
+}
+
+/**
+ * The top-level `d1_databases` the repo's wrangler config declares, in order,
+ * with each one's migrations directory. A fresh local database has no tables
+ * at all until those migrations are applied to it. An `[env.*]` block's
+ * bindings are not the ones a local server uses, so they are not read; an
+ * entry with no binding is left out.
+ */
+export function qaD1Migrations(repo: string): QaD1Migrations[] {
+  const out: QaD1Migrations[] = [];
+  const toml = join(repo, "wrangler.toml");
+  if (isFile(toml)) {
+    let cur: Record<string, string> | undefined;
+    const close = () => {
+      if (cur?.binding)
+        out.push({ binding: cur.binding, dir: cur.migrations_dir || "migrations", remote: cur.remote === "true" });
+      cur = undefined;
+    };
+    for (const l of readFileSync(toml, "utf8").split("\n")) {
+      if (/^\s*#/.test(l)) continue;
+      if (/^\s*\[/.test(l)) {
+        close();
+        if (/^\s*\[\[\s*d1_databases\s*\]\]/.test(l)) cur = {};
+        continue;
+      }
+      const m = /^\s*(binding|migrations_dir|remote)\s*=\s*(.*)$/.exec(l);
+      if (cur && m) cur[m[1] ?? ""] = m[1] === "remote" ? ((m[2] ?? "").trim().split(/\s/)[0] ?? "") : qaTomlValue(l);
+    }
+    close();
+    return out;
+  }
+  const list = wranglerConfigObject(repo).d1_databases;
+  for (const d of Array.isArray(list) ? list : []) {
+    if (!isRecord(d) || !nonEmptyString(d.binding)) continue;
+    out.push({
+      binding: d.binding,
+      dir: nonEmptyString(d.migrations_dir) ? d.migrations_dir : "migrations",
+      remote: d.remote === true,
+    });
+  }
+  return out;
+}
+
 /** A local stand-in for Cloudflare Access: the key set a Worker verifies with, and one token it signed. */
 export interface QaLocalAccess {
   jwks: string;
@@ -799,13 +868,15 @@ export function qaLocalAccess(
 /**
  * The issuer Cloudflare Access puts on this account's tokens,
  * `https://<auth_domain>`, from the account's Access organization — the
- * registry, not a copy of the team name. Cached 6h at QA_CF_ACCESS_ORG_CACHE.
+ * registry, not a copy of the team name. Cached 6h per account
+ * (qaCfAccountCache) under QA_CF_ACCESS_ORG_CACHE.
  */
 export async function qaAccessIssuer(): Promise<string | undefined> {
   const cache = process.env.QA_CF_ACCESS_ORG_CACHE || "/tmp/qa-cf-access-org.json";
   const good = (e: unknown) => isRecord(e) && nonEmptyString(e.auth_domain);
-  if (!(await qaCfRegistryRefresh(cache, "access/organizations", good, "object"))) return undefined;
-  const d = readJson(cache);
+  const file = await qaCfRegistryRefresh(cache, "access/organizations", good, "object");
+  if (file === undefined) return undefined;
+  const d = readJson(file);
   const org = isRecord(d) && isRecord(d.result) ? d.result : {};
   return nonEmptyString(org.auth_domain) ? `https://${org.auth_domain}` : undefined;
 }

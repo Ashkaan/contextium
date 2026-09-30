@@ -275,6 +275,33 @@ if [[ "${1:-}" == "--self-test" ]]; then
       else fail=$((fail+1)); echo "FAIL (agy shape: expected silence, got '${agy_out:0:40}'): $cmd" >&2; fi
     fi
   done < <(grep -E '^#   (block|pass|raw)\*?: ' "$self")
+  # (d)'s carve-out needs a unit on disk, which a one-line example cannot
+  # place: a scratch HOME whose ~/.config/systemd/user links a unit into the
+  # main checkout, a linked worktree, another repo and a `<repo>-evil`
+  # sibling, each enabled from inside the scratch repo. Nothing real is read.
+  fx=$(mktemp -d "${TMPDIR:-/tmp}/infra-selftest.XXXXXX"); fx=$(cd "$fx" && pwd -P)
+  self_abs="$(cd "$(dirname "$self")" && pwd -P)/$(basename "$self")"
+  if {
+    git init -q "$fx/repo" &&
+      git -C "$fx/repo" -c user.email=t@example.com -c user.name=t commit -q --allow-empty -m seed &&
+      git -C "$fx/repo" worktree add -q "$fx/wt" 2>/dev/null &&
+      git init -q "$fx/other" && mkdir -p "$fx/repo-evil" "$fx/home/.config/systemd/user"
+  } >/dev/null 2>&1; then
+    for d in repo wt other repo-evil; do
+      printf '[Unit]\n' >"$fx/$d/u.timer"
+      ln -s "$fx/$d/u.timer" "$fx/home/.config/systemd/user/$d.timer"
+    done
+    for row in "repo 0 repo.timer" "repo 0 wt.timer" "wt 0 repo.timer" "repo 2 other.timer" "repo 2 repo-evil.timer"; do
+      read -r from want unit <<<"$row"
+      payload=$(jq -nc --arg c "systemctl --user enable $unit" '{tool_name:"Bash",tool_input:{command:$c}}')
+      rc=0; (cd "$fx/$from" && printf '%s' "$payload" | HOME="$fx/home" bash "$self_abs") >/dev/null 2>&1 || rc=$?
+      if [[ "$rc" == "$want" ]]; then pass=$((pass+1))
+      else fail=$((fail+1)); echo "FAIL (unit fixture: from $from, enable $unit, expected exit $want, got $rc)" >&2; fi
+    done
+  else
+    fail=$((fail+1)); echo "FAIL (unit fixture: could not build the scratch repos)" >&2
+  fi
+  rm -rf "$fx"
   echo "self-test: pass=$pass fail=$fail"
   [[ "$fail" == 0 ]] && exit 0 || exit 1
 fi
@@ -814,15 +841,26 @@ resolve_link() {
   printf '%s/%s\n' "$(cd "$(dirname "$p")" && pwd -P)" "$(basename "$p")"
 }
 
+# same_repo <path> <common> — <path> sits in a work tree of the repo whose git
+# common dir (physical) is <common>: its main checkout or any linked worktree,
+# wherever the worktree lives. Never a path inside a .git directory.
+same_repo() {
+  local d c
+  [ -n "$2" ] || return 1
+  d=$(dirname "$1")
+  [ "$(git -C "$d" rev-parse --is-inside-work-tree 2>/dev/null)" = true ] || return 1
+  c=$(git -C "$d" rev-parse --git-common-dir 2>/dev/null) || return 1
+  case "$c" in /*) ;; *) c="$d/$c" ;; esac
+  c=$(cd "$c" 2>/dev/null && pwd -P) || return 1
+  [ "$c" = "$2" ]
+}
+
 user_unit_enable_ok() {
   local text="$1"
   local unit_dir="$HOME/.config/systemd/user"
-  local workbench common
+  local common
   common=$(git rev-parse --git-common-dir 2>/dev/null || true)
-  workbench=""
-  if [ -n "$common" ]; then
-    workbench=$(cd "$common/.." 2>/dev/null && pwd -P || true)
-  fi
+  [ -z "$common" ] || common=$(cd "$common" 2>/dev/null && pwd -P || true)
 
   # 1. --user scope is mandatory; a system-scope enable never passes here.
   grep -qE '\bsystemctl\b([[:space:]]+--[a-z-]+)*[[:space:]]+--user\b|\bsystemctl[[:space:]]+--user\b' <<<"$text" || return 1
@@ -871,23 +909,18 @@ user_unit_enable_ok() {
       [ -e "$unit_dir/$unit" ] || [ -L "$unit_dir/$unit" ] || return 1
 
       # 4. The allowed roots, resolved. Anything else blocks. The trailing
-      #    slash on each pattern is load-bearing: without it the workbench
-      #    would also prefix-match a sibling named `<workbench>-evil/...`. The
-      #    workbench is the main checkout of the repo this session is in, and
-      #    any worktree of it; `git rev-parse --git-common-dir` names the first
-      #    from inside either.
+      #    slash on each pattern is load-bearing: without it a root would also
+      #    prefix-match a sibling named `<root>-evil/...`. The workbench is the
+      #    main checkout of the repo this session is in AND every worktree of
+      #    it, wherever the worktree lives: the target's own git common dir is
+      #    compared with this session's, never a path prefix, which a
+      #    worktree outside the checkout would miss.
       target=$(resolve_link "$unit_dir/$unit")
       [ -n "$target" ] || return 1
       case "$target" in
         "$unit_dir"/*) ;;
         "$HOME"/.claude/worktrees/*) ;;
-        *)
-          [ -n "$workbench" ] || return 1
-          case "$target" in
-            "$workbench"/*) ;;
-            *) return 1 ;;
-          esac
-          ;;
+        *) same_repo "$target" "$common" || return 1 ;;
       esac
     done
   done <<<"$tails"

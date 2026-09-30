@@ -1,9 +1,8 @@
 // Test harness for dispatch-agents.ts — three seats (Claude, Codex, Grok), one
 // prompt each, and the stand-in rules that keep a debate at three positions. The
 // panel-row CLIs (claude / codex / grok) are stubbed via a per-test PATH so we
-// don't touch real binaries; the host's `timeout` is on that tight PATH when it
-// has one, case 6 replaces it with a recording wrapper, and cases 17-18 take it
-// away to exercise the script's own watchdog.
+// don't touch real binaries. No `timeout` is on that PATH: the ceiling is the
+// script's own watchdog, which cases 17, 18 and 20 exercise.
 //
 // EVERY case pins a FIXTURE panel through DEBATE_POLICY_JSON: the stubs are
 // named `claude`, `codex` and `grok` right here, so reading the shipped table
@@ -71,9 +70,8 @@ function which(bin: string): string | undefined {
   return undefined;
 }
 
-// The tools a stub needs (`#!/usr/bin/env bash`, sleep, printf) and the
-// `timeout` the script runs every CLI through — and nothing else, so no real
-// claude / codex / grok and no git can answer.
+// The tools a stub needs (`#!/usr/bin/env bash`, sleep, printf) — and nothing
+// else, so no real claude / codex / grok and no git can answer.
 function makeTightPath(): string {
   const d = scratch();
   for (const bin of [
@@ -92,7 +90,6 @@ function makeTightPath(): string {
     "tail",
     "sed",
     "awk",
-    "timeout",
     "chmod",
     "rm",
     "ls",
@@ -188,6 +185,8 @@ interface RunOpts {
   policy?: string;
   // Omitted → the resolver stub. "" is passed through: the script's identity rule.
   resolver?: string;
+  // DEBATE_MS_PER_S, the ceiling's clock seam; omitted → real seconds.
+  msPerS?: string;
   cwd?: string;
 }
 
@@ -197,8 +196,8 @@ interface Run {
   dir: string;
 }
 
-// The environment is wiped, so the two seams the script reads —
-// DEBATE_POLICY_JSON and DEBATE_RESOLVER — are forwarded explicitly.
+// The environment is wiped, so the seams the script reads — DEBATE_POLICY_JSON,
+// DEBATE_RESOLVER and DEBATE_MS_PER_S — are forwarded explicitly.
 function runScript(stubs: string, args: string[], o: RunOpts = {}): Run {
   const r = spawnSync(process.execPath, ["--experimental-strip-types", o.script ?? SCRIPT, ...args], {
     encoding: "utf8",
@@ -209,6 +208,7 @@ function runScript(stubs: string, args: string[], o: RunOpts = {}): Run {
       HOME: "/tmp",
       DEBATE_RESOLVER: o.resolver ?? RESOLVER_STUB,
       DEBATE_POLICY_JSON: o.policy ?? SHARED_POLICY,
+      ...(o.msPerS !== undefined ? { DEBATE_MS_PER_S: o.msPerS } : {}),
     },
   });
   const dir = /^output_dir=(.+)$/m.exec(r.stdout)?.[1] ?? "";
@@ -377,24 +377,16 @@ describe("case6: the grok seat's invocation", () => {
   });
 
   // All three seats share the default ceiling. An explicit --timeout-s still
-  // applies to all three (as above). The stub records the ceiling and runs the
-  // command without one, so the case needs no real `timeout` on the host.
+  // applies to all three (as above). With the clock seam at 1ms a second, the
+  // 300s default fires at 0.3s, before stubs that sleep 5s answer — and every
+  // seat's gap names the ceiling it hit.
   test("every seat's default ceiling is 300s", () => {
-    const timeouts = join(stubs, "timeouts.txt");
-    rmSync(join(stubs, "timeout"), { force: true });
-    writeExe(
-      join(stubs, "timeout"),
-      `#!/usr/bin/env bash\nprintf '%s:%s\\n' "$1" "$2" >> '${timeouts}'\nshift\nexec "$@"\n`,
-    );
-    const r = runScript(stubs, ["--prompts-dir", pdir], { policy: pol });
-    const seen = existsSync(timeouts) ? lines(timeouts) : [];
+    const slow = makeTightPath();
+    for (const v of ["grok", "claude", "codex"]) mkstub(slow, v, 0, 5, `${v} says late`);
+    const r = runScript(slow, ["--prompts-dir", makePromptsDir(3), "--no-stand-in"], { policy: pol, msPerS: "1" });
+    const gaps = ["role1", "role2", "role3"].map((role) => readFileSync(join(r.dir, `${role}.gap`), "utf8").trim());
     for (const v of ["grok", "claude", "codex"]) {
-      assert.ok(seen.includes(`300s:${v}`), `default ceilings: ${seen.join(" ")} ${r.out}`);
-    }
-    for (const role of ["role1", "role2", "role3"]) {
-      const out = join(r.dir, `${role}.output`);
-      assert.ok(existsSync(out) && statSync(out).size > 0, `${role} has no output: ${r.out}`);
-      assert.ok(!existsSync(join(r.dir, `${role}.gap`)), `${role} has a gap: ${r.out}`);
+      assert.ok(gaps.includes(`timeout after 300s (${v})`), `default ceilings: ${gaps.join(" | ")} ${r.out}`);
     }
   });
 });
@@ -606,7 +598,11 @@ test("case15: a voice whose output is only footer noise is a failure, and a stan
   mkstub(stubs, "grok", 0, 0, "grok says");
   const r = runScript(stubs, ["--prompts-dir", makePromptsDir(3), "--timeout-s", "5"]);
   assert.equal(r.code, 0, r.out);
-  assert.equal(arguedBy(r.dir), "role1=claude role2=claude role3=grok", "Codex's footer-only seat was not stood in for");
+  assert.equal(
+    arguedBy(r.dir),
+    "role1=claude role2=claude role3=grok",
+    "Codex's footer-only seat was not stood in for",
+  );
   assert.match(
     readFileSync(join(r.dir, "role2.voice"), "utf8"),
     /^claude opus\[1m\] — stood in for codex \(no answer in output \(codex\)\)/,
@@ -655,16 +651,17 @@ test("case16: with no resolver, every CLI is told its voice's tracks verbatim", 
   }
 });
 
-// ── Cases 17-18: no `timeout` or `gtimeout` on PATH → the script's own watchdog ──
-// macOS ships neither; the seat must still end at the ceiling, as exit 124, so
-// the stand-in and the gap text read exactly as they do with `timeout`.
+// ── Cases 17-18, 20: the script's own watchdog is the ceiling ──
+// No `timeout` binary is involved (macOS ships none); the seat must still end at
+// the ceiling, as exit 124, so the stand-in and the gap text read exactly as
+// `timeout`'s status would make them. A `timeout` planted on PATH is ignored.
 function tightPathWithoutTimeout(): string {
   const stubs = makeTightPath();
-  for (const bin of ["timeout", "gtimeout"]) rmSync(join(stubs, bin), { force: true });
+  writeExe(join(stubs, "timeout"), "#!/usr/bin/env bash\nexit 99\n");
   return stubs;
 }
 
-test("case17: with no timeout binary, the watchdog still times a seat out", () => {
+test("case17: the watchdog times a seat out, whatever `timeout` is on PATH", () => {
   const stubs = tightPathWithoutTimeout();
   mkstub(stubs, "claude", 0, 0, "claude says X");
   mkstub(stubs, "codex", 0, 5, "slow"); // exceeds timeout=2
@@ -679,7 +676,7 @@ test("case17: with no timeout binary, the watchdog still times a seat out", () =
 });
 
 // TERM alone would leave the debate waiting on a CLI that ignores it forever.
-test("case18: with no timeout binary, a CLI that ignores TERM is KILLed", () => {
+test("case18: a CLI that ignores TERM is KILLed", () => {
   const stubs = tightPathWithoutTimeout();
   mkstub(stubs, "claude", 0, 0, "claude says X");
   writeExe(join(stubs, "codex"), "#!/usr/bin/env bash\ntrap '' TERM\nexec sleep 30\n");
@@ -693,6 +690,33 @@ test("case18: with no timeout binary, a CLI that ignores TERM is KILLed", () => 
     r.out.includes("codex failed (timeout after 2s (codex)); claude stands in"),
     `the kill was not reported as a timeout: ${r.out}`,
   );
+});
+
+// A CLI that dies on TERM can leave a child that ignores it. The KILL that
+// follows the grace period must still reach the CLI's process group after the
+// CLI itself has exited; cancelling it on the CLI's exit left the child running
+// after the debate had moved on.
+test("case20: after a timeout, a TERM-ignoring child of the CLI is KILLed too", () => {
+  const stubs = tightPathWithoutTimeout();
+  const pidFile = join(stubs, "grandchild.pid");
+  mkstub(stubs, "claude", 0, 0, "claude says X");
+  writeExe(
+    join(stubs, "codex"),
+    `#!/usr/bin/env bash\nbash -c 'trap "" TERM; printf "%s" $$ > "${pidFile}"; exec sleep 30' &\nwait\n`,
+  );
+  mkstub(stubs, "grok", 0, 0, "grok says Z");
+  const r = runScript(stubs, ["--prompts-dir", makePromptsDir(3), "--timeout-s", "2"]);
+  assert.equal(r.code, 0, r.out);
+  assert.ok(r.out.includes("codex failed (timeout after 2s (codex))"), `no timeout reported: ${r.out}`);
+  const pid = Number(readFileSync(pidFile, "utf8"));
+  let alive = true;
+  try {
+    process.kill(pid, 0);
+  } catch {
+    alive = false;
+  }
+  if (alive) process.kill(pid, "SIGKILL");
+  assert.equal(alive, false, `the CLI's TERM-ignoring child (pid ${pid}) outlived the debate`);
 });
 
 // ── Case 19: --research gives the grok seat read + search tools (Contextium) ──

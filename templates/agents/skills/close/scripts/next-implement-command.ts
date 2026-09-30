@@ -127,7 +127,7 @@ async function main(): Promise<void> {
   // absolute path is honoured as given.
   if (!projectDir.startsWith("/") && projectDir.startsWith("projects/")) {
     const swr = `${SCRIPT_DIR}/../../implement/scripts/session-write-root.ts`;
-    const root = sibling(swr, []).out;
+    const root = sibling(swr, ["--no-create"]).out;
     if (root !== "" && isDir(`${root}/${projectDir}`)) projectDir = `${root}/${projectDir}`;
   }
   if (!isDir(projectDir)) {

@@ -6,12 +6,16 @@
 // before the close. Advisory: always exits 0.
 //
 // The checks are the ones in `.agents/checks/` that the close runs: decision
-// records, skill manifests and secrets over what changed since HEAD, and
-// standards citations over the tracked tree. Each present one prints a RAN
-// line; when none is present, a NO-MATCH line.
+// records, skill manifests and secrets over what changed since the base land.ts
+// measures from — where this branch left the trunk (`git merge-base HEAD
+// origin/<trunk>`, the trunk named by close/scripts/trunk.ts) — and standards
+// citations over the tracked tree. Each present one prints a RAN line; when
+// none is present, a NO-MATCH line. A tree with no trunk to measure from (no
+// origin, no merge-base) is measured from HEAD, and a NOTE line says so.
 //
 // peers: layer-1.ts, layer-2.ts, resolve-scope.ts,
-//        .agents/skills/close/scripts/land.ts (the same checks, blocking)
+//        .agents/skills/close/scripts/land.ts (the same checks, blocking),
+//        .agents/skills/close/scripts/trunk.ts (the trunk's name)
 //
 // Usage:
 //   layer-3.ts --scope <arg>     (the scope is accepted for symmetry with the
@@ -19,6 +23,7 @@
 //
 // Output (stdout):
 //   RAN: check-decision-records.ts → PASS
+//   NOTE: layer-3 — no merge-base with the trunk; the change is measured from HEAD
 //   NO-MATCH: no quality check applies to this scope
 //
 // Exit:
@@ -27,7 +32,7 @@
 
 import { spawnSync } from "node:child_process";
 import { readFileSync, realpathSync, statSync } from "node:fs";
-import { resolve } from "node:path";
+import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { exit, runToExit } from "../../../packages/cli-exit/cli-exit.ts";
 
@@ -49,12 +54,35 @@ function gitToplevel(): string {
   return r.status === 0 ? r.stdout.replace(/\n+$/, "") : "";
 }
 
+const TRUNK_TS = resolve(dirname(fileURLToPath(import.meta.url)), "../../close/scripts/trunk.ts");
+
+/**
+ * Where this branch left the trunk — the base land.ts hands the same checks.
+ * From HEAD, a record /implement had already COMMITTED was no part of the
+ * change: the dry-run passed it and the close then refused it. No fetch: an
+ * advisory dry-run measures from the trunk as last fetched. "" when there is no
+ * trunk or no merge-base to measure from.
+ */
+function trunkBase(): string {
+  const ref = spawnSync(process.execPath, ["--experimental-strip-types", TRUNK_TS, "--ref", "."], {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "ignore"],
+  });
+  const trunkRef = ref.status === 0 ? (ref.stdout ?? "").trim() : "";
+  if (trunkRef === "") return "";
+  const mb = spawnSync("git", ["merge-base", "HEAD", trunkRef], {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "ignore"],
+  });
+  return mb.status === 0 ? (mb.stdout ?? "").trim() : "";
+}
+
 // Each check and the arguments the close's scan gives it: the change since
-// HEAD, except the standards citations, which read the tracked tree.
-const CHECKS: ReadonlyArray<readonly [string, readonly string[]]> = [
-  ["check-decision-records.ts", ["--since", "HEAD"]],
-  ["check-skills.ts", ["--since", "HEAD"]],
-  ["check-secrets.ts", ["--since", "HEAD"]],
+// the base, except the standards citations, which read the tracked tree.
+const CHECKS = (base: string): ReadonlyArray<readonly [string, readonly string[]]> => [
+  ["check-decision-records.ts", ["--since", base]],
+  ["check-skills.ts", ["--since", base]],
+  ["check-secrets.ts", ["--since", base]],
   ["check-standards-refs.ts", []],
 ];
 
@@ -93,7 +121,15 @@ async function main(): Promise<void> {
   // Spawned on this same node binary with `--experimental-strip-types`, stdin
   // closed and output discarded: the verdict is the exit status.
   let ran = false;
-  for (const [check, args] of CHECKS) {
+  let base = "HEAD";
+  if (CHECKS(base).some(([check]) => isFile(`${CHECKS_REL}/${check}`))) {
+    base = trunkBase();
+    if (base === "") {
+      base = "HEAD";
+      process.stdout.write("NOTE: layer-3 — no merge-base with the trunk; the change is measured from HEAD\n");
+    }
+  }
+  for (const [check, args] of CHECKS(base)) {
     if (!isFile(`${CHECKS_REL}/${check}`)) continue;
     ran = true;
     const r = spawnSync(process.execPath, ["--experimental-strip-types", `${CHECKS_REL}/${check}`, ...args], {

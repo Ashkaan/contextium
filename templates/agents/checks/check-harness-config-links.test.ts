@@ -446,6 +446,91 @@ test("no ~/.codex means no Codex manifest to check", () => {
   assert.equal(r.rc, 0, r.out);
 });
 
+// Hook groups and a group's handlers are ARRAYS in every harness's format;
+// an object in their place is a manifest no harness can run, however its
+// values read. Only Antigravity's top level is a map (hook name → events).
+const asObject = (a: unknown[]): Json => Object.fromEntries(a.map((v, i) => [String(i), v]));
+
+test("hook groups that are an object, not an array", async (t) => {
+  const F = mkfix();
+  edit(`${F}/home/.claude/settings.json`, (j) => {
+    const h = j.hooks as Json;
+    h.PreToolUse = asObject(h.PreToolUse as unknown[]);
+    return j;
+  });
+  const r = run(F);
+  await t.test("exits 1", () => assert.equal(r.rc, 1, r.out));
+  await t.test("and names a tool", () =>
+    says(r.out, "Claude Code manifest does not route Bash to check-host-infra-safety.sh"),
+  );
+});
+
+test("a group's handlers that are an object, not an array", async (t) => {
+  const F = mkfix();
+  edit(`${F}/repo/.agents/gemini-settings.json`, (j) => {
+    for (const g of (j.hooks as Json).BeforeTool as Json[]) g.hooks = asObject(g.hooks as unknown[]);
+    return j;
+  });
+  const r = run(F);
+  await t.test("exits 1", () => assert.equal(r.rc, 1, r.out));
+  await t.test("and names a tool", () =>
+    says(r.out, "Gemini CLI manifest does not route run_shell_command to check-host-infra-safety.sh"),
+  );
+});
+
+test("Antigravity events that are an object, not an array", async (t) => {
+  const F = mkfix();
+  edit(`${F}/repo/.agents/hooks.json`, (j) => {
+    for (const spec of Object.values(j) as Json[]) spec.PreToolUse = asObject(spec.PreToolUse as unknown[]);
+    return j;
+  });
+  const r = run(F);
+  await t.test("exits 1", () => assert.equal(r.rc, 1, r.out));
+  await t.test("and names a tool", () =>
+    says(r.out, "Antigravity manifest does not route run_command to check-host-infra-safety.sh"),
+  );
+});
+
+// A tool tools= names was wired by the installer, so its manifest must be
+// there: a deleted one is guards that stopped running, not a harness that was
+// never picked.
+test("tools= naming every harness requires every manifest", async (t) => {
+  const F = mkfix();
+  writeFileSync(`${F}/repo/.agents/harness`, "harness=claude\nagent=claude\ntools=claude codex grok gemini antigravity\n");
+  const ok = run(F);
+  await t.test("present, they pass", () => assert.equal(ok.rc, 0, ok.out));
+  for (const p of [
+    `${F}/home/.claude/settings.json`,
+    `${F}/home/.codex/hooks.json`,
+    `${F}/home/.grok/hooks/contextium.json`,
+    `${F}/repo/.gemini/settings.json`,
+    `${F}/repo/.agents/hooks.json`,
+  ]) {
+    rmSync(p);
+  }
+  const r = run(F);
+  await t.test("deleted, exits 1", () => assert.equal(r.rc, 1, r.out));
+  for (const [label, p] of [
+    ["Claude Code", ".claude/settings.json"],
+    ["Codex", ".codex/hooks.json"],
+    ["Grok Build", ".grok/hooks/contextium.json"],
+    ["Gemini CLI", ".gemini/settings.json"],
+    ["Antigravity", ".agents/hooks.json"],
+  ]) {
+    await t.test(`and names ${label}'s`, () => says(r.out, `${label} manifest missing at`) );
+    await t.test(`at ${p}`, () => says(r.out, p));
+  }
+});
+
+test("tools= naming claude requires its settings even where ~/.claude is gone", async (t) => {
+  const F = mkfix();
+  writeFileSync(`${F}/repo/.agents/harness`, "harness=claude\nagent=claude\ntools=claude\n");
+  rmSync(`${F}/home/.claude`, { recursive: true });
+  const r = run(F);
+  await t.test("exits 1", () => assert.equal(r.rc, 1, r.out));
+  await t.test("and names the manifest", () => says(r.out, "Claude Code manifest missing at"));
+});
+
 test("an unknown flag", () => {
   const r = run(mkfix(), "--bogus");
   assert.equal(r.rc, 1, r.out);

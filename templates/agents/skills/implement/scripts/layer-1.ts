@@ -15,7 +15,9 @@
 //
 // Markdown and the records folders (journal/, projects/, knowledge/,
 // decisions/) never select a package. A DELETED path still selects its package:
-// deleting a file is exactly when you want its package checked.
+// deleting a file is exactly when you want its package checked. Any other file
+// that no package owns is linted by nothing, and a WARN line names it — "no
+// package in scope" is a clean result only when there was no code to lint.
 //
 // peers: resolve-scope.ts, layer-2.ts, layer-3.ts
 //
@@ -23,6 +25,7 @@
 //   PASS: layer-1 lint (apps/foo)
 //   PASS: layer-1 typecheck (apps/foo)
 //   WARN: layer-1 typecheck (tools/gen) — no typecheck/check script or make target; skipped
+//   WARN: layer-1 lint (2 files in no package) — not linted or typechecked: bin/x.py tools/y.sh
 //   FAIL: layer-1 lint (apps/foo)             (its output on stderr)
 //
 // Exit:
@@ -95,10 +98,14 @@ function headToStderr(buf: Buffer): void {
   process.stderr.write(Buffer.from(`${text}\n`, "utf8").subarray(0, 10240));
 }
 
+/** Markdown and the records: prose, which no package's lint reads. */
+function isProse(file: string): boolean {
+  return file.endsWith(".md") || /^(journal|projects|knowledge|decisions)\//.test(file);
+}
+
 /** The package that owns a repo-relative path, or "" for none. */
 function pkgOf(file: string): string {
-  if (file.endsWith(".md")) return "";
-  if (/^(journal|projects|knowledge|decisions)\//.test(file)) return "";
+  if (isProse(file)) return "";
   let d = posix.dirname(file);
   for (;;) {
     if (isFile(`${d}/package.json`) || isFile(`${d}/Makefile`)) return d;
@@ -119,16 +126,56 @@ function declaresScript(pkg: string, name: string): boolean {
   }
 }
 
-/** Does the package's Makefile declare `<name>:` at the start of a line? */
-function hasTarget(pkg: string, name: string): boolean {
-  let text = "";
-  try {
-    text = readFileSync(`${pkg}/Makefile`, "utf8");
-  } catch {
-    return false;
+/**
+ * The targets the package's Makefile declares, as make itself reads them: its
+ * own database (`make -pnqr .DEFAULT`), so a rule naming several targets
+ * (`lint typecheck:`) and a target from an included file both count — a match
+ * on `^<name>:` saw neither, and a declared step was skipped as a WARN. `-n`
+ * and the goal `.DEFAULT` run no recipe; `-r` leaves the built-in rules out.
+ * In the database's file section a target is a `name[ name…]:` line that is not
+ * a target-specific variable (`name: VAR = x`) and not marked `# Not a target:`.
+ * When make cannot give a database (not installed, a Makefile it cannot parse)
+ * the Makefile's own lines are read instead, so a declared step still runs —
+ * and FAILs loudly — rather than being skipped.
+ */
+const targetsMemo = new Map<string, Set<string>>();
+function makeTargets(pkg: string): Set<string> {
+  const memo = targetsMemo.get(pkg);
+  if (memo) return memo;
+  const targets = new Set<string>();
+  const addNames = (line: string): void => {
+    const m = /^([^#\s:=%][^:=%]*?)\s*::?(?!=)(.*)$/.exec(line);
+    if (!m || (m[2] ?? "").includes("=")) return;
+    for (const t of (m[1] ?? "").split(/\s+/)) if (t !== "") targets.add(t);
+  };
+  const r = spawnSync("make", ["-pnqr", ".DEFAULT"], {
+    cwd: pkg,
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "ignore"],
+    maxBuffer: 64 * 1024 * 1024,
+  });
+  const db = typeof r.stdout === "string" ? r.stdout.split("\n") : [];
+  const start = db.indexOf("# Files");
+  if (!r.error && start !== -1) {
+    for (let i = start + 1; i < db.length && !(db[i] ?? "").startsWith("# files hash-table stats"); i++) {
+      if (db[i - 1] !== "# Not a target:") addNames(db[i] ?? "");
+    }
+  } else {
+    let text = "";
+    try {
+      text = readFileSync(`${pkg}/Makefile`, "utf8");
+    } catch {
+      text = "";
+    }
+    for (const line of text.split("\n")) addNames(line);
   }
-  const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  return new RegExp(`^${escaped}[ \\t]*:`, "m").test(text);
+  targetsMemo.set(pkg, targets);
+  return targets;
+}
+
+/** Does the package's Makefile declare the target? */
+function hasTarget(pkg: string, name: string): boolean {
+  return isFile(`${pkg}/Makefile`) && makeTargets(pkg).has(name);
 }
 
 /** Run one step over every package; false when any FAILs. */
@@ -187,8 +234,13 @@ async function main(): Promise<void> {
   }
 
   const pkgs = [...new Set(files.map(pkgOf).filter((p) => p !== ""))].sort();
+  const unowned = [...new Set(files.filter((f) => !isProse(f) && pkgOf(f) === ""))].sort();
+  if (unowned.length > 0) {
+    const shown = unowned.slice(0, 10).join(" ") + (unowned.length > 10 ? " …" : "");
+    out(`WARN: layer-1 lint (${unowned.length} files in no package) — not linted or typechecked: ${shown}`);
+  }
   if (pkgs.length === 0) {
-    out("PASS: layer-1 (no package in scope)");
+    if (unowned.length === 0) out("PASS: layer-1 (no package in scope)");
     exit(0);
   }
 

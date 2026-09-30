@@ -803,6 +803,43 @@ test("the timeout is a watchdog, not timeout(1), and it takes the suite's childr
   is(`the hung suite's sleep outlived it: ${left.stdout}`, left.stdout.trim(), "");
 });
 
+// A suite whose own child IGNORES TERM, and whose leader traps TERM and exits
+// at once. The leader's exit must not cancel the KILL the watchdog scheduled for
+// the group: a descendant that shrugs off TERM would outlive the close for good.
+test("the watchdog's KILL still reaches a group whose leader exited on TERM", () => {
+  const pidFile = join(TMP, "stubborn.pid");
+  suite(
+    "stubborn/s.test.sh",
+    `( trap "" TERM; exec sleep 60 ) & echo $! > ${JSON.stringify(pidFile)}; trap "exit 0" TERM; wait`,
+  );
+  git("-C", WBCLEAN, "add", "--", ".agents/skills/stubborn");
+  git("-C", WBCLEAN, "commit", "-q", "-m", "stubborn");
+  git("-C", WBCLEAN, "push", "-q", "origin", "main");
+  writeFileSync(join(SK, "stubborn/scratch.md"), "// touched\n");
+  let pid = 0;
+  try {
+    go({ VERIFY_SKILLS_TIMEOUT: "1" });
+    pid = Number(readFileSync(pidFile, "utf8").trim());
+    has("…reported as a timeout", OUT, "FAIL .agents/skills/stubborn .agents/skills/stubborn/s.test.sh — timed out after 1s");
+    let alive = true;
+    try {
+      process.kill(pid, 0);
+    } catch {
+      alive = false;
+    }
+    is(`the TERM-ignoring child ${pid} outlived the close`, String(alive), "false");
+  } finally {
+    rmSync(join(SK, "stubborn/scratch.md"), { force: true });
+    if (pid > 0) {
+      try {
+        process.kill(pid, "SIGKILL");
+      } catch {
+        // already gone
+      }
+    }
+  }
+});
+
 // A workbench without the run.ts launcher runs a node:test suite with Node
 // directly, and says so in the rerun line.
 test("no launcher", () => {

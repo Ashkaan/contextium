@@ -6,7 +6,7 @@
 // Run: node --test --experimental-strip-types .agents/checks/check-secrets.test.ts
 
 import { spawnSync } from "node:child_process";
-import { appendFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
@@ -117,6 +117,25 @@ test("--since: a removal alone passes", () => {
 });
 
 // A diff that cannot be read is not a clean diff.
+// Git commits an untracked symlink as the PATH it names, never as its
+// target's bytes: a link to a key outside the repo commits no key. The path
+// itself is what is scanned.
+test("--since: an untracked link to a file holding a key is scanned as its path", () => {
+  const r = newrepo();
+  const outside = join(TMP, `outside-${n}`);
+  writeFileSync(outside, `${KEY}\n`);
+  symlinkSync(outside, join(r, "id_rsa"));
+  rcIs("a link to an outside key", run(r, "--since", "HEAD"), 0);
+  symlinkSync(`/keys/${AWS}`, join(r, "named"));
+  rcIs("a link whose path holds a key id", run(r, "--since", "HEAD"), 1);
+});
+
+test("--since: a dangling untracked link is its path, not an unreadable change", () => {
+  const r = newrepo();
+  symlinkSync(join(TMP, "nowhere"), join(r, "gone"));
+  rcIs("a dangling link", run(r, "--since", "HEAD"), 0);
+});
+
 test("an unreadable staged diff is an error, not a pass", () => {
   const r = newrepo();
   writeFileSync(join(r, "a"), "x\n");

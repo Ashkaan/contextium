@@ -135,10 +135,57 @@ const ROWS: [string, string, string, "ok" | "violation", string][] = [
     "ok",
     "OK — 1 skill(s) checked",
   ],
+  // YAML shapes: a key's value is a scalar, a list or a map, and only a
+  // scalar is a name, a description or a compatibility.
+  ["a description that is a map", "alpha", "name: alpha\ndescription:\n  a: b", "violation", "Field 'description' must be a non-empty string"],
+  ["a name that is a map", "alpha", "name:\n  a: b\ndescription: x", "violation", "Field 'name' must be a non-empty string"],
+  ["a compatibility that is a list", "alpha", "name: alpha\ndescription: x\ncompatibility:\n  - a\n  - b", "violation", "Field 'compatibility' must be a string"],
+  ["a compatibility that is a map", "alpha", "name: alpha\ndescription: x\ncompatibility:\n  node: 22", "violation", "Field 'compatibility' must be a string"],
+  // A plain scalar cannot hold `: ` — YAML reads it as a nested mapping.
+  ["a plain value holding ': '", "alpha", "name: alpha\ndescription: foo: bar", "violation", "Invalid YAML in frontmatter: mapping values are not allowed here"],
+  ["a plain continuation line holding ': '", "alpha", "name: alpha\ndescription: foo\n  bar: baz", "violation", "Invalid YAML in frontmatter: mapping values are not allowed here"],
+  ["a quoted value holding ': '", "alpha", 'name: alpha\ndescription: "foo: bar"', "ok", "OK — 1 skill(s) checked"],
+  ["a colon without a space in a plain value", "alpha", "name: alpha\ndescription: see http://x.y/z and a:b # note: c", "ok", "OK — 1 skill(s) checked"],
+  ["a '- ' continuation of a plain value is text, not a list", "alpha", "name: alpha\ndescription: foo\n  - bar", "ok", "OK — 1 skill(s) checked"],
+  // Block scalars: a header may carry a comment, and the chomping indicator
+  // decides the final newline the validator counts.
+  [
+    "a block header with a comment is still a block",
+    "alpha",
+    `name: alpha\ndescription: >- # why\n  ${"x".repeat(1025)}`,
+    "violation",
+    "Description exceeds 1024 character limit (1025 chars)",
+  ],
+  [
+    "a clipped > block counts its final newline",
+    "alpha",
+    `name: alpha\ndescription: > # why\n  ${"x".repeat(1024)}`,
+    "violation",
+    "Description exceeds 1024 character limit (1025 chars)",
+  ],
+  ["a stripped >- block of 1024 characters", "alpha", `name: alpha\ndescription: >-\n  ${"x".repeat(1024)}`, "ok", "OK — 1 skill(s) checked"],
+  // Names are Unicode letters and digits, NFKC-normalized, as the validator reads them.
+  ["a Unicode lowercase name", "café", "name: café\ndescription: x", "ok", "OK — 1 skill(s) checked"],
+  ["a Unicode uppercase name", "Café", "name: Café\ndescription: x", "violation", "must be lowercase"],
+  ["a name equal to its folder after NFKC", "file", "name: \ufb01le\ndescription: x", "ok", "OK — 1 skill(s) checked"],
+  ["a Unicode symbol in a name", "a\u2605b", "name: a\u2605b\ndescription: x", "violation", "contains invalid characters"],
 ];
 for (const [label, name, fm, want, needle] of ROWS) {
   test(label, () => rowsSkill(name, fm, want, needle));
 }
+// The validator reports every name rule a name breaks, not the first.
+test("a name breaking several rules reports each", () => {
+  rmSync(join(ROOT, "alpha"), { recursive: true, force: true });
+  makeSkill("alpha", "name: -Bad--x-\ndescription: x");
+  try {
+    const { out, rc } = runCheck(["alpha"]);
+    assert.equal(rc, 1, out);
+    for (const needle of ["must be lowercase", "cannot start or end with a hyphen", "consecutive hyphens", "Directory name 'alpha'"])
+      assert.ok(out.includes(needle), `output lacks "${needle}": ${out}`);
+  } finally {
+    rmSync(join(ROOT, "alpha"), { recursive: true, force: true });
+  }
+});
 test("no frontmatter", () => {
   mkdirSync(join(ROOT, "alpha"), { recursive: true });
   writeFileSync(join(ROOT, "alpha/SKILL.md"), "# no frontmatter\n");

@@ -50,7 +50,12 @@ test("harness_worktree_root: where each harness keeps its worktrees", () => {
   assert.equal(root("claude"), `${R}/.claude/worktrees`, "claude: in the repo, where claude -w puts them");
   assert.equal(root("gemini"), `${R}/.gemini/worktrees`, "gemini: in the repo");
   assert.equal(root("grok"), "/home/u/.grok/worktrees/shop", "grok: under ~/.grok, per repo");
-  assert.equal(root("codex", "/opt/cx"), "/opt/cx/worktrees", "codex: under CODEX_HOME");
+  assert.match(root("codex", "/opt/cx"), /^\/opt\/cx\/worktrees\/shop-[0-9a-f]{8}$/, "codex: under CODEX_HOME, one folder per repo");
+  assert.notEqual(
+    h(`harness_worktree_root ${TMP}/elsewhere/shop`, { CONTEXTIUM_HARNESS: "codex", CODEX_HOME: "/opt/cx" }),
+    root("codex", "/opt/cx"),
+    "codex: two checkouts both called shop get two roots",
+  );
   assert.equal(root("t3"), `${TMP}/shop.worktrees`, "t3 local mode: beside the repo");
   assert.equal(root("cursor"), `${TMP}/shop.worktrees`, "cursor: beside the repo");
   assert.equal(root("something-new"), `${TMP}/shop.worktrees`, "unknown: beside the repo");

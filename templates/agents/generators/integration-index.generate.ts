@@ -6,7 +6,7 @@
 // Usage: node .agents/generators/integration-index.generate.ts [--out /path/to/output.md]
 
 import { readdirSync, readFileSync, writeFileSync } from "fs";
-import { join } from "path";
+import { dirname, join, relative, resolve, sep } from "path";
 import process from "node:process";
 import { parseFrontmatter } from "./parse_frontmatter.ts";
 import { oneLineCell } from "./table_cell.ts";
@@ -24,7 +24,11 @@ interface IntegrationMeta {
 
 // ── Discovery ────────────────────────────────────────────────────────
 
-const SKIP_DIRS = new Set(["_config", ".git"]);
+// Not integrations: _config, installed dependencies (node_modules/) and
+// dot-folders (.git, tool caches).
+function isSkipped(name: string): boolean {
+  return name === "_config" || name === "node_modules" || name.startsWith(".");
+}
 
 function discoverIntegrations(integrationsDir: string): { integrations: IntegrationMeta[]; drops: number } {
   const integrations: IntegrationMeta[] = [];
@@ -33,7 +37,7 @@ function discoverIntegrations(integrationsDir: string): { integrations: Integrat
   let entries: string[];
   try {
     entries = readdirSync(integrationsDir, { withFileTypes: true })
-      .filter((d) => d.isDirectory() && !SKIP_DIRS.has(d.name))
+      .filter((d) => d.isDirectory() && !isSkipped(d.name))
       .map((d) => d.name);
   } catch {
     console.error(`Error: cannot read ${integrationsDir}`);
@@ -91,11 +95,14 @@ function truncate(desc: string, max = 90): string {
   return desc.slice(0, max - 1) + "…";
 }
 
-function buildReadme(integrations: IntegrationMeta[]): string {
+// linkBase is the folder the index is written to; every link is relative to it,
+// so an index written outside integrations/ still reaches each integration.
+function buildReadme(integrations: IntegrationMeta[], integrationsDir: string, root: string, linkBase: string): string {
+  const rel = (to: string) => relative(linkBase, to).split(sep).join("/") || ".";
   const sorted = [...integrations].sort((a, b) => a.dirName.localeCompare(b.dirName));
 
   const rows = sorted.map((i) => {
-    const link = `[${oneLineCell(i.name)}](${i.dirName}/)`;
+    const link = `[${oneLineCell(i.name)}](${rel(join(integrationsDir, i.dirName))}/)`;
     const purpose = oneLineCell(truncate(i.description));
     return `| ${link} | ${oneLineCell(i.cli)} | ${purpose} |`;
   });
@@ -113,7 +120,7 @@ function buildReadme(integrations: IntegrationMeta[]): string {
     "",
     `**Total: ${integrations.length} integrations**`,
     "",
-    "See [AGENTS.md](../AGENTS.md) for repo conventions. See each integration's README for configuration details.",
+    `See [AGENTS.md](${rel(join(root, "AGENTS.md"))}) for repo conventions. See each integration's README for configuration details.`,
     "",
   ].join("\n");
 }
@@ -149,7 +156,9 @@ if (outputPath !== "-" && drops > 0) {
   process.exit(1);
 }
 
-const readme = buildReadme(integrations);
+// stdout is read as integrations/README.md would be, so its links are relative to integrations/.
+const linkBase = outputPath === "-" ? integrationsDir : dirname(resolve(outputPath));
+const readme = buildReadme(integrations, integrationsDir, root, linkBase);
 
 if (outputPath === "-") {
   process.stdout.write(readme);

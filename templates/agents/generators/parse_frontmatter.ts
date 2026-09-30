@@ -16,14 +16,17 @@ export function parseFrontmatter(content: string): Record<string, string> | null
     const key = kvMatch[1];
     let value = kvMatch[2].trim();
 
-    // Handle >- or > multiline folded scalar
-    if (value === ">-" || value === ">") {
+    // A > or >- folded scalar (its header may carry a ` #` comment): the
+    // indented lines joined with spaces. Its text is literal, so it is never
+    // unquoted or cut at a `#`; with no lines it is empty and skipped.
+    if (/^>-?(\s+#.*)?$/.test(value)) {
       const parts: string[] = [];
       while (i + 1 < lines.length && /^\s+\S/.test(lines[i + 1])) {
         i++;
         parts.push(lines[i].trim());
       }
-      value = parts.join(" ");
+      if (parts.length > 0) result[key] = parts.join(" ");
+      continue;
     }
 
     // Skip YAML lists

@@ -6,13 +6,14 @@
 //   (8) session-discipline gate (9) context injection on tool call
 //
 // Wiring (REQUIRED — fires from nothing until added): a matcher block in
-// <workbench>/.agents/user-hooks.json, which install.sh merges into each
-// harness's hook manifest (Claude Code ~/.claude/settings.json, Codex
-// ~/.codex/hooks.json, Antigravity .agents/hooks.json) — the author skill's
-// references/hook.md Step 5:
+// <workbench>/.agents/user-hooks.json, which install.sh merges into the hook
+// manifest Claude Code, Codex and Grok Build read. Gemini CLI takes its own
+// hooks in .agents/user-gemini-settings.json; Antigravity has no place for them — the
+// author skill's references/hook.md Step 5. <workbench> is the absolute path,
+// spelled out and kept inside the escaped quotes:
 //   { "matcher": "<ToolName or regex>",
 //     "hooks": [{ "type": "command",
-//                 "command": "node --experimental-strip-types <workbench>/.agents/hooks/{{name}}.ts" }] }
+//                 "command": "node --experimental-strip-types \"<workbench>/.agents/hooks/{{name}}.ts\"" }] }
 //
 // Cost: a hook on a busy matcher starts a Node process on every matching tool
 // call. The bash-vs-TypeScript rule lets a hook the harness fires on every tool

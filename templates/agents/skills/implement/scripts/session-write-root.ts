@@ -313,20 +313,19 @@ export function resolveWriteRoot(mode: Mode): Resolution {
   //
   // So inside a thread, the answer comes from the same resolver everything else
   // uses (write-root.sh, which records it in the ledger): a worktree the thread
-  // already has is the answer in every mode, and the default mode makes one —
-  // but only for a session that is really there: one whose harness exports an id
-  // (harness.sh), or one standing in a worktree its harness gave it (T3 Code,
-  // `claude -w`). thread.ts also NAMES an id-less session, generating an id so
-  // the close can land it, and a read (detect-stage.ts, find-project.ts) must
-  // not make that session a worktree; with no id there is no session to
-  // isolate, and this falls through to the main checkout below, as it always has.
+  // already has is the answer in every mode, and the default mode makes one.
+  // That includes an id-less session: thread.ts NAMES it, generating an id so
+  // the close can land it, and the shared-checkout guard sends its every edit to
+  // a write-root.sh worktree — so a scaffold answered the main checkout here
+  // would write where nothing else of the session is and no close looks. A
+  // READ (detect-stage.ts, find-project.ts, resolve-scope.ts, …) passes
+  // --no-create, which answers from the ledger and creates nothing, so looking
+  // never makes a worktree.
   //
   // `CLAUDE_PROJECT_DIR` unset is the production tell, and the same one the gate
   // further down already relies on: an ordinary shell call has none, while every
   // suite below points it at a `mktemp` fixture. Delegating for a fixture would
   // ask the resolver to build a worktree of a throwaway directory.
-  const sessionIsPresent = (): boolean =>
-    harnessSessionId() !== "" || capture(process.execPath, node(THREAD_HELPER, ["--worktree"])).ok;
   if (mode !== "slug" && !env.CLAUDE_PROJECT_DIR && inThread()) {
     // Answer from the ledger if this thread already has a worktree for this
     // repo. Creates nothing.
@@ -335,7 +334,7 @@ export function resolveWriteRoot(mode: Mode): Resolution {
       print(root);
       return done(0);
     }
-    if (mode === "root" && sessionIsPresent()) {
+    if (mode === "root") {
       const WRITE_ROOT_HELPER = env.WRITE_ROOT_SCRIPT || `${SCRIPT_DIR}/../../close/scripts/write-root.sh`;
       if (isFile(WRITE_ROOT_HELPER)) {
         // write-root.sh stays bash (it runs `git worktree add`); its stderr is

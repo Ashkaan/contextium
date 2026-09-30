@@ -38,8 +38,9 @@ holds every folder here to.
   `panel` keeps every seat.
 - **The parsers** `blast-radius-symbols.ts` uses — `web-tree-sitter`,
   `tree-sitter-bash`, `typescript` — are declared in `package.json` here and
-  found in the workbench's own `node_modules`, then Node's global one
-  (`npm i -g typescript@5 web-tree-sitter tree-sitter-bash`). Without them the
+  found in the workbench's own `node_modules`, then npm's global root
+  (`npm i -g typescript@5 web-tree-sitter tree-sitter-bash`), then Node's own
+  global `node_modules`. Without them the
   packer warns and falls back to a regex walk.
 
 ## Tests and the eval

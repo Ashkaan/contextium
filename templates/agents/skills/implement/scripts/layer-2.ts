@@ -76,10 +76,16 @@ function stdinLines(): string[] {
 
 const TEST_FILE = /\.test\.(ts|js|mjs|cjs)$/;
 
+/** Installed dependencies, build output and git internals: never a package's own tests. */
+const PRUNED = new Set(["node_modules", ".git", "dist", "build"]);
+
 /**
- * Every `*.test.{ts,js,mjs,cjs}` regular file under a directory, never
- * following a symlink and never inside node_modules, sorted; nothing at all
- * when the directory is not there.
+ * Every `*.test.{ts,js,mjs,cjs}` regular file a package owns, never following
+ * a symlink, sorted; nothing at all when the directory is not there. The walk
+ * skips the PRUNED folders — dist/ and build/ hold emitted copies of the same
+ * tests, which ran twice — and stops at a nested package (a folder below the
+ * start with its own package.json or Makefile): that one is tested by its own
+ * runner when it is in scope, never through its parent's `node --test`.
  */
 function findTests(dir: string): string[] {
   const found: string[] = [];
@@ -90,10 +96,11 @@ function findTests(dir: string): string[] {
     } catch {
       return;
     }
+    if (d !== dir && entries.some((e) => (e.name === "package.json" || e.name === "Makefile") && e.isFile())) return;
     for (const e of entries) {
       const p = `${d}/${e.name}`;
       if (e.isDirectory()) {
-        if (e.name !== "node_modules") walk(p);
+        if (!PRUNED.has(e.name)) walk(p);
       } else if (e.isFile() && TEST_FILE.test(e.name)) {
         found.push(p);
       }
@@ -157,16 +164,56 @@ function declaresScript(pkg: string, name: string): boolean {
   }
 }
 
-/** Does the package's Makefile declare `<name>:` at the start of a line? */
-function hasTarget(pkg: string, name: string): boolean {
-  let text = "";
-  try {
-    text = readFileSync(`${pkg}/Makefile`, "utf8");
-  } catch {
-    return false;
+/**
+ * The targets the package's Makefile declares, as make itself reads them: its
+ * own database (`make -pnqr .DEFAULT`), so a rule naming several targets
+ * (`lint typecheck:`) and a target from an included file both count — a match
+ * on `^<name>:` saw neither, and a declared step was skipped as a WARN. `-n`
+ * and the goal `.DEFAULT` run no recipe; `-r` leaves the built-in rules out.
+ * In the database's file section a target is a `name[ name…]:` line that is not
+ * a target-specific variable (`name: VAR = x`) and not marked `# Not a target:`.
+ * When make cannot give a database (not installed, a Makefile it cannot parse)
+ * the Makefile's own lines are read instead, so a declared step still runs —
+ * and FAILs loudly — rather than being skipped.
+ */
+const targetsMemo = new Map<string, Set<string>>();
+function makeTargets(pkg: string): Set<string> {
+  const memo = targetsMemo.get(pkg);
+  if (memo) return memo;
+  const targets = new Set<string>();
+  const addNames = (line: string): void => {
+    const m = /^([^#\s:=%][^:=%]*?)\s*::?(?!=)(.*)$/.exec(line);
+    if (!m || (m[2] ?? "").includes("=")) return;
+    for (const t of (m[1] ?? "").split(/\s+/)) if (t !== "") targets.add(t);
+  };
+  const r = spawnSync("make", ["-pnqr", ".DEFAULT"], {
+    cwd: pkg,
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "ignore"],
+    maxBuffer: 64 * 1024 * 1024,
+  });
+  const db = typeof r.stdout === "string" ? r.stdout.split("\n") : [];
+  const start = db.indexOf("# Files");
+  if (!r.error && start !== -1) {
+    for (let i = start + 1; i < db.length && !(db[i] ?? "").startsWith("# files hash-table stats"); i++) {
+      if (db[i - 1] !== "# Not a target:") addNames(db[i] ?? "");
+    }
+  } else {
+    let text = "";
+    try {
+      text = readFileSync(`${pkg}/Makefile`, "utf8");
+    } catch {
+      text = "";
+    }
+    for (const line of text.split("\n")) addNames(line);
   }
-  const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  return new RegExp(`^${escaped}[ \\t]*:`, "m").test(text);
+  targetsMemo.set(pkg, targets);
+  return targets;
+}
+
+/** Does the package's Makefile declare the target? */
+function hasTarget(pkg: string, name: string): boolean {
+  return isFile(`${pkg}/Makefile`) && makeTargets(pkg).has(name);
 }
 
 async function main(): Promise<void> {

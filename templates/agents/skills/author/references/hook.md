@@ -56,11 +56,19 @@ For a `.ts` hook or check it checks that the file parses once its types are stri
 
 ## Step 5 — register (a PreToolUse/PostToolUse hook only — it fires from nothing until wired)
 
-Do NOT hand-edit `~/.claude/settings.json`, `~/.codex/hooks.json` or
-`.agents/hooks.json`: the installer writes or links those, and a re-run replaces
-what it made. Your own hooks go in `.agents/user-hooks.json` at the workbench
-root — the installer never writes that file, and every run merges it into each
-harness's manifest:
+Do NOT hand-edit `~/.claude/settings.json`, `~/.codex/hooks.json`,
+`.agents/hooks/claude-hooks.json` or `.agents/hooks.json`: the installer writes,
+links or merges those, and a re-run replaces what it made. Where a hook of your
+own goes depends on the harness, because each reads its own format with its own
+tool names:
+
+| Harness | Your hook goes in | Merged by `install.sh` into |
+|---|---|---|
+| Claude Code, Codex, Grok Build | `.agents/user-hooks.json` (below) | `.agents/hooks/claude-hooks.json`, which `~/.codex/hooks.json` and `~/.grok/hooks/contextium.json` link to and `~/.claude/settings.json` has merged in |
+| Gemini CLI | `.agents/user-gemini-settings.json`, under `hooks.BeforeTool`, matching Gemini's tool names | `.agents/gemini-settings.json`, which `.gemini/settings.json` links to |
+| Antigravity | no supported place: it reads `.agents/hooks.json` in place, and the installer lays that file down from the template on every run, so an entry added there is gone after the next run | — |
+
+The installer never writes `.agents/user-hooks.json`; every run merges it:
 
 ```jsonc
 // <workbench>/.agents/user-hooks.json
@@ -69,7 +77,7 @@ harness's manifest:
     "PreToolUse": [
       {
         "matcher": "<ToolName or regex>",
-        "hooks": [{ "type": "command", "command": "node --experimental-strip-types <workbench>/.agents/hooks/<name>.ts" }]
+        "hooks": [{ "type": "command", "command": "node --experimental-strip-types \"<workbench>/.agents/hooks/<name>.ts\"" }]
       }
     ]
   }
@@ -77,9 +85,12 @@ harness's manifest:
 ```
 
 Name the hook by the workbench's ABSOLUTE path (`<workbench>` is where
-`install.sh` put it, e.g. `~/code/workbench`): a session can be working in a
-product repo, where `$CLAUDE_PROJECT_DIR` is that repo and holds no
-`.agents/hooks/`. Then re-run `install.sh` to merge it.
+`install.sh` put it, spelled out, e.g. `/Users/you/code/workbench`: a `~` does
+not expand inside the quotes), and keep the escaped quotes around the whole
+path so a workbench under a folder with a space in its name still launches. The
+absolute path matters because a session can be working in a product repo, where
+`$CLAUDE_PROJECT_DIR` is that repo and holds no `.agents/hooks/`. Then re-run
+`install.sh` to merge it.
 
 After wiring, re-run `verify.ts hook` — the "not wired" WARN should be gone. If you intentionally leave it unwired, the WARN is non-blocking but the hook will never fire.
 

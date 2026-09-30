@@ -295,6 +295,36 @@ test("7 — a timed-out slot falls through; all-timeout returns 124", () => {
   rcIs("7c timeout then failure is 1, not 124", 1, c.rc);
 });
 
+// The slot's wall clock holds against a vendor that ignores TERM, and against
+// anything the vendor started: after the grace period both are KILLed, as a
+// process group. TERM alone left the walk waiting on the first for as long as
+// it chose to run, and the second running after the walk had moved on.
+test("7d — a slot that ignores TERM is KILLed at the cap, with what it started", () => {
+  const pidFile = `${TMP}/term-child.pid`;
+  mkstub(
+    `${TMP}/ignore-term.sh`,
+    `bash -c 'trap "" TERM; printf "%s" $$ > "${pidFile}"; exec sleep 30' &\ntrap '' TERM\nsleep 8`,
+  );
+  const start = Date.now();
+  const r = run("adversarial-review", PROMPT, {
+    CODEX_BIN: `${TMP}/ignore-term.sh`,
+    GROK_BIN: `${TMP}/ignore-term.sh`,
+    POLICY_CHAIN_SLOT_TIMEOUT_S: "1",
+  });
+  const elapsed = (Date.now() - start) / 1000;
+  rcIs("7d every slot timed out", 124, r.rc);
+  assert.ok(elapsed < 12, `a TERM-ignoring slot held the walk ${elapsed}s past two 1s caps`);
+  const pid = Number(read(pidFile));
+  let alive = true;
+  try {
+    process.kill(pid, 0);
+  } catch {
+    alive = false;
+  }
+  if (alive) process.kill(pid, "SIGKILL");
+  assert.equal(alive, false, `a TERM-ignoring child of the slot (pid ${pid}) outlived the walk`);
+});
+
 test("8 — the walk stops on first success; streams never concatenate", () => {
   const r = run("adversarial-review", PROMPT, { CODEX_BIN: `${TMP}/say-codex.sh`, GROK_BIN: `${TMP}/say-grok.sh` });
   rcIs("8 first slot answers", 0, r.rc);
@@ -378,11 +408,15 @@ test("16b/16c — the table is the one shipped beside the script", () => {
   const code = `const m = await import(${JSON.stringify(`${TMP}/copy/a/b/policy-chain.ts`)}); const p = m.policyChainPolicyPath(); if (p === null) process.exit(2); process.stdout.write(p + "\\n");`;
   const env = { ...process.env };
   delete env.POLICY_JSON;
-  const r = spawnSync(process.execPath, ["--experimental-strip-types", "--no-warnings", "--input-type=module", "-e", code], {
-    cwd: "/",
-    env,
-    encoding: "utf8",
-  });
+  const r = spawnSync(
+    process.execPath,
+    ["--experimental-strip-types", "--no-warnings", "--input-type=module", "-e", code],
+    {
+      cwd: "/",
+      env,
+      encoding: "utf8",
+    },
+  );
   rcIs("16b resolves with no repo and no POLICY_JSON", 0, r.status);
   eq("16b the policy.json beside the script", `${TMP}/copy/a/b/policy.json`, r.stdout.replace(/\n+$/, ""));
 
@@ -391,7 +425,11 @@ test("16b/16c — the table is the one shipped beside the script", () => {
   const shipped = JSON.parse(readFileSync(join(SCRIPT_DIR, "policy.json"), "utf8")) as {
     rows: Record<string, { chain?: { tracks: string }[]; voices?: { tracks: string }[] }>;
   };
-  eq("16c shipped rows", "adversarial-review judgment panel repo-investigation", Object.keys(shipped.rows).sort().join(" "));
+  eq(
+    "16c shipped rows",
+    "adversarial-review judgment panel repo-investigation",
+    Object.keys(shipped.rows).sort().join(" "),
+  );
   eq(
     "16c the shipped table pins no model",
     "",

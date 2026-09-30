@@ -313,7 +313,9 @@ async function main(): Promise<void> {
         //
         // A research seat (--research) reads and searches: a read-only allowlist
         // and the web left on. Still never a shell or a write.
-        const scope = research ? ["--tools", "read_file,list_dir,grep"] : ["--tools", "list_dir", "--disable-web-search"];
+        const scope = research
+          ? ["--tools", "read_file,list_dir,grep"]
+          : ["--tools", "list_dir", "--disable-web-search"];
         const system = research
           ? "Investigate the user's message: read repo files and search the web as needed, then reply with the answer only, in its requested format. Do not narrate."
           : "Answer the user's message directly from its supplied context. Follow its requested output format exactly. Do not use tools or narrate.";
@@ -339,20 +341,38 @@ async function main(): Promise<void> {
     }
   }
 
-  // Portable timeout: GNU `timeout`, else Homebrew's `gtimeout`, else a watchdog
-  // in this process (macOS ships neither). Every path exits 124 on a timeout, as
-  // `timeout` does, so the gap text and the stand-in read the same on any host.
-  const TIMEOUT_BIN = onPath("timeout") ? "timeout" : onPath("gtimeout") ? "gtimeout" : "";
-  // After TERM, how long a CLI gets before KILL: one that ignores TERM would
-  // otherwise hold the debate open forever.
+  // The ceiling is a watchdog in this process rather than coreutils `timeout`:
+  // macOS ships no `timeout`, the implementations disagree on the status after a
+  // KILL (124 or 137), and none of them KILLs what the CLI started once the CLI
+  // itself has exited. After TERM, the CLI and everything it started get
+  // KILL_GRACE_MS before KILL — one that ignores TERM would otherwise hold the
+  // debate open, or outlive it.
   const KILL_GRACE_MS = 3000;
+  // TEST SEAM, like DEBATE_POLICY_JSON: milliseconds per second of the ceiling,
+  // so a suite can run the 300s default in a fraction of a second. Unset in
+  // every real run.
+  const MS_PER_S = Number(process.env.DEBATE_MS_PER_S ?? "") || 1000;
+  // One entry per timed-out seat, settled once its process group is empty or
+  // KILLed. The program ends through runToExit, which exits at once, so main
+  // awaits these before returning — a pending KILL timer would not hold it open.
+  const reaping: Promise<void>[] = [];
+
+  /** Whether any process is left in the group `pgid` leads (or led). */
+  function groupAlive(pgid: number): boolean {
+    try {
+      process.kill(-pgid, 0);
+      return true;
+    } catch {
+      return false;
+    }
+  }
 
   /**
    * Run `<cli> <args…>` under the ceiling with stdin from /dev/null, stdout and
    * stderr to the given files, and resolve with its exit status: 124 when the
-   * ceiling fires. A status from a signal is 128 + its number, and a command
-   * that cannot be started is 127 with the reason in the error file — what a
-   * shell reports.
+   * ceiling fires, as `timeout` reports it. A status from a signal is 128 + its
+   * number, and a command that cannot be started is 127 with the reason in the
+   * error file — what a shell reports.
    */
   function runTimed(cli: string, args: string[], outf: string, errf: string): Promise<number> {
     const outFd = openSync(outf, "w");
@@ -362,43 +382,51 @@ async function main(): Promise<void> {
       // first one settles the seat.
       let settled = false;
       let timedOut = false;
-      const timers: NodeJS.Timeout[] = [];
+      let ceiling: NodeJS.Timeout | undefined;
       const finish = (rc: number): void => {
         if (settled) return;
         settled = true;
-        for (const t of timers) clearTimeout(t);
+        clearTimeout(ceiling);
         closeSync(outFd);
         closeSync(errFd);
         done(timedOut ? 124 : rc);
       };
-      const [cmd, argv] = TIMEOUT_BIN !== "" ? [TIMEOUT_BIN, [`${timeoutS}s`, cli, ...args]] : [cli, args];
-      // The watchdog's child leads its own process group, so TERM and KILL
-      // reach whatever the CLI started too, not only the CLI itself.
-      const child = spawn(cmd, argv, { stdio: ["ignore", outFd, errFd], detached: TIMEOUT_BIN === "" });
+      // The CLI leads its own process group, so TERM and KILL reach whatever it
+      // started too, not only the CLI itself.
+      const child = spawn(cli, args, { stdio: ["ignore", outFd, errFd], detached: true });
+      const signalGroup = (sig: NodeJS.Signals): void => {
+        if (child.pid === undefined) return;
+        try {
+          process.kill(-child.pid, sig);
+        } catch {
+          // ESRCH: every process in the group has already exited.
+        }
+      };
       child.on("error", (e) => {
-        writeFileSync(errFd, `${cmd}: ${e.message}\n`);
+        writeFileSync(errFd, `${cli}: ${e.message}\n`);
         finish(127);
       });
       child.on("close", (code, signal) => {
         finish(code ?? 128 + (signal ? osConstants.signals[signal] : 0));
       });
-      if (TIMEOUT_BIN === "") {
-        const signal = (sig: NodeJS.Signals): void => {
-          if (settled || child.pid === undefined) return;
-          try {
-            process.kill(-child.pid, sig);
-          } catch {
-            child.kill(sig);
-          }
-        };
-        timers.push(
-          setTimeout(() => {
-            timedOut = true;
-            signal("SIGTERM");
-            timers.push(setTimeout(() => signal("SIGKILL"), KILL_GRACE_MS));
-          }, Number(timeoutS) * 1000),
+      ceiling = setTimeout(() => {
+        timedOut = true;
+        signalGroup("SIGTERM");
+        // Not cancelled when the CLI exits: a child that ignored TERM is still
+        // in the group, and this KILL is what ends it. It stops early only once
+        // the group is empty.
+        reaping.push(
+          new Promise((reaped) => {
+            const started = Date.now();
+            const poll = setInterval(() => {
+              if (child.pid !== undefined && groupAlive(child.pid) && Date.now() - started < KILL_GRACE_MS) return;
+              clearInterval(poll);
+              signalGroup("SIGKILL");
+              reaped();
+            }, 100);
+          }),
         );
-      }
+      }, Number(timeoutS) * MS_PER_S);
     });
   }
 
@@ -509,6 +537,9 @@ async function main(): Promise<void> {
       okCount++;
     }
   });
+
+  // Every timed-out seat's process group, emptied before the debate moves on.
+  await Promise.all(reaping);
 
   process.stdout.write(`output_dir=${OUTPUT_DIR}\n`);
 

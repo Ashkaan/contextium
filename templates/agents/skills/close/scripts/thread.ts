@@ -123,7 +123,8 @@ process.stdout.write(
 `;
 
 // One query, one row, fields joined by \x1f — or status 4 for "no such row" so the
-// caller can tell an empty result from a broken database (3). Read-only is not
+// caller can tell an empty result from a broken database (3) or a query that
+// failed (any other status: a schema T3 changed, a corrupt file). Read-only is not
 // politeness: T3 is usually running and writing, and an accidental write lock
 // here would stall the UI.
 function dbRow(db: string, sql: string, ...params: string[]): { status: number; row: string } {
@@ -133,6 +134,16 @@ function dbRow(db: string, sql: string, ...params: string[]): { status: number; 
   });
   // A command substitution drops trailing newlines; the row has none of its own.
   return { status: r.status ?? 1, row: (r.stdout ?? "").replace(/\n+$/, "") };
+}
+
+// A lookup's answer: the row, or "" for exit 4 and only exit 4. Every other
+// failure refuses — read as "no row", a query error handed a T3 thread a
+// harness session id, and the close then saw none of the thread's satellites.
+function rowOrNone(db: string, r: { status: number; row: string }): string {
+  if (r.status === 0) return r.row;
+  if (r.status === 4) return "";
+  if (r.status === 3) fail(`cannot read ${db}`);
+  return fail(`cannot query ${db} (exit ${r.status})`);
 }
 
 // The row's columns, split on the unit separator, empty ones kept: a null
@@ -295,11 +306,8 @@ async function main(): Promise<void> {
         `select ${COLUMNS} from projection_threads where thread_id = ? and deleted_at is null`,
         override,
       );
-      if (r.status !== 0) {
-        if (r.status === 3) fail(`cannot read ${DB}`);
-        fail(`no thread ${override} in ${DB}`);
-      }
-      row = r.row;
+      row = rowOrNone(DB, r);
+      if (row === "") fail(`no thread ${override} in ${DB}`);
     } else {
       // No T3 at all: the override names a harness session.
       row = harnessRow(LEDGER_HOME, override, true);
@@ -321,12 +329,7 @@ async function main(): Promise<void> {
         `select ${COLUMNS} from projection_threads where worktree_path = ? and deleted_at is null`,
         TOP,
       );
-      if (r.status !== 0) {
-        if (r.status === 3) fail(`cannot read ${DB}`);
-        row = "";
-      } else {
-        row = r.row;
-      }
+      row = rowOrNone(DB, r);
     }
 
     if (row === "") {
@@ -366,7 +369,7 @@ async function main(): Promise<void> {
         // A T3 thread's satellite reads T3's row; any other session's, its own.
         if (isFile(DB)) {
           const r = dbRow(DB, `select ${COLUMNS} from projection_threads where thread_id = ? and deleted_at is null`, TID);
-          if (r.status === 0) row = r.row;
+          row = rowOrNone(DB, r);
         }
         if (row === "") row = harnessRow(LEDGER_HOME, TID, false);
       }

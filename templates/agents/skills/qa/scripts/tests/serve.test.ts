@@ -30,7 +30,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { after, test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { qaRepoSlug } from "../lib.ts";
+import { qaCfAccountCache, qaRepoSlug } from "../lib.ts";
 
 const SCRIPT = join(dirname(fileURLToPath(import.meta.url)), "..", "serve.ts");
 const TMP = mkdtempSync(join(tmpdir(), "serve-test-"));
@@ -93,13 +93,28 @@ printf '%s\\ncwd=%s\\n' "$*" "$PWD" > "$STUB_SERVER_LOG"
 exec sleep ${STUB_SLEEP}
 `,
 );
-// npm: the astro build fails loudly; a fixture holding .build-ok builds
-stub("npm", '#!/bin/sh\n[ -f .build-ok ] && exit 0\necho "build: boom"; exit 1\n');
+// npm: the astro build fails loudly; a fixture holding .build-ok builds; the
+// app's qa:seed script records what it was handed
+stub(
+  "npm",
+  `#!/bin/sh
+if [ "$1 $2" = "run qa:seed" ]; then
+  printf 'seed persist=%s act_as=%s cwd=%s\\n' "$QA_D1_PERSIST" "$QA_ACT_AS" "$PWD" >> "$STUB_D1_LOG"
+  exit \${STUB_SEED_RC:-0}
+fi
+[ -f .build-ok ] && exit 0
+echo "build: boom"; exit 1
+`,
+);
 // npx: the vite/wrangler server — record argv and the two variables a local
 // sign-in hands the Worker, then stay up
 stub(
   "npx",
   `#!/bin/sh
+if [ "$1 $2 $3" = "wrangler d1 migrations" ]; then
+  printf '%s cwd=%s\\n' "$*" "$PWD" >> "$STUB_D1_LOG"
+  exit \${STUB_D1_RC:-0}
+fi
 printf '%s\\nACCESS_JWKS_URL=%s\\nINCLUDE=%s\\n' "$*" "$ACCESS_JWKS_URL" "$CLOUDFLARE_INCLUDE_PROCESS_ENV" > "$STUB_SERVER_LOG"
 exec sleep ${STUB_SLEEP}
 `,
@@ -107,6 +122,7 @@ exec sleep ${STUB_SLEEP}
 // op: never reachable offline
 stub("op", "#!/bin/sh\nexit 1\n");
 const SERVER_LOG = join(TMP, "server.log");
+const D1_LOG = join(TMP, "d1.log");
 
 // ── fixtures ──
 // a static site: dist/ to serve, src/pages/ for discover-routes, committed
@@ -139,12 +155,43 @@ writeFileSync(
   'name = "gated"\n[vars]\nACCESS_AUD = "aud-one,aud-two"\nPROBE_ACTS_AS = "cli_abc Probe@Example.com"\n',
 );
 
+// a Vite Worker with D1: one database with migrations, one whose migrations
+// dir is missing, one bound remote; and a qa:seed script of its own
+const D1APP = join(TMP, "d1app");
+mkdirSync(join(D1APP, "migrations"), { recursive: true });
+writeFileSync(join(D1APP, "migrations/0001_init.sql"), "CREATE TABLE notes (id INTEGER PRIMARY KEY);\n");
+writeFileSync(
+  join(D1APP, "package.json"),
+  '{"dependencies":{"vite":"7","wrangler":"4"},"scripts":{"qa:seed":"node seed.js"}}',
+);
+writeFileSync(join(D1APP, ".build-ok"), "");
+writeFileSync(
+  join(D1APP, "wrangler.toml"),
+  [
+    'name = "d1app"',
+    "[[d1_databases]]",
+    'binding = "DB"',
+    'database_id = "id-db"',
+    "[[d1_databases]]",
+    'binding = "CACHE_DB"',
+    'database_id = "id-cache"',
+    'migrations_dir = "db/cache"',
+    "[[d1_databases]]",
+    'binding = "PROD_DB"',
+    'database_id = "id-prod"',
+    "remote = true",
+    "[vars]",
+    'PROBE_ACTS_AS = "cli_abc Probe@Example.com"',
+  ].join("\n"),
+);
+
 mkdirSync(join(TMP, "home"));
 const ENV: NodeJS.ProcessEnv = {
   ...hermeticEnv(),
   HOME: join(TMP, "home"),
   PATH: `${BIN}:${process.env.PATH}`,
   STUB_SERVER_LOG: SERVER_LOG,
+  STUB_D1_LOG: D1_LOG,
   QA_CF_PAGES_CACHE: join(TMP, "pages.json"),
   QA_CF_WORKERS_DOMAINS_CACHE: join(TMP, "workers.json"),
   QA_CF_ACCESS_ORG_CACHE: join(TMP, "access-org.json"),
@@ -158,13 +205,12 @@ function run(args: string[], env: Record<string, string> = {}) {
   });
   return { rc: r.status, out: `${r.stdout}${r.stderr}`, stdout: r.stdout };
 }
-/** A runfile value with its double quotes removed, as the bash suite read it. */
-const rf = (key: string): string => {
-  let v = "";
-  for (const l of readFileSync(RUNFILE, "utf8").split("\n")) if (l.startsWith(`${key}=`)) v = l.slice(key.length + 1);
-  return v.replaceAll('"', "");
-};
-const runfileOf = (out: string) => /^QA_RUNFILE="(.*)"$/m.exec(out)?.[1] ?? "";
+/** What `KEY` holds after bash evaluates `block` — the SKILL `eval`s serve.ts's stdout. */
+const bashValue = (block: string, key: string): string =>
+  spawnSync("bash", ["-c", `eval "$1" && printf '%s' "\${${key}-}"`, "x", block], { encoding: "utf8" }).stdout;
+/** A runfile value as bash reads it back. */
+const rf = (key: string): string => bashValue(readFileSync(RUNFILE, "utf8"), key);
+const runfileOf = (out: string) => bashValue(/^QA_RUNFILE=.*$/m.exec(out)?.[0] ?? "", "QA_RUNFILE");
 const serverLog = () => (existsSync(SERVER_LOG) ? readFileSync(SERVER_LOG, "utf8") : "");
 const serverLine = (n: number) => serverLog().split("\n")[n - 1] ?? "";
 function down() {
@@ -189,9 +235,13 @@ after(() => {
     ["/tmp/qa-shots", qaRepoSlug(SITE)],
     ["/tmp/qa-shots", qaRepoSlug(ASTRO)],
     ["/tmp/qa-shots", qaRepoSlug(GATED)],
+    ["/tmp/qa-shots", qaRepoSlug(D1APP)],
     ["/tmp/qa-shots", qaRepoSlug(CLI)],
     ["/tmp/qa-shots", qaRepoSlug(NONE)],
+    ["/tmp/qa-shots", qaRepoSlug(ODD_APP)],
+    ["/tmp/qa-shots", qaRepoSlug(join(ODD, "apps", "new"))],
     ["/tmp/qa-worktrees", `${qaRepoSlug(SITE)}-`],
+    ["/tmp/qa-worktrees", `${qaRepoSlug(ODD_APP)}-`],
   ] as const) {
     for (const d of existsSync(root) ? readdirSync(root) : []) {
       if (d.startsWith(prefix)) rmSync(join(root, d), { recursive: true, force: true });
@@ -240,7 +290,10 @@ test("before: working tree, no worktree", () => {
   assert.equal(rf("QA_WORKTREE"), "");
   assert.equal(rf("QA_SOURCE_REPO"), SITE);
 });
-test("QA_PAGES from discover-routes, %q-quoted", () => assert.equal(rf("QA_PAGES"), "/\\ /about\\ "));
+test("QA_PAGES from discover-routes, %q-quoted", () => {
+  assert.equal(rf("QA_PAGES"), "/ /about ");
+  assert.match(readFileSync(RUNFILE, "utf8"), /^QA_PAGES=\/\\ \/about\\ $/m);
+});
 test("server command: python3 -m http.server 8813", () => assert.equal(serverLine(1), "-m http.server 8813"));
 test("served from dist/", () => assert.equal(serverLine(2), `cwd=${SITE}/dist`));
 test("progress line names type and port", () => assert.ok(upOut.includes("starting static server on :8813"), upOut));
@@ -310,6 +363,52 @@ test("foreign attempt's server killed", () => {
   assert.equal(r.stdout, "", "stub server still running");
 });
 
+// ── every emitted value survives the SKILL's eval: a path with a space, `$`, `&`
+// and parentheses comes back as itself. The app sits two levels below its git
+// root, as an app in a monorepo does. ──
+const ODD = join(TMP, "odd $HOME & (x)");
+const ODD_APP = join(ODD, "apps", "web");
+mkdirSync(join(ODD_APP, "dist"), { recursive: true });
+writeFileSync(join(ODD_APP, "dist/index.html"), "<h1>odd</h1>\n");
+writeFileSync(join(ODD, "README.md"), "the repository root, not an app\n");
+git(ODD, "init", "-q");
+git(ODD, "add", "-A");
+git(ODD, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "init");
+test("a path that is shell syntax comes back through eval as itself", () => {
+  const r = run(["up", "--repo", ODD_APP, "--mode", "before", "--run-id", "q1"]);
+  RUNFILE = runfileOf(r.stdout);
+  assert.equal(r.rc, 0, r.out);
+  assert.equal(rf("QA_SOURCE_REPO"), ODD_APP);
+  assert.equal(rf("QA_SRC"), ODD_APP);
+  assert.equal(rf("QA_RUNFILE"), RUNFILE);
+  assert.ok(existsSync(RUNFILE), RUNFILE);
+  assert.equal(serverLine(2), `cwd=${ODD_APP}/dist`);
+  const d = down();
+  assert.equal(d.rc, 0, d.out);
+});
+test("after, app below its git root: served from the same app in the HEAD worktree", () => {
+  const r = run(["up", "--repo", ODD_APP, "--mode", "after", "--run-id", "q2"]);
+  RUNFILE = runfileOf(r.stdout);
+  assert.equal(r.rc, 0, r.out);
+  const tree = rf("QA_WORKTREE");
+  assert.equal(serverLine(2), `cwd=${tree}/apps/web/dist`);
+  assert.equal(rf("QA_SRC"), `${tree}/apps/web`);
+  assert.ok(git(ODD, "worktree", "list").includes(tree));
+  const d = down();
+  assert.equal(d.rc, 0, d.out);
+  assert.equal(existsSync(tree), false);
+  assert.equal(git(ODD, "worktree", "list").includes(tree), false, "down removed the files but not the registration");
+});
+test("after, an app directory HEAD does not have → 2, named, no worktree left", () => {
+  const fresh = join(ODD, "apps", "new");
+  mkdirSync(join(fresh, "dist"), { recursive: true });
+  writeFileSync(join(fresh, "dist/index.html"), "<h1>uncommitted</h1>\n");
+  const r = run(["up", "--repo", fresh, "--mode", "after", "--run-id", "q3"]);
+  assert.equal(r.rc, 2, r.out);
+  assert.match(r.out, /apps\/new\/ is not in HEAD/);
+  assert.equal(git(ODD, "worktree", "list").trim().split("\n").length, 1);
+});
+
 // ── --mode after: a detached worktree of HEAD, removed on down ──
 let wt = "";
 test("after → worktree at /tmp/qa-worktrees/<slug>-<run-id>", () => {
@@ -335,7 +434,7 @@ test("down removes the worktree", () => {
 // ── --mode live from a seeded registry cache: no server, no op, no network ──
 test("live: URL from the Pages registry, no pid", () => {
   writeFileSync(
-    ENV.QA_CF_PAGES_CACHE ?? "",
+    qaCfAccountCache(ENV.QA_CF_PAGES_CACHE ?? "", "test-account"),
     '{"success":true,"result":[{"name":"site","domains":["site.pages.dev","www.example.com"],"source":{"config":{"repo_name":"site"}}}]}\n',
   );
   writeFileSync(SERVER_LOG, "");
@@ -355,11 +454,24 @@ test("no PROBE_ACTS_AS → no act-as line", () => {
   assert.equal(readFileSync(RUNFILE, "utf8").includes("QA_AUTH_ACT_AS"), false);
   RUNFILE = "";
 });
+test("live: a URL with & and an item title with spaces come back through eval as themselves", () => {
+  const url = "https://www.example.com/app?a=1&b=$HOME";
+  const item = "Cloudflare Access (QA probe) 'main'";
+  const r = run(["up", "--repo", SITE, "--mode", "live", "--run-id", "r9", "--live-url", url], {
+    QA_ACCESS_OP_ITEM: item,
+    QA_ACCESS_ID_FIELD: "client id",
+  });
+  assert.equal(r.rc, 0, r.out);
+  assert.equal(bashValue(r.stdout, "QA_URL"), url);
+  assert.equal(bashValue(r.stdout, "QA_LABEL"), `live URL ${url}`);
+  assert.equal(bashValue(r.stdout, "QA_AUTH_OP_ITEM"), item);
+  assert.equal(bashValue(r.stdout, "QA_AUTH_ID_FIELD"), "client id");
+});
 // the Workers registry, via the repo's wrangler.toml, with PROBE_ACTS_AS
 test("live: URL from the Workers registry via wrangler name", () => {
-  writeFileSync(ENV.QA_CF_PAGES_CACHE ?? "", '{"success":true,"result":[]}');
+  writeFileSync(qaCfAccountCache(ENV.QA_CF_PAGES_CACHE ?? "", "test-account"), '{"success":true,"result":[]}');
   writeFileSync(
-    ENV.QA_CF_WORKERS_DOMAINS_CACHE ?? "",
+    qaCfAccountCache(ENV.QA_CF_WORKERS_DOMAINS_CACHE ?? "", "test-account"),
     '{"success":true,"result":[{"hostname":"portal.example.com","service":"site-worker","environment":"production"}]}\n',
   );
   writeFileSync(
@@ -380,7 +492,7 @@ test("live: PROBE_ACTS_AS email, lower-cased", () => {
 // ── a gated Worker served locally: /qa stands in for Cloudflare Access ──
 const jwtPart = (jwt: string, i: number) => JSON.parse(Buffer.from(jwt.split(".")[i] ?? "", "base64url").toString());
 test("gated: no Access team domain → 8, no server", () => {
-  rmSync(ENV.QA_CF_ACCESS_ORG_CACHE ?? "", { force: true });
+  rmSync(qaCfAccountCache(ENV.QA_CF_ACCESS_ORG_CACHE ?? "", "test-account"), { force: true });
   writeFileSync(SERVER_LOG, "");
   const r = run(["up", "--repo", GATED, "--mode", "before", "--run-id", "g0"]);
   assert.equal(r.rc, 8, r.out);
@@ -388,7 +500,10 @@ test("gated: no Access team domain → 8, no server", () => {
   assert.equal(serverLog(), "");
 });
 test("gated: signs a token for the PROBE_ACTS_AS person and names its file", () => {
-  writeFileSync(ENV.QA_CF_ACCESS_ORG_CACHE ?? "", '{"success":true,"result":{"auth_domain":"team.example.com"}}');
+  writeFileSync(
+    qaCfAccountCache(ENV.QA_CF_ACCESS_ORG_CACHE ?? "", "test-account"),
+    '{"success":true,"result":{"auth_domain":"team.example.com"}}',
+  );
   const r = run(["up", "--repo", GATED, "--mode", "before", "--run-id", "g1"]);
   RUNFILE = runfileOf(r.out);
   assert.equal(r.rc, 0, r.out);
@@ -424,4 +539,49 @@ test("gated: down stops the key-set server with the rest of the group", async ()
   down();
   await new Promise((res) => setTimeout(res, 300));
   await assert.rejects(fetch(url));
+});
+
+// ── a fresh local D1 database gets the app's schema before the server starts ──
+// Empty local databases have no tables, so every query is a 500 ("no such
+// table") instead of the empty state the page shows with no rows.
+test("d1: each local database with migrations gets them, into the state dir the server reads", () => {
+  writeFileSync(D1_LOG, "");
+  writeFileSync(SERVER_LOG, "");
+  const r = run(["up", "--repo", D1APP, "--mode", "before", "--run-id", "d1"]);
+  RUNFILE = runfileOf(r.stdout);
+  assert.equal(r.rc, 0, r.out);
+  const log = readFileSync(D1_LOG, "utf8").split("\n");
+  assert.equal(log[0], `wrangler d1 migrations apply DB --local --persist-to ${D1APP}/.wrangler/state cwd=${D1APP}`);
+  assert.equal(log.filter((l) => l.startsWith("wrangler")).length, 1, log.join("\n"));
+  assert.match(r.out, /CACHE_DB has no db\/cache\/ — its local database starts with no tables/);
+  assert.match(r.out, /PROD_DB is remote — left alone/);
+  assert.match(rf("QA_LABEL"), /local D1: schema from migrations, no production rows/);
+  assert.match(serverLine(1), /^vite preview --port \d+$/, "the server starts after the schema");
+});
+test("d1: the app's qa:seed runs after the schema, told the state dir and the signed-in person", () => {
+  const log = readFileSync(D1_LOG, "utf8").split("\n");
+  assert.equal(log[1], `seed persist=${D1APP}/.wrangler/state act_as=probe@example.com cwd=${D1APP}`);
+  down();
+});
+test("d1: a failed migration → 8, no server", () => {
+  writeFileSync(SERVER_LOG, "");
+  const r = run(["up", "--repo", D1APP, "--mode", "before", "--run-id", "d2"], { STUB_D1_RC: "1" });
+  assert.equal(r.rc, 8, r.out);
+  assert.match(r.out, /DB's migrations failed/);
+  assert.equal(serverLog(), "");
+});
+test("d1: a failed qa:seed → 8, no server", () => {
+  writeFileSync(SERVER_LOG, "");
+  const r = run(["up", "--repo", D1APP, "--mode", "before", "--run-id", "d3"], { STUB_SEED_RC: "1" });
+  assert.equal(r.rc, 8, r.out);
+  assert.match(r.out, /qa:seed failed/);
+  assert.equal(serverLog(), "");
+});
+test("d1: no D1 binding → no wrangler d1 call", () => {
+  writeFileSync(D1_LOG, "");
+  const r = run(["up", "--repo", SITE, "--mode", "before", "--run-id", "d4"]);
+  RUNFILE = runfileOf(r.stdout);
+  assert.equal(r.rc, 0, r.out);
+  assert.equal(readFileSync(D1_LOG, "utf8"), "");
+  down();
 });

@@ -48,7 +48,8 @@
 // PARSER RESOLUTION. `typescript` for .ts/.tsx, `web-tree-sitter` +
 // `tree-sitter-bash`'s shipped .wasm for .sh, looked for under each root in
 // BLAST_RADIUS_PARSER_ROOTS (colon-separated), defaulting to
-// $BLAST_RADIUS_REPO_ROOT/node_modules, then Node's own global node_modules.
+// $BLAST_RADIUS_REPO_ROOT/node_modules, then `npm root -g`, then Node's own
+// global node_modules.
 // A root that has no such package is skipped; when none of them load, the
 // regex fallback runs and says so in `warnings` and in `parser`. Setting
 // BLAST_RADIUS_PARSER_ROOTS to the empty string removes every root, which is how
@@ -61,6 +62,7 @@
 //
 // Exit: 0 response written · 2 unreadable / unparseable request
 
+import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import path from "node:path";
@@ -198,15 +200,24 @@ const warnings: string[] = [];
 // ── Parser resolution ──────────────────────────────────────────────────
 
 // The repo's own node_modules first — where a project that uses TypeScript
-// already has it — then Node's global prefix (<prefix>/bin/node →
-// <prefix>/lib/node_modules), where a global `npm i -g typescript` lands.
+// already has it — then `npm root -g`, where a global `npm i -g typescript`
+// lands (a custom npm prefix moves it away from Node's), then Node's own
+// global prefix (<prefix>/bin/node → <prefix>/lib/node_modules) for a machine
+// with no npm on PATH. Computed once: `npm root -g` is a process spawn.
+let rootsMemo: string[] | undefined;
 function parserRoots(): string[] {
   const env = process.env.BLAST_RADIUS_PARSER_ROOTS;
   if (env !== undefined) return env.split(":").filter(Boolean);
+  if (rootsMemo) return rootsMemo;
   const roots: string[] = [];
   const repo = process.env.BLAST_RADIUS_REPO_ROOT;
   if (repo) roots.push(path.join(repo, "node_modules"));
-  roots.push(path.join(path.dirname(process.execPath), "..", "lib", "node_modules"));
+  const npm = spawnSync("npm", ["root", "-g"], { encoding: "utf8", timeout: 15_000 });
+  const npmRoot = npm.status === 0 ? npm.stdout.trim() : "";
+  if (npmRoot) roots.push(npmRoot);
+  const nodeRoot = path.join(path.dirname(process.execPath), "..", "lib", "node_modules");
+  if (path.resolve(nodeRoot) !== path.resolve(npmRoot || ".")) roots.push(nodeRoot);
+  rootsMemo = roots;
   return roots;
 }
 
@@ -575,7 +586,7 @@ if (collectorNames.ts === "regex" || collectorNames.sh === "regex") {
     warnings.push(
       `parsers looked in: ${roots.length ? roots.join(", ") : "(no roots: BLAST_RADIUS_PARSER_ROOTS is empty)"}; ` +
         "install them with `npm i -g typescript@5 web-tree-sitter tree-sitter-bash` " +
-        "(Node's global node_modules), or into the workbench's own node_modules",
+        "(npm's global root), or into the workbench's own node_modules",
     );
   }
 }

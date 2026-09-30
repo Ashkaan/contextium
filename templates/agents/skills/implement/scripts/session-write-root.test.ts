@@ -369,12 +369,14 @@ test("ts throws when the resolver fails", () => {
   assert.ok(out.includes("THREW"), `got: ${out}`);
 });
 
-// ── Inside a thread: the ledger's worktree, created only for a real session ──
+// ── Inside a thread: the ledger's worktree, created only by the WRITE mode ──
 //
 // thread.ts names every session — an id-less one gets a generated id so its
-// close can land — and the default mode must not turn a READ by that id-less
-// session into a worktree. A session whose harness exports an id gets one, and
-// --no-create then answers it from the ledger. The real thread.ts and
+// close can land — so the default (write) mode makes that session a ledgered
+// worktree exactly as it does for a session whose harness exports an id: a
+// scaffold that wrote into the main checkout instead would sit outside the
+// ledger, where no close lands it. A READ passes --no-create, which answers
+// the main checkout until a worktree exists and creates nothing. The real thread.ts and
 // write-root.sh run here, against a sandbox HOME (ledger, generated ids, new
 // worktrees) and a T3CODE_HOME with no database, so the session is a plain
 // harness session in the main checkout.
@@ -411,9 +413,33 @@ test("inside a thread", async (t) => {
     );
   const worktreeCount = () => git("-C", THR, "worktree", "list").split("\n").filter(Boolean).length;
 
-  const idless = inThread([]);
-  await t.test("an id-less session's read resolves to the main checkout", () => assert.equal(idless.out, THR));
+  const ledgered = (): string[] => {
+    const threads = join(thrHome, ".cache/workbench/threads");
+    return (existsSync(threads) ? readdirSync(threads) : [])
+      .map((tid) => join(threads, tid, "worktrees"))
+      .filter((f) => existsSync(f))
+      .flatMap((f) => readFileSync(f, "utf8").split("\n"))
+      .map((line) => line.split("\t")[0] ?? "");
+  };
+
+  const idlessRead = inThread(["--no-create"]);
+  await t.test("an id-less session's --no-create read resolves to the main checkout", () =>
+    assert.equal(idlessRead.out, THR),
+  );
   await t.test("…and makes no worktree", () => assert.equal(worktreeCount(), 1));
+
+  const idless = inThread([]);
+  await t.test("an id-less session's write mode gets a worktree, not the main checkout", () => {
+    assert.equal(idless.rc, 0, idless.out);
+    assert.notEqual(idless.out, THR);
+    assert.ok(existsSync(idless.out), `got [${idless.out}]`);
+  });
+  await t.test("…recorded in the thread's ledger, so its close lands it", () =>
+    assert.ok(ledgered().includes(idless.out), `ledger lines: ${JSON.stringify(ledgered())}`),
+  );
+  await t.test("…which the id-less --no-create then answers", () =>
+    assert.equal(inThread(["--no-create"]).out, idless.out),
+  );
 
   const real = inThread([], { CONTEXTIUM_SESSION: "real-one" });
   await t.test("a session with an id gets its worktree", () => {
@@ -423,15 +449,9 @@ test("inside a thread", async (t) => {
   });
   // From write-root.sh, not setup-worktree.sh: the per-session creator would
   // also hand back a worktree here, but one in no ledger — the close never lands it.
-  await t.test("…recorded in the thread's ledger", () => {
-    const threads = join(thrHome, ".cache/workbench/threads");
-    const ledgered = (existsSync(threads) ? readdirSync(threads) : [])
-      .map((tid) => join(threads, tid, "worktrees"))
-      .filter((f) => existsSync(f))
-      .flatMap((f) => readFileSync(f, "utf8").split("\n"))
-      .map((line) => line.split("\t")[0]);
-    assert.ok(ledgered.includes(real.out), `ledger lines: ${JSON.stringify(ledgered)}`);
-  });
+  await t.test("…recorded in the thread's ledger", () =>
+    assert.ok(ledgered().includes(real.out), `ledger lines: ${JSON.stringify(ledgered())}`),
+  );
   await t.test("…which --no-create then answers", () =>
     assert.equal(inThread(["--no-create"], { CONTEXTIUM_SESSION: "real-one" }).out, real.out),
   );

@@ -153,11 +153,14 @@ type Shape = "claude" | "gemini" | "agy";
 const isObj = (v: unknown): v is { [key: string]: unknown } =>
   v !== null && typeof v === "object" && !Array.isArray(v);
 
-/** `x[]?`: an array's items, an object's values, nothing for anything else. */
-function each(v: unknown): unknown[] {
+/** A list the harness iterates — hook groups, a group's handlers: its items,
+ *  nothing where it is absent (null), and an error (which makes that whole
+ *  mapping a miss) for anything else. An OBJECT in a list's place is refused:
+ *  no harness runs `{"0": group}`, however its values read. */
+function list(v: unknown): unknown[] {
   if (Array.isArray(v)) return v;
-  if (isObj(v)) return Object.values(v);
-  return [];
+  if (v === null) return [];
+  throw new TypeError(`expected an array, got ${isObj(v) ? "an object" : typeof v}`);
 }
 
 /** `.k` on a group or handler: null for null, the value for an object, and an
@@ -177,13 +180,14 @@ const alt = (a: unknown, b: string): unknown => (a === null || a === false ? b :
  *  value holds the events. Throws where the manifest is not shaped for it. */
 function hookGroups(shape: Shape, m: unknown): unknown[] {
   if (shape === "agy") {
-    if (!Array.isArray(m) && !isObj(m)) throw new TypeError("cannot iterate over the manifest");
+    // The one map among them: hook name → its events.
+    if (!isObj(m)) throw new TypeError("the manifest is not a map of hook names");
     const groups: unknown[] = [];
-    for (const spec of each(m)) if (isObj(spec)) groups.push(...each(spec.PreToolUse));
+    for (const spec of Object.values(m)) if (isObj(spec)) groups.push(...list(spec.PreToolUse ?? null));
     return groups;
   }
   const hooks = field(m, "hooks");
-  return each(field(hooks, shape === "gemini" ? "BeforeTool" : "PreToolUse"));
+  return list(field(hooks, shape === "gemini" ? "BeforeTool" : "PreToolUse"));
 }
 
 /** Does any group whose matcher matches the whole of <tool> run a command that
@@ -193,7 +197,7 @@ function routes(groups: unknown[], tool: string, script: string): boolean {
     const matcher = alt(field(g, "matcher"), ".*");
     if (typeof matcher !== "string") throw new TypeError("matcher is not a string");
     if (!new RegExp(`^(${matcher})$`).test(tool)) return false;
-    return each(field(g, "hooks")).some((h) => {
+    return list(field(g, "hooks")).some((h) => {
       const c = alt(field(h, "command"), "");
       if (typeof c !== "string") throw new TypeError("command is not a string");
       return c.includes(script);
@@ -355,6 +359,9 @@ function main(): void {
     toolsRec = "";
   }
   const toolWired = (t: string): boolean => toolsRec === "" || ` ${toolsRec} `.includes(` ${t} `);
+  // A tool the record NAMES was wired by the installer, so its manifest must be
+  // there; without a record, a manifest is asserted only where it exists.
+  const toolRecorded = (t: string): boolean => toolsRec !== "" && toolWired(t);
 
   let rc = 0;
   let nOk = 0;
@@ -485,16 +492,21 @@ function main(): void {
     `replace:${WRITE}`,
   ];
 
-  // Each manifest is asserted where its harness is wired: Claude Code's where
-  // ~/.claude exists, Codex's and Grok Build's where their hooks file exists,
-  // Gemini CLI's where this checkout's .gemini/settings.json exists, and
-  // Antigravity's where .agents/hooks.json exists — each only while tools= (if
-  // recorded) names the tool: a file kept after --drop-tool is the user's.
-  if (isDir(`${H}/.claude`) && toolWired("claude")) {
+  // Each manifest is asserted where its harness is wired. With a tools= record,
+  // that is exactly the tools it names, and a missing manifest of one is an
+  // error (its guards stopped running); a tool it leaves out is not asked about
+  // — a file kept after --drop-tool is the user's. With no record, each is
+  // asserted where it exists: Claude Code's where ~/.claude exists, Codex's and
+  // Grok Build's where their hooks file exists, Gemini CLI's where this
+  // checkout's .gemini/settings.json exists, Antigravity's where
+  // .agents/hooks.json exists.
+  const asserted = (tool: string, present: boolean): boolean =>
+    toolRecorded(tool) || (toolsRec === "" && present);
+  if (asserted("claude", isDir(`${H}/.claude`))) {
     checkManifest("Claude Code", "claude", `${H}/.claude/settings.json`, CLAUDE_WANT);
   }
   const codexHooks = `${H}/.codex/hooks.json`;
-  if (existsSync(codexHooks) && toolWired("codex")) {
+  if (asserted("codex", existsSync(codexHooks))) {
     checkManifest("Codex", "claude", codexHooks, [...CLAUDE_WANT, `apply_patch:${WRITE}`]);
     // Codex throws a manifest away whole when it carries any top-level key
     // besides `hooks` or `description` — both guards stop running there, with
@@ -513,11 +525,11 @@ function main(): void {
     }
   }
   const grokHooks = `${H}/.grok/hooks/contextium.json`;
-  if (existsSync(grokHooks) && toolWired("grok")) {
+  if (asserted("grok", existsSync(grokHooks))) {
     checkManifest("Grok Build", "claude", grokHooks, GROK_WANT);
   }
   const geminiSettings = `${HERE}/.gemini/settings.json`;
-  if (existsSync(geminiSettings) && toolWired("gemini")) {
+  if (asserted("gemini", existsSync(geminiSettings))) {
     checkManifest("Gemini CLI", "gemini", geminiSettings, GEMINI_WANT);
     // Gemini CLI reads .gemini/settings.json — AGENTS.md, the skills, the
     // guards — only in a trusted folder, so an untrusted workbench is not ready
@@ -534,7 +546,7 @@ function main(): void {
     }
   }
   const agyHooks = `${HERE}/.agents/hooks.json`;
-  if (existsSync(agyHooks) && toolWired("antigravity")) {
+  if (asserted("antigravity", existsSync(agyHooks))) {
     checkManifest("Antigravity", "agy", agyHooks, [
       `run_command:${INFRA}`,
       `run_command:${WRITE}`,

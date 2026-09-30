@@ -41,7 +41,7 @@ Run the 5 deterministic checks against the diff between `$BASE_SHA` (start of th
 node --experimental-strip-types .agents/skills/implement-audit/scripts/run-automated-checks.ts --session-base "$BASE_SHA"
 ```
 
-The script emits TAP-ish `PASS: <check>` / `FAIL: <check> <detail>` / `WARN: <check> missing` lines plus a final `SUMMARY:` line. The 5 checks: each touched package's own lint and typecheck (`implement/scripts/layer-1.ts`), shellcheck on changed `.sh`, `.agents/checks/check-standards-refs.ts` on changed files, `.agents/skills/review/find-peers.ts`, and `.agents/checks/check-secrets.ts --since $BASE_SHA` — the same citation and secrets scans `land.ts` runs before it commits. A check whose program is absent (a product repo carries no `.agents/checks/`) is a `WARN`, never a `FAIL`. Capture stdout verbatim — Step 2 passes it to the agent as ground truth so the agent doesn't duplicate the work.
+The script emits TAP-ish `PASS: <check>` / `FAIL: <check> <detail>` / `WARN: <check> missing` lines plus a final `SUMMARY:` line. The 5 checks: each touched package's own lint and typecheck (`implement/scripts/layer-1.ts`), shellcheck on changed `.sh`, `.agents/checks/check-standards-refs.ts` on changed files, `.agents/skills/review/find-peers.ts --base $BASE_SHA`, and `.agents/checks/check-secrets.ts --since $BASE_SHA` — the same citation and secrets scans `land.ts` runs before it commits. A check whose program is absent (a product repo carries no `.agents/checks/`) is a `WARN`, never a `FAIL`. Capture stdout verbatim — Step 2 passes it to the agent as ground truth so the agent doesn't duplicate the work.
 
 ## step-2-dispatch-reviewer
 

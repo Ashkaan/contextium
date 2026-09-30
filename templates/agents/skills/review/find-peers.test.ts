@@ -290,6 +290,33 @@ describe("mode 2: removed-token vs declared peers", () => {
     put(repo, "apps/one.ts", ONE_NEW);
     assert.equal(run(repo, []).rc, 0, "mode 2 must exit 0 — it is warn-only");
   });
+
+  // A session that COMMITTED its class fix diffs to nothing against HEAD; the
+  // caller that knows where the session began passes it, and the committed
+  // removal is measured from there.
+  test("--base measures a committed removal from that revision", () => {
+    const repo = newRepo("base-committed");
+    put(repo, "apps/one.ts", ONE_OLD);
+    put(repo, "apps/two.ts", "const v = envelope.data.scores;\n");
+    commitAll(repo, "init");
+    const base = execFileSync("git", ["-C", repo, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+    put(repo, "apps/one.ts", ONE_NEW);
+    commitAll(repo, "the fix, committed");
+    assert.equal(run(repo, []).err, "", "from HEAD a committed removal is no change at all");
+    for (const args of [
+      ["--base", base],
+      ["--base", base, "apps/one.ts"],
+    ]) {
+      const r = run(repo, args);
+      assert.equal(r.rc, 0, r.err);
+      assert.ok(
+        r.err.includes("apps/two.ts") && r.err.includes("data.scores"),
+        `${args.join(" ")} should warn about the left-behind peer; got: ${r.err}`,
+      );
+    }
+    const bad = run(repo, ["--base"]);
+    assert.equal(bad.rc, 2, `--base with no revision: ${bad.err}`);
+  });
 });
 
 // ── The declared-peers reader: `--peers <file>` ─────────────────────────

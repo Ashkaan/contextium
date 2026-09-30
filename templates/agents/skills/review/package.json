@@ -2,7 +2,7 @@
   "name": "review",
   "private": true,
   "type": "module",
-  "description": "Declares the parser packages blast-radius-symbols.ts uses. There is no build step and no install target here: the packer looks for them in the workbench's own node_modules, then Node's global one (npm i -g typescript@5 web-tree-sitter tree-sitter-bash), and falls back to a regex walk without them.",
+  "description": "Declares the parser packages blast-radius-symbols.ts uses. There is no build step and no install target here: the packer looks for them in the workbench's own node_modules, then npm's global root (npm i -g typescript@5 web-tree-sitter tree-sitter-bash), then Node's own global node_modules, and falls back to a regex walk without them.",
   "engines": {
     "node": ">=22.0.0"
   },

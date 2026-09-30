@@ -280,6 +280,28 @@ test("an override naming no row is refused, not guessed", () => {
   );
 });
 
+// ── A database that answers with an error is not an empty answer ─────────────
+
+// Only exit 4 is "no such row". A query that fails (a schema T3 changed, a
+// corrupt file) must refuse: read as "no row", it handed a T3 thread a harness
+// session id, and the close then saw none of the thread's satellites.
+const T3_BAD = join(TMP, "t3-bad");
+mkdirSync(join(T3_BAD, "userdata"), { recursive: true });
+sh(process.execPath, [
+  "--experimental-sqlite",
+  "--disable-warning=ExperimentalWarning",
+  "-e",
+  `new (require("node:sqlite").DatabaseSync)(process.argv[1]).exec("create table projection_threads (thread_id TEXT)")`,
+  join(T3_BAD, "userdata/state.sqlite"),
+]);
+const ENV_BAD = { HOME: FAKE_HOME, T3CODE_HOME: T3_BAD };
+
+test("a failing query is refused, never read as no row", () => {
+  expect("worktree lookup", 2, "cannot query", run(NOT_A_THREAD, { ...ENV_BAD, CONTEXTIUM_SESSION: "harness-1" }));
+  expect("satellite lookup", 2, "cannot query", run(SAT, ENV_BAD, ["--branch"]));
+  expect("override lookup", 2, "cannot query", run(TMP, { ...ENV_BAD, WORKBENCH_THREAD_ID: TID_A }, ["--branch"]));
+});
+
 // ── Usage ───────────────────────────────────────────────────────────────────
 
 // A null branch is an empty column, not a missing one: --branch refuses and

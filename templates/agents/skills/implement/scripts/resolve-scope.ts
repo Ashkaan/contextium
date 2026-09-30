@@ -24,7 +24,7 @@
 //   stderr: scope-arg errors
 //
 // Exit:
-//   0  scope resolved (zero or more files)
+//   0  scope resolved (zero or more files; a directory is listed as its files)
 //   1  scope refers to a non-existent app/integration
 //   2  a read the resolution depends on failed (an unreadable directory in
 //      scope, a failed git command) — never reported as an empty scope
@@ -225,7 +225,7 @@ async function main(): Promise<void> {
   if (SCOPE.startsWith("projects/")) {
     const swr = spawnSync(
       process.execPath,
-      ["--experimental-strip-types", `${dirname(fileURLToPath(import.meta.url))}/session-write-root.ts`],
+      ["--experimental-strip-types", `${dirname(fileURLToPath(import.meta.url))}/session-write-root.ts`, "--no-create"],
       { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] },
     );
     const PROJECTS_ROOT = swr.status === 0 ? (swr.stdout ?? "").replace(/\n+$/, "") : "";
@@ -279,12 +279,22 @@ async function main(): Promise<void> {
     matches = [];
   }
 
-  if (matches.length === 0) {
+  // A match that is a DIRECTORY stands for the files in it. The layers take a
+  // FILE list and find each file's package from the file's own folder upward,
+  // so a bare `packages/lib` line started that walk at `packages/`, missed the
+  // package it names, and lint, typecheck and tests passed without running.
+  // A match holding no file is no match.
+  const files = sorted(
+    matches.flatMap((m) => (isDir(m) ? srcFiles(m) : [m])),
+    true,
+  );
+
+  if (files.length === 0) {
     err(`no files match scope: ${SCOPE}`);
     exit(1);
   }
 
-  emit(sorted(matches));
+  emit(files);
 }
 
 if (process.argv[1] && realpathSync(resolve(process.argv[1])) === realpathSync(fileURLToPath(import.meta.url))) {

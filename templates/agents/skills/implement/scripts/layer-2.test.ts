@@ -94,6 +94,18 @@ test("case4 make-test-target", { skip: noMake }, () => {
   assert.ok(r.out.includes("PASS: layer-2 tools/gen (make test)"), r.all);
 });
 
+// ── Case 4b: a test target on a multi-target rule, or in an included file ──
+test("case4b make-multi-target-and-included-test", { skip: noMake }, () => {
+  const repo = makeRepo();
+  write(join(repo, "tools/multi/Makefile"), "check test:\n\t@true\n");
+  write(join(repo, "tools/inc/Makefile"), "include rules.mk\n");
+  write(join(repo, "tools/inc/rules.mk"), "test:\n\t@false\n");
+  const r = run("tools/multi/main.go\ntools/inc/main.go", { repo });
+  assert.ok(r.out.includes("PASS: layer-2 tools/multi (make test)"), r.all);
+  assert.ok(r.out.includes("FAIL: layer-2 tools/inc"), `an included test target was not run: ${r.all}`);
+  assert.equal(r.rc, 1, r.all);
+});
+
 // ── Case 5: an integration with no package runs its *.test.ts in place ──
 test("case5 in-place-tests-pass-and-fail", () => {
   const repo = makeRepo();
@@ -160,5 +172,24 @@ test("case10 node-modules-tests-are-not-run", () => {
   write(join(repo, "packages/lib/node_modules/dep/dep.test.ts"), BAD_TEST);
   const r = run("packages/lib/index.ts", { repo });
   assert.equal(r.rc, 0, `a dependency's test was run: ${r.all}`);
+  assert.ok(r.out.includes("PASS: layer-2 packages/lib (1 tests)"), r.all);
+});
+
+// ── Case 11: build output and nested packages are not this package's tests ──
+//
+// dist/ and build/ hold emitted copies of the package's own tests (run twice,
+// or stale); a nested folder with its own package.json or Makefile is a
+// package of its own, tested by its own runner when it is in scope.
+test("case11 build-output-and-nested-packages-are-not-searched", () => {
+  const repo = makeRepo();
+  write(join(repo, "packages/lib/index.test.ts"), OK_TEST);
+  write(join(repo, "packages/lib/dist/index.test.js"), BAD_TEST);
+  write(join(repo, "packages/lib/build/index.test.mjs"), BAD_TEST);
+  write(join(repo, "packages/lib/sub/package.json"), '{"name":"sub"}\n');
+  write(join(repo, "packages/lib/sub/sub.test.ts"), BAD_TEST);
+  write(join(repo, "packages/lib/tool/Makefile"), "all:\n\t@true\n");
+  write(join(repo, "packages/lib/tool/tool.test.ts"), BAD_TEST);
+  const r = run("packages/lib/index.ts", { repo });
+  assert.equal(r.rc, 0, `a build copy or a nested package's test was run: ${r.all}`);
   assert.ok(r.out.includes("PASS: layer-2 packages/lib (1 tests)"), r.all);
 });

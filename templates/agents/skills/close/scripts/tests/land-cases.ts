@@ -988,6 +988,29 @@ kase("Case 6r: a failed deploy is re-checked on the retry, never forgotten", () 
   is("…having polled it", polledCount(), "1");
 });
 
+kase("Case 6p: a satellite's poller runs in the checkout that supplies it", () => {
+  // A poller asks git or gh about ITS repo, from where it stands. Started in
+  // the caller's directory (the thread's own worktree of another repo), a
+  // satellite's poller asked about the wrong repo, and a push that deployed
+  // fine stayed NOT CLOSED.
+  fixture("c6p");
+  write(
+    join(F.PROD, ".agents/deploy/await-deploy-run.sh"),
+    `#!/usr/bin/env bash
+echo "deploy: completed for $(basename "$(git remote get-url origin)")"
+`,
+  );
+  write(join(F.PROD, ".agents/deployable-prefixes.json"), '["one"]\n');
+  gDo(F.PROD, "add", ".agents");
+  gDo(F.PROD, "commit", "-q", "-m", "the prod poller");
+  gDo(F.PROD, "push", "-q", "origin", "main");
+  const SAT = writeRoot(1, F.PROD).out;
+  write(join(SAT, "one-prod.md"), "prod\n");
+  const r = land(1, ["thread one"], { merge: true });
+  is("a satellite that opted in closes on its own poller's verdict", r.rc, "0");
+  has("…which asked about the satellite's repo", r.out, `deploy: completed for ${basename(F.PROD)}.git`);
+});
+
 // ── Case 7 ────────────────────────────────────────────────────────────────
 
 kase("Case 7: a journal the aggregator could not parse never lands", () => {
@@ -1904,11 +1927,14 @@ process.exit(rc);
   );
   write(
     join(dir, ".agents/checks/check-standards-refs.ts"),
-    `import { readdirSync, readFileSync } from "node:fs";
-const hit = (readdirSync(".", { recursive: true }) as string[])
-  .filter((f) => f.endsWith(".md") && !f.startsWith(".git/"))
-  .some((f) => readFileSync(f, "utf8").includes("Standards → Nonexistent"));
-if (hit) { console.error("cites a bullet that does not exist: Nonexistent"); process.exit(1); }
+    // Reads what git reads, as the real checker does: `git grep` sees tracked
+    // files only, and `--cached` the staged copies. A stub that walked the
+    // filesystem saw an untracked file the real checker never would.
+    `import { spawnSync } from "node:child_process";
+const cached = process.argv[2] === "--cached";
+const g = spawnSync("git", ["grep", ...(cached ? ["--cached"] : []), "-l", "-F", "-e", "Standards → Nonexistent", "--", "*.md"], { encoding: "utf8" });
+if (g.status === 0) { console.error("cites a bullet that does not exist: Nonexistent"); process.exit(1); }
+if (g.status !== 1) { console.error(\`git grep failed: \${g.stderr}\`); process.exit(2); }
 `,
   );
   gDo(dir, "add", "-A");
@@ -1938,6 +1964,7 @@ kase("Case 14s: the secrets and standards gates", () => {
   r = land(1, ["thread one"], { merge: true });
   is("a citation of a missing standard exits 3", r.rc, "3");
   has("…naming the standards check", r.out, `NOT CLOSED: standards citations rejected in ${F.WT1}`);
+  is("…and the new file that carried it never reached main", onMain(F.CODE, "notes.md"), "no");
 
   fixture("c14sd");
   checksStub(F.WT1);

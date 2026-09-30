@@ -9,7 +9,7 @@
 #                          when it ran past <secs> and was stopped
 #
 # peers:
-#   .agents/hooks/lib/paths.test.sh
+#   .agents/hooks/lib/paths.test.ts
 #   .agents/hooks/check-shared-checkout-write.sh
 
 # Walk the path one component at a time, the way the kernel resolves it: a
@@ -71,9 +71,22 @@ run_bounded() {
   # At the limit: the command, then the children it had (listed first, since
   # they are re-parented once it dies) — a child such as a script's `sleep`
   # would otherwise keep the caller's pipe open past the limit.
-  ( sleep "$secs"; : >"$fired"; kids="$(pgrep -P "$pid" 2>/dev/null || true)"; kill "$pid" 2>/dev/null
+  # The watcher's own streams are /dev/null: under `x="$(run_bounded …)"` an
+  # inherited stdout is the substitution's pipe, and its `sleep` would hold
+  # that open — the caller blocked to the limit however quick the command.
+  # The sleep runs in the background and is waited for, so the TERM sent when
+  # the command ends interrupts the wait and the trap cancels the sleep.
+  (
+    trap 'kill "${spid:-}" 2>/dev/null; exit 0' TERM
+    sleep "$secs" &
+    spid=$!
+    wait "$spid" 2>/dev/null
+    : >"$fired"
+    kids="$(pgrep -P "$pid" 2>/dev/null || true)"
+    kill "$pid" 2>/dev/null
     # shellcheck disable=SC2086  # one pid per word
-    [ -z "$kids" ] || kill $kids 2>/dev/null ) &
+    [ -z "$kids" ] || kill $kids 2>/dev/null
+  ) </dev/null >/dev/null 2>&1 &
   watcher=$!
   wait "$pid" 2>/dev/null || rc=$?
   if [ -e "$fired" ]; then
@@ -81,9 +94,7 @@ run_bounded() {
     wait "$watcher" 2>/dev/null
     return 124
   fi
-  # Not waited on: the watcher is inside its `sleep`, and a shell defers a
-  # signal until its foreground child ends, so waiting would cost the full
-  # limit on every call. Its sleep ends on its own.
   kill "$watcher" 2>/dev/null
+  wait "$watcher" 2>/dev/null
   return "$rc"
 }

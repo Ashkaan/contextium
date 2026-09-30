@@ -79,7 +79,11 @@ node --experimental-strip-types .agents/skills/close/scripts/roadmap.ts <project
 ```
 
 **A project with no `ROADMAP.md`** — update `## Current Progress` and
-`## Next Steps` in its README.
+`## Next Steps` in its README. When it has a `## Shard Status` table, set this
+shard's State cell (the row's last column) to `closed`, last — this close is
+that state's only writer. Left `in-flight`, `project-remaining-work.ts` keeps
+reporting `work-remains` and `next-implement-command.ts` keeps offering the
+shard it just closed.
 
 **Either way**, flip `status:` to `completed` or `monitor` only when
 `project-remaining-work.ts` says `no-hard-signal` AND the goal is met;

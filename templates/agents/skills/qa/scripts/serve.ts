@@ -24,15 +24,18 @@
 // immediately before spawning). Answering on a port is not evidence of owning it.
 //   serve.ts down --runfile <path>
 //
-// `up` output (stdout, KEY=VALUE, shell-sourceable — the SKILL `eval`s it):
+// `up` output (stdout, KEY=VALUE, every value shellQuote'd — the SKILL `eval`s it):
 //   QA_URL=<base url>          QA_PORT=<port>        QA_LABEL=<evidence label>
 //   QA_RUNFILE=<runfile path>  QA_PID=<server pid or empty for --live>
+//   QA_SRC=<the app directory served: inside QA_WORKTREE for --after, else --repo;
+//           --before/--after only>
 //   QA_PAGES=<%q-quoted space-separated routes discovered from the SERVED source;
 //            empty when the source has no static routes — the SKILL then HALTs
 //            unless an explicit `page` arg was passed>
 //   QA_AUTH_JWT_FILE=<local Access token for a gated Worker, --before/--after only>
 // Exit: 0 ok; 2 usage; 3 detect unknown; 4 build failed; 5 server never up;
-//       6 no derivable live URL; 8 local sign-in failed.
+//       6 no derivable live URL; 8 local database setup (migrations, qa:seed)
+//       or local sign-in failed.
 
 import { spawn, spawnSync } from "node:child_process";
 import { closeSync, mkdirSync, openSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
@@ -41,6 +44,7 @@ import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   qaAccessIssuer,
+  qaD1Migrations,
   qaDeriveLiveUrlFromCf,
   qaDeriveLiveUrlFromWorkers,
   qaErr,
@@ -98,15 +102,36 @@ function shellQuote(s: string): string {
   return out;
 }
 
+/** Undo shellQuote: `''`, backslash escapes, and `$'…'` control-character runs, as bash reads them. */
+function shellUnquote(v: string): string {
+  if (v === "''") return "";
+  const named: Record<string, string> = { a: "\x07", b: "\b", t: "\t", n: "\n", v: "\v", f: "\f", r: "\r" };
+  let out = "";
+  for (let i = 0; i < v.length; i++) {
+    const ch = v[i] ?? "";
+    if (ch === "\\" && i + 1 < v.length) {
+      out += v[++i];
+    } else if (ch === "$" && v[i + 1] === "'") {
+      const end = v.indexOf("'", i + 2);
+      const body = v.slice(i + 2, end === -1 ? v.length : end);
+      out += body.replace(/\\([0-7]{3}|.)/g, (_m, e: string) =>
+        /^[0-7]{3}$/.test(e) ? String.fromCharCode(Number.parseInt(e, 8)) : (named[e] ?? e),
+      );
+      i = end === -1 ? v.length : end;
+    } else {
+      out += ch;
+    }
+  }
+  return out;
+}
+
 /** The value of `KEY=…` in a runfile this script wrote, unquoted as bash would source it. */
 function runfileValue(text: string, key: string): string {
   let v = "";
   for (const line of text.split("\n")) {
     if (line.startsWith(`${key}=`)) v = line.slice(key.length + 1);
   }
-  if (v.length >= 2 && v.startsWith('"') && v.endsWith('"')) return v.slice(1, -1).replace(/\\([\\"$`])/g, "$1");
-  if (v === "''") return "";
-  return v.replace(/\\(.)/g, "$1");
+  return shellUnquote(v);
 }
 
 // ── port ownership ───────────────────────────────────────────────────
@@ -116,9 +141,11 @@ function runfileValue(text: string, key: string): string {
 // label claims the right one. These helpers make a run prove it owns the
 // listener.
 //
-// `ss` on Linux, `lsof` where there is no `ss` (macOS). With neither, a port
-// reads as free and no listener pid resolves — the run then accepts only a port
-// it saw free the instant before spawning.
+// `ss` on Linux, `lsof` where there is no `ss` (macOS). With neither, no
+// listener pid resolves, and a port is free only when it can be bound on the
+// wildcard and loopback addresses (bindFree) — never merely because nothing
+// could be asked. The run then accepts only a port it proved free the instant
+// before spawning.
 
 /** Whether `cmd` can be run at all. */
 function hasCmd(cmd: string): boolean {
@@ -142,11 +169,37 @@ export function qaListenerPids(port: string | number): string[] {
   return [...new Set(pids.map((p) => p.trim()).filter((p) => p !== ""))].sort();
 }
 
+// A child node, so the check stays synchronous: it binds the port on each
+// address in turn and exits 1 on the first one something already holds.
+const BIND_PROBE = `const net = require("node:net");
+const port = Number(process.argv[1]);
+(async () => {
+  for (const host of ["::", "0.0.0.0", "127.0.0.1", "::1"]) {
+    const code = await new Promise((done) => {
+      const s = net.createServer();
+      s.once("error", (e) => done(e.code));
+      s.listen({ port, host, exclusive: true }, () => s.close(() => done("")));
+    });
+    if (code === "EADDRINUSE" || code === "EACCES") process.exit(1);
+  }
+  process.exit(0);
+})();`;
+
+/**
+ * True when `port` can be bound right now on the wildcard and loopback
+ * addresses, IPv6 and IPv4 — what "free" means with no tool to list listeners.
+ * An address family the host lacks is skipped, not counted as busy.
+ */
+function bindFree(port: string | number): boolean {
+  const r = spawnSync(process.execPath, ["-e", BIND_PROBE, String(port)], { stdio: "ignore", timeout: 10_000 });
+  return !r.error && r.status === 0;
+}
+
 /** True when nothing is listening on `port`. */
 export function qaPortFree(port: string | number): boolean {
   if (hasCmd("ss")) return query("ss", ["-ltnH", `sport = :${port}`]) === "";
   if (hasCmd("lsof")) return query("lsof", ["-nP", `-iTCP:${port}`, "-sTCP:LISTEN", "-t"]).trim() === "";
-  return true;
+  return bindFree(port);
 }
 
 /** The process group of `pid`, or "" when ps cannot see it. */
@@ -223,9 +276,14 @@ async function doDown(args: string[]): Promise<void> {
   process.stdout.write(`qa: torn down (pid=${pid || "none"}, worktree=${worktree || "none"})\n`);
 }
 
-/** Print the runfile lines to stdout and write them to the runfile, as `tee` did. */
-function emitRunfile(runfile: string, lines: string[]): void {
-  const text = lines.map((l) => `${l}\n`).join("");
+/**
+ * Print `KEY=value` lines to stdout and write them to the runfile, as `tee` did.
+ * Every value goes through shellQuote: the SKILL `eval`s this block, so a value
+ * with a space, `&`, `$` or a quote in it must come back as itself, never as
+ * shell syntax.
+ */
+function emitRunfile(runfile: string, entries: [string, string | number][]): void {
+  const text = entries.map(([k, v]) => `${k}=${shellQuote(String(v))}\n`).join("");
   writeFileSync(runfile, text);
   process.stdout.write(text);
 }
@@ -300,13 +358,22 @@ async function doUp(args: string[]): Promise<void> {
       stdio: ["ignore", "inherit", "inherit"],
     });
     if (add.error || add.status !== 0) exit(add.status ?? 1);
-    src = worktree;
+    // The worktree is of the whole repository; an app below its git root (a
+    // monorepo's apps/<x>) is served from the same place inside it, or
+    // detection and the build would run on the repository root instead.
+    const prefix = spawnSync("git", ["-C", REPO, "rev-parse", "--show-prefix"], { encoding: "utf8" });
+    src = join(worktree, (prefix.stdout ?? "").trim()).replace(/\/+$/, "");
     label = "HEAD worktree";
   }
   // Remove the --after worktree on any early exit below (fail-safe cleanup).
   const cleanupWorktree = () => {
     if (worktree !== "") spawnSync("git", ["-C", REPO, "worktree", "remove", "--force", worktree], { stdio: "ignore" });
   };
+  if (!isDir(src)) {
+    qaErr(`serve up: ${src.slice(worktree.length + 1)}/ is not in HEAD — commit it, or use --before`);
+    cleanupWorktree();
+    exit(2);
+  }
 
   // Detect type + any qa:* escape-hatch command against the served source.
   const detect = spawnSync(process.execPath, ["--experimental-strip-types", join(SCRIPT_DIR, "detect-app.ts"), src], {
@@ -381,23 +448,23 @@ async function doUp(args: string[]): Promise<void> {
         clientSecret: process.env.QA_ACCESS_SECRET_FIELD || "client_secret",
       },
     };
-    const lines = [
-      `QA_URL=${liveUrl}`,
-      'QA_PORT=""',
-      `QA_LABEL="live URL ${liveUrl}"`,
-      `QA_RUNFILE="${RUNFILE}"`,
-      `QA_SLUG=${slug}`,
-      'QA_PID=""',
-      `QA_AUTH_OP_ITEM=${probe.id}`,
-      `QA_AUTH_ID_FIELD=${probe.fields.clientId}`,
-      `QA_AUTH_SECRET_FIELD=${probe.fields.clientSecret}`,
+    const lines: [string, string][] = [
+      ["QA_URL", liveUrl],
+      ["QA_PORT", ""],
+      ["QA_LABEL", `live URL ${liveUrl}`],
+      ["QA_RUNFILE", RUNFILE],
+      ["QA_SLUG", slug],
+      ["QA_PID", ""],
+      ["QA_AUTH_OP_ITEM", probe.id],
+      ["QA_AUTH_ID_FIELD", probe.fields.clientId],
+      ["QA_AUTH_SECRET_FIELD", probe.fields.clientSecret],
     ];
     // An app that pairs the Access service token with a person (PROBE_ACTS_AS
     // in its wrangler config) answers every page with a machine's 403 unless
     // the act-as header names that person; emit it. Absent, nothing is sent.
     const actAs = qaProbeActsAs(REPO);
-    if (actAs !== "") lines.push(`QA_AUTH_ACT_AS=${actAs}`);
-    lines.push(`QA_PAGES=${shellQuote(pages)}`);
+    if (actAs !== "") lines.push(["QA_AUTH_ACT_AS", actAs]);
+    lines.push(["QA_PAGES", pages]);
     emitRunfile(RUNFILE, lines);
     return;
   }
@@ -498,9 +565,68 @@ async function doUp(args: string[]): Promise<void> {
     }
   }
 
-  // ── no local data seed: a --before build of a portal that reads a remote
-  //    store renders empty/no-data states by design. For DATA-correctness QA
-  //    of those portals, use --live (real data) or read the store directly. ──
+  // ── a fresh local database gets the app's schema, and no production rows ──
+  // A Worker served by a Cloudflare runtime starts with EMPTY local D1
+  // databases — no tables at all — so every query fails "no such table" and
+  // the page is a 500, not the empty state it shows with no rows. /qa applies
+  // the repo's own D1 migrations to each local database (`wrangler d1
+  // migrations apply --local`, into the state dir the server is told to
+  // persist to), then runs the app's `qa:seed` script when it has one: the
+  // place for rows the app cannot work without locally, such as the role of
+  // the person signed in below. No production data is read, so pages render
+  // their empty states; for DATA-correctness QA use --live or read the store
+  // directly. A binding marked `remote` is left alone and named — a local
+  // server reaches production through it.
+  if (TYPE === "astro-cf" || TYPE === "vite") {
+    // The Cloudflare Vite plugin keeps its state in .wrangler/state; wrangler is told --persist-to.
+    const statePath = TYPE === "vite" ? `${buildDir}/.wrangler/state` : persist;
+    const toLocal = (what: string, cmd: string, args: string[], env: NodeJS.ProcessEnv = {}) => {
+      // Its output goes to stderr: stdout is the runfile block the SKILL evaluates.
+      const r = spawnSync(cmd, args, { cwd: buildDir, env: { ...process.env, ...env }, stdio: ["ignore", 2, 2] });
+      if (r.error || r.status !== 0) {
+        qaErr(`qa: ${what} failed — a local server without its tables answers 500s, not empty states`);
+        cleanupWorktree();
+        exit(8);
+      }
+    };
+    let migrated = 0;
+    for (const db of qaD1Migrations(buildDir)) {
+      if (db.remote) {
+        qaErr(`qa: ${db.binding} is remote — left alone; a local server reaches production through it`);
+      } else if (!isDir(join(buildDir, db.dir))) {
+        qaErr(`qa: ${db.binding} has no ${db.dir}/ — its local database starts with no tables`);
+      } else {
+        process.stderr.write(`qa: applying ${db.binding}'s migrations to its local database…\n`);
+        toLocal(`applying ${db.binding}'s migrations`, "npx", [
+          "wrangler",
+          "d1",
+          "migrations",
+          "apply",
+          db.binding,
+          "--local",
+          "--persist-to",
+          statePath,
+        ]);
+        migrated++;
+      }
+    }
+    const seedScript = (() => {
+      try {
+        const pkg = JSON.parse(readFileSync(join(buildDir, "package.json"), "utf8"));
+        return typeof pkg?.scripts?.["qa:seed"] === "string" ? pkg.scripts["qa:seed"] : "";
+      } catch {
+        return "";
+      }
+    })();
+    if (seedScript !== "") {
+      process.stderr.write("qa: running the app's qa:seed…\n");
+      toLocal("the app's qa:seed", "npm", ["run", "qa:seed"], {
+        QA_D1_PERSIST: statePath,
+        QA_ACT_AS: qaProbeActsAs(buildDir),
+      });
+    }
+    if (migrated > 0) label = `${label}, local D1: schema from migrations, no production rows`;
+  }
 
   // ── a local sign-in, for a Worker served by a Cloudflare runtime ──
   // An app whose wrangler config names PROBE_ACTS_AS and ACCESS_AUD verifies a
@@ -641,17 +767,18 @@ async function doUp(args: string[]): Promise<void> {
   }
 
   emitRunfile(RUNFILE, [
-    `QA_URL=http://localhost:${port}`,
-    `QA_PORT=${port}`,
-    `QA_LABEL="${label}"`,
-    `QA_RUNFILE="${RUNFILE}"`,
-    `QA_SLUG=${slug}`,
-    `QA_PID=${pid}`,
-    `QA_WORKTREE="${worktree}"`,
-    `QA_SOURCE_REPO="${REPO}"`,
-    `QA_LOGFILE="${logfile}"`,
-    ...(jwtFile !== "" ? [`QA_AUTH_JWT_FILE="${jwtFile}"`] : []),
-    `QA_PAGES=${shellQuote(pages)}`,
+    ["QA_URL", `http://localhost:${port}`],
+    ["QA_PORT", port],
+    ["QA_LABEL", label],
+    ["QA_RUNFILE", RUNFILE],
+    ["QA_SLUG", slug],
+    ["QA_PID", pid],
+    ["QA_WORKTREE", worktree],
+    ["QA_SRC", src],
+    ["QA_SOURCE_REPO", REPO],
+    ["QA_LOGFILE", logfile],
+    ...(jwtFile !== "" ? ([["QA_AUTH_JWT_FILE", jwtFile]] as [string, string][]) : []),
+    ["QA_PAGES", pages],
   ]);
 }
 

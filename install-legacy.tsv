@@ -7,6 +7,10 @@
 #   its installed path and summed with `git show <tag>:<file> | cksum`.
 # Plus each top-level entry of templates/agents/{skills,generators} at those tags
 # that v8 does not install (a folder or file it no longer ships, or a test).
+# Plus the machinery releases before v4 installed into apps/ (app-index,
+# project-index, integration-index, quality, shared): every version of those
+# files the release sources recorded. A folder there holding a file not listed
+# (an edit, an addition, or a version not recorded) is kept whole and named.
 .agents/reviewers/ai-layer-reviewer.md	2845351310 5215
 .agents/reviewers/ai-layer-reviewer.md	2974568152 5275
 .agents/reviewers/implement-audit-reviewer.md	101110821 7944
@@ -82,3 +86,21 @@
 .githooks/pre-commit	668483796 2685
 .githooks/pre-commit.test.sh	3755138996 4462
 .agents/generators/generators.test.ts	845197066 6001
+apps/app-index/README.md	2907993779 839
+apps/app-index/README.md	3288921838 911
+apps/app-index/generate.ts	1314474282 8304
+apps/app-index/generate.ts	3707325363 9080
+apps/integration-index/README.md	3427084596 874
+apps/integration-index/generate.ts	2714755636 5221
+apps/project-index/README.md	2092188801 886
+apps/project-index/README.md	3860416052 1213
+apps/project-index/generate.ts	1605464045 9598
+apps/project-index/generate.ts	234777927 5816
+apps/project-index/generate.ts	3085421589 5844
+apps/quality/README.md	682003839 1372
+apps/quality/check-commit-subject.sh	2989328448 2026
+apps/quality/check-secrets.sh	3879748128 1147
+apps/shared/README.md	2790941160 1025
+apps/shared/README.md	3911059088 1027
+apps/shared/app_categories.json	2227638204 300
+apps/shared/validate_outcome.ts	368339022 1416

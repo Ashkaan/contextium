@@ -112,6 +112,60 @@ test("case5 make-target-and-missing-step-warns", { skip: noMake }, () => {
   );
 });
 
+// ── Case 5b: make's own view of the targets, not a line match ──
+//
+// A rule may name several targets (`lint typecheck:`) and an included file may
+// hold them; a match on `^<name>:` saw neither, and a declared step was skipped
+// as a WARN. A name that is only a prefix of a target, a variable and a pattern
+// rule are still not targets.
+test("case5b make-multi-target-and-included-targets", { skip: noMake }, () => {
+  const repo = makeRepo();
+  const log = join(repo, "order.log");
+  mkdirSync(join(repo, "tools/multi"), { recursive: true });
+  writeFileSync(join(repo, "tools/multi/Makefile"), `lint typecheck:\n\t@echo multi-$@ >> ${log}\n`);
+  mkdirSync(join(repo, "tools/inc"), { recursive: true });
+  writeFileSync(join(repo, "tools/inc/Makefile"), "include rules.mk\n");
+  writeFileSync(
+    join(repo, "tools/inc/rules.mk"),
+    `lint:\n\t@echo inc-lint >> ${log}\ncheck:\n\t@echo inc-check >> ${log}\n`,
+  );
+  mkdirSync(join(repo, "tools/none"), { recursive: true });
+  writeFileSync(join(repo, "tools/none/Makefile"), "lintx:\n\t@false\nLINT := lint\n%.o: %.c\n\t@false\n");
+  const r = run("tools/multi/a.go\ntools/inc/a.go\ntools/none/a.go", { repo });
+  assert.equal(r.rc, 0, r.all);
+  for (const line of [
+    "PASS: layer-1 lint (tools/multi)",
+    "PASS: layer-1 typecheck (tools/multi)",
+    "PASS: layer-1 lint (tools/inc)",
+    "PASS: layer-1 typecheck (tools/inc)",
+    "WARN: layer-1 lint (tools/none) — no lint script or make target; skipped",
+  ]) {
+    assert.ok(r.out.includes(line), `missing [${line}]: ${r.all}`);
+  }
+  assert.equal(order(repo), "inc-lint multi-lint inc-check multi-typecheck ");
+});
+
+// ── Case 5c: no make to ask — a declared target still runs, and FAILs ──
+//
+// Without make there is no database, so the Makefile's own lines answer; the
+// step is then run and fails on the missing binary instead of passing as a
+// skipped WARN. The run needs no binary but node, so an empty PATH stands in
+// for a host without make.
+test("case5c no-make-declared-target-fails-not-skips", () => {
+  const repo = makeRepo();
+  mkdirSync(join(repo, "tools/gen"), { recursive: true });
+  writeFileSync(join(repo, "tools/gen/Makefile"), "lint typecheck:\n\t@true\n");
+  const empty = mktemp();
+  const r = spawnSync(process.execPath, ["--experimental-strip-types", SCRIPT], {
+    encoding: "utf8",
+    input: "tools/gen/main.go\n",
+    env: { ...process.env, CLAUDE_PROJECT_DIR: repo, PATH: empty },
+    timeout: 120000,
+  });
+  assert.equal(r.status, 1, `${r.stdout}${r.stderr}`);
+  assert.ok(r.stdout.includes("FAIL: layer-1 lint (tools/gen)"), `${r.stdout}${r.stderr}`);
+});
+
 // ── Case 6: markdown and records select no package; a deleted file still does ──
 test("case6 records-select-nothing-deleted-selects-its-package", { skip: noNpm }, () => {
   const repo = makeRepo();
@@ -138,4 +192,28 @@ test("case8 env-unset-outside-repo-hard-errors", () => {
   const r = run("x.ts", { cwd: nongit });
   assert.equal(r.rc, 1, r.all);
   assert.ok(r.all.includes("not inside a git repo"), r.all);
+});
+
+// ── Case 9: a code file no package owns is said, never passed over ──
+//
+// Nothing lints a file outside every package, and "no package in scope" read
+// as a clean lint: a standalone script was certified linted with no checker
+// run. It is a WARN naming the files; markdown and records stay silent.
+test("case9 code-outside-every-package-warns", { skip: noNpm }, () => {
+  const repo = makeRepo();
+  let r = run("scripts/tool.sh\nbin/x.py\nREADME.md", { repo });
+  assert.equal(r.rc, 0, r.all);
+  assert.ok(
+    r.out.includes("WARN: layer-1 lint (2 files in no package) — not linted or typechecked: bin/x.py scripts/tool.sh"),
+    `unowned code not warned: ${r.all}`,
+  );
+  assert.equal(r.out.includes("PASS:"), false, `a pass was reported over nothing: ${r.all}`);
+  pkg(repo, "apps/a", "true", "true");
+  r = run("apps/a/x.ts\nscripts/tool.sh", { repo });
+  assert.equal(r.rc, 0, r.all);
+  assert.ok(r.out.includes("PASS: layer-1 lint (apps/a)"), r.all);
+  assert.ok(
+    r.out.includes("WARN: layer-1 lint (1 files in no package) — not linted or typechecked: scripts/tool.sh"),
+    r.all,
+  );
 });

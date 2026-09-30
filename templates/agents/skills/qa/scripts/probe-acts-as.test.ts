@@ -73,6 +73,7 @@ for (const [k, v] of Object.entries(HERMETIC)) {
   else process.env[k] = v;
 }
 const {
+  qaCfAccountCache,
   qaDeriveLiveUrlFromCf,
   qaDeriveLiveUrlFromWorkers,
   qaPlaywrightNodeModules,
@@ -89,8 +90,9 @@ const savedPages = process.env.QA_CF_PAGES_CACHE;
 process.env.PATH = `${join(tmp, "bin")}:${process.env.PATH}`;
 process.env.QA_CF_WORKERS_DOMAINS_CACHE = join(tmp, "domains.json");
 process.env.QA_CF_PAGES_CACHE = join(tmp, "pages.json");
-const DOMAINS = process.env.QA_CF_WORKERS_DOMAINS_CACHE;
-const PAGES = process.env.QA_CF_PAGES_CACHE;
+// The registry keeps each account's copy in its own file; these are test-account's.
+const DOMAINS = qaCfAccountCache(process.env.QA_CF_WORKERS_DOMAINS_CACHE);
+const PAGES = qaCfAccountCache(process.env.QA_CF_PAGES_CACHE);
 after(() => {
   process.env.PATH = savedPath;
   process.env.HOME = savedHome;
