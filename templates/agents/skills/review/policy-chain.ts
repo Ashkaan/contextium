@@ -388,21 +388,33 @@ function emit(file: string, sink: ChainSink): void {
 // The cap holds until the captured streams close, not only until the command
 // exits: spawnSync returns when its pipes reach EOF, and anything the command
 // started holds them. So the leader's exit ends the run only once its group is
-// empty; a descendant still running at the cap is stopped with the group and
-// the run is 124, not the leader's status. A descendant that left the group is
-// out of the watchdog's reach, so spawnSync's own timeout is set past the cap
-// and the grace as a backstop: it closes the caller's end of the pipes, and
-// that run is 124 too.
+// empty and its output has closed; a descendant still running at the cap is
+// stopped with the group and the run is 124, not the leader's status. The
+// output is relayed through the watchdog's own pipes, so a descendant that left
+// the group holds only those: the caller's end closes when the watchdog exits,
+// at the cap at the latest. spawnSync's own timeout, past the cap and the grace,
+// is the backstop for a watchdog that itself never ends.
 const CAP_KILL_GRACE_MS = 3000;
-// The watchdog is a Node process of its own: its start-up precedes the cap's
-// clock, so a call is measured as overrunning only past cap + this.
-const CAP_STARTUP_MS = 500;
 const CAP_BACKSTOP_MS = 2000;
 const CAP_WATCHDOG = `
 const { spawn } = require("node:child_process");
 const { constants } = require("node:os");
 const [capMs, graceMs, bin, ...args] = process.argv.slice(1);
-const child = spawn(bin, args, { stdio: "inherit", detached: true });
+// The command's output comes through pipes of the watchdog's own and is relayed
+// to the caller's, so the caller's end closes when THIS process exits: a
+// descendant that left the group can hold only the watchdog's pipe.
+const child = spawn(bin, args, { stdio: ["inherit", "pipe", "pipe"], detached: true });
+let open = 2;
+for (const [from, to] of [[child.stdout, process.stdout], [child.stderr, process.stderr]]) {
+  from.on("data", (d) => to.write(d));
+  from.on("error", () => {});
+  from.on("close", () => {
+    open--;
+    settle();
+  });
+}
+process.stdout.on("error", () => {});
+process.stderr.on("error", () => {});
 const group = (sig) => {
   try {
     process.kill(-child.pid, sig);
@@ -411,33 +423,41 @@ const group = (sig) => {
     return false;
   }
 };
+// Leave with a status once what was relayed has been flushed.
+const leave = (status) => {
+  process.exitCode = status;
+  process.stdout.write("", () => process.stderr.write("", () => process.exit()));
+};
 for (const sig of ["SIGTERM", "SIGINT", "SIGHUP"]) process.on(sig, () => group(sig));
 let timedOut = false;
+let status = null;
 child.on("error", (e) => {
   process.stderr.write(bin + ": " + e.message + "\\n");
-  process.exit(e.code === "ENOENT" ? 127 : 126);
+  leave(e.code === "ENOENT" ? 127 : 126);
 });
+// The run ends when the command has exited, nothing is left in its group, and
+// its output has closed — or at the cap, whichever is first.
+const drain = setInterval(() => settle(), 20);
+function settle() {
+  if (timedOut || status === null || open > 0 || group(0)) return;
+  clearInterval(drain);
+  clearTimeout(cap);
+  leave(status);
+}
 child.on("exit", (code, signal) => {
-  if (timedOut) return;
-  const status = code ?? 128 + (constants.signals[signal] ?? 0);
-  const done = () => {
-    if (group(0) || timedOut) return;
-    clearInterval(drain);
-    clearTimeout(cap);
-    process.exit(status);
-  };
-  const drain = setInterval(done, 20);
-  done();
+  status = code ?? 128 + (constants.signals[signal] ?? 0);
+  settle();
 });
 const cap = setTimeout(() => {
   timedOut = true;
+  clearInterval(drain);
   group("SIGTERM");
   const t0 = Date.now();
   const poll = setInterval(() => {
     if (group(0) && Date.now() - t0 < Number(graceMs)) return;
     clearInterval(poll);
     group("SIGKILL");
-    process.exit(124);
+    leave(124);
   }, 50);
 }, Number(capMs));
 `;
@@ -448,19 +468,13 @@ export function spawnCapped(
   args: string[],
   opts: SpawnSyncOptions = {},
 ): SpawnSyncReturns<string | Buffer> {
-  const start = Date.now();
   const r = spawnSync(
     process.execPath,
     ["-e", CAP_WATCHDOG, "--", String(capMs), String(CAP_KILL_GRACE_MS), bin, ...args],
     { timeout: capMs + CAP_KILL_GRACE_MS + CAP_BACKSTOP_MS, ...opts },
   );
   const code = (r.error as NodeJS.ErrnoException | undefined)?.code;
-  // A descendant that left the process group is out of the watchdog's reach and
-  // can hold a captured pipe after the group is empty, so the call returns only
-  // when it lets go. A call that outlived its cap by more than the watchdog's own
-  // start-up timed out, whatever status the leader left behind.
-  const overran = Date.now() - start > capMs + CAP_STARTUP_MS;
-  return code === "ETIMEDOUT" || overran ? { ...r, status: 124, signal: null, error: undefined } : r;
+  return code === "ETIMEDOUT" ? { ...r, status: 124, signal: null, error: undefined } : r;
 }
 
 // `<bin> …` under a per-slot wall clock (spawnCapped), stdin/stdout/stderr

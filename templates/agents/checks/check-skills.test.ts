@@ -198,6 +198,16 @@ const ROWS: [string, string, string, "ok" | "violation", string][] = [
     "Description exceeds 1024 character limit (1026 chars)",
   ],
   ["a tab before a block's indent is invalid YAML", "alpha", "name: alpha\ndescription: |2-\n  xxxxxxxxxx\n \t\n  y", "violation", "Invalid YAML in frontmatter"],
+  // With no indicator the indent is found from the first line holding more than
+  // spaces, and a tab is more than spaces: it is that first text line.
+  [
+    "a tab line opening an implicit-indent block is its first text",
+    "alpha",
+    `name: alpha\ndescription: |-\n  \t\n  ${"x".repeat(1023)}`,
+    "violation",
+    "Description exceeds 1024 character limit (1025 chars)",
+  ],
+  ["a tab at column 0 opening a block is invalid YAML", "alpha", "name: alpha\ndescription: |-\n\t\n  xxx", "violation", "Invalid YAML in frontmatter"],
   ["a line under the block's indent is invalid YAML", "alpha", "name: alpha\ndescription: >\n    aaa\n  bbb", "violation", "Invalid YAML in frontmatter"],
   ["a line under an indentation indicator is invalid YAML", "alpha", "name: alpha\ndescription: >4\n  text", "violation", "Invalid YAML in frontmatter"],
   // Names are Unicode letters and digits, NFKC-normalized, as the validator reads them.

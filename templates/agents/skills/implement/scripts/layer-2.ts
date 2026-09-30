@@ -27,17 +27,7 @@
 //   1  any FAIL
 
 import { spawnSync } from "node:child_process";
-import {
-  closeSync,
-  type Dirent,
-  mkdtempSync,
-  openSync,
-  readdirSync,
-  readFileSync,
-  realpathSync,
-  rmSync,
-  statSync,
-} from "node:fs";
+import { closeSync, existsSync, mkdtempSync, openSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, type Dirent, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, posix, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -165,6 +155,20 @@ function declaresScript(pkg: string, name: string): boolean {
   }
 }
 
+/** The goal the make probe asks for; declared in the probe file, never the package's. */
+const MAKE_PROBE_GOAL = ".contextium-make-probe";
+let probeFile = "";
+/** A one-line makefile declaring MAKE_PROBE_GOAL, written once per run. */
+function makeProbe(): string {
+  if (probeFile === "") {
+    const dir = mkdtempSync(join(tmpdir(), "make-probe."));
+    probeFile = join(dir, "probe.mk");
+    writeFileSync(probeFile, `${MAKE_PROBE_GOAL}:\n`);
+    process.on("exit", () => rmSync(dir, { recursive: true, force: true }));
+  }
+  return probeFile;
+}
+
 /**
  * The targets the package's Makefile declares, as make itself reads them: its
  * own database (`make -pnqr .DEFAULT`), so a rule naming several targets
@@ -180,9 +184,9 @@ function declaresScript(pkg: string, name: string): boolean {
  * database even after a parse error (a syntax error, a missing include, an
  * `$(error)`), holding none of the file's targets, so that database is never
  * used: `broken` carries make's own error lines and the step FAILs with them.
- * make's fatal errors are the `*** ` lines ending `.  Stop.`; the one it always
- * prints — no rule for the `.DEFAULT` goal — is the ordinary case. A warning can
- * carry `*** ` in its own text (`$(warning *** …)`) and never ends in `Stop.`.
+ * Whether make could read the file is its exit status against a goal of our
+ * own, never its message: an `$(error …)` spans lines, and a `$(warning …)` can
+ * print `*** ` too.
  */
 interface MakeDb {
   targets: Set<string>;
@@ -196,21 +200,21 @@ function makeTargets(pkg: string): MakeDb {
   const addNames = (line: string): void => {
     const m = /^([^#\s:=%][^:=%]*?)\s*::?(?!=)(.*)$/.exec(line);
     if (!m || (m[2] ?? "").includes("=")) return;
-    for (const t of (m[1] ?? "").split(/\s+/)) if (t !== "") targets.add(t);
+    for (const t of (m[1] ?? "").split(/\s+/)) if (t !== "" && t !== MAKE_PROBE_GOAL) targets.add(t);
   };
-  const r = spawnSync("make", ["-pnqr", ".DEFAULT"], {
+  // A goal of our own, from a second -f, so make's exit status says whether it
+  // could read the package's makefile: 2 is a file it cannot read (a syntax
+  // error, a missing include, an $(error), one line or many), 0 or 1 is one it
+  // read. A second -f stops make reading its default file, so that is named.
+  const mk = ["GNUmakefile", "makefile", "Makefile"].find((n) => existsSync(`${pkg}/${n}`)) ?? "Makefile";
+  const r = spawnSync("make", ["-pnqr", "-f", mk, "-f", makeProbe(), MAKE_PROBE_GOAL], {
     cwd: pkg,
     encoding: "utf8",
     env: { ...process.env, LC_ALL: "C" },
     stdio: ["ignore", "pipe", "pipe"],
     maxBuffer: 64 * 1024 * 1024,
   });
-  const broken = r.error
-    ? ""
-    : (r.stderr ?? "")
-        .split("\n")
-        .filter((l) => /\*\*\* .*\.\s+Stop\.$/.test(l) && !/No rule to make target [`']\.DEFAULT'/.test(l))
-        .join("\n");
+  const broken = !r.error && r.status === 2 ? (r.stderr ?? "").trim() || "make exited 2" : "";
   if (broken !== "") {
     const db = { targets, broken };
     targetsMemo.set(pkg, db);

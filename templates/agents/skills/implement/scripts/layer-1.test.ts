@@ -187,6 +187,20 @@ test("case5d unparseable-makefile-fails-not-skips", { skip: noMake }, () => {
   assert.doesNotMatch(r.out, /WARN: layer-1 lint \(tools\/(bad|noinc)\)/, `…never a skipped WARN: ${r.all}`);
 });
 
+// A multi-line $(error …) puts `***` and `Stop.` on different lines; make's
+// exit status, not its message, is what says it could not read the file.
+test("case5f a-multiline-error-is-a-parse-error", { skip: noMake }, () => {
+  const repo = makeRepo();
+  mkdirSync(join(repo, "tools/multi"), { recursive: true });
+  writeFileSync(
+    join(repo, "tools/multi/Makefile"),
+    "define MSG\nline one ***\nline two\nendef\n$(error $(MSG))\nlint:\n\t@true\n",
+  );
+  const r = run("tools/multi/a.go", { repo });
+  assert.equal(r.rc, 1, `a multi-line $(error) passed: ${r.all}`);
+  assert.ok(r.out.includes("FAIL: layer-1 lint (tools/multi)"), r.all);
+});
+
 // A $(warning …) whose text holds `*** ` is still a warning: only a line ending
 // in make's `.  Stop.` is fatal, and the targets it declares run.
 test("case5e a-warning-with-stars-is-not-a-parse-error", { skip: noMake }, () => {

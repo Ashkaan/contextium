@@ -339,13 +339,16 @@ test("7f — a descendant that left the group and held the pipe past the cap rea
   const start = Date.now();
   // A detached child is a new session on Linux and macOS alike (there is no
   // setsid(1) on macOS); it inherits the pipes and exits after a second.
-  const detach = "require('node:child_process').spawn('sleep', ['1'], { detached: true, stdio: 'inherit' }).unref()";
+  // Held 300 ms past a 100 ms cap: an overrun too short for any start-up
+  // allowance to hide, which is what an earlier fix measured by.
+  const detach = "require('node:child_process').spawn('sleep', ['0.4'], { detached: true, stdio: 'inherit' }).unref()";
   const r = spawnCapped(100, process.execPath, ["-e", detach], {
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
   });
   const ms = Date.now() - start;
   assert.equal(r.status, 124, `a 100ms cap returned status ${r.status} after ${ms}ms`);
+  assert.ok(ms < 1500, `the caller waited ${ms}ms on a pipe the watchdog no longer owns`);
 });
 
 test("7e — the cap outlives the leader: a descendant holding the stream is stopped at it", () => {

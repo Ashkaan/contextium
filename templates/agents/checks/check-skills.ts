@@ -195,9 +195,10 @@ function blockValue(header: string, raw: string[]): { value: string; bad: boolea
   let indent: number;
   if (digit) indent = Number(digit[0]);
   else {
-    // Every leading blank line is a break, and the widest sets the floor.
+    // Every leading line of spaces alone is a break, and the widest sets the
+    // floor. A tab is not indentation: its line is the first text line.
     let widest = 0;
-    for (; i < raw.length && /^[ \t]*$/.test(raw[i] ?? ""); i++) {
+    for (; i < raw.length && /^ *$/.test(raw[i] ?? ""); i++) {
       widest = Math.max(widest, lead(raw[i] ?? ""));
       breaks++;
     }
