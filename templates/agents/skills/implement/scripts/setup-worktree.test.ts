@@ -223,6 +223,24 @@ test("foreign-claim (second session refused, holder untouched)", () => {
   assert.ok(r.all.includes("already claimed by another session"), `refused without naming the conflict: ${r.all}`);
 });
 
+// ── A worktree of ANOTHER repo at this path is never reclaimed ──
+// Two checkouts sharing a basename can share a worktree root (a harness that
+// keys its root by folder name), so the same slug names the same folder for
+// both. Branch name and session marker then both match; only the repository
+// identity tells them apart, and handing the other repo's worktree back sends
+// this repo's edits into it.
+test("other-repo (same slug and session, another repo's worktree refused)", () => {
+  const a = makeRepo();
+  const b = makeRepo();
+  const home = join(mktemp(), "worktrees");
+  const env = (repo: string) => ({ CLAUDE_PROJECT_DIR: repo, CLAUDE_SESSION_ID: "abc", CLAUDE_WORKTREE_HOME: home });
+  assert.equal(runSetup(["my-slug"], env(a)).rc, 0, "first repo's worktree was not created");
+  const r = runSetup(["my-slug"], env(b));
+  assert.notEqual(r.rc, 0, `handed repo b the worktree of repo a: ${r.all}`);
+  assert.ok(r.all.includes("is not a worktree of"), `refused without naming the repo mismatch: ${r.all}`);
+  assert.equal(r.out.includes("WORKTREE_DIR="), false, `printed a WORKTREE_DIR anyway: ${r.out}`);
+});
+
 // ── Mode 1: worktree exists, branch differs — fail loud ──
 test("branch-differs (fail loud)", () => {
   const repo = makeRepo();

@@ -166,6 +166,27 @@ test("case5c no-make-declared-target-fails-not-skips", () => {
   assert.ok(r.stdout.includes("FAIL: layer-1 lint (tools/gen)"), `${r.stdout}${r.stderr}`);
 });
 
+// ── Case 5d: a Makefile make cannot read FAILs, it is not "no such target" ──
+//
+// make still prints a database after a parse error — one holding none of the
+// Makefile's targets — so a syntax error above the rules, or an include that
+// is missing, read as a package that declares no lint and no typecheck, and
+// the whole layer passed as two skipped WARNs. A Makefile with no `.DEFAULT`
+// goal (every Makefile here) is the ordinary case and stays one.
+test("case5d unparseable-makefile-fails-not-skips", { skip: noMake }, () => {
+  const repo = makeRepo();
+  mkdirSync(join(repo, "tools/bad"), { recursive: true });
+  writeFileSync(join(repo, "tools/bad/Makefile"), "oops this is not make\nlint typecheck:\n\t@true\n");
+  mkdirSync(join(repo, "tools/noinc"), { recursive: true });
+  writeFileSync(join(repo, "tools/noinc/Makefile"), "include missing.mk\n");
+  const r = run("tools/bad/a.go\ntools/noinc/a.go", { repo });
+  assert.equal(r.rc, 1, `an unparseable Makefile passed: ${r.all}`);
+  assert.ok(r.out.includes("FAIL: layer-1 lint (tools/bad)"), `syntax error read as no target: ${r.all}`);
+  assert.ok(r.out.includes("FAIL: layer-1 lint (tools/noinc)"), `missing include read as no target: ${r.all}`);
+  assert.match(r.all, /missing separator/, "…and the failure quotes make's own error");
+  assert.doesNotMatch(r.out, /WARN: layer-1 lint \(tools\/(bad|noinc)\)/, `…never a skipped WARN: ${r.all}`);
+});
+
 // ── Case 6: markdown and records select no package; a deleted file still does ──
 test("case6 records-select-nothing-deleted-selects-its-package", { skip: noNpm }, () => {
   const repo = makeRepo();

@@ -172,41 +172,66 @@ function isBlock(v: string): boolean {
 }
 
 /**
- * The value a block scalar carries, as YAML reads it: `|` keeps its line
- * breaks, `>` folds adjacent lines into one space (a blank line is a break),
- * and the chomping indicator decides the end — `-` no final newline, `+`
- * every trailing one, neither exactly one. The validator counts that newline.
+ * The value a block scalar carries, as YAML reads it (PyYAML's
+ * scan_block_scalar, which the validator's parser shares). The indent is the
+ * indentation indicator when the header has one (`>2-`, `|4`, `>-2`: a
+ * top-level key sits at column 0, so the digit is the indent itself), else the
+ * first text line's leading spaces; spaces past it are text. `|` keeps its line
+ * breaks; `>` folds a break between two lines that both start with text into
+ * one space (a blank line is a break, and a line starting with a space keeps
+ * the breaks around it); the chomping indicator decides the end — `-` no final
+ * newline, `+` every trailing one, neither exactly one. The validator counts
+ * that newline. A text line indented less than the block ends it where YAML
+ * would, which in a frontmatter mapping is invalid YAML: `bad` is then true.
  */
-function blockValue(header: string, raw: string[]): string {
+function blockValue(header: string, raw: string[]): { value: string; bad: boolean } {
   const ind = header.replace(/[ \t]+#.*$/, "");
   const chomp = ind.includes("-") ? "strip" : ind.includes("+") ? "keep" : "clip";
-  const first = raw.find((l) => !/^[ \t]*$/.test(l)) ?? "";
-  const indent = first.length - first.replace(/^[ \t]+/, "").length;
-  const lines = raw.map((l) => (/^[ \t]*$/.test(l) ? "" : l.slice(indent)));
-  let end = lines.length;
-  while (end > 0 && lines[end - 1] === "") end--;
-  const body = lines.slice(0, end);
-  const trailing = lines.length - end;
-  if (body.length === 0) return chomp === "keep" ? "\n".repeat(trailing) : "";
-  let out = "";
-  if (ind.startsWith("|")) out = body.join("\n");
+  const folded = ind.startsWith(">");
+  const lead = (l: string): number => l.length - l.replace(/^ +/, "").length;
+  const digit = /[1-9]/.exec(ind);
+  let i = 0;
+  let breaks = 0;
+  let indent: number;
+  if (digit) indent = Number(digit[0]);
   else {
-    let blanks = 0;
-    let started = false;
-    for (const l of body) {
-      if (l === "") {
-        blanks++;
-        continue;
-      }
-      if (started) out += blanks > 0 ? "\n".repeat(blanks) : " ";
-      else out += "\n".repeat(blanks);
-      out += l;
-      started = true;
-      blanks = 0;
+    // Every leading blank line is a break, and the widest sets the floor.
+    let widest = 0;
+    for (; i < raw.length && /^[ \t]*$/.test(raw[i] ?? ""); i++) {
+      widest = Math.max(widest, lead(raw[i] ?? ""));
+      breaks++;
     }
+    indent = Math.max(1, widest, i < raw.length ? lead(raw[i] ?? "") : 0);
   }
-  if (chomp === "strip") return out;
-  return chomp === "keep" ? `${out}\n${"\n".repeat(trailing)}` : `${out}\n`;
+  // A break line: blank once up to `indent` spaces are consumed.
+  const isBreak = (l: string): boolean => /^[ \t]*$/.test(l) && !(lead(l) > indent && !l.includes("\t"));
+  const skipBreaks = (): void => {
+    while (i < raw.length && isBreak(raw[i] ?? "")) {
+      i++;
+      breaks++;
+    }
+  };
+  const isText = (l: string): boolean => lead(l) >= indent;
+  if (digit) skipBreaks();
+  let out = "";
+  let lineBreak = "";
+  while (i < raw.length && isText(raw[i] ?? "")) {
+    out += "\n".repeat(breaks);
+    const text = (raw[i] ?? "").slice(indent);
+    const leadingText = !/^[ \t]/.test(text);
+    out += text;
+    lineBreak = "\n";
+    i++;
+    breaks = 0;
+    skipBreaks();
+    if (i >= raw.length || !isText(raw[i] ?? "")) break;
+    if (folded && leadingText && !/^[ \t]/.test((raw[i] ?? "").slice(indent))) {
+      if (breaks === 0) out += " ";
+    } else out += lineBreak;
+  }
+  const bad = i < raw.length;
+  if (chomp === "strip") return { value: out, bad };
+  return { value: chomp === "keep" ? `${out}${lineBreak}${"\n".repeat(breaks)}` : `${out}${lineBreak}`, bad };
 }
 
 /** An indented line that opens a nested mapping entry: `key:` then a space or the end. */
@@ -273,8 +298,11 @@ function parseFm(file: string): Fact[] {
     if (listy) facts.push({ tag: "L", key });
     else if (mapped) facts.push({ tag: "N", key });
     else if (key !== "metadata") {
-      const ys = block ? { value: blockValue(header, blines), state: "ok" } : yamlScalar(val);
-      if (!block && ys.state === "ok" && !/^["']/.test(trim(val)) && /:([ \t]|$)/.test(ys.value))
+      const bv = block ? blockValue(header, blines) : null;
+      const ys = bv ? { value: bv.value, state: "ok" } : yamlScalar(val);
+      if (bv?.bad)
+        facts.push({ tag: "E", message: `Invalid YAML in frontmatter: a line of ${key} is indented less than its block scalar` });
+      else if (!block && ys.state === "ok" && !/^["']/.test(trim(val)) && /:([ \t]|$)/.test(ys.value))
         facts.push({ tag: "E", message: `Invalid YAML in frontmatter: mapping values are not allowed here (in ${key})` });
       else if (ys.state === "open")
         facts.push({
@@ -312,7 +340,7 @@ function parseFm(file: string): Fact[] {
       break;
     }
     if (/^[ \t]*$/.test(raw)) {
-      if (block && key !== "") blines.push("");
+      if (block && key !== "") blines.push(raw);
       continue;
     }
     if (raw.startsWith("#")) continue;

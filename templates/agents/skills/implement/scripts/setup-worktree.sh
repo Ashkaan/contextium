@@ -183,6 +183,15 @@ if ! git -C "$repo" rev-parse --verify "$fork_point" >/dev/null 2>&1; then
   fork_point="HEAD"
 fi
 
+# Both paths are worktrees (or the main checkout) of one repository: the same
+# git common dir, compared physically.
+same_git_dir() {
+  local a b
+  a="$(git -C "$1" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" || return 1
+  b="$(git -C "$2" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" || return 1
+  [[ -d "$a" && -d "$b" && "$(cd "$a" && pwd -P)" == "$(cd "$b" && pwd -P)" ]]
+}
+
 worktree_exists() {
   [[ -d "$worktree_dir" ]]
 }
@@ -419,7 +428,16 @@ if [[ -n "$owned" ]] && ! same_dir "$owned" "$worktree_dir"; then
 fi
 
 if worktree_exists; then
-  # Worktree dir present — verify branch alignment + re-claim.
+  # Worktree dir present — verify it is this repo's, its branch, then re-claim.
+  #
+  # Repository first: two checkouts sharing a folder name can share a worktree
+  # root, so this slug's folder may be a worktree of the OTHER one — same
+  # branch name, same session marker. Handing it back would send this repo's
+  # edits into that repo. The shared git dir is the repo's identity.
+  if ! same_git_dir "$worktree_dir" "$repo"; then
+    err "worktree at $worktree_dir is not a worktree of $repo (it belongs to $(git -C "$worktree_dir" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || echo 'no repository')); use another slug"
+    exit 1
+  fi
   current_branch=$(git -C "$worktree_dir" rev-parse --abbrev-ref HEAD 2>/dev/null || true)
   if [[ "$current_branch" != "$branch" ]]; then
     err "worktree at $worktree_dir is on unexpected branch $current_branch; expected $branch"

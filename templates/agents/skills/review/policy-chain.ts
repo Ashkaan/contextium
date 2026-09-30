@@ -384,7 +384,17 @@ function emit(file: string, sink: ChainSink): void {
 // reports. The watchdog forwards TERM, INT and HUP to the group, so a caller
 // that is itself stopped stops the command too. code-review.ts caps its packer
 // with it as well.
+//
+// The cap holds until the captured streams close, not only until the command
+// exits: spawnSync returns when its pipes reach EOF, and anything the command
+// started holds them. So the leader's exit ends the run only once its group is
+// empty; a descendant still running at the cap is stopped with the group and
+// the run is 124, not the leader's status. A descendant that left the group is
+// out of the watchdog's reach, so spawnSync's own timeout is set past the cap
+// and the grace as a backstop: it closes the caller's end of the pipes, and
+// that run is 124 too.
 const CAP_KILL_GRACE_MS = 3000;
+const CAP_BACKSTOP_MS = 2000;
 const CAP_WATCHDOG = `
 const { spawn } = require("node:child_process");
 const { constants } = require("node:os");
@@ -406,8 +416,15 @@ child.on("error", (e) => {
 });
 child.on("exit", (code, signal) => {
   if (timedOut) return;
-  clearTimeout(cap);
-  process.exit(code ?? 128 + (constants.signals[signal] ?? 0));
+  const status = code ?? 128 + (constants.signals[signal] ?? 0);
+  const done = () => {
+    if (group(0) || timedOut) return;
+    clearInterval(drain);
+    clearTimeout(cap);
+    process.exit(status);
+  };
+  const drain = setInterval(done, 20);
+  done();
 });
 const cap = setTimeout(() => {
   timedOut = true;
@@ -428,11 +445,13 @@ export function spawnCapped(
   args: string[],
   opts: SpawnSyncOptions = {},
 ): SpawnSyncReturns<string | Buffer> {
-  return spawnSync(
+  const r = spawnSync(
     process.execPath,
     ["-e", CAP_WATCHDOG, "--", String(capMs), String(CAP_KILL_GRACE_MS), bin, ...args],
-    opts,
+    { timeout: capMs + CAP_KILL_GRACE_MS + CAP_BACKSTOP_MS, ...opts },
   );
+  const code = (r.error as NodeJS.ErrnoException | undefined)?.code;
+  return code === "ETIMEDOUT" ? { ...r, status: 124, signal: null, error: undefined } : r;
 }
 
 // `<bin> …` under a per-slot wall clock (spawnCapped), stdin/stdout/stderr

@@ -125,12 +125,19 @@ function shellUnquote(v: string): string {
   return out;
 }
 
-/** The value of `KEY=…` in a runfile this script wrote, unquoted as bash would source it. */
+/**
+ * The value of `KEY=…` in a runfile this script wrote, unquoted as bash would
+ * source it. A runfile written before every value went through shellQuote
+ * double-quoted its paths (`QA_WORKTREE="…"`, `QA_PID=""`), and a down after an
+ * upgrade still reads one. The two cannot be confused: shellQuote escapes every
+ * `"`, so a value it wrote never opens with a bare one.
+ */
 function runfileValue(text: string, key: string): string {
   let v = "";
   for (const line of text.split("\n")) {
     if (line.startsWith(`${key}=`)) v = line.slice(key.length + 1);
   }
+  if (v.length >= 2 && v.startsWith('"') && v.endsWith('"')) return v.slice(1, -1).replace(/\\([\\"$`])/g, "$1");
   return shellUnquote(v);
 }
 
@@ -145,7 +152,8 @@ function runfileValue(text: string, key: string): string {
 // listener pid resolves, and a port is free only when it can be bound on the
 // wildcard and loopback addresses (bindFree) — never merely because nothing
 // could be asked. The run then accepts only a port it proved free the instant
-// before spawning.
+// before spawning. A tool that exits nonzero with nothing on stdout answered
+// nothing either, and bindFree decides for it too.
 
 /** Whether `cmd` can be run at all. */
 function hasCmd(cmd: string): boolean {
@@ -170,36 +178,53 @@ export function qaListenerPids(port: string | number): string[] {
 }
 
 // A child node, so the check stays synchronous: it binds the port on each
-// address in turn and exits 1 on the first one something already holds.
+// address in turn. It exits 1 on the first failure that is not a missing
+// address family (EAFNOSUPPORT, or EADDRNOTAVAIL for an absent ::1) — a denied
+// bind (EPERM, EACCES) says nothing about the port — and exits 1 too when no
+// address could be bound at all.
 const BIND_PROBE = `const net = require("node:net");
 const port = Number(process.argv[1]);
 (async () => {
+  let bound = 0;
   for (const host of ["::", "0.0.0.0", "127.0.0.1", "::1"]) {
     const code = await new Promise((done) => {
       const s = net.createServer();
-      s.once("error", (e) => done(e.code));
+      s.once("error", (e) => done(e.code || "EUNKNOWN"));
       s.listen({ port, host, exclusive: true }, () => s.close(() => done("")));
     });
-    if (code === "EADDRINUSE" || code === "EACCES") process.exit(1);
+    if (code === "") bound++;
+    else if (code !== "EAFNOSUPPORT" && code !== "EADDRNOTAVAIL") process.exit(1);
   }
-  process.exit(0);
+  process.exit(bound > 0 ? 0 : 1);
 })();`;
 
 /**
  * True when `port` can be bound right now on the wildcard and loopback
  * addresses, IPv6 and IPv4 — what "free" means with no tool to list listeners.
- * An address family the host lacks is skipped, not counted as busy.
+ * An address family the host lacks is skipped, not counted as busy; any other
+ * bind failure, or no address bound at all, is not free.
  */
 function bindFree(port: string | number): boolean {
   const r = spawnSync(process.execPath, ["-e", BIND_PROBE, String(port)], { stdio: "ignore", timeout: 10_000 });
   return !r.error && r.status === 0;
 }
 
-/** True when nothing is listening on `port`. */
+/**
+ * True when nothing is listening on `port`: ss or lsof says so with a clean
+ * exit, or, when neither can answer, the port binds.
+ */
 export function qaPortFree(port: string | number): boolean {
-  if (hasCmd("ss")) return query("ss", ["-ltnH", `sport = :${port}`]) === "";
-  if (hasCmd("lsof")) return query("lsof", ["-nP", `-iTCP:${port}`, "-sTCP:LISTEN", "-t"]).trim() === "";
-  return bindFree(port);
+  const ask = (cmd: string, args: string[]) =>
+    spawnSync(cmd, args, { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
+  const r = hasCmd("ss")
+    ? ask("ss", ["-ltnH", `sport = :${port}`])
+    : hasCmd("lsof")
+      ? ask("lsof", ["-nP", `-iTCP:${port}`, "-sTCP:LISTEN", "-t"])
+      : null;
+  if (r === null) return bindFree(port);
+  if ((r.stdout ?? "").trim() !== "") return false;
+  if (r.error || r.status !== 0) return bindFree(port);
+  return true;
 }
 
 /** The process group of `pid`, or "" when ps cannot see it. */

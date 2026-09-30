@@ -27,6 +27,7 @@
 //   WARN: layer-1 typecheck (tools/gen) — no typecheck/check script or make target; skipped
 //   WARN: layer-1 lint (2 files in no package) — not linted or typechecked: bin/x.py tools/y.sh
 //   FAIL: layer-1 lint (apps/foo)             (its output on stderr)
+//   FAIL: layer-1 lint (tools/gen) — make cannot read the Makefile   (make's error on stderr)
 //
 // Exit:
 //   0  all PASS (WARNs included)
@@ -134,12 +135,22 @@ function declaresScript(pkg: string, name: string): boolean {
  * and the goal `.DEFAULT` run no recipe; `-r` leaves the built-in rules out.
  * In the database's file section a target is a `name[ name…]:` line that is not
  * a target-specific variable (`name: VAR = x`) and not marked `# Not a target:`.
- * When make cannot give a database (not installed, a Makefile it cannot parse)
- * the Makefile's own lines are read instead, so a declared step still runs —
- * and FAILs loudly — rather than being skipped.
+ * When make is not installed the Makefile's own lines are read instead, so a
+ * declared step still runs — and FAILs loudly — rather than being skipped.
+ *
+ * A Makefile make cannot READ is not one that declares nothing. make prints a
+ * database even after a parse error (a syntax error, a missing include, an
+ * `$(error)`), holding none of the file's targets, so that database is never
+ * used: `broken` carries make's own error lines and the step FAILs with them.
+ * make's `*** ` lines are its errors; the one it always prints — no rule for
+ * the `.DEFAULT` goal — is the ordinary case, and its warnings carry no `***`.
  */
-const targetsMemo = new Map<string, Set<string>>();
-function makeTargets(pkg: string): Set<string> {
+interface MakeDb {
+  targets: Set<string>;
+  broken: string;
+}
+const targetsMemo = new Map<string, MakeDb>();
+function makeTargets(pkg: string): MakeDb {
   const memo = targetsMemo.get(pkg);
   if (memo) return memo;
   const targets = new Set<string>();
@@ -151,9 +162,21 @@ function makeTargets(pkg: string): Set<string> {
   const r = spawnSync("make", ["-pnqr", ".DEFAULT"], {
     cwd: pkg,
     encoding: "utf8",
-    stdio: ["ignore", "pipe", "ignore"],
+    env: { ...process.env, LC_ALL: "C" },
+    stdio: ["ignore", "pipe", "pipe"],
     maxBuffer: 64 * 1024 * 1024,
   });
+  const broken = r.error
+    ? ""
+    : (r.stderr ?? "")
+        .split("\n")
+        .filter((l) => l.includes("*** ") && !/No rule to make target [`']\.DEFAULT'/.test(l))
+        .join("\n");
+  if (broken !== "") {
+    const db = { targets, broken };
+    targetsMemo.set(pkg, db);
+    return db;
+  }
   const db = typeof r.stdout === "string" ? r.stdout.split("\n") : [];
   const start = db.indexOf("# Files");
   if (!r.error && start !== -1) {
@@ -169,13 +192,19 @@ function makeTargets(pkg: string): Set<string> {
     }
     for (const line of text.split("\n")) addNames(line);
   }
-  targetsMemo.set(pkg, targets);
-  return targets;
+  const found = { targets, broken: "" };
+  targetsMemo.set(pkg, found);
+  return found;
 }
 
 /** Does the package's Makefile declare the target? */
 function hasTarget(pkg: string, name: string): boolean {
-  return isFile(`${pkg}/Makefile`) && makeTargets(pkg).has(name);
+  return isFile(`${pkg}/Makefile`) && makeTargets(pkg).targets.has(name);
+}
+
+/** make's error when the package's Makefile does not parse; "" when it does, or there is none. */
+function brokenMakefile(pkg: string): string {
+  return isFile(`${pkg}/Makefile`) ? makeTargets(pkg).broken : "";
 }
 
 /** Run one step over every package; false when any FAILs. */
@@ -189,6 +218,12 @@ function runStep(pkgs: string[], step: string, candidates: string[]): boolean {
         cmd = ["npm", "run", "--silent", cand];
         break;
       }
+    }
+    if (cmd === null && brokenMakefile(pkg) !== "") {
+      out(`FAIL: layer-1 ${step} (${label}) — make cannot read the Makefile`);
+      headToStderr(Buffer.from(brokenMakefile(pkg)));
+      ok = false;
+      continue;
     }
     if (cmd === null) {
       for (const cand of candidates) {

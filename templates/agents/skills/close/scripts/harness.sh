@@ -45,7 +45,7 @@ harness_repo_key() {
 }
 
 # harness_worktree_root <repo-main-checkout> — absolute folder, no trailing slash,
-# and one per repo: a root every repo shares (CODEX_HOME's) gets the repo key,
+# and one per repo: a root every repo shares (CODEX_HOME's, ~/.grok's) gets the repo key,
 # or one session writing two repos was handed the first repo's worktree for the
 # second. In-repo roots (claude, gemini) must be git-ignored; the installer adds
 # them.
@@ -54,7 +54,7 @@ harness_worktree_root() {
   case "$(harness_name "$repo")" in
     claude) printf '%s/.claude/worktrees\n' "$repo" ;;
     gemini) printf '%s/.gemini/worktrees\n' "$repo" ;;
-    grok)   printf '%s/.grok/worktrees/%s\n' "$HOME" "$(basename "$repo")" ;;
+    grok)   printf '%s/.grok/worktrees/%s\n' "$HOME" "$(harness_repo_key "$repo")" ;;
     codex)  printf '%s/worktrees/%s\n' "${CODEX_HOME:-$HOME/.codex}" "$(harness_repo_key "$repo")" ;;
     # t3 (a main checkout opened in T3's local mode), cursor, vscode,
     # antigravity and anything unrecorded: beside the repo, not inside it — a

@@ -290,9 +290,11 @@ fi
 # Re-checked inside the lock: the loser of a race arrives here after the winner
 # has finished, and must print the winner's path rather than create a second.
 if [ -d "${TARGET}" ]; then
-  # …and it must be a worktree of THIS repo. A harness root keyed coarser than
-  # the checkout (grok's is per basename) can hold another repo's folder here,
-  # and handing that back sends this repo's edits into the other one.
+  # …and it must be a worktree of THIS repo. A root keyed coarser than the
+  # checkout (the in-repo claude/gemini roots are per checkout, the rest carry
+  # the repo key, but a folder made by hand or by an older layout is not) can
+  # hold another repo's folder here, and handing that back sends this repo's
+  # edits into the other one.
   [ "$(canonical_shared "${TARGET}" || true)" = "${SHARED}" ] \
     || fail "${TARGET} exists and is not a worktree of ${SHARED}"
   ledger_add "${TARGET}" "${SHARED}" "${BRANCH}"

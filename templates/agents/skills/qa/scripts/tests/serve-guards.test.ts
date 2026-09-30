@@ -234,3 +234,69 @@ test("bad mode → exit 2", () =>
 test("missing run-id → exit 2", () => assert.equal(run(["up", "--repo", EMPTY, "--mode", "before"]).rc, 2));
 test("down missing runfile → exit 2", () => assert.equal(run(["down", "--runfile", "/nonexistent/server.run"]).rc, 2));
 test("unknown subcommand → exit 2", () => assert.equal(run(["sideways"]).rc, 2));
+
+// Loaded into the bind probe's node through NODE_OPTIONS: every listen fails
+// with the code in FAKE_BIND_ERROR, as a sandbox that denies binding does.
+const DENY = join(TMP, "deny-bind.cjs");
+writeFileSync(
+  DENY,
+  `const net = require("node:net");
+net.Server.prototype.listen = function () {
+  const e = Object.assign(new Error("bind denied"), { code: process.env.FAKE_BIND_ERROR });
+  process.nextTick(() => this.emit("error", e));
+  return this;
+};
+`,
+);
+/** qaPortFree with only `bin` on PATH and, when `code` is set, every bind failing with it. */
+function portFreeUnder(bin: string, port: number, code = ""): boolean {
+  const saved = { PATH: process.env.PATH, NODE_OPTIONS: process.env.NODE_OPTIONS };
+  process.env.PATH = bin;
+  if (code !== "") {
+    process.env.NODE_OPTIONS = `--require ${DENY}`;
+    process.env.FAKE_BIND_ERROR = code;
+  }
+  try {
+    return qaPortFree(port);
+  } finally {
+    process.env.PATH = saved.PATH;
+    if (saved.NODE_OPTIONS === undefined) delete process.env.NODE_OPTIONS;
+    else process.env.NODE_OPTIONS = saved.NODE_OPTIONS;
+    delete process.env.FAKE_BIND_ERROR;
+  }
+}
+
+// A bind that fails for any reason but a missing address family proves nothing
+// about the port, so it is not free; nor is a port no address could be bound on.
+test("neither ss nor lsof: a bind denied (EPERM) or impossible on every family reads not free", () => {
+  lsof(false);
+  for (const code of ["EPERM", "EINVAL", "EAFNOSUPPORT"]) {
+    assert.equal(portFreeUnder(NOSS, 4244, code), false, `a bind failing with ${code} read as free`);
+  }
+});
+
+// A tool that exits nonzero with nothing on stdout said nothing about the port —
+// ss when it fails, lsof both when it fails and when it finds nothing — so its
+// silence is not "no listener", and the bind probe decides instead.
+test("ss or lsof exiting nonzero: a held port reads busy, a quiet one free", async () => {
+  const badSs = join(TMP, "bad-ss");
+  mkdirSync(badSs, { recursive: true });
+  writeFileSync(join(badSs, "ss"), "#!/bin/sh\necho 'Cannot open netlink socket' >&2\nexit 1\n");
+  chmodSync(join(badSs, "ss"), 0o755);
+  const badLsof = join(TMP, "bad-lsof");
+  mkdirSync(badLsof, { recursive: true });
+  writeFileSync(join(badLsof, "lsof"), "#!/bin/sh\nexit 1\n");
+  chmodSync(join(badLsof, "lsof"), 0o755);
+  for (const bin of [badSs, badLsof]) {
+    const held = createServer();
+    await new Promise<void>((done) => held.listen(0, "127.0.0.1", () => done()));
+    const addr = held.address();
+    const port = typeof addr === "object" && addr !== null ? addr.port : 0;
+    try {
+      assert.equal(portFreeUnder(bin, port), false, `a listener on ${port} read as free under ${bin}`);
+    } finally {
+      await new Promise<void>((done) => held.close(() => done()));
+    }
+    assert.equal(portFreeUnder(bin, port), true, `${port} read busy after its listener closed, under ${bin}`);
+  }
+});

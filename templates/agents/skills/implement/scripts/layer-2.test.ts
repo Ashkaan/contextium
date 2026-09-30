@@ -106,6 +106,20 @@ test("case4b make-multi-target-and-included-test", { skip: noMake }, () => {
   assert.equal(r.rc, 1, r.all);
 });
 
+// ── Case 4c: a Makefile make cannot read FAILs, it is not "no tests" ──
+//
+// make still prints a database after a parse error, holding none of the
+// Makefile's targets, so a syntax error above `test:` read as a package with
+// no test target and no test files: "no tests in scope", a pass.
+test("case4c unparseable-makefile-fails-not-no-tests", { skip: noMake }, () => {
+  const repo = makeRepo();
+  write(join(repo, "tools/bad/Makefile"), "oops this is not make\ntest:\n\t@true\n");
+  const r = run("tools/bad/main.go", { repo });
+  assert.equal(r.rc, 1, `an unparseable Makefile passed: ${r.all}`);
+  assert.ok(r.out.includes("FAIL: layer-2 tools/bad"), `syntax error read as no test target: ${r.all}`);
+  assert.match(r.all, /missing separator/, "…and the failure quotes make's own error");
+});
+
 // ── Case 5: an integration with no package runs its *.test.ts in place ──
 test("case5 in-place-tests-pass-and-fail", () => {
   const repo = makeRepo();

@@ -164,6 +164,32 @@ const ROWS: [string, string, string, "ok" | "violation", string][] = [
     "Description exceeds 1024 character limit (1025 chars)",
   ],
   ["a stripped >- block of 1024 characters", "alpha", `name: alpha\ndescription: >-\n  ${"x".repeat(1024)}`, "ok", "OK — 1 skill(s) checked"],
+  // An indentation indicator fixes the indent, in either order with the
+  // chomping indicator: spaces past it are text the length counts.
+  [
+    "a >2- block keeps the spaces past its indent",
+    "alpha",
+    `name: alpha\ndescription: >2-\n    ${"x".repeat(1023)}`,
+    "violation",
+    "Description exceeds 1024 character limit (1025 chars)",
+  ],
+  [
+    "a |4 block keeps the spaces past its indent and clips",
+    "alpha",
+    `name: alpha\ndescription: |4\n      ${"x".repeat(1022)}`,
+    "violation",
+    "Description exceeds 1024 character limit (1025 chars)",
+  ],
+  ["a >-2 block of 1024 characters with its spaces", "alpha", `name: alpha\ndescription: >-2\n    ${"x".repeat(1022)}`, "ok", "OK — 1 skill(s) checked"],
+  [
+    "a whitespace line past the indent is text",
+    "alpha",
+    `name: alpha\ndescription: |2-\n  ${"x".repeat(1022)}\n    `,
+    "violation",
+    "Description exceeds 1024 character limit (1025 chars)",
+  ],
+  ["a line under the block's indent is invalid YAML", "alpha", "name: alpha\ndescription: >\n    aaa\n  bbb", "violation", "Invalid YAML in frontmatter"],
+  ["a line under an indentation indicator is invalid YAML", "alpha", "name: alpha\ndescription: >4\n  text", "violation", "Invalid YAML in frontmatter"],
   // Names are Unicode letters and digits, NFKC-normalized, as the validator reads them.
   ["a Unicode lowercase name", "café", "name: café\ndescription: x", "ok", "OK — 1 skill(s) checked"],
   ["a Unicode uppercase name", "Café", "name: Café\ndescription: x", "violation", "must be lowercase"],

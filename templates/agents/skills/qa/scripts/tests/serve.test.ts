@@ -430,6 +430,20 @@ test("down removes the worktree", () => {
   assert.equal(existsSync(wt), false);
   assert.ok(r.out.includes(`worktree=${wt}`), r.out);
 });
+// A runfile an earlier serve wrote double-quoted its paths (`QA_WORKTREE="…"`)
+// and left QA_PID="" for --live; a down after an upgrade must still read it, or
+// it reports a teardown while the worktree and its registration stay behind.
+test("down reads a runfile in the earlier double-quoted format", () => {
+  const old = join(TMP, "old run tree");
+  git(SITE, "worktree", "add", "--detach", "-q", old, "HEAD");
+  const file = join(TMP, "old.run");
+  writeFileSync(file, `QA_LABEL="HEAD worktree"\nQA_PID=""\nQA_WORKTREE="${old}"\nQA_SOURCE_REPO="${SITE}"\n`);
+  const r = run(["down", "--runfile", file]);
+  assert.equal(r.rc, 0, r.out);
+  assert.ok(r.out.includes(`torn down (pid=none, worktree=${old})`), r.out);
+  assert.equal(existsSync(old), false, "down left the old run's worktree");
+  assert.equal(git(SITE, "worktree", "list").includes(old), false, "down left the old run's registration");
+});
 
 // ── --mode live from a seeded registry cache: no server, no op, no network ──
 test("live: URL from the Pages registry, no pid", () => {

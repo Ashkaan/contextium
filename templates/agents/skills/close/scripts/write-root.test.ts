@@ -407,15 +407,36 @@ test("a harness root shared by every repo still gives each repo its own worktree
   assert.equal(common(code.stdout), common(CODE), "…and it is a worktree of the repo that was asked for");
 });
 
-// Grok's root is per basename, so two checkouts both called `lib` meet in one
-// folder. A folder already at the target that is not a worktree of the repo
-// asked for is refused, never handed back as that repo's worktree.
-test("a target folder that belongs to another repo is refused", () => {
+// Grok keeps every repo's worktrees under ~/.grok, keyed per checkout (name
+// plus path hash), so two checkouts both called `lib` get a folder each. A
+// folder already at the target that is not a worktree of the repo asked for —
+// made by hand, or by a layout that keyed coarser — is refused, never handed
+// back as that repo's worktree.
+test("grok: two checkouts called lib get a worktree each", () => {
   const env = { ...NO_T3, CONTEXTIUM_SESSION: "gk-1", CONTEXTIUM_HARNESS: "grok" };
   const lib = run(LIB, [LIB], env);
   assert.equal(lib.rc, 0, `grok, first repo: ${lib.out}`);
-  const dup = run(LIB, [DUP], env);
-  assert.equal(dup.rc, 2, `a same-basename repo was handed ${dup.stdout}`);
+  const dup = run(DUP, [DUP], env);
+  assert.equal(dup.rc, 0, `grok, same-basename repo: ${dup.out}`);
+  assert.notEqual(dup.stdout, lib.stdout, "the same-basename repo was handed the first repo's worktree");
+  assert.ok(dup.stdout.startsWith(join(FAKE_HOME, ".grok/worktrees/")), `…still under ~/.grok: ${dup.stdout}`);
+  const common = (wt: string): string => git("-C", wt, "rev-parse", "--path-format=absolute", "--git-common-dir");
+  assert.equal(common(dup.stdout), common(DUP), "…and it is a worktree of the repo that was asked for");
+});
+
+test("a target folder that belongs to another repo is refused", () => {
+  const env = { ...NO_T3, CONTEXTIUM_SESSION: "gk-2", CONTEXTIUM_HARNESS: "grok" };
+  const lib = run(LIB, [LIB], env);
+  assert.equal(lib.rc, 0, `grok, first repo: ${lib.out}`);
+  // Plant a worktree of LIB exactly where DUP's would go.
+  const root = spawnSync("bash", ["-c", 'source "$0"; harness_worktree_root "$1"', join(HERE, "harness.sh"), DUP], {
+    encoding: "utf8",
+    env: { ...E, CONTEXTIUM_HARNESS: "grok" },
+  }).stdout.trim();
+  const target = join(root, basename(lib.stdout));
+  git("-C", LIB, "worktree", "add", "-q", "-b", "foreign-gk-2", target, "main");
+  const dup = run(DUP, [DUP], env);
+  assert.equal(dup.rc, 2, `a repo was handed another repo's worktree: ${dup.stdout}`);
   assert.match(dup.out, /is not a worktree of/, "…and the refusal says why");
 });
 

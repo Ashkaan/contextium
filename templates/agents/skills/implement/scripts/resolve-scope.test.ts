@@ -185,6 +185,18 @@ test("case7b directory-scope-lists-its-files", () => {
   let lines = r.out.split("\n").filter(Boolean);
   assert.ok(lines.includes("packages/lib/src/index.ts"), `index.ts missing: ${r.out}`);
   assert.equal(lines.includes("packages/lib"), false, `a bare directory line was emitted: ${r.out}`);
+  // Every file, not only TypeScript: a directory scope of hooks holds the .sh
+  // they run, and its package.json is a file of the scope too. Installed
+  // dependencies are not.
+  mkdirSync(join(repo, "packages/lib/bin"), { recursive: true });
+  mkdirSync(join(repo, "packages/lib/node_modules/dep"), { recursive: true });
+  writeFileSync(join(repo, "packages/lib/bin/run.sh"), "#!/usr/bin/env bash\n");
+  writeFileSync(join(repo, "packages/lib/node_modules/dep/index.ts"), "export {};\n");
+  r = runScript(repo, "--scope", "packages/lib");
+  lines = r.out.split("\n").filter(Boolean);
+  assert.ok(lines.includes("packages/lib/bin/run.sh"), `a non-TypeScript file of the directory is missing: ${r.out}`);
+  assert.ok(lines.includes("packages/lib/package.json"), `package.json missing: ${r.out}`);
+  assert.equal(lines.some((l) => l.includes("/node_modules/")), false, `installed dependencies listed: ${r.out}`);
   r = runScript(repo, "--scope", "packages/*");
   lines = r.out.split("\n").filter(Boolean);
   assert.deepEqual(

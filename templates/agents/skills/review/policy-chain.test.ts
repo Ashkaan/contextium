@@ -36,7 +36,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { after, test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { policyRunChain, type Validator } from "./policy-chain.ts";
+import { policyRunChain, spawnCapped, type Validator } from "./policy-chain.ts";
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = spawnSync("git", ["-C", SCRIPT_DIR, "rev-parse", "--show-toplevel"], {
@@ -323,6 +323,59 @@ test("7d — a slot that ignores TERM is KILLed at the cap, with what it started
   }
   if (alive) process.kill(pid, "SIGKILL");
   assert.equal(alive, false, `a TERM-ignoring child of the slot (pid ${pid}) outlived the walk`);
+});
+
+// The cap holds until the captured streams close, not only until the command
+// it started exits. A command that backgrounds a descendant and exits leaves
+// that descendant holding the caller's pipe, and spawnSync waits for the pipe:
+// the watchdog stood down on the leader's exit, so `sleep 3 &` held the caller
+// three seconds and came back as a success, and a descendant that never exits
+// held it forever.
+test("7e — the cap outlives the leader: a descendant holding the stream is stopped at it", () => {
+  const alive = (pid: number): boolean => {
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  const captured = { encoding: "utf8" as const, stdio: ["ignore", "pipe", "pipe"] as ["ignore", "pipe", "pipe"] };
+
+  const pidFile = `${TMP}/bg-sleep.pid`;
+  let start = Date.now();
+  const r = spawnCapped(100, "sh", ["-c", `sleep 3 & printf %s $! > "${pidFile}"; exit 0`], captured);
+  let ms = Date.now() - start;
+  const pid = Number(read(pidFile));
+  const left = alive(pid);
+  if (left) process.kill(pid, "SIGKILL");
+  assert.equal(r.status, 124, `a descendant outliving its leader past the cap: status ${r.status}, ${ms}ms`);
+  assert.ok(ms < 2000, `a 100ms cap held the caller ${ms}ms`);
+  assert.equal(left, false, `the backgrounded descendant (pid ${pid}) outlived the cap`);
+
+  // Inside the cap nothing changes: the leader's own status, once what it
+  // started has finished too.
+  start = Date.now();
+  const ok = spawnCapped(5000, "sh", ["-c", "sleep 0.2 & exit 3"], captured);
+  ms = Date.now() - start;
+  assert.equal(ok.status, 3, `a descendant finishing inside the cap changed the status to ${ok.status}`);
+  assert.ok(ms < 2000, `a command done in 0.2s held the caller ${ms}ms`);
+
+  // A descendant that left the process group is out of the watchdog's reach,
+  // but not out of the caller's: the pipe it holds is closed at the backstop.
+  const escPidFile = `${TMP}/escaped.pid`;
+  const escaper = [
+    `const c = require("node:child_process").spawn(process.execPath, ["-e", "setTimeout(() => {}, 30000)"], { detached: true, stdio: "inherit" });`,
+    `require("node:fs").writeFileSync(${JSON.stringify(escPidFile)}, String(c.pid));`,
+    "c.unref();",
+  ].join("\n");
+  start = Date.now();
+  const esc = spawnCapped(100, process.execPath, ["-e", escaper], captured);
+  ms = Date.now() - start;
+  const escPid = Number(read(escPidFile));
+  if (escPid > 0 && alive(escPid)) process.kill(escPid, "SIGKILL");
+  assert.equal(esc.status, 124, `a descendant in its own group held the stream: status ${esc.status}, ${ms}ms`);
+  assert.ok(ms < 10_000, `a descendant in its own group held the caller ${ms}ms`);
 });
 
 test("8 — the walk stops on first success; streams never concatenate", () => {

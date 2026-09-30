@@ -20,6 +20,7 @@
 //   PASS: layer-2 apps/foo (npm test)
 //   PASS: layer-2 integrations/bar (N tests)
 //   FAIL: layer-2 apps/foo — see stderr
+//   FAIL: layer-2 tools/gen — make cannot read the Makefile   (make's error on stderr)
 //
 // Exit:
 //   0  all PASS
@@ -172,12 +173,22 @@ function declaresScript(pkg: string, name: string): boolean {
  * and the goal `.DEFAULT` run no recipe; `-r` leaves the built-in rules out.
  * In the database's file section a target is a `name[ name…]:` line that is not
  * a target-specific variable (`name: VAR = x`) and not marked `# Not a target:`.
- * When make cannot give a database (not installed, a Makefile it cannot parse)
- * the Makefile's own lines are read instead, so a declared step still runs —
- * and FAILs loudly — rather than being skipped.
+ * When make is not installed the Makefile's own lines are read instead, so a
+ * declared step still runs — and FAILs loudly — rather than being skipped.
+ *
+ * A Makefile make cannot READ is not one that declares nothing. make prints a
+ * database even after a parse error (a syntax error, a missing include, an
+ * `$(error)`), holding none of the file's targets, so that database is never
+ * used: `broken` carries make's own error lines and the step FAILs with them.
+ * make's `*** ` lines are its errors; the one it always prints — no rule for
+ * the `.DEFAULT` goal — is the ordinary case, and its warnings carry no `***`.
  */
-const targetsMemo = new Map<string, Set<string>>();
-function makeTargets(pkg: string): Set<string> {
+interface MakeDb {
+  targets: Set<string>;
+  broken: string;
+}
+const targetsMemo = new Map<string, MakeDb>();
+function makeTargets(pkg: string): MakeDb {
   const memo = targetsMemo.get(pkg);
   if (memo) return memo;
   const targets = new Set<string>();
@@ -189,9 +200,21 @@ function makeTargets(pkg: string): Set<string> {
   const r = spawnSync("make", ["-pnqr", ".DEFAULT"], {
     cwd: pkg,
     encoding: "utf8",
-    stdio: ["ignore", "pipe", "ignore"],
+    env: { ...process.env, LC_ALL: "C" },
+    stdio: ["ignore", "pipe", "pipe"],
     maxBuffer: 64 * 1024 * 1024,
   });
+  const broken = r.error
+    ? ""
+    : (r.stderr ?? "")
+        .split("\n")
+        .filter((l) => l.includes("*** ") && !/No rule to make target [`']\.DEFAULT'/.test(l))
+        .join("\n");
+  if (broken !== "") {
+    const db = { targets, broken };
+    targetsMemo.set(pkg, db);
+    return db;
+  }
   const db = typeof r.stdout === "string" ? r.stdout.split("\n") : [];
   const start = db.indexOf("# Files");
   if (!r.error && start !== -1) {
@@ -207,13 +230,19 @@ function makeTargets(pkg: string): Set<string> {
     }
     for (const line of text.split("\n")) addNames(line);
   }
-  targetsMemo.set(pkg, targets);
-  return targets;
+  const found = { targets, broken: "" };
+  targetsMemo.set(pkg, found);
+  return found;
 }
 
 /** Does the package's Makefile declare the target? */
 function hasTarget(pkg: string, name: string): boolean {
-  return isFile(`${pkg}/Makefile`) && makeTargets(pkg).has(name);
+  return isFile(`${pkg}/Makefile`) && makeTargets(pkg).targets.has(name);
+}
+
+/** make's error when the package's Makefile does not parse; "" when it does, or there is none. */
+function brokenMakefile(pkg: string): string {
+  return isFile(`${pkg}/Makefile`) ? makeTargets(pkg).broken : "";
 }
 
 async function main(): Promise<void> {
@@ -274,7 +303,12 @@ async function main(): Promise<void> {
     const label = unit === "." ? "(root)" : unit.replace(/^\.\//, "");
     let cmd: string[] | null = null;
     if (declaresScript(unit, "test")) cmd = ["npm", "test", "--silent"];
-    else if (hasTarget(unit, "test")) cmd = ["make", "--no-print-directory", "test"];
+    else if (brokenMakefile(unit) !== "") {
+      out(`FAIL: layer-2 ${label} — make cannot read the Makefile`);
+      headToStderr(Buffer.from(`${brokenMakefile(unit)}\n`));
+      anyFail = true;
+      continue;
+    } else if (hasTarget(unit, "test")) cmd = ["make", "--no-print-directory", "test"];
     if (cmd !== null) {
       // The package owns its own test script — its answer, not a guess.
       const [bin = "", ...args] = cmd;
