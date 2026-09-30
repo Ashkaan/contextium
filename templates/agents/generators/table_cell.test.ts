@@ -2,7 +2,7 @@
 // cell stays one cell — a line break (parse_frontmatter decodes `\n` in a
 // double-quoted value) would end the row, and a `|` would end the cell.
 //
-// Run: cd .agents/generators && node --test --strip-types table_cell.test.ts
+// Run: cd .agents/generators && node --test --experimental-strip-types table_cell.test.ts
 
 import assert from "node:assert/strict";
 import { test } from "node:test";

@@ -9,7 +9,10 @@ methodology is short. The interesting part is the habit, and you pick that up by
 - bash, on macOS or Linux. On Windows, use WSL.
 - jq. The installer uses it to merge its guards into your tool's settings, and the review scripts
   read their policy table with it.
-- Node 22.6 or later, for the project index. `/qa` assumes 22.18 or later.
+- Node 22.6 or later. Every script in `.agents/` except the guards and the worktree setup is
+  TypeScript, run as `node --experimental-strip-types <script>.ts`, which Node has accepted since
+  22.6 (earlier releases of that line print an ExperimentalWarning for it, which is harmless). `/qa` assumes 22.18 or later.
+  Without Node the installer still lays the layer down, but it cannot check it, and says so.
 - An AI tool to drive the loop. T3 Code is the recommended one; Claude Code, Codex, Cursor, VS Code
   with Copilot, Gemini CLI, Antigravity and Grok Build all work.
 - For reviews that are independent of the model writing your code: the Codex CLI or the Grok CLI,
@@ -143,7 +146,7 @@ The installer ends by checking the home links and guard manifests, and you can r
 time:
 
 ```bash
-bash .agents/checks/check-harness-config-links.sh
+node --experimental-strip-types .agents/checks/check-harness-config-links.ts
 ```
 
 ## Open it in your tool
@@ -208,7 +211,7 @@ new one (in T3 Code, a new thread), and run the command the close printed:
 ```
 
 It reads the row's spec back and builds against it, checking each file as it goes. Then
-`validate.sh` runs the checks in a fixed order — lint and typecheck, tests, the workbench's own
+`validate.ts` runs the checks in a fixed order — lint and typecheck, tests, the workbench's own
 checks, then the code review — and, if you changed a web app, `/qa` takes screenshots and checks the
 design. It writes `report.md` beside the spec and closes the session itself.
 
@@ -230,14 +233,14 @@ cleanly. It runs in five steps:
 4. Land: run the workbench checks, commit, merge your trunk, push, and prove against a fresh fetch
    that the work is on `origin`. A worktree the close made is removed; one your tool made (a T3 Code
    thread's) is left for the tool to clean up, and checked to hold nothing unlanded.
-5. Report: copy the block `land.sh` printed — what shipped, a link to the journal entry, the next
+5. Report: copy the block `land.ts` printed — what shipped, a link to the journal entry, the next
    `/implement` command for every ready row, and the last line:
 
 ```
 origin/main is at 3f9c2e1 — closing this tab loses nothing.
 ```
 
-Only `land.sh` prints that line. If anything fails it prints `NOT CLOSED: <reason>` instead, leaves
+Only `land.ts` prints that line. If anything fails it prints `NOT CLOSED: <reason>` instead, leaves
 the worktree as it is, and a re-run picks up where it stopped.
 
 You can still run `/close` by hand, for a session that didn't go through `/spec` or `/implement` — a

@@ -21,7 +21,8 @@
 # harness itself would, so its own worktree tools see it.
 #
 # peers:
-#   .agents/skills/close/scripts/harness.test.sh
+#   .agents/skills/close/scripts/harness.test.ts
+#   .agents/skills/close/scripts/thread.ts      (asks harness_session_id through bash)
 #   .agents/skills/close/scripts/write-root.sh
 
 harness_name() {

@@ -2,23 +2,23 @@
 name: qa
 description: See the real running product of any app in your workbench, find its design problems, fix them, and explain what changed. Use after a UI change, before/after committing, when asked to QA, screenshot, fix, or visually verify a web app, or to confirm a portal renders correctly at desktop/tablet/phone. CLI/library targets capture stdout instead of screenshots.
 metadata:
-  peers: ".agents/skills/qa/scripts/detect-app.sh .agents/skills/qa/scripts/discover-routes.sh .agents/skills/qa/scripts/serve.sh .agents/skills/qa/scripts/screenshot.sh .agents/skills/qa/scripts/sight-check.sh .agents/skills/qa/scripts/sight-stamp.mjs .agents/skills/qa/scripts/a11y.sh .agents/skills/qa/scripts/gen-design-md.ts .agents/skills/qa/scripts/design-authority.sh .agents/skills/qa/scripts/design-frontmatter.mjs .agents/skills/qa/scripts/element-scan.mjs .agents/skills/qa/scripts/interaction-check.sh .agents/skills/qa/scripts/interaction-check.mjs .agents/skills/qa/scripts/system-drift.sh .agents/skills/qa/scripts/impeccable-detect.sh .agents/skills/qa/scripts/lib.sh .agents/skills/qa/scripts/ensure-playwright.sh .agents/skills/qa/scripts/mark-qa-done.sh .agents/skills/qa/scripts/qa-targets.sh .agents/skills/qa/references/review-rubric.md .agents/skills/review/policy-review.sh"
+  peers: ".agents/skills/qa/scripts/detect-app.ts .agents/skills/qa/scripts/discover-routes.ts .agents/skills/qa/scripts/serve.ts .agents/skills/qa/scripts/screenshot.ts .agents/skills/qa/scripts/sight-check.ts .agents/skills/qa/scripts/sight-stamp.ts .agents/skills/qa/scripts/a11y.ts .agents/skills/qa/scripts/gen-design-md.ts .agents/skills/qa/scripts/design-authority.ts .agents/skills/qa/scripts/design-frontmatter.ts .agents/skills/qa/scripts/element-scan.ts .agents/skills/qa/scripts/interaction-check.ts .agents/skills/qa/scripts/interaction-check.browser.ts .agents/skills/qa/scripts/system-drift.ts .agents/skills/qa/scripts/impeccable-detect.ts .agents/skills/qa/scripts/lib.ts .agents/skills/qa/scripts/ensure-playwright.ts .agents/skills/qa/scripts/mark-qa-done.ts .agents/skills/qa/scripts/qa-targets.ts .agents/skills/qa/scripts/import-map.ts .agents/skills/qa/references/review-rubric.md .agents/skills/review/policy-review.ts"
 ---
 
 # /qa — see the real running product
 
 ## Critical
 
-- **`/implement` REQUIRES this, and will not close without it.** `/implement` phase-4.8 runs `scripts/qa-targets.sh` over its diff. Every web target it prints gets a full `/qa` — impeccable on `@latest` (step-2.6), its fixes (step-2.7), screenshots, sight-check, fresh-context visual review — and `validate.sh --require-qa` then refuses the close until each one has a marker for the tree that is about to ship. "Fully" is not a posture here, it is the gate's definition: a `/qa` that stopped after impeccable writes no marker, and the session does not close. `scripts/mark-qa-done.sh --tree <sha>` writes that marker, only at step-6-teardown, only after the review passed — never by hand, and never early.
-- **The automatic trigger is `/implement`, not a hook.** Phase 4.8 runs `validate.sh --phase qa-list` and `--require-qa`, so a session that changed a web app cannot close without a finished `/qa`. Invoking `/qa` by hand is the manual override.
-- **Tools install on first use; a missing tool is a skip, never a pass.** Playwright and Chromium (`ensure-playwright.sh`), impeccable (`impeccable-detect.sh`, which also upgrades it when a newer version is published) and the axe packages for `--a11y` install the first time they are needed — nothing at install time. When one cannot be installed (offline, no npm, `QA_NO_INSTALL=1`), the script prints `qa: skipped — Playwright unavailable (<reason>)` or `impeccable: detector unavailable — <reason>`; repeat that line to the user word for word and write no marker. The sight stamp uses ImageMagick (`magick`) when installed and Playwright otherwise, so it needs nothing extra. Node 22.18+ is assumed (it runs `gen-design-md.ts` directly).
-- **A design authority that contains no design is a P1, not a pass.** `/qa` delegates the entire look question to the app's own `DESIGN.md` — correct — but a delegated file can hold no design. `gen-design-md.ts` writes a token inventory on a repo's first run, the `design-system-*` checks run against it, and the result is clean forever; that is how a portal passes `/qa` while its owner finds it plainly bad. `design-authority.sh` (step-2.5) now raises the missing system as the run's first finding, and `system-drift.sh` (step-2.6b) counts how far the source has drifted from whatever the app DID declare. Neither adds a design opinion to this skill: the rubric still prescribes no type ramp, palette or spacing scale.
+- **`/implement` REQUIRES this, and will not close without it.** `/implement` phase-4.8 runs `scripts/qa-targets.ts` over its diff. Every web target it prints gets a full `/qa` — impeccable on `@latest` (step-2.6), its fixes (step-2.7), screenshots, sight-check, fresh-context visual review — and `validate.ts --require-qa` then refuses the close until each one has a marker for the tree that is about to ship. "Fully" is not a posture here, it is the gate's definition: a `/qa` that stopped after impeccable writes no marker, and the session does not close. `scripts/mark-qa-done.ts --tree <sha>` writes that marker, only at step-6-teardown, only after the review passed — never by hand, and never early.
+- **The automatic trigger is `/implement`, not a hook.** Phase 4.8 runs `validate.ts --phase qa-list` and `--require-qa`, so a session that changed a web app cannot close without a finished `/qa`. Invoking `/qa` by hand is the manual override.
+- **Tools install on first use; a missing tool is a skip, never a pass.** Playwright and Chromium (`ensure-playwright.ts`), impeccable (`impeccable-detect.ts`, which also upgrades it when a newer version is published) and the axe packages for `--a11y` install the first time they are needed — nothing at install time. When one cannot be installed (offline, no npm, `QA_NO_INSTALL=1`), the script prints `qa: skipped — Playwright unavailable (<reason>)` or `impeccable: detector unavailable — <reason>`; repeat that line to the user word for word and write no marker. The sight stamp uses ImageMagick (`magick`) when installed and Playwright otherwise, so it needs nothing extra. Node 22.18+ is assumed (every script here is TypeScript that Node runs directly).
+- **A design authority that contains no design is a P1, not a pass.** `/qa` delegates the entire look question to the app's own `DESIGN.md` — correct — but a delegated file can hold no design. `gen-design-md.ts` writes a token inventory on a repo's first run, the `design-system-*` checks run against it, and the result is clean forever; that is how a portal passes `/qa` while its owner finds it plainly bad. `design-authority.ts` (step-2.5) now raises the missing system as the run's first finding, and `system-drift.ts` (step-2.6b) counts how far the source has drifted from whatever the app DID declare. Neither adds a design opinion to this skill: the rubric still prescribes no type ramp, palette or spacing scale.
 - **Evidence, not assertion.** The deliverable is the manifest (page x viewport -> path, bytes, http-status) + the fresh-context findings, NOT "looks good." Give the agent a runnable check, and show the evidence.
 - **The builder does not grade itself.** `step-4-fresh-review` dispatches a fresh-context subagent (in Claude Code, the `Task` tool; elsewhere, the harness's subagent or a new session) that Reads the PNGs and checks geometry — never inline-QA in this orchestrator. Hot-context self-review produces motivated reasoning.
-- **Zero-config — no `.qa.json`.** Routes come from whichever file-based routing dirs the repo actually has — `src/pages/`, `pages/`, `app/`, `src/app/` (`discover-routes.sh`); the live URL from `--live-url`, or the Cloudflare Pages registry when wrangler's credentials are set. `DESIGN.md` is the only per-repo file the QA process involves, and `/qa` commits it itself (step-2.5-design-md).
+- **Zero-config — no `.qa.json`.** Routes come from whichever file-based routing dirs the repo actually has — `src/pages/`, `pages/`, `app/`, `src/app/` (`discover-routes.ts`); the live URL from `--live-url`, or the Cloudflare Pages registry when wrangler's credentials are set. `DESIGN.md` is the only per-repo file the QA process involves, and `/qa` commits it itself (step-2.5-design-md).
 - **Never guess a serve command.** Node-server / CLI / render targets REQUIRE a `qa:*` script in the repo's own `package.json` (`qa:serve` / `qa:cmd` / `qa:render`). Only Astro / Vite / static get a convention default.
-- **Own your processes.** Teardown signals only the process group `serve.sh` started + removes only the worktree it created. Never global-`pkill workerd`/`wrangler` — that kills other repos' servers on the same machine. Ownership is proved at STARTUP too: the health check refuses a listener that is not in the process group this run spawned (unless the port was verified free the instant before spawning). Answering on a port is not evidence of owning it — a stale server from another repo answers 200 all day.
-- **CLI/Node Playwright only** — `npx playwright` or an inline Node script importing the `playwright` package. No Playwright MCP server; the Node API is what `screenshot.sh` is built on.
+- **Own your processes.** Teardown signals only the process group `serve.ts` started + removes only the worktree it created. Never global-`pkill workerd`/`wrangler` — that kills other repos' servers on the same machine. Ownership is proved at STARTUP too: the health check refuses a listener that is not in the process group this run spawned (unless the port was verified free the instant before spawning). Answering on a port is not evidence of owning it — a stale server from another repo answers 200 all day.
+- **CLI/Node Playwright only** — `npx playwright` or an inline Node script importing the `playwright` package. No Playwright MCP server; the Node API is what `screenshot.ts` is built on.
 
 ## When to use vs. the neighbors
 
@@ -30,7 +30,7 @@ metadata:
 
 ## step-0-resolve-target
 
-Args: `target` (an app directory — a repo, or an app folder inside one; default = the repo of cwd). `page ...` = routes (default = auto-discovered from `src/pages/` by `discover-routes.sh`). Flags: `--before` (default) | `--after` | `--live [--live-url <url>]`, `--keep`, `--a11y`, `--viewports W,W,W`.
+Args: `target` (an app directory — a repo, or an app folder inside one; default = the repo of cwd). `page ...` = routes (default = auto-discovered from `src/pages/` by `discover-routes.ts`). Flags: `--before` (default) | `--after` | `--live [--live-url <url>]`, `--keep`, `--a11y`, `--viewports W,W,W`.
 
 ```bash
 TARGET="${1:-$(git rev-parse --show-toplevel)}"   # resolve to an absolute directory
@@ -41,23 +41,23 @@ RUN_ID="$(date +%Y%m%d-%H%M%S)-$$"
 
 ```bash
 S=.agents/skills/qa/scripts
-TYPE="$(bash "$S/detect-app.sh" "$TARGET" | sed -n 's/^TYPE=//p')"   # exit 3 -> halt, print signals
+TYPE="$(node --experimental-strip-types "$S/detect-app.ts" "$TARGET" | sed -n 's/^TYPE=//p')"   # exit 3 -> halt, print signals
 ```
 
 An undetectable type stops here. Surface the exact message; do NOT invent a command. `/qa` is zero-config — there is no `.qa.json`; the non-convention types declare themselves with a `qa:*` script in their own `package.json`.
 
-**Branch on `TYPE` BEFORE anything else** — `detect-app.sh` returns `astro-cf | astro | next | vite | static | node-server | render | cli | unknown`:
+**Branch on `TYPE` BEFORE anything else** — `detect-app.ts` returns `astro-cf | astro | next | vite | static | node-server | render | cli | unknown`:
 - `render` → skip serve + screenshot; go to `step-5b-render` (the repo's `qa:render` script produces the PNGs). The universal hatch — TRMNL Liquid, HTML-to-image, anything non-served. **Route discovery does NOT apply.**
 - `cli` → skip to `step-5-cli` (stdout is the evidence). **Route discovery does NOT apply.**
 - `astro-cf` on a CF-Access-gated portal → see **§ Cloudflare portal recipe** before choosing `--before` vs `--live`.
 - everything else → `step-2-serve`.
 
-**Routes are discovered, not tracked — and by `serve.sh`, against the SERVED source.** For a served type, `serve.sh` (step-2) walks every file-based routing dir (`src/pages/`, `pages/`, `app/`, `src/app/`) of the exact revision it serves (the HEAD worktree for `--after`, the working tree for `--before`/`--live`) and emits `QA_PAGES`. Discovering there — not here against the possibly-dirty working tree — is what keeps `--after` honest: an uncommitted added/removed page can't produce a 404 or a missed shot for the committed revision the label claims. `QA_PAGES` empty (source has no static routes) with NO explicit `page` arg → HALT and ask which route(s) to shoot; never fabricate `/` (no guessing). An explicit `page ...` arg always overrides (scoped run). Next repos ride the same walk: under App Router the DIRECTORY holding a `page.*` file is the route, `(group)` segments are organisational and never appear in the URL, `@slot` parallel routes are not standalone URLs, and `[param]` routes are skipped rather than shot as a literal bracket path.
+**Routes are discovered, not tracked — and by `serve.ts`, against the SERVED source.** For a served type, `serve.ts` (step-2) walks every file-based routing dir (`src/pages/`, `pages/`, `app/`, `src/app/`) of the exact revision it serves (the HEAD worktree for `--after`, the working tree for `--before`/`--live`) and emits `QA_PAGES`. Discovering there — not here against the possibly-dirty working tree — is what keeps `--after` honest: an uncommitted added/removed page can't produce a 404 or a missed shot for the committed revision the label claims. `QA_PAGES` empty (source has no static routes) with NO explicit `page` arg → HALT and ask which route(s) to shoot; never fabricate `/` (no guessing). An explicit `page ...` arg always overrides (scoped run). Next repos ride the same walk: under App Router the DIRECTORY holding a `page.*` file is the route, `(group)` segments are organisational and never appear in the URL, `@slot` parallel routes are not standalone URLs, and `[param]` routes are skipped rather than shot as a literal bracket path.
 
 ## step-2-serve
 
 ```bash
-eval "$(bash "$S/serve.sh" up --repo "$TARGET" --mode "$MODE" --run-id "$RUN_ID" | grep '^QA_')"
+eval "$(node --experimental-strip-types "$S/serve.ts" up --repo "$TARGET" --mode "$MODE" --run-id "$RUN_ID" | grep '^QA_')"
 # MODE = before|after|live. Captures QA_URL, QA_PORT, QA_LABEL, QA_RUNFILE,
 # QA_PID, and QA_PAGES (routes discovered from the served source).
 
@@ -72,11 +72,13 @@ fi
 
 `--before` serves the working tree; `--after` builds a clean `git worktree` of HEAD so uncommitted edits don't leak into the shot; `--live` hits the deployed URL and skips the build.
 
-**`/qa` is zero-config — every repo runs with no per-repo config file.** Astro / Vite / static targets get convention defaults. For `--live`, `--live-url <url>` (or `QA_LIVE_URL`) names the deployed site; without it, `serve.sh` resolves the URL from a Cloudflare Pages registry lookup (`qa_derive_live_url_from_cf` in `lib.sh`, using wrangler's `CLOUDFLARE_API_TOKEN` + `CLOUDFLARE_ACCOUNT_ID`) that matches the repo against each project's `source.config.repo_name` and returns that project's custom domain — cached 6h at `/tmp/qa-cf-pages-cache.json`. That is a lookup in an authoritative registry, not inference from the directory name; the two genuinely differ (a repo named `site-web` deploying to `example.com`), which is why the heuristic would be wrong and the API is not. A site behind Cloudflare Access gets a service token when you name its 1Password item in `QA_ACCESS_OP_ITEM` (or set `QA_CF_ACCESS_ID` / `QA_CF_ACCESS_SECRET`). The only per-repo declaration `/qa` ever reads is a `qa:*` script in `package.json` for the non-convention types (`node-server`, `cli`, `render`); a CF-deployed Astro app needs nothing. Build/serve failures halt with the log tail. If detection returned `render`/`cli`, skip to `step-5b-render`/`step-5-cli`.
+**`/qa` is zero-config — every repo runs with no per-repo config file.** Astro / Vite / static targets get convention defaults. For `--live`, `--live-url <url>` (or `QA_LIVE_URL`) names the deployed site; without it, `serve.ts` resolves the URL from a Cloudflare Pages registry lookup (`qaDeriveLiveUrlFromCf` in `lib.ts`, using wrangler's `CLOUDFLARE_API_TOKEN` + `CLOUDFLARE_ACCOUNT_ID`) that matches the repo against each project's `source.config.repo_name` and returns that project's custom domain — cached 6h at `/tmp/qa-cf-pages-cache.json`. That is a lookup in an authoritative registry, not inference from the directory name; the two genuinely differ (a repo named `site-web` deploying to `example.com`), which is why the heuristic would be wrong and the API is not. A site behind Cloudflare Access gets a service token when you name its 1Password item in `QA_ACCESS_OP_ITEM` (or set `QA_CF_ACCESS_ID` / `QA_CF_ACCESS_SECRET`). The only per-repo declaration `/qa` ever reads is a `qa:*` script in `package.json` for the non-convention types (`node-server`, `cli`, `render`); a CF-deployed Astro app needs nothing. Build/serve failures halt with the log tail. If detection returned `render`/`cli`, skip to `step-5b-render`/`step-5-cli`.
 
 **No local data seed.** A `--before` build of a portal that reads a remote store renders empty/no-data states by design. For data-correctness QA of those portals, use `--live` (real data) or read the production store directly (§ Cloudflare portal recipe).
 
-For an `astro-cf` target, serve.sh tries `wrangler pages dev` first (real CF bindings) and, if workerd won't boot, automatically falls back to `astro dev` (Vite, serves source, **no** CF bindings — `QA_LABEL` says so). The fallback server renders layout faithfully but has no production data; verify real DATA against the production store directly, not this server (§ Cloudflare portal recipe).
+**A gated local Worker gets a signed-in person.** If the wrangler config of an `astro-cf` or `vite` target names `PROBE_ACTS_AS` and `ACCESS_AUD`, `serve.ts` on `--before`/`--after` stands in for Cloudflare Access. It signs a token for that person with a key made for the run, reading the issuer from the account's Access organization (so it needs wrangler's `CLOUDFLARE_API_TOKEN` + `CLOUDFLARE_ACCOUNT_ID`). It serves the matching key set on loopback beside the server and hands the Worker its URL as `ACCESS_JWKS_URL`, which such an app should trust only on a loopback request. It names the token's file as `QA_AUTH_JWT_FILE`, and the scripts below send it as `Cf-Access-Jwt-Assertion`. Exit 8 means the sign-in failed: a local server that answers every page with 401 is not a QA target. An app that declares neither key gets none of this.
+
+For an `astro-cf` target, serve.ts tries `wrangler pages dev` first (real CF bindings) and, if workerd won't boot, automatically falls back to `astro dev` (Vite, serves source, **no** CF bindings — `QA_LABEL` says so). The fallback server renders layout faithfully but has no production data; verify real DATA against the production store directly, not this server (§ Cloudflare portal recipe).
 
 ## step-2.5-design-md
 
@@ -84,12 +86,12 @@ For an `astro-cf` target, serve.sh tries `wrangler pages dev` first (real CF bin
 
 **And nothing else checks that the delegated authority contains a design.** That is the hole, and it is worth stating precisely because the delegation itself is correct. `/qa` hands the whole question of what an app should look like to the app's own `DESIGN.md` — right, because every app gets a fresh design and a globally prescribed look gets in the way. But `gen-design-md.ts` writes that file on a repo's first run as a token inventory whose creative direction is, in its own words, "intentionally omitted": no type ramp, no spacing scale, no control sizes, no field or focus anatomy, no empty state. So an auto-generated stub becomes the baseline, the design-system checks run against nothing, and the run reports clean forever: a clean `/qa`, on a portal its owner finds plainly bad.
 
-The frontmatter follows the published DESIGN.md format (`google-labs-code/design.md`), which impeccable reads; `npx @google/design.md lint DESIGN.md` checks a file against it, and a token map outside its five keys (`colors`, `typography`, `rounded`, `spacing`, `components`) is ignored by that tooling. A `spacing` map or a `components` section changes nothing impeccable reports (probed against page fixtures); those sections serve the published schema and `system-drift.sh`, which reads `spacing` and `components.control-*` heights when the older `spacingScale`/`controlHeights` keys are absent.
+The frontmatter follows the published DESIGN.md format (`google-labs-code/design.md`), which impeccable reads; `npx @google/design.md lint DESIGN.md` checks a file against it, and a token map outside its five keys (`colors`, `typography`, `rounded`, `spacing`, `components`) is ignored by that tooling. A `spacing` map or a `components` section changes nothing impeccable reports (probed against page fixtures); those sections serve the published schema and `system-drift.ts`, which reads `spacing` and `components.control-*` heights when the older `spacingScale`/`controlHeights` keys are absent.
 
 If the repo has no `DESIGN.md`, generate one from the tokens already in the repo. Token extraction is data, not judgment, so it's a script, not an LLM pass — ONE file, no `.impeccable/` sidecar:
 
 ```bash
-node "$S/gen-design-md.ts" "$TARGET"   # exit 3 = already exists (skip); exit 4 = no tokens found
+node --experimental-strip-types "$S/gen-design-md.ts" "$TARGET"   # exit 3 = already exists (skip); exit 4 = no tokens found
 ```
 
 The generator greps CSS custom properties, a Tailwind theme, and font-family declarations, and emits only the classes it finds (shadcn HSL-channel tokens are wrapped as `hsl(...)`; literal-hex palettes pass through). It never overwrites an existing `DESIGN.md` — that file may be hand-refined. **On a repo's first run the fresh file finds ~0 drift by construction** (the code matches the file just made from it) — which looks like a benign fact and is not one: it is the whole defect. Everything the generator writes now carries `design-authority: generated-stub`, and the gate below turns that zero-drift result into a P1 instead of a pass.
@@ -97,7 +99,7 @@ The generator greps CSS custom properties, a Tailwind theme, and font-family dec
 ### The stub gate
 
 ```bash
-bash "$S/design-authority.sh" status "$TARGET"   # 0 real · 3 stub or missing · 2 unparseable
+node --experimental-strip-types "$S/design-authority.ts" status "$TARGET"   # 0 real · 3 stub or missing · 2 unparseable
 ```
 
 **One rule, two limbs.** A `DESIGN.md` is a STUB iff it carries
@@ -131,16 +133,18 @@ The `-- DESIGN.md` pathspec is what keeps the commit to one file when the workin
 Run impeccable against the **rendered page**, where its coverage is real. Measured: identical markup yields 12 findings as a live page vs ~4 as source files, and the styling idiom barely moves the source number (Tailwind 4, styled-components 3, inline `style={{}}` 2). So point it at `QA_URL`, not `src/`.
 
 ```bash
-bash "$S/impeccable-detect.sh" "$TARGET" "$QA_URL"
+node --experimental-strip-types "$S/impeccable-detect.ts" "$TARGET" "$QA_URL" ${QA_AUTH_JWT_FILE:+--auth-jwt-file "$QA_AUTH_JWT_FILE"}
 ```
 
 The script always exits 0 — a detector CRASH must never fail a QA run. That is not permission to SKIP this step: surviving a blown-up detector and omitting the step are different things, and there is no path on which step 2.6 does not run. `/implement`'s gate takes the same line — a crash is survivable, an omission is not.
+
+**A gated page is scanned signed in.** The engine sends no headers, so on an app that answers 401 without its local Access token it would scan the 401 page and print `clean`. With `QA_AUTH_JWT_FILE` set (serve.ts emits it for a locally signed-in app), `--auth-jwt-file` points the engine at a loopback proxy that adds the token to every request.
 
 **It runs the INSTALLED shim, kept at the latest version.** Impeccable's rules move, and a pin is a promise to stop learning what they learn. So the script compares `impeccable --version` with `npm view impeccable version` and runs `npm install -g impeccable@latest` when the copy is missing or older — once, not on every call the way `npx impeccable@latest` would. Offline it runs the installed copy and says the check could not happen; a failed upgrade runs the installed copy and names its version; a failed first install is `detector unavailable`. The engine that scans the page is resolved by the shim out of the CLI package; impeccable is a tool here, not a skill. Do not pin a version anywhere, and never run the package's `install` verb: it writes into every harness home.
 
 **"Clean" and "could not check" are different lines now.** The old call was wrapped `|| true`, so a broken install printed exactly what a clean page printed — silence — and a reader of the transcript could not tell which had happened. The script prints `impeccable: clean` only when the engine actually ran and returned nothing, and `impeccable: detector unavailable — <reason>` on every path where it did not. The step is still non-blocking either way.
 
-And it stays HERE, inside `/qa`, rather than moving into `/implement`'s `validate.sh`: it needs a rendered page at a live URL, which only this skill has, and a second caller would split one fact across two files.
+And it stays HERE, inside `/qa`, rather than moving into `/implement`'s `validate.ts`: it needs a rendered page at a live URL, which only this skill has, and a second caller would split one fact across two files.
 
 Nor does the step-4 visual reviewer stand in for it. Contrast ratios and design-token drift are exactly what a rule engine is better at than a model reading a PNG, and the fresh-eyes pass should spend its tokens on judgment a rule cannot make.
 
@@ -160,10 +164,10 @@ SOURCE against the scales the app declared for itself — the half nobody was
 measuring.
 
 ```bash
-bash "$S/system-drift.sh" "${QA_WORKTREE:-$TARGET}"
+node --experimental-strip-types "$S/system-drift.ts" "${QA_WORKTREE:-$TARGET}"
 ```
 
-**Against the source `serve.sh` BUILT**, not the working tree. `serve.sh --after`
+**Against the source `serve.ts` BUILT**, not the working tree. `serve.ts --after`
 emits `QA_WORKTREE`; that is the revision that produced the screenshots, and
 scanning the working tree instead would report a fix made mid-run as if it had
 shipped.
@@ -210,10 +214,10 @@ Impeccable pinpoints each finding by rule + file + line. Fix them right there �
 **Rebuild before re-checking.** The app was already built and served in step 2, so source edits made here are NOT live on a static serve (`wrangler pages dev dist`, `astro build` + serve) — only a raw HMR dev server would hot-reload them. So after applying fixes, tear the old server down FIRST (else the next `up` health-checks the still-running stale process and the runfile PID gets clobbered), re-serve to rebuild, then re-run `impeccable detect` against the fresh URL:
 
 ```bash
-bash "$S/serve.sh" down --runfile "$QA_RUNFILE"    # kill the pre-fix server before re-serving
-eval "$(bash "$S/serve.sh" up --repo "$TARGET" --mode "$MODE" --run-id "$RUN_ID" | grep '^QA_')"
-bash "$S/impeccable-detect.sh" "$TARGET" "$QA_URL"
-bash "$S/system-drift.sh" "${QA_WORKTREE:-$TARGET}"
+node --experimental-strip-types "$S/serve.ts" down --runfile "$QA_RUNFILE"    # kill the pre-fix server before re-serving
+eval "$(node --experimental-strip-types "$S/serve.ts" up --repo "$TARGET" --mode "$MODE" --run-id "$RUN_ID" | grep '^QA_')"
+node --experimental-strip-types "$S/impeccable-detect.ts" "$TARGET" "$QA_URL" ${QA_AUTH_JWT_FILE:+--auth-jwt-file "$QA_AUTH_JWT_FILE"}
+node --experimental-strip-types "$S/system-drift.ts" "${QA_WORKTREE:-$TARGET}"
 ```
 
 **All deterministic fixing happens here, before any AI looks, and the step-3 screenshots are taken from this rebuilt server** — never the pre-fix build. The fresh-eyes review is expensive and should spend its tokens only on judgment a rule can't make, not on tells impeccable already located and you already fixed.
@@ -221,17 +225,20 @@ bash "$S/system-drift.sh" "${QA_WORKTREE:-$TARGET}"
 ## step-3-screenshot
 
 ```bash
-# $QA_SLUG came from serve.sh up — the collision-safe slug (basename-cksum) that
-# screenshot.sh + teardown must BOTH use, so a plain basename never mismatches
-# serve.sh's own shots dir.
-# On --live with QA_ACCESS_OP_ITEM set, serve.sh emits that op-item (QA_AUTH_*),
-# so screenshot.sh resolves + sends CF-Access headers — 200 on a gated site,
+# $QA_SLUG came from serve.ts up — the collision-safe slug (basename-cksum) that
+# screenshot.ts + teardown must BOTH use, so a plain basename never mismatches
+# serve.ts's own shots dir.
+# On --live with QA_ACCESS_OP_ITEM set, serve.ts emits that op-item (QA_AUTH_*),
+# so screenshot.ts resolves + sends CF-Access headers — 200 on a gated site,
 # harmless extra headers on an ungated one. On an app whose wrangler config
 # sets PROBE_ACTS_AS it also emits QA_AUTH_ACT_AS: the token alone is a machine
 # there, and the act-as header is what makes it the person the app names.
+# On --before/--after of such an app it emits QA_AUTH_JWT_FILE instead: the
+# token serve.ts signed for that person, sent as Cloudflare Access would send it.
 AUTH=(); [ -n "${QA_AUTH_OP_ITEM:-}" ] && AUTH=(--auth-op-item "$QA_AUTH_OP_ITEM" --auth-id-field "$QA_AUTH_ID_FIELD" --auth-secret-field "$QA_AUTH_SECRET_FIELD")
 [ -n "${QA_AUTH_ACT_AS:-}" ] && AUTH+=(--auth-act-as "$QA_AUTH_ACT_AS")
-bash "$S/screenshot.sh" --url "$QA_URL" --repo-slug "$QA_SLUG" --run-id "$RUN_ID" \
+[ -n "${QA_AUTH_JWT_FILE:-}" ] && AUTH+=(--auth-jwt-file "$QA_AUTH_JWT_FILE")
+node --experimental-strip-types "$S/screenshot.ts" --url "$QA_URL" --repo-slug "$QA_SLUG" --run-id "$RUN_ID" \
   --pages "$PAGES" --viewports "${VIEWPORTS:-1440,820,390}" --app "$TARGET" ${AUTH[@]+"${AUTH[@]}"}
 ```
 
@@ -246,7 +253,7 @@ settled end state; they are not evidence about motion and never were.
 
 ## step-3.6-motion
 
-`screenshot.sh` captures motion on every run, by default, and prints a summary
+`screenshot.ts` captures motion on every run, by default, and prints a summary
 line. Nothing extra to invoke — but the RESULT is a gate, so read it:
 
 ```
@@ -278,7 +285,7 @@ To check the accessibility axis deliberately, re-run the capture with
 Still animating under that flag is a P1 accessibility failure.
 
 ```bash
-bash "$S/screenshot.sh" --url "$QA_URL" --repo-slug "$QA_SLUG" --run-id "$RUN_ID-rm" \
+node --experimental-strip-types "$S/screenshot.ts" --url "$QA_URL" --repo-slug "$QA_SLUG" --run-id "$RUN_ID-rm" \
   --pages "$PAGES" --viewports 1440 --reduced-motion --app "$TARGET" ${AUTH[@]+"${AUTH[@]}"}
 ```
 
@@ -290,7 +297,7 @@ fixed in this run). Each page is loaded once with its data held, then every
 visible button is pressed on a fresh load with everything that could write held.
 
 ```bash
-bash "$S/interaction-check.sh" --url "$QA_URL" --pages "$PAGES" --repo "$TARGET" ${AUTH[@]+"${AUTH[@]}"}
+node --experimental-strip-types "$S/interaction-check.ts" --url "$QA_URL" --pages "$PAGES" --repo "$TARGET" ${AUTH[@]+"${AUTH[@]}"}
 ```
 
 Each `INTERACTION <route> <kind> <detail>` line is a **P1 finding**, fixed in
@@ -308,7 +315,19 @@ step-4.5 like any other:
 - `unloadable` — the route did not load; the run exits 1.
 
 **Held means never sent**: every non-GET request, every fetch/XHR, every
-WebSocket and every service worker. GET navigations are not held, so a GET
+WebSocket and every service worker. A plain HTML form's POST, which the browser
+sends as a page navigation, is answered locally with a 204 rather than held —
+held open, it tore the page down and wedged the run — so it is still never sent
+and the page stays up to be read. Each press gets a fresh browser context, so
+nothing an earlier press stored carries over: a press that saves a collapsed
+section to `localStorage` would otherwise hide the buttons every later press
+was counted against. The hold is never lifted before that page closes: it is
+armed in the page itself as well as on the route, because a keepalive fetch or
+a beacon sent from `pagehide` or `beforeunload` leaves through the browser past
+any route. Lifting the hold to reload between presses lets an editor that saves
+on its way out write to the real data store on every press. That is also why
+this step never runs against `--live`; a correct hold does not make `--live`
+allowed. GET navigations are not held, so a GET
 endpoint with a side effect is the one thing this can still trigger. Dialogs are
 dismissed. It cannot see the RESULT a save shows once the server answers — that
 half is still the reviewer's, from the running app.
@@ -316,23 +335,33 @@ half is still the reviewer's, from the running app.
 A control whose correct response is off screen (a copy-to-clipboard button) can
 carry `data-qa-feedback="<reason>"`; it is skipped and listed as `SKIPPED` with
 the reason, which the reviewer accepts or rejects. It is never the way out of a
-real `no-feedback`.
+real `no-feedback`. The option a set already has selected — `aria-selected`,
+`aria-pressed` or `aria-current` on it — is listed the same way ("already the
+selected option"): pressing it again correctly changes nothing, and the aria
+state is what says so to a screen reader too. A toggle that styles its selected
+option without that state is the page's defect, fixed in the page.
 
-A clean run (exit 0) stamps the tree, and `mark-qa-done.sh --tree` refuses a
+Each load is settled before anything is counted or pressed: past network quiet,
+until the buttons and the text stop changing for 1.2 s (capped at 8 s). A client
+app can fetch, go quiet, and only then draw its buttons; counted at network
+quiet, such a page has one button, and the run presses nothing on one pass and
+reaches for buttons not yet drawn on the next.
+
+A clean run (exit 0) stamps the tree, and `mark-qa-done.ts --tree` refuses a
 served app without that stamp (exit 3), so step-6 cannot mark a tree whose
 buttons were never pressed. Why this exists: a form that sits blank for seconds
 while its data loads, and a button that gives no sign it was pressed, both pass
 a screenshot review — the shots show only the settled page.
 
 Exit 7 is `qa: skipped — Playwright unavailable (<reason>)`: no stamp is written,
-so `mark-qa-done.sh --tree` refuses, and the report says the check was skipped.
+so `mark-qa-done.ts --tree` refuses, and the report says the check was skipped.
 
 ## step-3.5-a11y
 
 Only with `--a11y`:
 
 ```bash
-bash "$S/a11y.sh" --url "$QA_URL" --pages "$PAGES" --viewports "${VIEWPORTS:-1440}" ${AUTH[@]+"${AUTH[@]}"}
+node --experimental-strip-types "$S/a11y.ts" --url "$QA_URL" --pages "$PAGES" --viewports "${VIEWPORTS:-1440}" ${AUTH[@]+"${AUTH[@]}"}
 ```
 
 Per-page axe violation counts. Advisory (~57% WCAG coverage) — report it, never block on it.
@@ -344,15 +373,15 @@ Per-page axe violation counts. Advisory (~57% WCAG coverage) — report it, neve
 So the brief is not the gate. Burn a random code into the pixels of every shot and make the reviewer hand it back:
 
 ```bash
-eval "$(bash "$S/sight-check.sh" stamp --dir "/tmp/qa-shots/$QA_SLUG/$RUN_ID")"
+eval "$(node --experimental-strip-types "$S/sight-check.ts" stamp --dir "/tmp/qa-shots/$QA_SLUG/$RUN_ID")"
 # -> QA_SIGHT_CODES=<path>  QA_SIGHT_COUNT=<n>
 ```
 
 A 6-character code per shot, appended in a strip BELOW the image so every y-coordinate in the page is unchanged and the reviewer's geometry stays valid. The code exists in the pixels and nowhere else — not in the DOM, not in the served HTML, not in the PNG's bytes as text, and **not in the run dir**: `QA_SIGHT_CODES` deliberately points outside it, because a codes file sitting next to the PNGs is a text answer to a picture question. Never paste the codes into the brief.
 
-The stamp is drawn by ImageMagick when `magick` is installed and by Playwright (`sight-stamp.mjs`) when it is not — the same strip either way. This step HALTS on exit 3 (neither ImageMagick nor Playwright available) or 4 (no PNGs, or the stamp rendered blank because no font resolved). A review that cannot be proven sighted must not be dispatched at all — an unstampable run is a broken harness, not a run to push through.
+The stamp is drawn by ImageMagick when `magick` is installed and by Playwright (`sight-stamp.ts`) when it is not — the same strip either way. This step HALTS on exit 3 (neither ImageMagick nor Playwright available) or 4 (no PNGs, or the stamp rendered blank because no font resolved). A review that cannot be proven sighted must not be dispatched at all — an unstampable run is a broken harness, not a run to push through.
 
-Both halves run outside the model (Bash, and a headless browser when there is no ImageMagick), so this gate still fires when the ORCHESTRATOR's own image `Read` is dead — which is the condition it exists for.
+Both halves run outside the model (Node, and a headless browser when there is no ImageMagick), so this gate still fires when the ORCHESTRATOR's own image `Read` is dead — which is the condition it exists for.
 
 ## step-4-fresh-review
 
@@ -404,7 +433,7 @@ Zero findings is a permitted answer; do not pad.
 **Then verify the reply before you read a word of it.** Write the reviewer's answer to a file and run the gate:
 
 ```bash
-bash "$S/sight-check.sh" verify --codes "$QA_SIGHT_CODES" --response /tmp/qa-review-$RUN_ID.txt
+node --experimental-strip-types "$S/sight-check.ts" verify --codes "$QA_SIGHT_CODES" --response /tmp/qa-review-$RUN_ID.txt
 ```
 
 Exit 0 prints `SIGHTED — n/n codes transcribed`. Exit 6 means the codes did not come back and the findings, however well-formed, were computed rather than seen. Exit 5 means no codes exist at all, so nothing about the reply is proven — absence is never a pass. **Either one HALTS the review. MUST NOT report a visual pass on an unverified reply**, and MUST NOT read past a "degraded"/"could not open the image" line in the reviewer's own text: that is exactly the line that gets read past.
@@ -412,10 +441,10 @@ Exit 0 prints `SIGHTED — n/n codes transcribed`. Exit 6 means the codes did no
 **When it fails, route around it — the fallback is the review chain on another vendor, not a retry.** `adversarial-review` puts the review on a different vendor from the author — the independence the review gate wants anyway. The brief names the PNG paths the reviewer must open.
 
 ```bash
-bash .agents/skills/review/policy-review.sh adversarial-review \
+node --experimental-strip-types .agents/skills/review/policy-review.ts adversarial-review \
   "/tmp/qa-shots/$QA_SLUG/$RUN_ID/manifest.json" /tmp/qa-brief-$RUN_ID.txt \
   > /tmp/qa-review-$RUN_ID.txt
-bash "$S/sight-check.sh" verify --codes "$QA_SIGHT_CODES" --response /tmp/qa-review-$RUN_ID.txt
+node --experimental-strip-types "$S/sight-check.ts" verify --codes "$QA_SIGHT_CODES" --response /tmp/qa-review-$RUN_ID.txt
 ```
 
 The brief file carries the same text as the subagent brief above — rubric, sight-code instruction, design intent, and the absolute path of every PNG to open — and still never the codes. Max **8 images per call**; a bigger run is batched, and each batch's reply is verified against the same codes file. A vendor that cannot open an image cannot return the codes, so the same gate refuses its answer: when no reviewer in the chain can see, the review HALTS and the report says the visual review did not happen.
@@ -426,7 +455,7 @@ Apply taste to the findings (the subagent verifies structure, not whether a fix 
 
 ## step-4.5-fix-reverify
 
-Act on every P0 and P1 from step-4 and every `INTERACTION` line from step-3.7. Then re-serve, **re-run `interaction-check.sh` until it exits 0**, and re-shoot the affected pages, **re-run `step-4-stamp-sight` on the new shots**, and dispatch a **fresh** visual-QA subagent — not the one that reviewed the first pass (same-subagent-as-built is not acceptable) — to confirm the fixes landed and introduced no regression. Re-stamping is not optional: fresh PNGs carry no codes, and reusing the first pass's codes would let a reviewer pass this round by quoting what it read last round. Its reply goes through `sight-check.sh verify` on exactly the same terms, with the same halt and the same review-chain fallback. Skip this step entirely if step-4 returned zero P0/P1 and step-3.7 exited 0.
+Act on every P0 and P1 from step-4 and every `INTERACTION` line from step-3.7. Then re-serve, **re-run `interaction-check.ts` until it exits 0**, and re-shoot the affected pages, **re-run `step-4-stamp-sight` on the new shots**, and dispatch a **fresh** visual-QA subagent — not the one that reviewed the first pass (same-subagent-as-built is not acceptable) — to confirm the fixes landed and introduced no regression. Re-stamping is not optional: fresh PNGs carry no codes, and reusing the first pass's codes would let a reviewer pass this round by quoting what it read last round. Its reply goes through `sight-check.ts verify` on exactly the same terms, with the same halt and the same review-chain fallback. Skip this step entirely if step-4 returned zero P0/P1 and step-3.7 exited 0.
 
 ## step-4.7-explain
 
@@ -455,7 +484,7 @@ export QA_OUT="/tmp/qa-shots/<slug>/$RUN_ID"; mkdir -p "$QA_OUT"
 (cd "$TARGET" && npm run --silent qa:render)
 ```
 
-The PNG(s) under `$QA_OUT` ARE the screenshots — no serve, no `screenshot.sh`. Then continue to `step-4-fresh-review` over them exactly as for a served page. This is how `/qa` guarantees it can always render the thing it's working on: if a target can't be served, it declares how to render itself.
+The PNG(s) under `$QA_OUT` ARE the screenshots — no serve, no `screenshot.ts`. Then continue to `step-4-fresh-review` over them exactly as for a served page. This is how `/qa` guarantees it can always render the thing it's working on: if a target can't be served, it declares how to render itself.
 
 ## Cloudflare portal recipe
 
@@ -464,37 +493,37 @@ A Cloudflare-hosted site behind Cloudflare Access is not a dead end. Three doors
 | Question | Door |
 |---|---|
 | Is the DATA / logic right? | Read the production store directly — e.g. `npx wrangler d1 execute <db> --remote --command "<sql>"`, or `npx wrangler kv key get <key> --namespace-id <id> --remote`. No server, no browser. Beats a screenshot for data-correctness. |
-| Does the live page RENDER right? | `/qa <site> --live` with an Access service token: name its 1Password item in `QA_ACCESS_OP_ITEM` (or set `QA_CF_ACCESS_ID` / `QA_CF_ACCESS_SECRET`). The Access app needs a Service Auth policy for that token; then the gated URL returns 200 (headers resolved inside `screenshot.sh`, never on stdout). |
+| Does the live page RENDER right? | `/qa <site> --live` with an Access service token: name its 1Password item in `QA_ACCESS_OP_ITEM` (or set `QA_CF_ACCESS_ID` / `QA_CF_ACCESS_SECRET`). The Access app needs a Service Auth policy for that token; then the gated URL returns 200 (headers resolved inside `screenshot.ts`, never on stdout). |
 | Pre-commit layout of uncommitted edits? | `--before`; astro-cf auto-falls-back to `astro dev` if workerd won't boot. No CF bindings on the fallback, so pair it with the data read above. |
 
-**Walking a page as a person.** Some apps treat a service token alone as a MACHINE and answer every page with "service tokens cannot access this page". If the app's wrangler config declares `PROBE_ACTS_AS = "<client id> <email>"`, the app treats the token plus an `X-Portal-Act-As: <that email>` header as that person. `serve.sh --live` reads the declaration (`qa_probe_acts_as` in `lib.sh`), finds a Worker's URL through the Workers custom-domain registry, and emits `QA_AUTH_ACT_AS`; pass it as `--auth-act-as` to `screenshot.sh`, `interaction-check.sh` and `a11y.sh`. An app that declares nothing gets no header.
+**Walking a page as a person.** Some apps treat a service token alone as a MACHINE and answer every page with "service tokens cannot access this page". If the app's wrangler config declares `PROBE_ACTS_AS = "<client id> <email>"`, the app treats the token plus an `X-Portal-Act-As: <that email>` header as that person. `serve.ts --live` reads the declaration (`qaProbeActsAs` in `lib.ts`), finds a Worker's URL through the Workers custom-domain registry, and emits `QA_AUTH_ACT_AS`; pass it as `--auth-act-as` to `screenshot.ts`, `interaction-check.ts` and `a11y.ts`. An app that declares nothing gets no header. On `--before`/`--after` the same declaration (with `ACCESS_AUD`) signs the app in locally instead (step-2), except on the `astro dev` fallback, which has no CF bindings.
 
 Never conclude a portal fix is "unverifiable locally" — that conflates *your tool's* browser access with the open database and service-token doors. And never hand a live check to the user as "needs your sign-in" before sending the act-as header: with a service token and `--auth-act-as` the page is reachable without them.
 
 ## step-6-teardown
 
 ```bash
-bash "$S/serve.sh" down --runfile "$QA_RUNFILE"   # unless --keep
-[ -z "${KEEP:-}" ] && rm -rf "/tmp/qa-shots/$QA_SLUG/$RUN_ID"   # $QA_SLUG (from serve.sh) matches the real shots dir; nobody reviews the shots after the run
+node --experimental-strip-types "$S/serve.ts" down --runfile "$QA_RUNFILE"   # unless --keep
+[ -z "${KEEP:-}" ] && rm -rf "/tmp/qa-shots/$QA_SLUG/$RUN_ID"   # $QA_SLUG (from serve.ts) matches the real shots dir; nobody reviews the shots after the run
 ```
 
-The screenshots exist only to be reviewed during the run (steps 4-4.5); once the review is done they're deleted. `--keep` leaves both the server AND the shots up, and prints `QA_URL`, the shots dir, and the teardown one-liner: `bash .agents/skills/qa/scripts/serve.sh down --runfile <QA_RUNFILE>`. The step-4.7 plain-English summary is the result the user sees, not the PNGs.
+The screenshots exist only to be reviewed during the run (steps 4-4.5); once the review is done they're deleted. `--keep` leaves both the server AND the shots up, and prints `QA_URL`, the shots dir, and the teardown one-liner: `node --experimental-strip-types .agents/skills/qa/scripts/serve.ts down --runfile <QA_RUNFILE>`. The step-4.7 plain-English summary is the result the user sees, not the PNGs.
 
 After the review completes and fix-now findings are handled, clear the autonomous gate for this change-set:
 
 ```bash
-bash .agents/skills/qa/scripts/mark-qa-done.sh "$TARGET"
+node --experimental-strip-types .agents/skills/qa/scripts/mark-qa-done.ts "$TARGET"
 
 # Under /implement phase-4.8, pass the tree the gate will check against — the
 # snapshot taken AFTER this /qa finished, so the marker names the bytes that ship:
-bash .agents/skills/qa/scripts/mark-qa-done.sh --tree "$POST_QA" "$TARGET"
+node --experimental-strip-types .agents/skills/qa/scripts/mark-qa-done.ts --tree "$POST_QA" "$TARGET"
 ```
 
-With `--tree` it writes `/tmp/qa-done/<slug>-<tree-sha>`, which is what `validate.sh --require-qa` reads. Both forms also write the legacy `/tmp/qa-done/<repo>-<change-hash>` key, which nothing reads any more. The next paragraph is why the gate needed a second key rather than a reuse of that one.
+With `--tree` it writes `/tmp/qa-done/<slug>-<tree-sha>`, which is what `validate.ts --require-qa` reads. Both forms also write the legacy `/tmp/qa-done/<repo>-<change-hash>` key, which nothing reads any more. The next paragraph is why the gate needed a second key rather than a reuse of that one.
 
-**Write the marker only here, and only after the review passed.** `mark-qa-done.sh --tree` itself refuses a served app whose interaction check has not passed on that exact tree. It is the single piece of evidence `/implement` accepts that a UI was actually looked at. A marker touched early — or by hand to get past a gate — is the gate lying, and the next thing that happens is a UI shipping on a green run that nobody saw.
+**Write the marker only here, and only after the review passed.** `mark-qa-done.ts --tree` itself refuses a served app whose interaction check has not passed on that exact tree. It is the single piece of evidence `/implement` accepts that a UI was actually looked at. A marker touched early — or by hand to get past a gate — is the gate lying, and the next thing that happens is a UI shipping on a green run that nobody saw.
 
-**What the legacy key does NOT durably clear.** It is `git status --porcelain | cksum` — a digest of the repo's UNCOMMITTED change-set (`qa_change_hash` in `scripts/lib.sh`). Run after the work is committed, the digest is of empty input: the marker is keyed `-4294967295`, which is exactly `printf '' | cksum`. Such a marker can never match a future dirty state, so it proves nothing about the tree that shipped.
+**What the legacy key does NOT durably clear.** It is `git status --porcelain | cksum` — a digest of the repo's UNCOMMITTED change-set (`qaChangeHash` in `scripts/lib.ts`). Run after the work is committed, the digest is of empty input: the marker is keyed `-4294967295`, which is exactly `printf '' | cksum`. Such a marker can never match a future dirty state, so it proves nothing about the tree that shipped.
 
 That measurement is exactly why the `/implement` gate could not reuse this key and got a second one. A tree SHA names the bytes QA looked at, survives the commit, and — the part the gate needs — MOVES when a later `/qa` edits source, so an earlier target's marker stops matching and that target runs again. `--require-qa` asks "has this exact tree been seen, target by target?" — a question the change-set key could never answer.
 
@@ -519,17 +548,17 @@ That measurement is exactly why the `/implement` gate could not reuse this key a
 | `detect-app: unknown app type` | Node-server / CLI / render target with no `qa:*` script | add a `qa:serve` / `qa:cmd` / `qa:render` script to the repo's `package.json` |
 | `discover-routes: no-src-pages` / `no-static-routes` | the repo has no routing dir at all (`src/pages/`, `pages/`, `app/`, `src/app/`), or only dynamic/private/error routes | pass explicit `page ...` args for the routes to shoot; `/qa` never fabricates one |
 | `build failed` | the repo's `npm run build` is red | fix the build in the target repo first |
-| `server never came up` | slow boot / crash | check the printed `server.log` tail. A busy default port is no longer a cause — with no `--port`, `serve.sh` scans upward from 8813 for a free one |
+| `server never came up` | slow boot / crash | check the printed `server.log` tail. A busy default port is no longer a cause — with no `--port`, `serve.ts` scans upward from 8813 for a free one |
 | `the listener is NOT this run's process group` | a server from another repo or session already holds the port and answers 200 | stop that process or pass `--port <free-port>`. `/qa` refuses it deliberately: accepting it means an entire review pass grades a different application |
-| `qa: BLANK CAPTURES` (exit 8) | the shot is (near-)uniform — almost always sections that fade in on scroll, since a `fullPage` shot does not scroll | the capture now scroll-walks the page and forces `[data-animate]`/`[data-aos]`/`.reveal`/`.fade-in`/`.animate-on-scroll` visible before shooting; if a site hides content under some OTHER selector, add it to that rule in `scripts/screenshot.sh`. A genuinely near-empty page (bare 404, one-line confirmation) is the false positive — re-run with `QA_INK_FLOOR=0`. Never review a shot the gate rejected: a reviewer handed a white image critiques the whitespace and returns confident findings about nothing. |
+| `qa: BLANK CAPTURES` (exit 8) | the shot is (near-)uniform — almost always sections that fade in on scroll, since a `fullPage` shot does not scroll | the capture now scroll-walks the page and forces `[data-animate]`/`[data-aos]`/`.reveal`/`.fade-in`/`.animate-on-scroll` visible before shooting; if a site hides content under some OTHER selector, add it to that rule in `scripts/screenshot.ts`. A genuinely near-empty page (bare 404, one-line confirmation) is the false positive — re-run with `QA_INK_FLOOR=0`. Never review a shot the gate rejected: a reviewer handed a white image critiques the whitespace and returns confident findings about nothing. |
 | blank screenshots that survive the gate | SPA needs a wait/selector | the Node capture uses `networkidle`; add a mask or raise the timeout |
 | `qa: IDENTICAL SHOTS` (exit 6) | every route rendered the same image — auth wall, dead client routing, or a catch-all | `curl -sI <url>/<route> \| head -3` to see the redirect. On `--live`, attach an Access service token (§ Cloudflare portal recipe) — otherwise `--before` bypasses the gate. Never review the shots as-is. |
 | `qa: UNSUCCESSFUL RESPONSES` (exit 9) | a route answered 4xx/5xx or not at all — a gated app's machine 403 carries a full page of ink, so the blank and identical-shot gates cannot see it | a 403 on a gated app: pass `--auth-act-as` (the "service tokens cannot access this page" row below); anything else: fix the route. Never review the shots |
 | `qa: REDIRECTED OFF-ORIGIN` (exit 7) | navigation landed on a different origin (CF Access / Google sign-in) — catches the single-page case exit 6 structurally cannot | Attach an Access service token (§ Cloudflare portal recipe), or use `--before`. |
-| `qa: skipped — Playwright unavailable (<reason>)` (exit 7) | no Playwright could be found or installed — offline, no npm, or `QA_NO_INSTALL=1` | report the skip, never a pass. Fix the reason (network, npm) and re-run; `bash .agents/skills/qa/scripts/ensure-playwright.sh` installs it on its own |
+| `qa: skipped — Playwright unavailable (<reason>)` (exit 7) | no Playwright could be found or installed — offline, no npm, or `QA_NO_INSTALL=1` | report the skip, never a pass. Fix the reason (network, npm) and re-run; `node --experimental-strip-types .agents/skills/qa/scripts/ensure-playwright.ts` installs it on its own |
 | `impeccable: detector unavailable — …` | impeccable is missing and could not be installed, or it crashed | report it as not checked; `npm install -g impeccable@latest` by hand, then re-run step-2.6 |
 | `--live` refused | no `--live-url`, no CF Pages project matched the repo name, and no Workers custom domain serves the Worker its wrangler config names (or no Cloudflare credentials) | pass `--live-url <url>`, or use `--before` to build + serve the working tree (the URL is never inferred) |
-| a gated app's page shows "service tokens cannot access this page" (or an API says a person is required) | the token reached the app as a MACHINE: no `X-Portal-Act-As` was sent | the target's wrangler config has no `PROBE_ACTS_AS`, or the run bypassed `serve.sh --live`. Pass `--auth-act-as <the email PROBE_ACTS_AS names>` to `screenshot.sh` / `interaction-check.sh`; a sign-in is never the fix |
+| a gated app's page shows "service tokens cannot access this page" (or an API says a person is required) | the token reached the app as a MACHINE: no `X-Portal-Act-As` was sent | the target's wrangler config has no `PROBE_ACTS_AS`, or the run bypassed `serve.ts --live`. Pass `--auth-act-as <the email PROBE_ACTS_AS names>` to `screenshot.ts` / `interaction-check.ts`; a sign-in is never the fix |
 | auth-gated `--live` shows a login redirect | no Access service token was sent, or the Access app has no Service Auth policy for it | § Cloudflare portal recipe. If you need the DATA not the pixels, read the store directly instead. |
-| `wrangler pages dev` won't boot (workerd error) | sandbox can't start the Workers runtime | serve.sh auto-falls-back to `astro dev` (label says "no CF bindings"); verify data with a direct read, not the fallback server |
+| `wrangler pages dev` won't boot (workerd error) | sandbox can't start the Workers runtime | serve.ts auto-falls-back to `astro dev` (label says "no CF bindings"); verify data with a direct read, not the fallback server |
 | `render` command wrote no PNGs | the `qa:render` script didn't write to `$QA_OUT` | it MUST write its PNG(s) to `$QA_OUT` (exported by step-5b); fix the script's output path |

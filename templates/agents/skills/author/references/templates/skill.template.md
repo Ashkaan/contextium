@@ -11,7 +11,7 @@ description: TODO third person, what this skill does AND when to fire it (trigge
 TODO one-paragraph statement of what `/{{name}}` does and when to reach for it.
 The shape this file must keep — the six frontmatter keys, `metadata.peers`,
 the learned-state folder convention, the body standard — is
-`AGENTS.md` § Skill shape; `check-skills.sh` holds it to that. Whether only the user may
+`AGENTS.md` § Skill shape; `check-skills.ts` holds it to that. Whether only the user may
 fire it is `skillOverrides` in `~/.claude/settings.json`, not a field here.
 
 ## Critical

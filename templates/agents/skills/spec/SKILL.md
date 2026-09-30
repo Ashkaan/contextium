@@ -3,7 +3,7 @@ name: spec
 description: Writes one spec folder, specs/NNN-name/{spec,plan,tasks,research}.md, per designed roadmap row from spec-kit's templates, fills the row in ROADMAP.md, auto-dispatches spec-audit (reviewer consensus + spirit-check), folds findings, then auto-invokes /close. Use when /project hands over a design, or when work-in-progress turns out to need a SPEC in the moment. The SPEC-writing half of the loop's Think verb — broken out so a SPEC can be produced anytime one is needed, not only inside a full /project think flow.
 allowed-tools: "Bash(.agents/skills/close/scripts/*:*) Bash(.agents/skills/spec-audit/scripts/*:*) Read Edit Write Skill Task"
 metadata:
-  peers: ".agents/skills/project/SKILL.md .agents/skills/spec-audit/SKILL.md .agents/skills/close/references/auto-close-gate.md .agents/skills/spec/references/templates/SOURCE.md .agents/skills/project/references/templates/ROADMAP.md .agents/skills/close/scripts/roadmap.sh"
+  peers: ".agents/skills/project/SKILL.md .agents/skills/spec-audit/SKILL.md .agents/skills/close/references/auto-close-gate.md .agents/skills/spec/references/templates/SOURCE.md .agents/skills/project/references/templates/ROADMAP.md .agents/skills/close/scripts/roadmap.ts"
 ---
 
 # /spec — write the SPEC
@@ -51,21 +51,21 @@ to planning.
    `N/A — no grill (ad-hoc spec)` there.
 3. **Leave open items open.** Anything not settled is written in place as
    `[NEEDS CLARIFICATION: <the question>]`. That is not a failure of the spec:
-   `.agents/skills/close/scripts/open-clarifications.sh` finds it, `/implement` refuses to
+   `.agents/skills/close/scripts/open-clarifications.ts` finds it, `/implement` refuses to
    start while one remains, and the project routes back to `/project` to settle
    it.
 4. **The roadmap row.** With no `ROADMAP.md` in the project, create it from
    [`project/references/templates/ROADMAP.md`](../project/references/templates/ROADMAP.md):
    fill the epic name and intro, and REPLACE the template's three placeholder
    rows (`<name>`, `<one line>`) with the real rows — never append beneath them,
-   because `roadmap.sh` refuses a table that still holds a placeholder. A new
+   because `roadmap.ts` refuses a table that still holds a placeholder. A new
    row's ID is `R` + (the highest numeric ID + 1), from `R1`; an existing ID is
    never reused or renumbered, since specs and commits cite it. Then record the
    folder in the row, through the one writer of that table:
 
    ```bash
-   bash .agents/skills/close/scripts/roadmap.sh <project-folder> --set <ID> planned --sub-spec specs/NNN-name/
-   bash .agents/skills/close/scripts/roadmap.sh <project-folder> --sync-next
+   node --experimental-strip-types .agents/skills/close/scripts/roadmap.ts <project-folder> --set <ID> planned --sub-spec specs/NNN-name/
+   node --experimental-strip-types .agents/skills/close/scripts/roadmap.ts <project-folder> --sync-next
    ```
 
    The second line re-derives the README's `next:` from the table, per the
@@ -82,8 +82,8 @@ to planning.
 **Legacy projects.** A project with loose `*.spec.md` files and no
 `ROADMAP.md` gets its next spec in the new layout all the same — a folder plus a
 `ROADMAP.md` created from the template. The two layouts may sit side by side;
-every reader (`spec-state.sh`,
-`detect-stage.sh`, `project-remaining-work.sh`, `next-implement-command.sh`)
+every reader (`spec-state.ts`,
+`detect-stage.ts`, `project-remaining-work.ts`, `next-implement-command.ts`)
 reads both.
 
 ## step-2-spec-audit — dispatch /spec-audit
@@ -97,13 +97,13 @@ UNCONDITIONAL — fires on every spec `/spec` writes. Dispatch `/spec-audit <spe
 - **Spirit-check MATCH**: no drift; proceed.
 - **Spirit-check DRIFT / AMBIGUOUS, or a held reviewer escalation**: surface to the user. This is a hard stop — `step-3-auto-close` does NOT fire while it is outstanding (per the auto-close gate's precondition (i)).
 
-**Skip-clause** (handled inside `/spec-audit` via `check-materiality.sh`, which diffs the whole folder): trivial wording iteration of an already-audited spec skips the machine review and writes a `spec-audit: skipped — non-material` line there.
+**Skip-clause** (handled inside `/spec-audit` via `check-materiality.ts`, which diffs the whole folder): trivial wording iteration of an already-audited spec skips the machine review and writes a `spec-audit: skipped — non-material` line there.
 
 The line is a record in plan.md, never a gate on a commit; the close's journal entry quotes it.
 
 ## step-3-auto-close — auto-invoke /close
 
-Per the shared SSOT [close/references/auto-close-gate.md](../close/references/auto-close-gate.md). On clean completion — every folder written + audited, no escalation / DRIFT / hard stop / deferral outstanding, and `land.sh --gate` is `not-fired` — dispatch `/close` via the Skill tool. `/close` commits + pushes the specs and the ROADMAP/README edits, prints each ready row's command in its own block, and folds the `## SPEC Created` summary (below) into the close output.
+Per the shared SSOT [close/references/auto-close-gate.md](../close/references/auto-close-gate.md). On clean completion — every folder written + audited, no escalation / DRIFT / hard stop / deferral outstanding, and `land.ts --gate` is `not-fired` — run `/close` per the gate. `/close` commits + pushes the specs and the ROADMAP/README edits, prints each ready row's command in its own block, and folds the `## SPEC Created` summary (below) into the close output.
 
 **HALT instead of closing** iff a hard stop (a held reviewer escalation or spirit DRIFT the user must adjudicate) or a deferral question to the user is outstanding. After the user answers, the verb resumes and then auto-closes (the gate prevents a double-fire).
 
@@ -143,13 +143,13 @@ button — they are separate sessions and may run in parallel:
 The row ID is lowercased because `/implement`'s argument must pass the slug
 regex `^[a-z][a-z0-9-]{0,63}$` (`.agents/skills/implement/scripts/setup-worktree.sh`); it is
 matched to the row case-insensitively. These are the same lines
-`next-implement-command.sh` prints and `land.sh` renders at the close.
+`next-implement-command.ts` prints and `land.ts` renders at the close.
 
 ## Examples
 
 ### Example 1 — dispatched by /project (the golden path)
 
-`/project <slug>` runs the think flow through design + row split + categorize, then its `think-step-4-dispatch-spec` invokes `/spec` with two designed rows, R1 and R2 (R2 depends on R1). `step-1` creates `ROADMAP.md` from the template with those two rows, writes `specs/001-foundation/` and `specs/002-sync/`, and runs `roadmap.sh --set` for each, then `--sync-next`. `step-2` dispatches `/spec-audit specs/001-foundation/` and `/spec-audit specs/002-sync/` → round-1 consensus, spirit MATCH, `spec-audit:` line written into each plan.md. `step-3` sees no decision/deferral + `not-fired` → dispatches `/close`, which commits + pushes and prints one block, `/implement <slug> r1` — R2 is not ready until R1 is done. Session ends; the user opens a fresh tab for `/implement`.
+`/project <slug>` runs the think flow through design + row split + categorize, then its `think-step-4-dispatch-spec` invokes `/spec` with two designed rows, R1 and R2 (R2 depends on R1). `step-1` creates `ROADMAP.md` from the template with those two rows, writes `specs/001-foundation/` and `specs/002-sync/`, and runs `roadmap.ts --set` for each, then `--sync-next`. `step-2` dispatches `/spec-audit specs/001-foundation/` and `/spec-audit specs/002-sync/` → round-1 consensus, spirit MATCH, `spec-audit:` line written into each plan.md. `step-3` sees no decision/deferral + `not-fired` → dispatches `/close`, which commits + pushes and prints one block, `/implement <slug> r1` — R2 is not ready until R1 is done. Session ends; the user opens a fresh tab for `/implement`.
 
 ### Example 2 — ad-hoc mid-session SPEC
 
@@ -164,8 +164,8 @@ Working together, it turns out a small change needs a spec. `/spec "<scope hint>
 | Symptom | Likely cause | Fix |
 |---|---|---|
 | Auto-close fired while a DRIFT was unresolved | `step-2` surfaced DRIFT but `step-3` proceeded | Precondition (i) was violated — an outstanding decision means HALT; re-open the decision with the user before any close |
-| `/close` ran twice | the gate was not consulted before dispatch | `step-3` MUST run `land.sh --gate` BEFORE dispatching `/close`, and proceed only on `not-fired` |
+| `/close` ran twice | the gate was not consulted before dispatch | `step-3` MUST run `land.ts --gate` BEFORE dispatching `/close`, and proceed only on `not-fired` |
 | plan.md still holds the `- spec-audit: [...]` placeholder | `step-2` was skipped, or printed the line without writing it | Run `/spec-audit <spec-folder>`; it replaces the whole list item with the line |
-| Spec written as a loose `*.spec.md` | The legacy layout was followed | Move it into `specs/NNN-name/` split across the four templates, and point its row's Sub-spec at the folder with `roadmap.sh --set` |
-| `roadmap.sh` exits 1 `placeholder row R1` | ROADMAP.md was created from the template and the placeholder rows were appended to, not replaced | Delete the `<name>` rows; the real rows take their place |
+| Spec written as a loose `*.spec.md` | The legacy layout was followed | Move it into `specs/NNN-name/` split across the four templates, and point its row's Sub-spec at the folder with `roadmap.ts --set` |
+| `roadmap.ts` exits 1 `placeholder row R1` | ROADMAP.md was created from the template and the placeholder rows were appended to, not replaced | Delete the `<name>` rows; the real rows take their place |
 | `/implement` refuses with `NEEDS CLARIFICATION` | A marker was left in spec.md, plan.md or tasks.md | That is the gate working: settle the question in `/project <slug>`, then edit the marker out |

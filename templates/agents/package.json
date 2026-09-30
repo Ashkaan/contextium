@@ -1,0 +1,5 @@
+{
+  "private": true,
+  "type": "module",
+  "description": "Every script under .agents/ is an ES module in TypeScript, run as `node --experimental-strip-types <file>.ts`. This file only says so, which keeps Node 22 from warning MODULE_TYPELESS_PACKAGE_JSON on every run; there is nothing to install here."
+}

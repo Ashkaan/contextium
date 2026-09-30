@@ -34,7 +34,7 @@ it reads any code, so it is the cheapest place to prevent a wrong assumption.
 | `AGENTS.md` | this file — a link to `.agents/AGENTS.md` |
 | `.agents/skills/` | the skills, each with its scripts and the templates it writes; `review/` is the reviewer chain |
 | `.agents/agents/` | the agent prompts the skills dispatch in a fresh context |
-| `.agents/checks/` | the checks `land.sh` runs before it commits: decision records, skills, integration manifests, script tests, standards citations, secrets |
+| `.agents/checks/` | the checks `land.ts` runs before it commits: decision records, skills, integration manifests, script tests, standards citations, secrets |
 | `.agents/hooks/` | the pre-tool guards: no host change without asking, no write into the shared checkout |
 | `.agents/generators/` | the index generators for `apps/`, `integrations/`, `projects/` |
 | `.agents/output-styles/` | Claude Code output styles `/author` writes, reached through `~/.claude/output-styles` |
@@ -95,16 +95,16 @@ in `.agents/skills/close/references/journal-entry.md`.
 ## Skills
 
 The skill folders live at `.agents/skills/` in this workbench; a session runs the copy in its
-worktree (`bash .agents/skills/<name>/scripts/...`). The harnesses read the landed checkout through
-home links — `~/.agents/skills` → `<workbench>/.agents/skills`, with `~/.claude/skills` and
-`~/.gemini/config/skills` linked to it, and `~/.claude/agents` → `<workbench>/.agents/agents` —
-which `.agents/checks/check-harness-config-links.sh` asserts. Three verbs, fresh context between
+worktree (`node --experimental-strip-types .agents/skills/<name>/scripts/...`). The harnesses read
+the landed checkout through home links — `~/.agents/skills` → `<workbench>/.agents/skills`, with
+`~/.claude/skills` and `~/.gemini/config/skills` linked to it, and `~/.claude/agents` →
+`<workbench>/.agents/agents` — which `.agents/checks/check-harness-config-links.ts` asserts. Three verbs, fresh context between
 thinking and doing:
 
 - `/project` → `/spec` — think. Writes a SPEC, audits it, closes itself.
 - `/implement` — do. Builds, runs `/implement-audit`, closes itself.
 - `/close` — verify, record, land every worktree this session owns. The producer verbs invoke it
-  themselves; you do not type it to end one. Its last line is printed only by `land.sh`, after it has
+  themselves; you do not type it to end one. Its last line is printed only by `land.ts`, after it has
   proved against `origin/<trunk>` that nothing was left behind.
 
 Each artifact gets exactly one machine reviewer, fired by whatever produced it.
@@ -114,7 +114,7 @@ Each artifact gets exactly one machine reviewer, fired by whatever produced it.
 ## Skill shape
 
 A skill is what the [Agent Skills specification](https://agentskills.io/specification) says it is,
-and nothing more. The rules below are checked by `.agents/checks/check-skills.sh`; everything else
+and nothing more. The rules below are checked by `.agents/checks/check-skills.ts`; everything else
 points here rather than restating them (one fact, one file).
 
 **Frontmatter** is the specification's six keys — `name`, `description`, `license`, `compatibility`,
@@ -146,9 +146,9 @@ computation is a script file in `scripts/` that the body invokes, never prose de
 and concise and effective. Judgment stays in the body; data comes from a script. References are one
 level deep from `SKILL.md`.
 
-**The check.** `bash .agents/checks/check-skills.sh --all` holds every folder to the above; `land.sh`
-runs it with `--since` over the skill folders the session's worktree changed before each commit, and
-`/author`'s verify step runs it on the skill it scaffolded. It uses the published validator
+**The check.** `node --experimental-strip-types .agents/checks/check-skills.ts --all` holds every
+folder to the above; `land.ts` runs it with `--since` over the skill folders the session's worktree
+changed before each commit, and `/author`'s verify step runs it on the skill it scaffolded. It uses the published validator
 (`skills-ref`) when that is installed and a built-in reading of the same rules, in the validator's
 wording, when it is not.
 <!-- /contextium -->
@@ -158,7 +158,7 @@ wording, when it is not.
 
 The judgment rules a proposed change is measured against. A change that breaks one of these is not a
 good change however well it works. Cite one as `AGENTS.md § Standards → <name>`, the name being its
-bold words; `.agents/checks/check-standards-refs.sh` refuses a citation that names no bullet. Add your
+bold words; `.agents/checks/check-standards-refs.ts` refuses a citation that names no bullet. Add your
 own as bold-led bullets in a section of your own, outside this block — an upgrade replaces this block
 whole.
 
@@ -196,7 +196,7 @@ whole.
   than what it produced. Any app that calls a model carries an eval suite and re-runs it when its
   prompt moves. A script's test runs it as a program — `bash x.sh`, `node x.ts`, never `source` or
   `import` — so the test survives the script changing language, and
-  `.agents/checks/check-scripts.sh` refuses a close that changes a script under `.agents/` without
+  `.agents/checks/check-scripts.ts` refuses a close that changes a script under `.agents/` without
   a paired test.
 - **One fact, one file.** A rule, a step definition, a wire format or a schema lives in exactly one
   place and is referenced from everywhere else, never mirrored as prose.

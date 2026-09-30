@@ -8,8 +8,8 @@ Everything here is a NUMBER the reviewer can check against a PNG, or a STATE it 
 
 **That paragraph was right about prescribing a look and wrong about the consequence.** Delegating the design left no check on whether the delegated authority existed. `gen-design-md.ts` auto-writes `DESIGN.md` on a repo's first run as a token inventory with creative direction "intentionally omitted", so the design-system checks ran against nothing and the run reported clean forever — a portal can pass `/qa` repeatedly while its owner finds it plainly bad. Two things close that, and neither adds a design opinion here:
 
-1. **The app must declare a system.** A `DESIGN.md` that carries `design-authority: generated-stub`, or whose body declares none of the contract headings, is a stub, and `/qa` raises that as the run's FIRST finding at P1 — not as a clean result. `design-authority.sh` owns the rule.
-2. **Divergence from what it declared is counted.** `system-drift.sh` measures the source against the app's OWN scales. A scale the app does not declare disarms its own measure; nothing here says what the scale should be.
+1. **The app must declare a system.** A `DESIGN.md` that carries `design-authority: generated-stub`, or whose body declares none of the contract headings, is a stub, and `/qa` raises that as the run's FIRST finding at P1 — not as a clean result. `design-authority.ts` owns the rule.
+2. **Divergence from what it declared is counted.** `system-drift.ts` measures the source against the app's OWN scales. A scale the app does not declare disarms its own measure; nothing here says what the scale should be.
 
 This rubric still prescribes no type ramp, no palette and no spacing scale. It now requires that the app prescribe them, and it counts the gap.
 
@@ -118,7 +118,7 @@ Naming only the symptom is how drift compounds. A settings page exposing 40 fiel
 
 ## Design-system divergence
 
-Measured by `system-drift.sh` against the app's own `DESIGN.md`, never against a
+Measured by `system-drift.ts` against the app's own `DESIGN.md`, never against a
 house style. **A key the app does not declare disarms its measure and cannot
 fail.** One finding per distinct off-scale VALUE, carrying its occurrence count
 and up to five `file:line` examples — not one per occurrence, because 467

@@ -15,7 +15,7 @@ session history — you see only the brief below and whatever you read from disk
 You do not know why the author made any choice, and you must not assume there
 was a good reason.
 
-`verify.sh` already proved the artifact is well-FORMED. Your job is the part a
+`verify.ts` already proved the artifact is well-FORMED. Your job is the part a
 format check is blind to: whether the design is WRONG. A conforming skill that
 never fires, dispatches nothing, or describes a deterministic step in prose
 passes every linter and fails in production.

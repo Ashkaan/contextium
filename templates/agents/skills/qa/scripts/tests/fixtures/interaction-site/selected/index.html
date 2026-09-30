@@ -1,0 +1,5 @@
+<!doctype html><html><body><h1>Filter</h1>
+<button aria-pressed="true">All</button>
+<button aria-pressed="false" onclick="this.setAttribute('aria-pressed','true');this.previousElementSibling.setAttribute('aria-pressed','false');document.querySelector('h1').textContent='Completed'">Completed</button>
+<div role="tablist"><button role="tab" aria-selected="true">Only tab</button></div>
+</body></html>

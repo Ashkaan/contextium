@@ -1,4 +1,4 @@
-#!/usr/bin/env -S npx tsx
+#!/usr/bin/env -S node --experimental-strip-types
 // generate.ts — single owner of project-frontmatter parsing.
 //
 // One discoverProjects() pass feeds two outputs:
@@ -480,7 +480,7 @@ export function buildReadme(projects: ProjectMeta[]): string {
  *  rather than enforced: `/project`'s create step and its README template
  *  (`project/SKILL.md`, `project/references/templates/README.md`) cap
  *  `description:`, `blocked-on:` and `monitoring-until:` at 60 characters when
- *  a project is written, and `.agents/skills/close/scripts/roadmap.sh` cuts a
+ *  a project is written, and `.agents/skills/close/scripts/roadmap.ts` cuts a
  *  derived `next:` to the same budget. A cut mid-sentence reads as a typo,
  *  which is why a cap does not belong here.
  *

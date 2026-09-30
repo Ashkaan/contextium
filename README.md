@@ -99,9 +99,11 @@ and a headless run elsewhere needs `GEMINI_CLI_TRUST_WORKSPACE=true`.
   reviewer writes its verdict where the work lives — `spec-audit:` into the spec's `plan.md`, `implement-audit:` into the
   row's `report.md` — and the journal quotes it.
 - **The skills ship with their machinery, not a description of it.** Stage detection, roadmap edits,
-  worktree setup, the check order (`validate.sh`: lint and typecheck, tests, the workbench checks,
-  then review), journal filing and landing are all scripts. The test suites stay in this repo; the install carries
-  the scripts only.
+  worktree setup, the check order (`validate.ts`: lint and typecheck, tests, the workbench checks,
+  then review), journal filing and landing are all scripts: TypeScript, run by Node 22.6 or later as
+  `node --experimental-strip-types <script>.ts`, except the two guards and the few scripts that make a
+  session's worktree, which stay bash. The test suites stay in this repo; the install carries the
+  scripts only.
 - **`/qa` installs what it needs when it first needs it.** Playwright and Chromium on first use,
   impeccable when it is missing or older than the latest published version. A tool it cannot install
   is reported as a skip, never a pass.

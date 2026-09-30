@@ -93,7 +93,7 @@
 -->
 
 - [AGENTS.md § Standards → <name>]: [PASS | the violation]
-- spec-audit: [written by /spec-audit through write-audit-line.sh — leave this item in place]
+- spec-audit: [written by /spec-audit through write-audit-line.ts — leave this item in place]
 
 <!-- /contextium -->
 ## Project Structure
@@ -208,7 +208,7 @@ directories captured above]
 # Static checks (type check, lint) for the files this work touches
 [e.g. npm run check | ruff check <files> | shellcheck <files>]
 # Tests
-[e.g. npm test | pytest tests/ | bash path/to/script.test.sh]
+[e.g. npm test | pytest tests/ | node --test --experimental-strip-types path/to/script.test.ts]
 # End-to-end — the real behavior, with its expected output
 [command]   # expected: [output]
 ```

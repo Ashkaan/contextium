@@ -1,0 +1,3 @@
+<!doctype html><html><body><h1>Socket</h1>
+<button onclick="this.textContent='Deleting…'; const w=new WebSocket('ws://'+location.host+'/ws'); w.onopen=()=>w.send('DELETE')">Delete</button>
+</body></html>

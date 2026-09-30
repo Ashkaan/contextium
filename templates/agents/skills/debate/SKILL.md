@@ -3,7 +3,7 @@ name: debate
 description: Adversarial debate — three agents (Claude, Codex, Grok) argue a question from three positions, then the strongest conclusion is synthesized. Use when the user says "debate this", "I'm torn between X and Y", "red-team this plan", or "council on this".
 allowed-tools: Bash Read AskUserQuestion
 metadata:
-  peers: ".agents/skills/implement-audit/SKILL.md .agents/skills/review/policy.json .agents/skills/debate/scripts/build-agent-prompts.sh .agents/skills/debate/scripts/dispatch-agents.sh .agents/skills/debate/scripts/parse-agent-output.sh"
+  peers: ".agents/skills/implement-audit/SKILL.md .agents/skills/review/policy.json .agents/skills/debate/scripts/build-agent-prompts.ts .agents/skills/debate/scripts/dispatch-agents.ts .agents/skills/debate/scripts/parse-agent-output.ts"
 ---
 
 # Debate — Multi-Agent Adversarial Reasoning
@@ -21,11 +21,11 @@ there is no choice to get wrong before the debate starts.
 The models are the `panel` row of `.agents/skills/review/policy.json`; a voice
 whose `tracks` is empty runs its CLI's default model, and a non-empty `tracks`
 is passed to the CLI as the model. The positions are
-`scripts/build-agent-prompts.sh`. When a model fails — its CLI is not installed,
+`scripts/build-agent-prompts.ts`. When a model fails — its CLI is not installed,
 it times out, it errors — another argues its seat too, so the debate keeps three
 positions: **Claude fails → Codex doubles; Grok fails → Claude doubles; Codex
 fails → Claude doubles** (and the remaining model when that one failed as well).
-`scripts/dispatch-agents.sh` owns that rule, so a machine with one model CLI
+`scripts/dispatch-agents.ts` owns that rule, so a machine with one model CLI
 still gets a three-position debate, argued by one model.
 
 **Step graph**: step-1-parse-input → step-2-build-prompts → step-3-dispatch-agents → step-4-synthesize → step-5-optional-round-2
@@ -62,19 +62,19 @@ script — every agent argues from the same facts. Keep under 200 words.
 ## step-2-build-prompts
 
 ```bash
-bash .agents/skills/debate/scripts/build-agent-prompts.sh \
+node --experimental-strip-types .agents/skills/debate/scripts/build-agent-prompts.ts \
   --question "$QUESTION" \
   --context-file "$CTX_FILE"   # optional
 # stdout: prompts_dir=/tmp/debate-prompts-XXXXXX
 ```
 
 The role instructions, steel-man line and output schema live in the script's
-heredocs (SSOT).
+`TEMPLATES` table (SSOT).
 
 ## step-3-dispatch-agents
 
 ```bash
-bash .agents/skills/debate/scripts/dispatch-agents.sh \
+node --experimental-strip-types .agents/skills/debate/scripts/dispatch-agents.ts \
   --prompts-dir "$PROMPTS_DIR"
 # stdout: output_dir=/tmp/debate-outputs-XXXXXX
 # stderr: one line per stand-in and per unargued seat
@@ -87,7 +87,7 @@ argued. The default timeout is 300s for each seat; `--timeout-s` overrides it.
 ## step-4-synthesize
 
 ```bash
-bash .agents/skills/debate/scripts/parse-agent-output.sh \
+node --experimental-strip-types .agents/skills/debate/scripts/parse-agent-output.ts \
   --output-dir "$OUTPUT_DIR"
 # stdout: one block per seat — `=== <role> ===`, `argued by: …`, then the answer
 ```
@@ -138,9 +138,9 @@ lands on the same seat, asking for `## Rebuttal` / `## Underweighted Argument` /
 `## Revised Position`. Save them to a fresh prompts dir, then:
 
 ```bash
-bash .agents/skills/debate/scripts/dispatch-agents.sh \
+node --experimental-strip-types .agents/skills/debate/scripts/dispatch-agents.ts \
   --prompts-dir "$ROUND2_PROMPTS_DIR"
-bash .agents/skills/debate/scripts/parse-agent-output.sh \
+node --experimental-strip-types .agents/skills/debate/scripts/parse-agent-output.ts \
   --output-dir "$ROUND2_OUTPUT_DIR" \
   --round 2
 ```
@@ -163,6 +163,6 @@ User: `/debate red-team this plan: ship a repo-write service as an HTTP daemon w
 |---|---|---|
 | A seat's `.voice` says a model stood in | That seat's own model failed (timeout, quota, missing CLI, a model the CLI rejects) | Expected; name it under Gaps. The reason is in the `.voice` line. |
 | A seat ends as `.gap` | Its model failed and so did every eligible stand-in | Name it under Gaps; the `.gap` file carries both reasons. |
-| Codex output has header/footer noise leaking into synthesis input | `parse-agent-output.sh` is supposed to strip it — fixtures cover the known patterns | If a new Codex log shape leaks through, add a fixture under `scripts/fixtures/` and extend the awk footer-trim pattern in `parse-agent-output.sh`. |
+| Codex output has header/footer noise leaking into synthesis input | `parse-agent-output.ts` is supposed to strip it — fixtures cover the known patterns | If a new Codex log shape leaks through, add a fixture under `scripts/fixtures/` and extend the `FOOTER` pattern in `answer-block.ts` (the one reading both the parser and the dispatcher use). |
 | A round re-runs the same arguments | The loop should have ended on the work | Stop and synthesize. Do not fire a question; the count was never the signal. |
-| No seat argued → `dispatch-agents.sh` exits non-zero | Network outage, all three CLIs degraded, or invalid prompts | Halt the skill. Surface the failure to the user; do NOT emit a synthesis with zero inputs. |
+| No seat argued → `dispatch-agents.ts` exits non-zero | Network outage, all three CLIs degraded, or invalid prompts | Halt the skill. Surface the failure to the user; do NOT emit a synthesis with zero inputs. |

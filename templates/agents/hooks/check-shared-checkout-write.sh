@@ -3,7 +3,7 @@
 # thread's worktree of that checkout to write to instead.
 #
 # WHY. A harness gives a session a worktree of at most ONE repo. Every other
-# write lands in the shared checkout on its trunk, in no ledger — and `land.sh`
+# write lands in the shared checkout on its trunk, in no ledger — and `land.ts`
 # walks the ledger, so nothing commits it and no close can even mention it.
 # `close/scripts/write-root.sh` exists to hand back a worktree per repo; this
 # hook is what makes asking for one non-optional, because convention alone is
@@ -37,12 +37,12 @@
 #
 # WHAT IT ALLOWS. Everything under a worktree, which is the point — a worktree
 # is not inside the shared checkout, so it never matches. Every read. And every
-# Bash form not on the list above, including `bash <guarded>/close/verify.sh`:
+# Bash form not on the list above, including `node --experimental-strip-types <guarded>/close/verify.ts`:
 # merely NAMING a guarded path is not writing to it, and a hook that refused
 # that would be unusable and would be turned off.
 #
 # KNOWN and DECLINED. Each fails OPEN — a missed refusal, caught afterwards by
-# the dirty-checkout backstop in `close/scripts/verify.sh` whenever this thread
+# the dirty-checkout backstop in `close/scripts/verify.ts` whenever this thread
 # already owns a worktree of that checkout:
 #   · a write inside `$(...)`, a heredoc body, or an interpreter one-liner
 #     (`python3 -c 'open(p,"w")'`) — the target is not a token of the command;
@@ -94,7 +94,7 @@ fi
 # Overridable so the peer suite can point at stubs instead of the live scripts;
 # nothing in a real session sets any of these.
 _WR_DEFAULT="${HOOK_DIR}/../skills/close/scripts/write-root.sh"
-_TH_DEFAULT="${HOOK_DIR}/../skills/close/scripts/thread.sh"
+_TH_DEFAULT="${HOOK_DIR}/../skills/close/scripts/thread.ts"
 WRITE_ROOT="${CHECK_SHARED_WRITE_ROOT_SCRIPT:-${_WR_DEFAULT}}"
 THREAD="${CHECK_SHARED_WRITE_THREAD_SCRIPT:-${_TH_DEFAULT}}"
 # Seconds to wait on write-root.sh. Well inside the 120s flock it takes
@@ -438,7 +438,7 @@ refuse() {
 
   # Create-on-demand rather than refuse-and-instruct: the alternative costs a
   # round trip on every thread's first write to a satellite repo, and
-  # author/scripts/scaffold.sh:148 already set this precedent.
+  # author/scripts/scaffold.ts:148 already set this precedent.
   worktree="$(run_bounded "${WR_TIMEOUT}" bash "${WRITE_ROOT}" "${root}" \
     2>/dev/null)"
   if [[ -n "${worktree}" && -d "${worktree}" ]]; then
@@ -651,13 +651,14 @@ TARGETS="$(printf '%s' "${TARGETS}" | sed '/^$/d')"
 # write anywhere at all.
 #
 # Asked only once a target is INSIDE a guarded checkout, never up front:
-# `thread.sh --id` records the session in the cache as it answers, so asking it
+# `thread.ts --id` records the session in the cache as it answers, so asking it
 # for every command with a redirect — `2>/dev/null` included — left a session
 # entry behind for writes that reach no checkout at all.
 IN_THREAD=""
 in_thread() {
   if [[ -z "${IN_THREAD}" ]]; then
-    if bash "${THREAD}" --id >/dev/null 2>&1; then IN_THREAD=1; else IN_THREAD=0; fi
+    # thread.ts is TypeScript; this hook stays bash and runs it, never sources it.
+    if node --experimental-strip-types "${THREAD}" --id >/dev/null 2>&1; then IN_THREAD=1; else IN_THREAD=0; fi
   fi
   [[ "${IN_THREAD}" == 1 ]]
 }

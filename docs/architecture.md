@@ -73,7 +73,7 @@ that is already a file of yours; a file you had before gets a `.pre-contextium` 
 merge. Every entry Contextium adds starts with `: contextium;`, so a re-run replaces its own entries
 and leaves every other key and hook as it was. A real file or folder in the
 way of a link is moved aside to `<path>.pre-link`, never deleted.
-`.agents/checks/check-harness-config-links.sh` checks the links, and that every hook manifest still
+`.agents/checks/check-harness-config-links.ts` checks the links, and that every hook manifest still
 routes each tool's shell and write calls to both guards, any time you run it; `--fix` relinks.
 A tool is wired when you pick it, and stays wired: the `tools=` line of `.agents/harness` records
 every tool a run wired, and each re-run wires the union of those and the ones named then.
@@ -150,7 +150,7 @@ skill that writes each one:
 | `specs/NNN-name/` | One folder per row: `spec.md` (your words verbatim, the clarifications, the behavior contract), `plan.md` (the simplest shape, data sources, validation commands), `tasks.md` (what `/implement` executes, tests included), `research.md` (what was looked up, with sources), then `report.md` from `/implement` |
 | `decisions/` | MADR records for choices inside this project that would be expensive to reverse |
 
-`.agents/skills/close/scripts/roadmap.sh` is the one writer of a row's status and of the `next:` it
+`.agents/skills/close/scripts/roadmap.ts` is the one writer of a row's status and of the `next:` it
 derives. `/implement` only ever sets a row `in-progress`; `/close` sets it `done` when the row's
 `report.md` says the spec is complete. Anything a spec leaves unsettled is written in place as
 `[NEEDS CLARIFICATION: …]`, and `/implement` refuses to start while one is open — the project routes
@@ -183,11 +183,11 @@ its own database; elsewhere the tool's session id, or one generated and remember
 `/close` walks that ledger, so it lands every worktree the session wrote to, including one for another
 repo it touched.
 
-`land.sh` does the landing, per worktree: it runs the checks, commits, merges the trunk into the
+`land.ts` does the landing, per worktree: it runs the checks, commits, merges the trunk into the
 worktree (so a conflict stays in the session's own copy, not the shared one), pushes, and removes the
 worktrees it made. It refuses to land a repo with no `origin`. Before it merges it registers a merge
-driver for `ROADMAP.md`, `roadmap-merge.sh`, in the repo's `.git/info/attributes`: two sessions that
-each flipped their own row merge cell by cell instead of conflicting, and `land.sh` re-derives the
+driver for `ROADMAP.md`, `roadmap-merge.ts`, in the repo's `.git/info/attributes`: two sessions that
+each flipped their own row merge cell by cell instead of conflicting, and `land.ts` re-derives the
 README's `next:` from the merged table. The same cell changed two ways is still a conflict, and a
 `next:` that can't be re-derived from the merged table stops the close too, rather than pushing a
 README that names the wrong row. A worktree your tool made is left for the tool to clean up. Then it fetches again
@@ -201,7 +201,7 @@ intact for a re-run.
 
 Three places, each catching something the others can't.
 
-While building, `/implement` hands its checks to `.agents/skills/implement/scripts/validate.sh`,
+While building, `/implement` hands its checks to `.agents/skills/implement/scripts/validate.ts`,
 which runs them in one fixed order: each touched package's lint, then its typecheck; its tests; a dry
 run of the workbench checks below; then the code review. No argument puts review before lint, and a
 lint failure means the review never runs. When the review's fixes change the tree, lint and tests run
@@ -210,13 +210,13 @@ package's `lint`, `typecheck` or `check`, and `test` scripts or make targets —
 file to keep. If the change touched a web app, `/qa` has to finish on the exact tree that ships before
 the session can close.
 
-Before each commit, `land.sh` runs the workbench checks over what the session changed:
-`check-decision-records.sh`, `check-skills.sh` on any skill folder that moved,
-`check-integration-manifest.sh` on any integration README that moved (its front matter, against the
-schema in `integrations/README.md`), `check-scripts.sh` on any script under `.agents/` that moved
+Before each commit, `land.ts` runs the workbench checks over what the session changed:
+`check-decision-records.ts`, `check-skills.ts` on any skill folder that moved,
+`check-integration-manifest.ts` on any integration README that moved (its front matter, against the
+schema in `integrations/README.md`), `check-scripts.ts` on any script under `.agents/` that moved
 (it must carry a test, and the test must run it rather than import it; a script Contextium shipped
-passes until you edit it, since its tests live in the Contextium repo), `check-secrets.sh` and
-`check-standards-refs.sh` from `.agents/checks/`, and the journal checker from the close skill. A
+passes until you edit it, since its tests live in the Contextium repo), `check-secrets.ts` and
+`check-standards-refs.ts` from `.agents/checks/`, and the journal checker from the close skill. A
 violation refuses the close with every failing line printed. This replaces the git hooks earlier
 versions shipped: a hook only fires in a clone whose hooks path points at it, and these run on every
 landing because landing is the only way work reaches the trunk.
@@ -248,9 +248,9 @@ Antigravity author counts as Gemini; Cursor and Copilot name no single family, s
 
 Both review rows are marked `"fallback": "fresh-context"`. When no vendor in the row can answer —
 most installs have one model CLI — the chain exits 3, and the skill runs the same review with a
-fresh-context agent in your own session. `validate.sh` prints `NEED_FALLBACK_REVIEW=1` and exits 3:
+fresh-context agent in your own session. `validate.ts` prints `NEED_FALLBACK_REVIEW=1` and exits 3:
 the review is pending, not passed, until the fallback reviewer's findings are handed to
-`validate.sh --fallback-review <file>`, which passes or asks for fixes the same way an independent
+`validate.ts --fallback-review <file>`, which passes or asks for fixes the same way an independent
 review does. The recorded line carries `claude-fallback (fresh context, NOT independent)`, so a weaker review is never
 passed off as an independent one. A reviewer that answered in the wrong shape is not a missing one:
 the code review asks the chain once more, and if nothing usable comes back either review fails and
@@ -295,7 +295,7 @@ seats argued by one model are less independent than three.
 
 `/author` scaffolds a new skill, hook, agent prompt or response style in the shape the existing ones
 use, then checks it. For a skill, that shape is the `Skill shape` block of `AGENTS.md`, checked by
-`.agents/checks/check-skills.sh`.
+`.agents/checks/check-skills.ts`.
 
 ## Apps versus integrations
 
@@ -356,7 +356,7 @@ it on early just gets in the way.
   session, rather than scripts you trigger by hand.
 - A declarative reconciler that watches for drift across many checks and fixes it, instead of
   one-off scripts.
-- A deploy on every push. `land.sh` has the hook for it and leaves it off: add
+- A deploy on every push. `land.ts` has the hook for it and leaves it off: add
   `.agents/deployable-prefixes.json` (a JSON array of path prefixes whose push deploys something) and
   your own `.agents/deploy/await-deploy-run.sh`, and a landing that touches one of those paths must see
   a deploy start before the close succeeds.

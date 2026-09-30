@@ -33,7 +33,7 @@ spec-status: complete
 
 **implement-audit:** `{the line phase-4.7 printed — copy verbatim; this is its record}`
 
-**class-sweep:** `{<regex> -- <pathspec>, verified by find-peers.sh --verify-sweep exiting 0 — or "none" when the change was not a class fix}`
+**class-sweep:** `{<regex> -- <pathspec>, verified by find-peers.ts --verify-sweep exiting 0 — or "none" when the change was not a class fix}`
 
 **test-failure-observed:** `{the RED excerpt from Phase 4's tests, or "none"}`
 

@@ -3,7 +3,7 @@ name: close
 description: Ends the session — verify what changed, update the project, journal it, land every worktree this thread owns on its repo's trunk, report a line a script proved. Use when the user says "close", "wrap up", "let's close", or any plain-English request to end the session, and when a producer skill's auto-close gate fires. The gate is in close/references/auto-close-gate.md.
 allowed-tools: "Bash Read Edit Write"
 metadata:
-  peers: ".agents/skills/close/scripts/harness.sh .agents/skills/close/scripts/transcripts.sh .agents/skills/close/scripts/thread.sh .agents/skills/close/scripts/write-root.sh .agents/skills/close/scripts/trunk.sh .agents/skills/close/scripts/verify.sh .agents/skills/close/scripts/corrections.sh .agents/skills/close/scripts/journal-file.sh .agents/skills/close/scripts/land.sh .agents/skills/close/scripts/project-remaining-work.sh .agents/skills/close/scripts/next-implement-command.sh .agents/skills/close/scripts/roadmap.sh .agents/skills/close/scripts/roadmap-merge.sh .agents/skills/close/scripts/spec-state.sh .agents/skills/close/references/journal-entry.md .agents/skills/close/references/auto-close-gate.md"
+  peers: ".agents/skills/close/scripts/harness.sh .agents/skills/close/scripts/transcripts.ts .agents/skills/close/scripts/thread.ts .agents/skills/close/scripts/write-root.sh .agents/skills/close/scripts/trunk.ts .agents/skills/close/scripts/verify.ts .agents/skills/close/scripts/corrections.ts .agents/skills/close/scripts/journal-file.ts .agents/skills/close/scripts/land.ts .agents/skills/close/scripts/project-remaining-work.ts .agents/skills/close/scripts/next-implement-command.ts .agents/skills/close/scripts/roadmap.ts .agents/skills/close/scripts/roadmap-merge.ts .agents/skills/close/scripts/spec-state.ts .agents/skills/close/references/journal-entry.md .agents/skills/close/references/auto-close-gate.md"
 ---
 
 # /close — verify, project, journal, land, report
@@ -35,11 +35,11 @@ bash .agents/skills/close/scripts/write-root.sh .   # or an absolute repo path
 ## 1 — Verify
 
 ```bash
-bash .agents/skills/close/scripts/verify.sh
+node --experimental-strip-types .agents/skills/close/scripts/verify.ts
 ```
 
 Runs the `check` and `test` of every app whose files moved in this thread's
-worktree, and every `*.test.sh` beneath every `.agents/skills/<skill>/` folder that
+worktree, and every `*.test.sh` and `*.test.ts` beneath every `.agents/skills/<skill>/` folder that
 moved — a skill is code, and without this it would be the only code that closed
 with nothing run against it. **A `FAIL` halts here** — fix it and re-run;
 nothing is recorded yet, which is the point of going first. `unverified` is a
@@ -53,7 +53,7 @@ escaped the write guard and the close halts.
 ## 2 — Project
 
 ```bash
-bash .agents/skills/close/scripts/project-remaining-work.sh <project-folder>
+node --experimental-strip-types .agents/skills/close/scripts/project-remaining-work.ts <project-folder>
 ```
 
 For each project this session touched, under `projects/` of the worktree
@@ -66,23 +66,23 @@ work, so the README gets no `## Current Progress` or `## Next Steps`:
    is a row with Status `blocked: <date>`; a manual step or a waiting-on-someone
    item is a row with Sub-spec `—`. New IDs continue from the highest
    existing one and are never reused.
-2. **Flip each row whose spec is finished** — `spec-state.sh` reads its
+2. **Flip each row whose spec is finished** — `spec-state.ts` reads its
    `report.md` as `complete` — to `done`. This close is the only writer of
    `done`; `/implement` only ever sets `in-progress`.
 3. **Re-derive `next:`.** Never hand-write it; the rule is the README
    template's.
 
 ```bash
-bash .agents/skills/close/scripts/spec-state.sh <project-folder>             # which specs are complete
-bash .agents/skills/close/scripts/roadmap.sh <project-folder> --set <ID> done
-bash .agents/skills/close/scripts/roadmap.sh <project-folder> --sync-next
+node --experimental-strip-types .agents/skills/close/scripts/spec-state.ts <project-folder>             # which specs are complete
+node --experimental-strip-types .agents/skills/close/scripts/roadmap.ts <project-folder> --set <ID> done
+node --experimental-strip-types .agents/skills/close/scripts/roadmap.ts <project-folder> --sync-next
 ```
 
 **A project with no `ROADMAP.md`** — update `## Current Progress` and
 `## Next Steps` in its README.
 
 **Either way**, flip `status:` to `completed` or `monitor` only when
-`project-remaining-work.sh` says `no-hard-signal` AND the goal is met;
+`project-remaining-work.ts` says `no-hard-signal` AND the goal is met;
 `work-remains` keeps it `active`. On a ROADMAP project `no-hard-signal` means
 no row is open — every row `done` or `absorbed by …` — and a `roadmap-error:`
 line is `work-remains` until the table is fixed. A project whose only open rows
@@ -107,8 +107,8 @@ earlier. The generator is correct; `active` is the false input.
 ## 3 — Journal
 
 ```bash
-bash .agents/skills/close/scripts/journal-file.sh --existing \
-  || bash .agents/skills/close/scripts/journal-file.sh "<filename-stem>"
+node --experimental-strip-types .agents/skills/close/scripts/journal-file.ts --existing \
+  || node --experimental-strip-types .agents/skills/close/scripts/journal-file.ts "<filename-stem>"
 ```
 
 Read [references/journal-entry.md](references/journal-entry.md) before writing —
@@ -122,8 +122,8 @@ and the frontmatter `slug:` are different: the reference shows their exact
 relationship. For `**Corrections:**`:
 
 ```bash
-bash .agents/skills/close/scripts/corrections.sh          # one row per turn
-bash .agents/skills/close/scripts/corrections.sh --full   # a turn that spans lines
+node --experimental-strip-types .agents/skills/close/scripts/corrections.ts          # one row per turn
+node --experimental-strip-types .agents/skills/close/scripts/corrections.ts --full   # a turn that spans lines
 ```
 
 It reads T3 Code's record of the session, or outside T3 the harness's own
@@ -142,25 +142,25 @@ line is a record in the artifact and the journal, never a gate on a commit.
 After writing or updating the entry, validate it before Land:
 
 ```bash
-bash .agents/skills/close/scripts/journal-file.sh --check
+node --experimental-strip-types .agents/skills/close/scripts/journal-file.ts --check
 ```
 
 Repair any reported errors in this thread's entry and repeat the check. This
-uses Land's validator, `scripts/check-journal-entry.sh`; do not bypass it or
+uses Land's validator, `scripts/check-journal-entry.ts`; do not bypass it or
 change another session's entry. Land refuses the close when the entry fails it,
 and refuses too when the checker itself is missing.
 
 ## 4 — Land
 
 ```bash
-bash .agents/skills/close/scripts/land.sh "<verb-led subject, ≤72 chars>"
+node --experimental-strip-types .agents/skills/close/scripts/land.ts "<verb-led subject, ≤72 chars>"
 ```
 
 Runs the workbench's checks (decision records, skills, secrets, standards
 citations) and the journal check, commits, merges the repo's trunk, pushes,
 confirms the push deployed where the repo opts in
 (`.agents/deployable-prefixes.json`), removes the worktrees it made, then
-re-fetches and checks. `ROADMAP.md` merges row by row (`roadmap-merge.sh`), so
+re-fetches and checks. `ROADMAP.md` merges row by row (`roadmap-merge.ts`), so
 two sessions closing two rows of one project do not conflict; a real clash in
 one row still does. On any failure it prints one
 `NOT CLOSED: <reason>` and exits 3; the worktrees are intact and re-running resumes.
@@ -172,7 +172,7 @@ exact `NOT CLOSED` line and the blocker; never print the success line yourself.
 
 ## 5 — Report
 
-Copy the final Markdown block from `land.sh` verbatim. It mechanically emits
+Copy the final Markdown block from `land.ts` verbatim. It mechanically emits
 `Shipped`, a clickable journal link whose target is the absolute landed path, the project journal's
 deterministic `Next` commands when there are any, and the proof line. Do not
 reconstruct or condense that block. Each `Next` command is in its own fenced
@@ -188,7 +188,7 @@ later in the session, hand back that line rather than retyping a path. Report a 
 gap or unfinished work immediately before it when either exists.
 
 The last line is `origin/<trunk> is at <sha> — closing this tab loses nothing.`
-**Only `land.sh` may produce it**, after proving against a freshly fetched trunk
+**Only `land.ts` may produce it**, after proving against a freshly fetched trunk
 that every merge SHA is an ancestor, the journal path is in the tree, and no
 worktree still holds anything. Writing it yourself is a false claim with a
 checkable SHA in it.
@@ -207,6 +207,6 @@ Each was removed deliberately; re-adding one needs a reason this table lacks.
 | Attestation markers, a `closed-by:` trailer, and a script that checked it before each commit | Three moving parts to prove what one ancestry check proves — and a commit-hook checker never runs in a repo whose hooks path points elsewhere |
 | Reading `implement-audit:` or `spec-audit:` lines off commits | The skill that produced the artifact writes its line into the artifact folder (`report.md`, `plan.md`) and § 3's journal entry quotes it |
 | Mode detection, a list of known checkouts | Every repo is a worktree in the ledger; there is one path |
-| A repo-to-trunk-branch table | `trunk.sh` reads `refs/remotes/origin/HEAD`, which is what the remote itself says. A table is a second copy that goes stale silently |
+| A repo-to-trunk-branch table | `trunk.ts` reads `refs/remotes/origin/HEAD`, which is what the remote itself says. A table is a second copy that goes stale silently |
 | Mid-session self-improvement, judgment sweeps, a root-cause prompt | Each re-checks something another skill owns |
 | Committing in a shared checkout | It holds other sessions' files. That is the failure this replaced |

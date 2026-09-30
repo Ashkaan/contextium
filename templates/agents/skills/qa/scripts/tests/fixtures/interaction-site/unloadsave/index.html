@@ -1,0 +1,10 @@
+<!doctype html><html><body><h1>Editor</h1>
+<button onclick="window.dirty=true; this.textContent='Edited'">Add row</button>
+<button onclick="this.textContent='Also edited'; window.dirty=true">Add item</button>
+<script>
+const flush = () => { if (!window.dirty) return; fetch('/api/unload-save', { method: 'POST', keepalive: true, body: 'x' }); navigator.sendBeacon('/api/unload-beacon', 'x'); };
+addEventListener('pagehide', flush);
+addEventListener('visibilitychange', flush);
+addEventListener('beforeunload', flush);
+</script>
+</body></html>

@@ -1,0 +1,8 @@
+{
+  "name": "@example/dashboard",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "check": "tsc --noEmit"
+  }
+}

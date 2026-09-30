@@ -36,4 +36,4 @@ So `access[0]` is the most capable shape, and `uses-why` is owed exactly when th
 
 Scalars are single lines; one containing `: `, or starting with a YAML indicator such as `` ` `` or `[`, is wrapped in double quotes. No nested maps.
 
-`.agents/checks/check-integration-manifest.sh` enforces all of this except the capability ranking itself, which is a reading no script can make; `land.sh` runs it over every README a close changes, before the commit. `--all` checks every README. `CREDS.<key>` is checked against `integrations/1password/credentials.ts`, so a workbench without one names `none`.
+`.agents/checks/check-integration-manifest.ts` enforces all of this except the capability ranking itself, which is a reading no script can make; `land.ts` runs it over every README a close changes, before the commit. `--all` checks every README. `CREDS.<key>` is checked against `integrations/1password/credentials.ts`, so a workbench without one names `none`.

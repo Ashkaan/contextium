@@ -1,7 +1,7 @@
-#!/usr/bin/env -S npx tsx
+#!/usr/bin/env -S node --experimental-strip-types
 // Prints the integration index from integration frontmatter. It does NOT write
 // integrations/README.md: that README is hand-maintained and holds the
-// manifest schema .agents/checks/check-integration-manifest.sh enforces, so a
+// manifest schema .agents/checks/check-integration-manifest.ts enforces, so a
 // generated copy over it would delete the schema.
 // Usage: node .agents/generators/integration-index.generate.ts [--out /path/to/output.md]
 

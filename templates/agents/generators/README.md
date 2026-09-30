@@ -12,8 +12,8 @@ programs, and `apps/` is yours.
 | `integration-index.generate.ts` | `integrations/*/README.md` frontmatter | stdout (default), or `--out <file>` — not `integrations/README.md`, which holds the manifest schema |
 
 ```bash
-node .agents/generators/project-index.generate.ts --compact
-node .agents/generators/app-index.generate.ts
+node --experimental-strip-types .agents/generators/project-index.generate.ts --compact
+node --experimental-strip-types .agents/generators/app-index.generate.ts
 ```
 
 The project index is never committed: it is rendered live, so there is no second copy of the
@@ -31,5 +31,5 @@ valid — the header still renders, with no rows.
 The suites run in the Contextium repo and are not installed:
 
 ```bash
-node --test templates/agents/generators/project-index.generate.test.ts templates/agents/generators/generators.test.ts
+node --test --experimental-strip-types templates/agents/generators/project-index.generate.test.ts templates/agents/generators/generators.test.ts
 ```

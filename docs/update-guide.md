@@ -4,11 +4,31 @@ A newer version of the template will ship better skills, refined standards, new 
 Pulling those in should never put your own work at risk. The installer is built around exactly that
 split: it refreshes the methodology layer and leaves your data alone.
 
+## Upgrading to v9.0.0: the scripts are TypeScript
+
+Re-run the installer. Every script the layer ships is now TypeScript, run by Node 22.6 or later as
+`node --experimental-strip-types <script>.ts`: the checks in `.agents/checks/`, the generators, and
+the skills' scripts (`land.ts`, `roadmap.ts`, `validate.ts` and the rest). A few stay bash,
+because a tool fires them as hooks or they make the worktree a session runs in: the two guards in
+`.agents/hooks/` (with their `lib/`), and `write-root.sh`, `harness.sh`, `lock.sh` and
+`setup-worktree.sh`. The helpers the TypeScript scripts share install to `.agents/packages/`, and
+`.agents/package.json` marks the layer as ES modules so Node 22 does not warn on every run.
+
+- Install Node 22.6 or later before you re-run. Without it the installer still lays the layer down,
+  but it cannot run the check at the end, so it does not call the install ready; and it keeps every
+  per-tool copy an earlier release generated, since it cannot regenerate one to compare it with.
+- The `.sh` checks v8.0.1 installed in `.agents/checks/` are removed while they are still as it
+  installed them. One you edited is kept and named; nothing runs it now, so carry your change over
+  to its `.ts` successor and delete it.
+- A command you had written down changes with the file name: the link check, for example, is now
+  `node --experimental-strip-types .agents/checks/check-harness-config-links.ts`.
+- A script of your own under `.agents/` still needs a test beside it, `.test.sh` or `.test.ts`.
+
 ## Upgrading to v8.0.1
 
 Re-run the installer; nothing moves. Two things behave differently afterwards:
 
-- `/close` now runs `.agents/checks/check-scripts.sh` before it commits. A script you add or change
+- `/close` now runs `.agents/checks/check-scripts.ts` before it commits. A script you add or change
   under `.agents/` must carry a test (`<name>.test.sh` or `.test.ts` beside it, or in a `tests/`
   folder), and the test must run the script rather than `source` or `import` it. Scripts Contextium
   shipped pass as long as you have not edited them; once you do, the script is yours, test included.

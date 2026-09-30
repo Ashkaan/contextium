@@ -3,7 +3,7 @@ name: author
 description: Scaffolds a conforming AI-layer artifact — skill, hook, agent or output style — that already passes the workbench's format checks, Anthropic's documented frontmatter shape, and the four token/context/determinism principles. Use when authoring or compressing any skill, hook, agent or output style.
 allowed-tools: Bash Read Edit Write AskUserQuestion
 metadata:
-  peers: ".agents/skills/author/references/skill.md .agents/skills/author/references/hook.md .agents/skills/author/references/agent.md .agents/skills/author/references/output-style.md .agents/skills/author/scripts/scaffold.sh .agents/skills/author/scripts/verify.sh .agents/agents/ai-layer-reviewer.md .agents/skills/review/policy-review.sh"
+  peers: ".agents/skills/author/references/skill.md .agents/skills/author/references/hook.md .agents/skills/author/references/agent.md .agents/skills/author/references/output-style.md .agents/skills/author/scripts/scaffold.ts .agents/skills/author/scripts/verify.ts .agents/agents/ai-layer-reviewer.md .agents/skills/review/policy-review.ts"
 ---
 
 # /author — Unified AI-Layer Artifact Scaffolder
@@ -20,21 +20,21 @@ which backstop.
 
 | Type | Branch doc | What scaffold writes | verify backstop |
 |---|---|---|---|
-| skill | [references/skill.md](references/skill.md) | `.agents/skills/<name>/SKILL.md` | `.agents/checks/check-skills.sh` (the published Agent Skills validator + `AGENTS.md § Skill shape`) |
-| hook | [references/hook.md](references/hook.md) | `.agents/hooks/<name>.sh` (or `.agents/checks/`) | `shellcheck` + safe-mode |
+| skill | [references/skill.md](references/skill.md) | `.agents/skills/<name>/SKILL.md` | `.agents/checks/check-skills.ts` (the published Agent Skills validator + `AGENTS.md § Skill shape`) |
+| hook | [references/hook.md](references/hook.md) | `.agents/hooks/<name>.ts` (or `.agents/checks/<name>.ts` + its test) | parses as TypeScript + no `process.exit` (`shellcheck` + safe-mode for a hand-written bash hook) |
 | agent | [references/agent.md](references/agent.md) | `.agents/agents/<name>.md` | frontmatter fields (SSOT in agent.md) |
 | output-style | [references/output-style.md](references/output-style.md) | `.agents/output-styles/<name>.md` | documented-field check (unknown key, `description`, `keep-coding-instructions`) |
 
 ## The four principles (enforced, not advised)
 
-Every artifact `/author` emits must satisfy four principles from the original ask. They are **deterministic `verify.sh` gates**, so a violation fails the check — it is not left to judgment. Sourced from Anthropic docs ([skills](https://code.claude.com/docs/en/skills), [sub-agents](https://code.claude.com/docs/en/sub-agents), [hooks](https://code.claude.com/docs/en/hooks)).
+Every artifact `/author` emits must satisfy four principles from the original ask. They are **deterministic `verify.ts` gates**, so a violation fails the check — it is not left to judgment. Sourced from Anthropic docs ([skills](https://code.claude.com/docs/en/skills), [sub-agents](https://code.claude.com/docs/en/sub-agents), [hooks](https://code.claude.com/docs/en/hooks)).
 
 | Principle | How it's enforced |
 |---|---|
-| Anthropic best practices | `verify.sh`: skill `description` ≤1,536 + third-person; hook exit-2-for-PreToolUse (emitted by placement); agent 6-field SSOT + scoped `tools` |
-| Low token usage | `verify.sh`: `description` within the always-loaded cap AND exactly one sentence (skill, agent, output-style); SKILL.md body ≤500 lines |
-| High determinism | `scaffold.sh` emits correct-by-construction (right hook shape + exit code per placement); every type has a non-zero-on-violation backstop; skill branch's determinism inventory pushes data steps to `scripts/` |
-| Low context usage | `verify.sh`: SKILL.md body ≤500 lines; `references/` one level deep (leaf docs) |
+| Anthropic best practices | `verify.ts`: skill `description` ≤1,536 + third-person; hook exit-2-for-PreToolUse (emitted by placement); agent 6-field SSOT + scoped `tools` |
+| Low token usage | `verify.ts`: `description` within the always-loaded cap AND exactly one sentence (skill, agent, output-style); SKILL.md body ≤500 lines |
+| High determinism | `scaffold.ts` emits correct-by-construction (right hook shape + exit code per placement); every type has a non-zero-on-violation backstop; skill branch's determinism inventory pushes data steps to `scripts/` |
+| Low context usage | `verify.ts`: SKILL.md body ≤500 lines; `references/` one level deep (leaf docs) |
 
 ## parse-type
 
@@ -113,7 +113,7 @@ Three outcomes:
 | The row's primary vendor | What to do |
 |---|---|
 | claude | An agent with `model: inherit` already honors it. Nothing more. |
-| codex / grok | An agent CANNOT honor it — the `model:` field takes only `inherit` or a Claude id. The dispatching skill MUST route the assigned work through `.agents/skills/review/policy-review.sh <task-kind> <artifact> <brief>`, using the agent only for the repo-context half a one-shot CLI call cannot do. |
+| codex / grok | An agent CANNOT honor it — the `model:` field takes only `inherit` or a Claude id. The dispatching skill MUST route the assigned work through `.agents/skills/review/policy-review.ts <task-kind> <artifact> <brief>`, using the agent only for the repo-context half a one-shot CLI call cannot do. |
 | no row fits | Legitimate. Every row describes one-shot prompt-in/answer-out work; multi-turn tool-driven agents (repo exploration) have no row by design. Say which rows you considered and why none applies. MUST NOT invent a row or force a bad fit. |
 
 Record the outcome so `fill` can wire it. Authoring a reviewer agent with
@@ -125,10 +125,10 @@ divergence this step exists to prevent.
 Run the deterministic emitter:
 
 ```bash
-bash .agents/skills/author/scripts/scaffold.sh <type> <name> [placement]
+node --experimental-strip-types .agents/skills/author/scripts/scaffold.ts <type> <name> [placement]
 ```
 
-It validates the type + kebab name, computes the surface path, refuses on collision (never overwrites, never normalizes), and copies the template with `{{name}}` substituted. `placement` is hook-only (`checks` → `.agents/checks/<name>.sh` plus `<name>.test.sh` beside it).
+It validates the type + kebab name, computes the surface path, refuses on collision (never overwrites, never normalizes), and copies the template with `{{name}}` substituted. `placement` is hook-only (default → `.agents/hooks/<name>.ts`; `checks` → `.agents/checks/<name>.ts` plus `<name>.test.ts` beside it).
 
 ## fill
 
@@ -151,7 +151,7 @@ the review policy table (`.agents/skills/review/policy.json`), not chosen here:
    what to attack), then:
 
    ```bash
-   bash .agents/skills/review/policy-review.sh adversarial-review <artifact-path> <brief-file>
+   node --experimental-strip-types .agents/skills/review/policy-review.ts adversarial-review <artifact-path> <brief-file>
    ```
 
    The shipped `adversarial-review` row starts with Codex; the script follows
@@ -182,19 +182,19 @@ general-purpose agent carrying the `ai-layer-reviewer` body covers the rest.
 Run the type's conformance backstop; it MUST exit 0 before the branch completes:
 
 ```bash
-bash .agents/skills/author/scripts/verify.sh <type> <path>
+node --experimental-strip-types .agents/skills/author/scripts/verify.ts <type> <path>
 ```
 
 On failure, fix at the source and re-run — never override, never exclude.
 
-`verify.sh hook` WARNs (non-blocking) when no hook manifest names a top-level hook (Claude Code `~/.claude/settings.json`, Codex `~/.codex/hooks.json`, Antigravity `.agents/hooks.json`). It says nothing about what fires a check under `.agents/checks/`: nothing dispatches a new check on its own. `/author` writes the check and its test.
+`verify.ts hook` WARNs (non-blocking) when no hook manifest names a top-level hook (Claude Code `~/.claude/settings.json`, Codex `~/.codex/hooks.json`, Antigravity `.agents/hooks.json`). It says nothing about what fires a check under `.agents/checks/`: nothing dispatches a new check on its own. `/author` writes the check and its test.
 
 ## register
 
 Meaningful for exactly one type — **hook** — because hooks are the only artifact that needs explicit wiring to fire:
 
 - **skill** — none; auto-discovered from `.agents/skills/<name>/SKILL.md`.
-- **hook** — a PreToolUse/PostToolUse hook is wired per [references/hook.md](references/hook.md) Step 5: a matcher block in each harness's hook manifest; `verify.sh hook` WARNs (non-blocking) while none names it. A check under `.agents/checks/` is not wired here: nothing fires it until something calls it.
+- **hook** — a PreToolUse/PostToolUse hook is wired per [references/hook.md](references/hook.md) Step 5: a matcher block in each harness's hook manifest; `verify.ts hook` WARNs (non-blocking) while none names it. A check under `.agents/checks/` is not wired here: nothing fires it until something calls it.
 - **agent** — none; auto-discovered from `.agents/agents/<name>.md`.
 - **output-style** — NOT auto-selected by existing. To make it the default set `outputStyle` in `~/.claude/settings.json`; to carry it into subagents add the agent types to the fail-closed allowlist of a `SubagentStart` hook in `.agents/hooks/`.
 
@@ -202,7 +202,7 @@ Meaningful for exactly one type — **hook** — because hooks are the only arti
 
 ### Example 1 — `/author skill weekly-digest`
 
-`parse-type` → skill. `resolve-shape` asks skill-vs-agent (session-stateful → skill) + gated-or-simple (no gates → single-body). `scaffold` writes `.agents/skills/weekly-digest/SKILL.md` from the template. `fill` completes the description (what + when) + `metadata.peers` + body. `verify` runs `check-skills.sh` → exit 0. `register` is a no-op (auto-discovered). Done.
+`parse-type` → skill. `resolve-shape` asks skill-vs-agent (session-stateful → skill) + gated-or-simple (no gates → single-body). `scaffold` writes `.agents/skills/weekly-digest/SKILL.md` from the template. `fill` completes the description (what + when) + `metadata.peers` + body. `verify` runs `check-skills.ts` → exit 0. `register` is a no-op (auto-discovered). Done.
 
 ### Example 2 — unknown type
 
@@ -212,9 +212,9 @@ Meaningful for exactly one type — **hook** — because hooks are the only arti
 
 | Failure | Cause | Fix |
 |---|---|---|
-| `scaffold.sh` exits 2 "unknown type" | `<type>` not in the four | Use skill\|hook\|agent\|output-style. |
-| `scaffold.sh` exits 1 "invalid name" | name not kebab `^[a-z][a-z0-9-]*$` | Rename to kebab-case; names are rejected, never normalized. |
-| `scaffold.sh` exits 1 "exists" | artifact already at the surface path | Pick a new name — never overwrites. |
-| `verify.sh` non-zero | conformance backstop failed | Read the stderr, fix at source, re-run. Never exclude. |
-| `verify.sh hook` WARNs "not wired" | no hook manifest names a top-level hook | Wire it per references/hook.md Step 5, or accept that it will never fire. |
+| `scaffold.ts` exits 2 "unknown type" | `<type>` not in the four | Use skill\|hook\|agent\|output-style. |
+| `scaffold.ts` exits 1 "invalid name" | name not kebab `^[a-z][a-z0-9-]*$` | Rename to kebab-case; names are rejected, never normalized. |
+| `scaffold.ts` exits 1 "exists" | artifact already at the surface path | Pick a new name — never overwrites. |
+| `verify.ts` non-zero | conformance backstop failed | Read the stderr, fix at source, re-run. Never exclude. |
+| `verify.ts hook` WARNs "not wired" | no hook manifest names a top-level hook | Wire it per references/hook.md Step 5, or accept that it will never fire. |
 | A check under `.agents/checks/` never runs | nothing dispatches it yet | Call it from whatever should fire it; run it by hand until then. |

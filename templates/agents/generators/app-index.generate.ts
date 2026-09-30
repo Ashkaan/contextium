@@ -1,4 +1,4 @@
-#!/usr/bin/env -S npx tsx
+#!/usr/bin/env -S node --experimental-strip-types
 // Generates apps/README.md from app frontmatter
 // Usage: node .agents/generators/app-index.generate.ts [--out /path/to/output.md]
 

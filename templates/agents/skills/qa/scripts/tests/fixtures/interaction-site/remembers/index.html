@@ -1,0 +1,8 @@
+<!doctype html><html><body><h1>Remembers</h1>
+<button id="fold" onclick="localStorage.setItem('folded','1'); document.getElementById('rest').hidden = true">Fold</button>
+<div id="rest">
+<button onclick="this.textContent='Saving…'">One</button>
+<button onclick="this.textContent='Saving…'">Two</button>
+</div>
+<script>if (localStorage.getItem('folded')) document.getElementById('rest').hidden = true;</script>
+</body></html>

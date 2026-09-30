@@ -8,7 +8,7 @@ peers: [.agents/skills/implement-audit/SKILL.md]
 
 > **STATUS — DEMOTED. This is no longer the default code reviewer.**
 >
-> `/implement-audit` step-2 now runs `.agents/skills/review/code-review.sh`, putting adversarial code review on **a different vendor from the author**. A reviewer running on the model that wrote the code is not independent in the sense the assignment policy asks for; fresh context removes shared session state but not shared authorship. The policy's `adversarial-review` row (`.agents/skills/review/policy.json`) owns which vendor that is, and the script walks the row's backup automatically — so no vendor name belongs in this file.
+> `/implement-audit` step-2 now runs `.agents/skills/review/code-review.ts`, putting adversarial code review on **a different vendor from the author**. A reviewer running on the model that wrote the code is not independent in the sense the assignment policy asks for; fresh context removes shared session state but not shared authorship. The policy's `adversarial-review` row (`.agents/skills/review/policy.json`) owns which vendor that is, and the script walks the row's backup automatically — so no vendor name belongs in this file.
 >
 > This agent is the **labelled fallback**: the loop dispatches it only when the review chain exits 3 — no vendor other than the author answered — and the line it leaves always reads `claude-fallback (fresh context, NOT independent)`. A same-model review is weaker than an independent one; what would be worse than none is reporting it as independent, so it never is.
 >

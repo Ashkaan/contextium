@@ -51,7 +51,7 @@ Ask the user (a numbered list, recommendation first; in Claude Code, `AskUserQue
 ## Step 3 — scaffold
 
 ```bash
-bash .agents/skills/author/scripts/scaffold.sh output-style <name>
+node --experimental-strip-types .agents/skills/author/scripts/scaffold.ts output-style <name>
 ```
 
 Writes `.agents/output-styles/<name>.md` from the template. Refuses on
@@ -77,7 +77,7 @@ system-prompt edit is not sampled at a decision point, it is present in every
 reply, so a dropped clause changes every turn rather than a rare one. Decompose
 original vs. rewrite into clauses and hand `{original, rewrite, dropped_clauses}`
 — and NOT your rationale — to the policy-assigned adversary via
-`.agents/skills/review/policy-review.sh adversarial-review <file> <brief>`.
+`.agents/skills/review/policy-review.ts adversarial-review <file> <brief>`.
 The brief lists every dropped clause and asks for one finding per clause in the
 reviewer's own format: a `[must-fix]` naming the clause means it is load-bearing
 (restore it and re-run); a `[nit]` or no finding means it was not. Converged =
@@ -91,7 +91,7 @@ single clean round as weaker evidence than it looks.
 ## Step 5 — verify + register
 
 ```bash
-bash .agents/skills/author/scripts/verify.sh output-style .agents/output-styles/<name>.md
+node --experimental-strip-types .agents/skills/author/scripts/verify.ts output-style .agents/output-styles/<name>.md
 ```
 
 Checks frontmatter delimiters, rejects any key outside the documented four,

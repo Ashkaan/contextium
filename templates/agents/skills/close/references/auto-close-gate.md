@@ -14,15 +14,15 @@ This table is the SSOT for WHICH skills auto-close. The criterion is **the skill
 
 **`/project` is bound by contract line 1 but not line 2.** It does not auto-close on completion — it *routes*: its `ready-to-close` stage invokes `/close` as that stage's action (a user-initiated route, not an automatic tail), and its think flow ends inside `/spec`'s auto-close rather than its own. So it never consults the gate, and it commits nothing mid-flow: its README and spec ride the close that ends the think flow.
 
-**Contract line 1 — dispatch the REAL skill.** The handoff MUST be a `Skill` tool call naming `close` (or the harness's equivalent). A caller MUST NOT stand in for the close by performing its steps itself — writing `journal/<date>/<HHMM>-<slug>.md`, running `git commit`, calling `land.sh`. A session commits once, through the close. Improvising the wrap lands a commit while silently skipping the verify, the journal gate, the project-README update, and the three checks that earn the safe-to-close line.
+**Contract line 1 — run the REAL close skill.** Use a `Skill` tool call naming `close` when the harness exposes one. Otherwise read `.agents/skills/close/SKILL.md` in this worktree and execute its five steps in order as the close skill, including its verification and journal gates. The absence of a dispatch tool is not a reason to stop with unlanded work. A caller MUST NOT improvise a partial close — writing a journal entry, committing, or calling `land.ts` without running the full close skill. A session commits once, through the close. Improvising the wrap lands a commit while silently skipping the verify, the journal gate, the project-README update, and the three checks that earn the safe-to-close line.
 
 **Contract line 2 — ask whether this session is already closed, before dispatching.** Every caller in the table MUST run the gate below and proceed only on `not-fired`. There is nothing to mark: the close records itself.
 
 ```bash
-bash .agents/skills/close/scripts/land.sh --gate    # fired | not-fired
+node --experimental-strip-types .agents/skills/close/scripts/land.ts --gate    # fired | not-fired
 ```
 
-**Why there is no marker to write, and no caller key.** A latch each caller writes for itself before dispatching records that a close was DISPATCHED, which is not the question — and a session-wide one set by an early caller suppresses every later auto-close in that session, stranding work uncommitted and unjournaled: the exact loss this gate exists to prevent, caused by the gate. `land.sh --gate` answers the question itself: `fired` only when this thread carries a `closed` marker AND no worktree it owns has anything uncommitted or unpushed. New work re-opens the gate on its own — and a close that dispatched but FAILED never wrote the marker, so its retry is not suppressed either.
+**Why there is no marker to write, and no caller key.** A latch each caller writes for itself before dispatching records that a close was DISPATCHED, which is not the question — and a session-wide one set by an early caller suppresses every later auto-close in that session, stranding work uncommitted and unjournaled: the exact loss this gate exists to prevent, caused by the gate. `land.ts --gate` answers the question itself: `fired` only when this thread carries a `closed` marker AND no worktree it owns has anything uncommitted or unpushed. New work re-opens the gate on its own — and a close that dispatched but FAILED never wrote the marker, so its retry is not suppressed either.
 
 **This gate never suppresses a close the USER asks for.** A user typing `/close`, or saying "close the session", is an instruction, not a double-dispatch. Only an auto-close gate consults it.
 
@@ -49,7 +49,7 @@ The goal-alignment FRONT gate (intent approved up front) is unchanged and orthog
 **(ii) This session is not already closed with nothing written since.**
 
 ```bash
-bash .agents/skills/close/scripts/land.sh --gate
+node --experimental-strip-types .agents/skills/close/scripts/land.ts --gate
 ```
 
 `not-fired` → proceed. `fired` → everything this thread wrote is already on its repo's trunk and nothing has changed since; do NOT re-invoke. This is the double-fire guard for the resume path: if the user answered a held question and the verb resumes after `/close` had already run, this stops a second dispatch. It says nothing about a close the user asks for.
@@ -60,9 +60,9 @@ bash .agents/skills/close/scripts/land.sh --gate
 
 1. Check the gate — there is nothing to write first, and no caller name to pass:
    ```bash
-   bash .agents/skills/close/scripts/land.sh --gate    # proceed on `not-fired`
+   node --experimental-strip-types .agents/skills/close/scripts/land.ts --gate    # proceed on `not-fired`
    ```
-2. Dispatch `/close` via the Skill tool. Per contract line 1, do NOT perform the close steps instead. `land.sh` writes the `closed` marker itself, at the end, and only after its three checks pass — so a close that failed at Land leaves the gate open for the retry that lands it.
+2. Run `/close` by the method in contract line 1. `land.ts` writes the `closed` marker itself, at the end, and only after its three checks pass — so a close that failed at Land leaves the gate open for the retry that lands it.
 
 `/close` runs its OWN internal gates unchanged — auto-close only removes the *user-typed `/close` step* and the *SPEC sign-off halt*, it does NOT skip:
 
@@ -80,5 +80,5 @@ bash .agents/skills/close/scripts/land.sh --gate
 
 ## Peers / scripts
 
-- `scripts/land.sh --gate` — the double-fire guard (`fired` / `not-fired`), with `scripts/land.test.sh` covering the stale-marker case a per-caller key existed to prevent.
-- Referenced by: every skill in the population table above. Each names this file in `metadata.peers` and dispatches `/close` from its body's auto-close section. To re-verify that claim rather than trust it: `grep -L "auto-close-gate.md" $(grep -l "land.sh --gate" .agents/skills/*/SKILL.md)` should print nothing.
+- `scripts/land.ts --gate` — the double-fire guard (`fired` / `not-fired`), with the stale-marker case in `scripts/tests/land-cases.ts` (run by `scripts/land.gates.test.ts`) covering what a per-caller key existed to prevent.
+- Referenced by: every skill in the population table above. Each names this file in `metadata.peers` and dispatches `/close` from its body's auto-close section. To re-verify that claim rather than trust it: `grep -L "auto-close-gate.md" $(grep -l "land.ts --gate" .agents/skills/*/SKILL.md)` should print nothing.

@@ -18,7 +18,7 @@
 # the model to list what it touched (a list from memory misses files).
 #
 # THE THREAD'S OWN WORKTREE IS NOT A SPECIAL CASE. The first call in a thread
-# registers the worktree the harness gave it (thread.sh --worktree) in the same
+# registers the worktree the harness gave it (thread.ts --worktree) in the same
 # ledger with the branch it actually has, so the close lands it the same way it
 # lands every satellite. The harness's own merge button still works; the close
 # no longer depends on someone clicking it.
@@ -43,15 +43,15 @@
 # anywhere by a guess.
 #
 # Env:
-#   WORKBENCH_THREAD_ID, T3CODE_HOME — read by thread.sh, documented there.
+#   WORKBENCH_THREAD_ID, T3CODE_HOME — read by thread.ts, documented there.
 #   CONTEXTIUM_HARNESS — read by harness.sh: where a NEW worktree goes. With no
 #                        harness recorded, under ~/.cache/workbench/worktrees/.
 #
 # peers:
-#   .agents/skills/close/scripts/write-root.test.sh
-#   .agents/skills/close/scripts/thread.sh    (the thread id)
-#   .agents/skills/close/scripts/land.sh      (walks the ledger this writes)
-#   .agents/skills/close/scripts/trunk.sh     (the trunk name, per repo)
+#   .agents/skills/close/scripts/write-root.test.ts
+#   .agents/skills/close/scripts/thread.ts    (the thread id)
+#   .agents/skills/close/scripts/land.ts      (walks the ledger this writes)
+#   .agents/skills/close/scripts/trunk.ts     (the trunk name, per repo)
 #   .agents/skills/close/scripts/harness.sh   (where a new worktree goes)
 #   .agents/skills/close/scripts/lock.sh      (the per-repo lock)
 #
@@ -61,8 +61,12 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-THREAD="${SCRIPT_DIR}/thread.sh"
-TRUNK_SH="${SCRIPT_DIR}/trunk.sh"
+# thread.ts and trunk.ts are TypeScript: EXECUTED through node, never sourced —
+# bash cannot source TypeScript. `--experimental-strip-types` because it is the
+# spelling every Node this template supports accepts (22.6+ and 26 alike).
+# harness.sh and lock.sh are bash libraries, sourced.
+THREAD="${SCRIPT_DIR}/thread.ts"
+TRUNK_TS="${SCRIPT_DIR}/trunk.ts"
 # shellcheck disable=SC1091  # sibling files, resolved at run time
 source "${SCRIPT_DIR}/harness.sh"
 # shellcheck disable=SC1091
@@ -135,9 +139,21 @@ fi
 # ── Which thread? ──────────────────────────────────────────────────────────
 #
 # No thread means no isolation to give and no close to land it. Nothing is
-# guessed here: a plain terminal is told to set WORKBENCH_THREAD_ID or to work
-# in a thread, and it writes nothing in the meantime.
-TID="$(bash "${THREAD}" --id 2>&1)" || fail "${TID#thread: }"
+# guessed here: thread.ts names the session (T3's thread, the harness's session
+# id, or one it generates for this tree), and where it cannot — a shell in no
+# git tree at all — this refuses and writes nothing.
+# The id is stdout alone. stderr is kept apart for the failure message: a Node
+# 22.x prints an ExperimentalWarning there on every run, and read as `2>&1` it
+# became the head of the id.
+TID_ERR="$(mktemp)"
+if ! TID="$(node --experimental-strip-types "${THREAD}" --id 2>"${TID_ERR}")"; then
+  WHY="$(grep '^thread: ' "${TID_ERR}" | tail -n 1 || true)"
+  # The last line that is not Node 22's type-stripping warning or its hint.
+  [ -n "${WHY}" ] || WHY="$(grep -v -e 'ExperimentalWarning' -e '^(Use `node --trace-warnings' "${TID_ERR}" | tail -n 1 || true)"
+  rm -f "${TID_ERR}"
+  fail "${WHY#thread: }"
+fi
+rm -f "${TID_ERR}"
 
 LEDGER_DIR="${HOME}/.cache/workbench/threads/${TID}"
 LEDGER="${LEDGER_DIR}/worktrees"
@@ -157,7 +173,7 @@ ledger_add() {
 }
 
 # The thread's worktree of a shared checkout, as the ledger records it — only
-# while it is still on disk: `land.sh` keeps a line after removing its worktree,
+# while it is still on disk: `land.ts` keeps a line after removing its worktree,
 # as the record that it landed.
 ledger_live() {
   [ -f "${LEDGER}" ] || return 1
@@ -172,7 +188,7 @@ ledger_live() {
 # The thread's own harness worktree, when it is a worktree of $1. Records nothing.
 own_of() {
   local wt
-  wt="$(bash "${THREAD}" --worktree 2>/dev/null || true)"
+  wt="$(node --experimental-strip-types "${THREAD}" --worktree 2>/dev/null || true)"
   [ -n "${wt}" ] && [ -d "${wt}" ] || return 1
   [ "$(canonical_shared "${wt}" || true)" = "$1" ] || return 1
   printf '%s\n' "${wt}"
@@ -187,7 +203,7 @@ fi
 # ── Adopt a worktree something else made ──────────────────────────────────
 #
 # /implement names its worktree after the work (setup-worktree.sh). Made there,
-# it is in no ledger, and `land.sh` walks only the ledger — so the close would
+# it is in no ledger, and `land.ts` walks only the ledger — so the close would
 # report success over code still sitting in it. Recording it here is what
 # makes it this thread's worktree of its repo, answered by every later call.
 if [ "${MODE}" = "adopt" ]; then
@@ -213,14 +229,14 @@ fi
 # the wrong branch or none.
 #
 # The SHARED column is the real checkout, not the worktree itself: it is what
-# `land.sh` fast-forwards, and it is where `land.sh` looks for
+# `land.ts` fast-forwards, and it is where `land.ts` looks for
 # `.agents/deployable-prefixes.json` to decide whether this repo's pushes
 # deploy at all.
-T3_WT="$(bash "${THREAD}" --worktree 2>/dev/null || true)"
+T3_WT="$(node --experimental-strip-types "${THREAD}" --worktree 2>/dev/null || true)"
 if [ -n "${T3_WT}" ] && [ -d "${T3_WT}" ]; then
   T3_SHARED="$(canonical_shared "${T3_WT}" || true)"
   if [ -n "${T3_SHARED}" ] && ! ledger_has "${T3_WT}"; then
-    T3_BRANCH="$(bash "${THREAD}" --branch 2>/dev/null || true)"
+    T3_BRANCH="$(node --experimental-strip-types "${THREAD}" --branch 2>/dev/null || true)"
     if [ -z "${T3_BRANCH}" ]; then
       T3_BRANCH="$(git -C "${T3_WT}" rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
     fi
@@ -290,7 +306,7 @@ fi
 # `master` would otherwise be refused outright, and the session that had to
 # write there would build its own worktree by hand, landed by nobody and
 # recorded in no ledger.
-TRUNK="$(bash "${TRUNK_SH}" "${SHARED}" 2>/dev/null)" \
+TRUNK="$(node --experimental-strip-types "${TRUNK_TS}" "${SHARED}" 2>/dev/null)" \
   || fail "no trunk branch in ${SHARED} (origin/HEAD unset and no origin/main or origin/master)"
 git -C "${SHARED}" fetch -q origin "${TRUNK}" 2>/dev/null || true
 git -C "${SHARED}" rev-parse --verify -q "origin/${TRUNK}" >/dev/null 2>&1 \

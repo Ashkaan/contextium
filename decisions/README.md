@@ -84,8 +84,8 @@ edited into a different decision.
 
 ## The check
 
-`.agents/checks/check-decision-records.sh` holds every record to this format,
-and `/close` runs it on the records a close is about to commit — `land.sh`
+`.agents/checks/check-decision-records.ts` holds every record to this format,
+and `/close` runs it on the records a close is about to commit — `land.ts`
 calls it with `--since origin/<trunk>` before its commit — so a violation
 refuses the close. Each violation names its part:
 
@@ -105,7 +105,7 @@ decision.
 Run it by hand:
 
 ```bash
-bash .agents/checks/check-decision-records.sh                     # changed since HEAD, staged or not
-bash .agents/checks/check-decision-records.sh --since origin/main # this branch's, committed or not — what /close runs
-bash .agents/checks/check-decision-records.sh decisions/          # every record in a folder
+node --experimental-strip-types .agents/checks/check-decision-records.ts                    # changed since HEAD
+node --experimental-strip-types .agents/checks/check-decision-records.ts --since origin/main # this branch's, committed or not — what /close runs
+node --experimental-strip-types .agents/checks/check-decision-records.ts decisions/         # every record in a folder
 ```

@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # lock.sh — a portable exclusive lock for the close scripts, sourced, not run.
-# Used where flock(1) may be missing (stock macOS): roadmap.sh's writers, and
-# the per-repo git lock write-root.sh and land.sh share.
+# Used where flock(1) may be missing (stock macOS): the per-repo git lock
+# write-root.sh and land.ts share (land.ts takes it through a bash child that
+# sources this file and holds it). roadmap.ts's per-project lock is this same
+# symlink protocol, ported to TypeScript beside it.
 #
 #   source lock.sh
 #   lock_take <lock-path> <wait-seconds> || <timed out>   # sets an EXIT trap
@@ -26,8 +28,9 @@
 # Portable: bash 3.2, BSD and GNU userland.
 #
 # peers:
-#   .agents/skills/close/scripts/lock.test.sh
-#   .agents/skills/close/scripts/roadmap.sh
+#   .agents/skills/close/scripts/lock.test.ts
+#   .agents/skills/close/scripts/land.ts      (holds lock_repo through a bash child)
+#   .agents/skills/close/scripts/roadmap.ts   (lock_take's protocol, in TypeScript)
 #   .agents/skills/close/scripts/write-root.sh
 
 lock_take() {

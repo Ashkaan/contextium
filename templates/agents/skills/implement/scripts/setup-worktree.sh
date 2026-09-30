@@ -18,7 +18,7 @@
 #   setup-worktree.sh --print-regex                   — emit SLUG_REGEX value (mode 3)
 #
 # peers:
-#   .agents/skills/implement/scripts/setup-worktree.test.sh
+#   .agents/skills/implement/scripts/setup-worktree.test.ts
 #   .agents/skills/implement/SKILL.md
 #   .agents/skills/close/scripts/harness.sh     (where it goes, its branch name)
 #   .agents/skills/close/scripts/write-root.sh  (records it for the close)
@@ -29,7 +29,7 @@
 #                         some callers leave it unset).
 #   CLAUDE_SESSION_ID   — the session id, used as the marker-file suffix.
 #                         Optional: else the harness's own (harness.sh), else
-#                         the id thread.sh generates for this checkout.
+#                         the id thread.ts generates for this checkout.
 #   CLAUDE_WORKTREE_HOME — the folder the worktree goes under. Optional; else
 #                         where the recorded harness keeps its worktrees.
 #
@@ -44,7 +44,7 @@
 
 set -euo pipefail
 
-# SSOT: every caller (this script, session-key.test.sh, the skill body) routes
+# SSOT: every caller (this script, session-key.test.ts, the skill body) routes
 # through --validate-slug; the regex MUST NOT be duplicated elsewhere.
 readonly SLUG_REGEX='^[a-z][a-z0-9-]{0,63}$'
 
@@ -130,11 +130,11 @@ if [[ ! -d "$repo/.git" ]] && ! git -C "$repo" rev-parse --git-dir >/dev/null 2>
 fi
 
 # The session id names the marker. A session whose harness exports none still
-# has one: thread.sh generates it once for this checkout and keeps it until a
+# has one: thread.ts generates it once for this checkout and keeps it until a
 # close lands, so every later call — and the close — agrees on it.
 SESSION_ID="${CLAUDE_SESSION_ID:-$(harness_session_id)}"
-if [[ -z "$SESSION_ID" && -f "$CLOSE_SCRIPTS/thread.sh" ]]; then
-  SESSION_ID="$(cd "$repo" && bash "$CLOSE_SCRIPTS/thread.sh" --id 2>/dev/null || true)"
+if [[ -z "$SESSION_ID" && -f "$CLOSE_SCRIPTS/thread.ts" ]]; then
+  SESSION_ID="$(cd "$repo" && node --experimental-strip-types "$CLOSE_SCRIPTS/thread.ts" --id 2>/dev/null || true)"
 fi
 [[ -n "$SESSION_ID" ]] || {
   err "no session id: set CLAUDE_SESSION_ID, or run inside a harness session"
@@ -161,15 +161,17 @@ mkdir -p "$worktree_home" || {
 # id carrying a glob metacharacter would widen that pattern and match another
 # session's worktree. One sanitizer, shared, is the only way the writer and the
 # readers stay in agreement (single source of truth). Identity for a normal
-# UUID id, so worktrees already on disk keep resolving.
-session_key_script="$(dirname "$0")/session-key.sh"
-if [[ -x "$session_key_script" ]]; then
-  session_key=$("$session_key_script" "$SESSION_ID") || {
+# UUID id, so worktrees already on disk keep resolving. It is TypeScript, run
+# by node and never sourced — this resolver stays bash only because it runs
+# `git worktree add`.
+session_key_script="$(dirname "$0")/session-key.ts"
+if [[ -f "$session_key_script" ]]; then
+  session_key=$(node --experimental-strip-types "$session_key_script" "$SESSION_ID") || {
     err "session id \"$SESSION_ID\" yields no usable marker key"
     exit 1
   }
 else
-  err "missing session-key.sh at $session_key_script"
+  err "missing session-key.ts at $session_key_script"
   exit 1
 fi
 marker="$worktree_dir/.claude-session-$session_key"
@@ -226,7 +228,7 @@ exclude_markers() {
     || printf '%s\n' '.claude-session-*' >>"$ex" 2>/dev/null || true
 }
 
-# Record the worktree in this thread's ledger. `land.sh` walks only the ledger,
+# Record the worktree in this thread's ledger. `land.ts` walks only the ledger,
 # so a worktree left out of it is one the close never commits — it would
 # report success over code still sitting here. A refusal is fatal for that
 # reason.
@@ -256,7 +258,7 @@ same_dir() { [[ -d "$1" && -d "$2" && "$(cd "$1" && pwd -P)" == "$(cd "$2" && pw
 # recurse without end.
 find_project_dir() {
   local records
-  records=$(bash "$SELF_DIR/session-write-root.sh" --no-create 2>/dev/null || true)
+  records=$(node --experimental-strip-types "$SELF_DIR/session-write-root.ts" --no-create 2>/dev/null || true)
   [[ -n "$records" && -d "$records/projects" ]] || return 0
   # `|| true` on the pipeline, not just 2>/dev/null on find: under `set -o
   # pipefail` a find that exits non-zero (no such directory) fails the whole
@@ -280,7 +282,7 @@ find_project_dir() {
 # must leave nothing behind: a worktree made for a row that cannot start is a
 # directory and a branch somebody has to clean up.
 #   --slug x --shard r4 → the row whose ID is `r4`, case-insensitively.
-#   bare x              → the row detect-stage.sh names in `next-row:` when the
+#   bare x              → the row detect-stage.ts names in `next-row:` when the
 #                         stage is ready-to-implement; any other stage refuses.
 #                         A legacy loose SPEC in flight wins, as it does there,
 #                         and takes the old path with no row to flip.
@@ -292,10 +294,10 @@ resolve_roadmap_row() {
   proj="$(find_project_dir)"
   [[ -n "$proj" && -f "$proj/ROADMAP.md" ]] || return 0
   errf="$(mktemp)"
-  rows="$(bash "$CLOSE_SCRIPTS/roadmap.sh" "$proj" 2>"$errf")" || rc=$?
+  rows="$(node --experimental-strip-types "$CLOSE_SCRIPTS/roadmap.ts" "$proj" 2>"$errf")" || rc=$?
   msg="$(sed -n 's/^roadmap: //p' "$errf" | tail -n1)"; rm -f "$errf"
   if [[ "$rc" -ne 0 ]]; then
-    err "BLOCKED: $proj/ROADMAP.md is malformed: ${msg:-roadmap.sh exited $rc}"
+    err "BLOCKED: $proj/ROADMAP.md is malformed: ${msg:-roadmap.ts exited $rc}"
     exit 1
   fi
   if [[ -n "$shard" ]]; then
@@ -323,11 +325,11 @@ resolve_roadmap_row() {
       err "BLOCKED: $rid has no spec yet — run /project $original_slug"
       exit 1
     fi
-    # awk reads to the end rather than `exit` on the match: spec-state.sh
+    # awk reads to the end rather than `exit` on the match: spec-state.ts
     # writes a line per spec, and a reader that quits early kills it with
     # SIGPIPE — under `set -e` and pipefail that took this script down, silent,
-    # exit 141, on any project whose row was not the last spec.
-    rstate="$(bash "$CLOSE_SCRIPTS/spec-state.sh" "$proj" 2>/dev/null | awk -F'\t' -v n="$rsub" '$1==n && !f {print $2; f=1}')"
+    # exit 141, on any row whose spec was not the last one listed.
+    rstate="$(node --experimental-strip-types "$CLOSE_SCRIPTS/spec-state.ts" "$proj" 2>/dev/null | awk -F'\t' -v n="$rsub" '$1==n && !f {print $2; f=1}')"
     case "$rstate" in
       none|partial) ;;
       complete) err "BLOCKED: $rid's spec is already reported complete — /close marks the row done"; exit 1 ;;
@@ -335,7 +337,7 @@ resolve_roadmap_row() {
     esac
   else
     local stage_out stage active next_row
-    stage_out="$(bash "$SELF_DIR/../../project/scripts/detect-stage.sh" "$proj" 2>/dev/null || true)"
+    stage_out="$(node --experimental-strip-types "$SELF_DIR/../../project/scripts/detect-stage.ts" "$proj" 2>/dev/null || true)"
     stage="$(sed -n 's/^stage: //p' <<<"$stage_out")"
     active="$(sed -n 's/^active-spec: \{0,1\}//p' <<<"$stage_out")"
     next_row="$(sed -n 's/^next-row: \{0,1\}//p' <<<"$stage_out")"
@@ -344,7 +346,7 @@ resolve_roadmap_row() {
       # When the row was sent to planning by its open markers, say which.
       sub="$(printf '%s\n' "$rows" | awk -F'\t' -v w="$next_row" '$1==w && !f {print $4; f=1}')"
       if [[ "$sub" == specs/* ]]; then
-        bash "$CLOSE_SCRIPTS/open-clarifications.sh" "$proj/$sub" 2>/dev/null | sed 's/^/  /' >&2 || true
+        node --experimental-strip-types "$CLOSE_SCRIPTS/open-clarifications.ts" "$proj/$sub" 2>/dev/null | sed 's/^/  /' >&2 || true
       fi
       exit 1
     fi
@@ -358,7 +360,7 @@ resolve_roadmap_row() {
   sub="$(cut -f4 <<<"$row")"
   if [[ "$sub" == specs/* ]]; then
     local markers mrc=0
-    markers="$(bash "$CLOSE_SCRIPTS/open-clarifications.sh" "$proj/$sub" 2>&1)" || mrc=$?
+    markers="$(node --experimental-strip-types "$CLOSE_SCRIPTS/open-clarifications.ts" "$proj/$sub" 2>&1)" || mrc=$?
     if [[ "$mrc" -ne 0 ]]; then
       err "BLOCKED: $(cut -f1 <<<"$row") has open NEEDS CLARIFICATION markers in $proj/$sub — settle them with /project $original_slug first:"
       printf '%s\n' "$markers" | sed 's/^/  /' >&2
@@ -373,11 +375,11 @@ resolve_roadmap_row() {
 # and the worktree stays.
 #
 # WRITTEN IN THE WORKTREE, not where the row was read. The row is resolved
-# before the worktree exists, so it is read from the main checkout; a flip
-# written there too is a dirty file in the shared checkout that no close
-# commits, and land.sh then will not fast-forward that checkout. When the
-# project is a folder of this repo, the flip goes to the worktree's copy of it,
-# which the close commits with the work.
+# before the worktree exists, so outside a thread it is read from the main
+# checkout; a flip written there too is a dirty file in the shared checkout that
+# no close commits, and land.ts then will not fast-forward that checkout. When
+# the project is a folder of this repo, the flip goes to the worktree's copy of
+# it, which the close commits with the work.
 flip_roadmap_row_to_in_progress() {
   [[ -n "$roadmap_row" ]] || return 0
   local target="$roadmap_project" root rel
@@ -390,7 +392,7 @@ flip_roadmap_row_to_in_progress() {
     rel="${rel#"$(cd "$root" && pwd -P)"/}"
     [[ -f "$worktree_dir/$rel/ROADMAP.md" ]] && target="$worktree_dir/$rel"
   fi
-  bash "$CLOSE_SCRIPTS/roadmap.sh" "$target" --set "$roadmap_row" in-progress >/dev/null 2>&1 \
+  node --experimental-strip-types "$CLOSE_SCRIPTS/roadmap.ts" "$target" --set "$roadmap_row" in-progress >/dev/null 2>&1 \
     || err "WARN: could not mark $roadmap_row in-progress in $target/ROADMAP.md"
 }
 

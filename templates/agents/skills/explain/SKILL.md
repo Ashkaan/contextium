@@ -3,7 +3,7 @@ name: explain
 description: Deep research into a topic or issue — investigates until confident, then presents an executive summary and root-cause analysis. Use when you need to understand WHY something happens. Takes [topic, question, or issue description].
 allowed-tools: Bash Read Grep Glob Task WebSearch WebFetch AskUserQuestion
 metadata:
-  peers: ".agents/agents/research-agent.md .agents/skills/explain/scripts/parallel-research.sh .agents/skills/debate/scripts/dispatch-agents.sh .agents/skills/review/policy.json .agents/skills/implement/SKILL.md"
+  peers: ".agents/agents/research-agent.md .agents/skills/explain/scripts/parallel-research.ts .agents/skills/debate/scripts/dispatch-agents.ts .agents/skills/review/policy.json .agents/skills/implement/SKILL.md"
 ---
 
 # Explain — Deep Research & Root Cause Analysis
@@ -61,12 +61,12 @@ someone should make with the explanation in hand.
 
 ### Deep complexity
 
-Launch 2-3 parallel research sources, each on a different hypothesis. Different models are worth more than one model asked three times — a model asked the same question three ways tends to agree with itself. `scripts/parallel-research.sh` seats the three voices of the `panel` row of `.agents/skills/review/policy.json` — the same three `/debate` seats — and runs them through `/debate`'s `dispatch-agents.sh`, so a seat whose CLI is missing or fails is argued by another voice. It warns when fewer than three panel CLIs are installed, so it still runs on a single-model machine, just with less independence between the three answers. You MAY replace one seat with the in-repo `research-agent` for focused code tracing.
+Launch 2-3 parallel research sources, each on a different hypothesis. Different models are worth more than one model asked three times — a model asked the same question three ways tends to agree with itself. `scripts/parallel-research.ts` seats the three voices of the `panel` row of `.agents/skills/review/policy.json` — the same three `/debate` seats — and runs them through `/debate`'s `dispatch-agents.ts`, so a seat whose CLI is missing or fails is argued by another voice. It warns when fewer than three panel CLIs are installed, so it still runs on a single-model machine, just with less independence between the three answers. You MAY replace one seat with the in-repo `research-agent` for focused code tracing.
 
 Invoke the parallel-research script — it owns the parallel CLI orchestration, per-source 120s timeout, partial-success collection, and 10KB output cap:
 
 ```bash
-bash .agents/skills/explain/scripts/parallel-research.sh \
+node --experimental-strip-types .agents/skills/explain/scripts/parallel-research.ts \
   --h1 "Investigate: {H1}. Specific, cite evidence, <500 words." \
   --h2 "Investigate: {H2}. Specific, cite evidence, <500 words." \
   --h3 "Investigate: {H3}. Specific, cite evidence, <500 words." \
@@ -155,7 +155,7 @@ User: `/explain why is the budget alert firing every hour for the last 3 days?` 
 
 ### Example 3 — Deep cross-cutting
 
-User: `/explain why does our deploy keep failing on the step that copies files to the server?` — cross-cutting, multiple plausible causes. step-1 classifies Deep; step-2 frames 3 hypotheses (a network path that is not open, a rotated credential, a key format the server rejects); step-3 invokes `scripts/parallel-research.sh` with H1/H2/H3 prompts mapped to each hypothesis, plus parallel local Read/Grep; step-4 reconciles and emits synthesis with Competing Explanations section; step-5 offers to ship the class fix when one is identified.
+User: `/explain why does our deploy keep failing on the step that copies files to the server?` — cross-cutting, multiple plausible causes. step-1 classifies Deep; step-2 frames 3 hypotheses (a network path that is not open, a rotated credential, a key format the server rejects); step-3 invokes `scripts/parallel-research.ts` with H1/H2/H3 prompts mapped to each hypothesis, plus parallel local Read/Grep; step-4 reconciles and emits synthesis with Competing Explanations section; step-5 offers to ship the class fix when one is identified.
 
 ## Troubleshooting
 

@@ -3,8 +3,8 @@
 Detail lifted out of [close/SKILL.md](../SKILL.md) so the skill body stays
 short. This file is the SSOT for the session file's shape — its path, its front
 matter, its heading, its section set and what each section may hold. § 3 reads
-it before writing, and `scripts/check-journal-entry.sh` (run by
-`journal-file.sh --check` and by Land) enforces the parts marked **checked**
+it before writing, and `scripts/check-journal-entry.ts` (run by
+`journal-file.ts --check` and by Land) enforces the parts marked **checked**
 below. Nothing else defines any of this.
 
 **A session entry records the session** — what was done, what was found and
@@ -18,11 +18,11 @@ A journal day is a FOLDER, `journal/<date>/`, and a session is one file inside
 it: `journal/<date>/<HHMM>-<filename-stem>.md`, where `HHMM` is the session's own start
 time in local time and `<filename-stem>` is a short filename label, normalized
 to at most 60 characters by the script. There is no new-day shape and no existing-day shape. **Do not
-assemble that path by hand** — `scripts/journal-file.sh "<filename-stem>"` owns it, it
-creates the day folder, and it persists its answer where `land.sh` checks it:
+assemble that path by hand** — `scripts/journal-file.ts "<filename-stem>"` owns it, it
+creates the day folder, and it persists its answer where `land.ts` checks it:
 
 ```bash
-bash .agents/skills/close/scripts/journal-file.sh "security-policy-ai"
+node --experimental-strip-types .agents/skills/close/scripts/journal-file.ts "security-policy-ai"
 ```
 
 The filename label above is NOT the frontmatter `slug:`. Despite its name,
@@ -75,16 +75,16 @@ Every field that used to sit in the day file's `sessions:` list entry — `proje
 The `sessions:` list is gone: a file IS a session.
 
 **`time`** is the thread's start, in local time —
-`bash scripts/thread.sh --started --local`, read from T3 Code's own record of
+`node --experimental-strip-types scripts/thread.ts --started --local`, read from T3 Code's own record of
 the thread, or recorded when a harness session outside T3 was first seen. Never the close time: a session that closes after midnight would
 otherwise file under a day it did not happen on.
 
-**Name collisions are `journal-file.sh`'s job, and it checks two places.** Two
+**Name collisions are `journal-file.ts`'s job, and it checks two places.** Two
 sessions closing in the same minute with the same slug both want
 `HHMM-<slug>.md`; the loser takes `HHMM-<slug>-2.md`, then `-3`. The second
 place is the trunk: the other session allocated the name in ITS OWN
 worktree, which this one cannot see, so a local-only check picks a name that
-collides at merge time. `land.sh` re-checks against a freshly fetched
+collides at merge time. `land.ts` re-checks against a freshly fetched
 trunk and renames again if the race was lost in between. Never
 overwrite: the file you would overwrite is another session's close.
 
@@ -172,7 +172,7 @@ a Findings bullet worth more than a sentence in Changes.
 
 ```markdown
 **Findings:**
-- `land.sh:366` skips the journal gate when the checker file is absent — `sed -n 360,372p close/scripts/land.sh`
+- `land.ts:366` skips the journal gate when the checker file is absent — `sed -n 360,372p close/scripts/land.ts`
 - a month of front matter carries `root_cause_status` values outside the set — `grep -ho '^root_cause_status: .*' journal/2026-01-*/*.md | sort | uniq -c`
 ```
 
@@ -191,7 +191,7 @@ a Findings bullet worth more than a sentence in Changes.
 - **Summary** — one line, no embedded newlines, the next non-blank line after
   Action. Enough for a future session to decide whether to read deeper.
 - **`project:`** — the project FOLDER path, `<domain>/<date>_<slug>` or
-  `projects/<domain>/<date>_<slug>`, or `null` for a one-off. `land.sh` resolves
+  `projects/<domain>/<date>_<slug>`, or `null` for a one-off. `land.ts` resolves
   it as a path under the repo to derive the next command, and
   refuses the close on a bare slug.
 - **`root_cause_status:`** — optional; when present, one of (checked):
@@ -234,8 +234,8 @@ section is the one part of the entry the agent does not author.
 Run it on every close:
 
 ```bash
-bash .agents/skills/close/scripts/corrections.sh          # one row per turn
-bash .agents/skills/close/scripts/corrections.sh --full   # a turn that spans lines
+node --experimental-strip-types .agents/skills/close/scripts/corrections.ts          # one row per turn
+node --experimental-strip-types .agents/skills/close/scripts/corrections.ts --full   # a turn that spans lines
 ```
 
 One `HH:MM <TAB> text` row per thing the user said, in the order they said it.
@@ -246,7 +246,7 @@ returns the same rows for every T3 thread in a time window as one JSON object
 **The source is the harness's own record, never memory.** In T3 Code it is
 T3's message table, `projection_thread_messages` — the one place every harness
 T3 runs lands in, since T3 is what renders the conversation. Outside T3 it is
-the harness's own session file (`transcripts.sh`: Claude Code's
+the harness's own session file (`transcripts.ts`: Claude Code's
 `~/.claude/projects/*.jsonl`, Codex's `~/.codex/sessions/**/rollout-*.jsonl`).
 When none exists the script says so; report that, and omit the section.
 

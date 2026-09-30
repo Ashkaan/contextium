@@ -1,6 +1,6 @@
 // metrics.ts — PLANTED-BUG FIXTURE. Not production code; nothing imports it.
 //
-// Exercises the code-review gate: `code-review.sh --fixture <this dir>`
+// Exercises the code-review gate: `code-review.ts --fixture <this dir>`
 // must surface the planted defects as [must-fix]. A planted-bug diff run ad hoc
 // and never committed cannot be re-run, so this file is that fixture, made
 // durable.

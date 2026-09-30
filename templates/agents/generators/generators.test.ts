@@ -1,7 +1,7 @@
 // Boundary rows for the helpers the app and integration indexes share: the
 // repo root they resolve in both layouts, and the frontmatter values a README
 // carries. The project index has its own suite, project-index.generate.test.ts.
-// Run: node --test templates/agents/generators/generators.test.ts
+// Run: node --test --experimental-strip-types templates/agents/generators/generators.test.ts
 
 import { test } from "node:test";
 import assert from "node:assert/strict";

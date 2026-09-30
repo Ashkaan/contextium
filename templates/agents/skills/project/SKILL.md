@@ -1,7 +1,7 @@
 ---
 name: project
-description: Single entry point for project work — renders the live project index, or loads a slug and routes it to the think flow, /implement, /close or a state report, composing /spec, /implement and /close as primitives. Use when the user says "/project", "/project [slug]", "let's work on [project]", "create a project for [X]", "complete [slug]", or "update [slug]". No args renders the live priority-sorted project index; an existing slug loads the README and detects stage via scripts/detect-stage.sh; new freeform creates a project and runs the think flow; complete/update modes do status changes only.
-allowed-tools: "Bash(.agents/skills/project/scripts/*:*) Bash(bash .agents/skills/project/scripts/*:*) Bash(bash .agents/skills/close/scripts/project-remaining-work.sh:*) Bash(node .agents/generators/project-index.generate.ts:*) Read Edit Write Task Skill"
+description: Single entry point for project work — renders the live project index, or loads a slug and routes it to the think flow, /implement, /close or a state report, composing /spec, /implement and /close as primitives. Use when the user says "/project", "/project [slug]", "let's work on [project]", "create a project for [X]", "complete [slug]", or "update [slug]". No args renders the live priority-sorted project index; an existing slug loads the README and detects stage via scripts/detect-stage.ts; new freeform creates a project and runs the think flow; complete/update modes do status changes only.
+allowed-tools: "Bash(.agents/skills/project/scripts/*:*) Bash(node --experimental-strip-types .agents/skills/project/scripts/*:*) Bash(node --experimental-strip-types .agents/skills/close/scripts/project-remaining-work.ts:*) Bash(node .agents/generators/project-index.generate.ts:*) Read Edit Write Task Skill"
 metadata:
   peers: "AGENTS.md .agents/skills/implement/SKILL.md .agents/skills/close/SKILL.md .agents/skills/spec/SKILL.md .agents/generators/project-index.generate.ts"
 ---
@@ -17,7 +17,7 @@ The index render lives here rather than in a skill of its own because a cross-sk
 - **Goal-alignment ALWAYS comes first** when the think flow runs. The think flow's `think-step-0-goal-alignment` produces (goal in plain language + simplest mechanism + explicit ask "does this match?") and MUST wait for explicit user approval before context-load, design, or SPEC writing. Silence is NOT approval. Skipping this is the single most expensive mistake the loop makes: a goal or shape mismatch caught here costs one turn, and caught after the build it costs the rebuild. **This step is not the whole enforcement:** it only reaches sessions that enter `/project`, `/spec` or `/implement`, and most task-shaped work does not. Every other session is held to the same gate by the think flow's goal-alignment step.
 - **SPEC writing + machine review live in `/spec`, not here.** Per `think-step-4-dispatch-spec`, `/project` does the thinking (goal-alignment → context-load → explore → design → row split → categorize) then hands the design to `/spec`, which writes one spec folder per designed roadmap row, dispatches `/spec-audit` (reviewer consensus + spirit-check), folds findings, and auto-closes. `/project` never writes the SPEC itself and never runs the machine review. The user is NEVER the first reviewer — the SPEC is machine-audited before it lands, because a plan presented raw ships the findings a reviewer would have caught in one pass. Each artifact has exactly ONE machine reviewer: SPECs get `/spec-audit` (inside `/spec`); shipped diffs get `/implement-audit` (inside `/implement`). One artifact type means one machine reviewer per artifact-write.
 - **No copy-paste-command outputs as the default.** When the router lands on `ready-to-implement` in a short session, INVOKE `/implement [slug]` inline — do not tell the user to paste a command. The only acceptable copy-paste output is the long-session fresh-tab handoff (see `step-2-turn-count-gate`), and only because `/implement`'s fresh-context boundary is load-bearing: a session that wrote the plan defends it mid-build instead of judging it.
-- **Stage detection is a script result, not a judgment.** Run `scripts/detect-stage.sh` to get the stage; don't infer from prose.
+- **Stage detection is a script result, not a judgment.** Run `scripts/detect-stage.ts` to get the stage; don't infer from prose.
 - **Credentials in plans must resolve to a named secret-store item + field BEFORE plan-review.** "From the key or whatever app Y uses" is a `AGENTS.md § Standards → Read before asserting` violation. Resolve the item's name + field (and its id, where the store has one) during `think-step-2-explore` by reading the store or the repo's credential helper, and cite it explicitly in the plan. A plan naming a credential nobody looked up names one that may not exist.
 - **Standards made incorrect by the SPEC's work are in-scope for the same commit.** If shipping the SPEC's work makes any statement in `AGENTS.md` § Standards (or any other standing rule the repo keeps) wrong, it MUST be amended in the same commit. Enumerate "standards made incorrect" as part of `think-step-3-design`. Deferring the amendment to a follow-up iteration is the deferral pattern `AGENTS.md § Standards → No deferral` forbids.
 - **Blank-mode: paste the generator output INTO your response.** After `step-0.5-render-index` runs Bash, the captured stdout is in your context but NOT yet visible to the user. Many harnesses render the Bash tool card **collapsed** — a one-line chip with a disclosure arrow, no output body. So stdout left in the tool card has reached nobody; "ran the generator" is not the deliverable, the user reading the index in your reply IS. Paste it verbatim: `buildCompact` emits finished markdown, so there is no formatting judgment left to make — reformatting it is how the paste turns into a summary. Self-check before sending: does the reply text literally contain the project rows? The failure this prevents is the agent running the generator and then asking "which one to start?" of a user who cannot see the list.
@@ -26,7 +26,7 @@ The index render lives here rather than in a skill of its own because a cross-sk
 
 | Argument | What /project does | Mechanism |
 |---|---|---|
-| blank | Run `scripts/render-index.sh` — one call, whole render — and **paste its stdout verbatim into your response** (the tool card may be collapsed — the user sees only what your reply text contains). The index, the lapsed-window block and the closing prompt are all in that stdout; add nothing. | `step-0.5-render-index` |
+| blank | Run `scripts/render-index.ts` — one call, whole render — and **paste its stdout verbatim into your response** (the tool card may be collapsed — the user sees only what your reply text contains). The index, the lapsed-window block and the closing prompt are all in that stdout; add nothing. | `step-0.5-render-index` |
 | `create <description>` or bare freeform new | New project + think flow | inline think flow |
 | `<domain>/<slug>` or `<slug>` (existing) | Load README → detect stage → route | `step-1-stage-detect-and-route` + table below |
 | `complete <slug>` | Status change only | inline (no delegation) |
@@ -40,8 +40,8 @@ it from a project nobody decided about. A window that lapses silently lets the
 post-ship defects it existed to catch go unnoticed, and lapsed windows pile up
 unless something prints them — the silence becomes the norm.
 
-`scripts/render-index.sh` already emits this block beneath the index (it calls
-`check-staleness.sh --expired-only` and formats the rows), newest-lapse last —
+`scripts/render-index.ts` already emits this block beneath the index (it calls
+`check-staleness.ts --expired-only` and formats the rows), newest-lapse last —
 this section is the specification of that shape, not a step to perform:
 
 ```
@@ -78,8 +78,8 @@ For existing-project-slug paths only. Load `projects/<domain>/<date>_<slug>/READ
 | Detected stage | Detection signal | What /project does |
 |---|---|---|
 | **needs-planning** | `status: active` + no spec at all — or, with `ROADMAP.md`, no rows yet, or a ready row whose Sub-spec is `—`, whose spec folder is missing on disk, or whose spec still carries a `NEEDS CLARIFICATION` marker (`next-row:` names it) | Run the think flow (steps 0 through 3.5 below) for that row, then `think-step-4-dispatch-spec` hands off to `/spec` (writes + audits the spec folders, then auto-closes). No user sign-off halt here (option A). |
-| **all-specs-reported** | `status: active` + every spec reported — or, with `ROADMAP.md`, no ready row owed a spec or implementation | **Do NOT start a think flow.** Run `step-1.5-remaining-work-gate`: `bash .agents/skills/close/scripts/project-remaining-work.sh <project-folder>`, report what is actually left, and ask whether the project wants a next chunk, a watch window, closing out, or nothing. See § Every SPEC reported below. |
-| **ready-to-implement** | `status: active` + a spec still owed work — with `ROADMAP.md`, the first ready row (in-progress before planned) whose spec folder has no `complete` report and no open marker; a legacy loose `*.spec.md` owed work wins over every row | Check session turn count (see § Turn-count gate below). Fresh session → invoke `/implement <project-slug>` inline. Long session → emit a single-line message: "Long session — open a fresh tab and paste: `/implement <project-slug>`." Always the PROJECT slug (not a sub-SPEC name, not a path — `/implement`'s worktree setup rejects both; see note in `think-step-4-dispatch-spec`). `/implement` resolves the row from `detect-stage.sh`'s `next-row:` itself. |
+| **all-specs-reported** | `status: active` + every spec reported — or, with `ROADMAP.md`, no ready row owed a spec or implementation | **Do NOT start a think flow.** Run `step-1.5-remaining-work-gate`: `node --experimental-strip-types .agents/skills/close/scripts/project-remaining-work.ts <project-folder>`, report what is actually left, and ask whether the project wants a next chunk, a watch window, closing out, or nothing. See § Every SPEC reported below. |
+| **ready-to-implement** | `status: active` + a spec still owed work — with `ROADMAP.md`, the first ready row (in-progress before planned) whose spec folder has no `complete` report and no open marker; a legacy loose `*.spec.md` owed work wins over every row | Check session turn count (see § Turn-count gate below). Fresh session → invoke `/implement <project-slug>` inline. Long session → emit a single-line message: "Long session — open a fresh tab and paste: `/implement <project-slug>`." Always the PROJECT slug (not a sub-SPEC name, not a path — `/implement`'s worktree setup rejects both; see note in `think-step-4-dispatch-spec`). `/implement` resolves the row from `detect-stage.ts`'s `next-row:` itself. |
 | **ready-to-close** | `status: active` + `ROADMAP.md`, and a ready row whose spec is reported `complete` while the row is not yet `done` (`next-row:` names it) — a close that did not finish. It outranks new work, because the row the close flips may be what unblocks the next one | Invoke `/close` inline; it flips the row to `done` and re-derives `next:`. |
 | **monitor** | `status: monitor` | Read `monitoring-until:` + watch criteria. Report state. No further action. |
 | **blocked** | `status: blocked` | Read `blocked-on:`. Report what's blocking. No further action. |
@@ -96,7 +96,7 @@ So this stage asks instead of routing. The counting is already written — reuse
 `/close`'s script rather than re-deriving it:
 
 ```bash
-bash .agents/skills/close/scripts/project-remaining-work.sh projects/<domain>/<date>_<slug>
+node --experimental-strip-types .agents/skills/close/scripts/project-remaining-work.ts projects/<domain>/<date>_<slug>
 ```
 
 Read its output and put it in front of the user before the question — the
@@ -163,8 +163,8 @@ When invoked with a free-form description (not an explicit `complete` / `update`
 
 1. Determine the domain (ask if unclear) from the list above.
 2. Create the folder `projects/{domain}/YYYY-MM-DD_brief-description/` in the session's worktree.
-3. Scaffold `README.md` from [references/templates/README.md](references/templates/README.md). Frontmatter: `project`, `status: active`, `priority`, `created`, `tags`, `description`. The `description:` field is ONE line of AT MOST 60 characters naming what the project IS — it becomes the index's `One-line` column, which is read in a chat column too narrow to wrap dozens of them, and the index never clips, so the budget is yours to hit when you WRITE it. The fuller version is the body's `## Goal`. Priority classifier: `high` = serves a goal the user has written down (a goals file under `knowledge/`, where one exists); `medium` = meta-infrastructure (standards/hooks/skills/telemetry/frameworks/support-apps); `low` = neither. **Do not write `next:` by hand** — it is derived from the roadmap by `roadmap.sh --sync-next` once rows exist, per the template's derivation rule. Keep the template's derivation comment; it is the rule's one home.
-4. Scaffold `ROADMAP.md` from [references/templates/ROADMAP.md](references/templates/ROADMAP.md) — epic name and intro filled — and run the **think flow** below. Its row split REPLACES the template's three placeholder rows with the real ones (never appended beneath them: `roadmap.sh` refuses a table that still holds a `<name>` row), and `/spec` writes each designed row's spec folder.
+3. Scaffold `README.md` from [references/templates/README.md](references/templates/README.md). Frontmatter: `project`, `status: active`, `priority`, `created`, `tags`, `description`. The `description:` field is ONE line of AT MOST 60 characters naming what the project IS — it becomes the index's `One-line` column, which is read in a chat column too narrow to wrap dozens of them, and the index never clips, so the budget is yours to hit when you WRITE it. The fuller version is the body's `## Goal`. Priority classifier: `high` = serves a goal the user has written down (a goals file under `knowledge/`, where one exists); `medium` = meta-infrastructure (standards/hooks/skills/telemetry/frameworks/support-apps); `low` = neither. **Do not write `next:` by hand** — it is derived from the roadmap by `roadmap.ts --sync-next` once rows exist, per the template's derivation rule. Keep the template's derivation comment; it is the rule's one home.
+4. Scaffold `ROADMAP.md` from [references/templates/ROADMAP.md](references/templates/ROADMAP.md) — epic name and intro filled — and run the **think flow** below. Its row split REPLACES the template's three placeholder rows with the real ones (never appended beneath them: `roadmap.ts` refuses a table that still holds a `<name>` row), and `/spec` writes each designed row's spec folder.
 5. Do NOT commit the README, ROADMAP or specs here. The think flow's tail is `/spec`, whose
    own `step-3-auto-close` dispatches `/close`, and `/close` § 4 is the one place
    a session commits — it stages everything the session touched. Leave the files in the
@@ -175,7 +175,7 @@ When invoked with a free-form description (not an explicit `complete` / `update`
 
 Invoked with `<domain>/<slug>` or a bare `<slug>` matching an existing project. Don't recreate the README — read it, run stage detection, route per the Stage Detection table above.
 
-The think flow only fires when the detected stage is **needs-planning** — a ready roadmap row with no spec yet, one whose spec folder is missing, or one whose spec carries an open `NEEDS CLARIFICATION` marker (`detect-stage.sh`'s `next-row:` names the row to plan), or a project with no spec at all. When a ready row's spec is still owed work, route to /implement instead. When a ready row's spec is reported complete but its row is not `done`, route to /close. A project holds one spec folder per row over its life. If nothing ready is owed work the stage is **all-specs-reported**, which is a question and not a think flow (§ Every SPEC reported). A legacy project — loose `*.spec.md` / `*.plan.md`, no `ROADMAP.md` — is still read by `detect-stage.sh`, and its next spec is written in the new layout, with a `ROADMAP.md` created from the template.
+The think flow only fires when the detected stage is **needs-planning** — a ready roadmap row with no spec yet, one whose spec folder is missing, or one whose spec carries an open `NEEDS CLARIFICATION` marker (`detect-stage.ts`'s `next-row:` names the row to plan), or a project with no spec at all. When a ready row's spec is still owed work, route to /implement instead. When a ready row's spec is reported complete but its row is not `done`, route to /close. A project holds one spec folder per row over its life. If nothing ready is owed work the stage is **all-specs-reported**, which is a question and not a think flow (§ Every SPEC reported). A legacy project — loose `*.spec.md` / `*.plan.md`, no `ROADMAP.md` — is still read by `detect-stage.ts`, and its next spec is written in the new layout, with a `ROADMAP.md` created from the template.
 
 ## The think flow
 
@@ -308,7 +308,7 @@ decide the rows this design becomes in `ROADMAP.md`:
   project's only list of outstanding work.
 
 Which rows are ready, and what `next:` says, is not decided here: it is the
-README template's derivation rule, applied by `close/scripts/roadmap.sh`.
+README template's derivation rule, applied by `close/scripts/roadmap.ts`.
 
 ### `think-step-3.5-categorize` — classify every proposed artifact
 
@@ -370,15 +370,15 @@ The failure mode is the same session holding the plan + the investment in prior 
 
 | Script | Purpose | Inputs → Output |
 |---|---|---|
-| [`scripts/render-index.sh`](scripts/render-index.sh) | **The whole blank-mode render in one call** — runs the index generator, appends the lapsed-window block (formatting `check-staleness.sh --expired-only`'s rows per § Lapsed monitor windows), appends the closing prompt. ~0.5s. Composition only, no judgment; nothing is left for the model to assemble | none → finished markdown on stdout, pasted verbatim |
-| [`scripts/parse-arg-mode.sh`](scripts/parse-arg-mode.sh) | Parse `$ARGUMENTS` into a mode tag | `[input]` → `mode: blank\|create\|existing-slug\|complete\|update` + `payload: [remainder]` |
-| [`scripts/find-project.sh`](scripts/find-project.sh) | Resolve a slug to a project folder path; suggest nearest matches if not found | `[slug or domain/slug]` → `PATH:...`, `NOT_FOUND`, or `NOT_FOUND:nearest: ...` |
-| [`scripts/detect-stage.sh`](scripts/detect-stage.sh) | Detect project stage from filesystem + frontmatter + ROADMAP rows | `[project-path]` → `stage: needs-planning\|all-specs-reported\|ready-to-implement\|ready-to-close\|monitor\|blocked\|completed\|unknown` + active spec path (`specs/NNN-name/spec.md`, or a legacy `*.spec.md` / `*.plan.md`) + spec/report counts + `next-row:` on a ROADMAP project + `roadmap-error:` when its table is malformed + `spec-state-error:` (and `stage: unknown`) when `spec-state.sh` crashed |
-| [`scripts/check-staleness.sh`](scripts/check-staleness.sh) | Two scans. `--expired-only`: monitor projects whose `monitoring-until:` has passed — fires on EVERY blank-mode render (`step-0.5-render-index`), ~0.2s. No flag: also scans active/blocked/monitor for no recent journal mention — optional, fire when the user asks "anything I'm forgetting?", ~1.2s | `--expired-only` \| `[days]` (default 14) → zero+ lines `EXPIRED:[domain]/[slug]:monitoring-until=[date]:days-overdue=[N]`, `NOWINDOW:[domain]/[slug]`, `STALE:[domain]/[slug]:days-since-last-mention=[N\|never]` |
+| [`scripts/render-index.ts`](scripts/render-index.ts) | **The whole blank-mode render in one call** — runs the index generator, appends the lapsed-window block (formatting `check-staleness.ts --expired-only`'s rows per § Lapsed monitor windows), appends the closing prompt. ~0.5s. Composition only, no judgment; nothing is left for the model to assemble | none → finished markdown on stdout, pasted verbatim |
+| [`scripts/parse-arg-mode.ts`](scripts/parse-arg-mode.ts) | Parse `$ARGUMENTS` into a mode tag | `[input]` → `mode: blank\|create\|existing-slug\|complete\|update` + `payload: [remainder]` |
+| [`scripts/find-project.ts`](scripts/find-project.ts) | Resolve a slug to a project folder path; suggest nearest matches if not found | `[slug or domain/slug]` → `PATH:...`, `NOT_FOUND`, or `NOT_FOUND:nearest: ...` |
+| [`scripts/detect-stage.ts`](scripts/detect-stage.ts) | Detect project stage from filesystem + frontmatter + ROADMAP rows | `[project-path]` → `stage: needs-planning\|all-specs-reported\|ready-to-implement\|ready-to-close\|monitor\|blocked\|completed\|unknown` + active spec path (`specs/NNN-name/spec.md`, or a legacy `*.spec.md` / `*.plan.md`) + spec/report counts + `next-row:` on a ROADMAP project + `roadmap-error:` when its table is malformed + `spec-state-error:` (and `stage: unknown`) when `spec-state.ts` crashed |
+| [`scripts/check-staleness.ts`](scripts/check-staleness.ts) | Two scans. `--expired-only`: monitor projects whose `monitoring-until:` has passed — fires on EVERY blank-mode render (`step-0.5-render-index`), ~0.2s. No flag: also scans active/blocked/monitor for no recent journal mention — optional, fire when the user asks "anything I'm forgetting?", ~1.2s | `--expired-only` \| `[days]` (default 14) → zero+ lines `EXPIRED:[domain]/[slug]:monitoring-until=[date]:days-overdue=[N]`, `NOWINDOW:[domain]/[slug]`, `STALE:[domain]/[slug]:days-since-last-mention=[N\|never]` |
 
-Each has a `*.test.sh` beside it.
+Each has a `*.test.ts` beside it.
 
-Note: `node .agents/generators/project-index.generate.ts --compact` is invoked by `render-index.sh` (not by the model directly) and produces the slim priority-sorted view as finished markdown: **Active — N**, **Blocked — N** and **Monitoring — N** tables (`glyph | slug | one-line`), then **Completed — N**. The BLANK LINE between each heading and its table header is load-bearing and MUST NOT be tidied away: glued together they are one paragraph, and in common chat markdown renderers a table cannot interrupt a paragraph, so the index collapses into a blob of literal pipes. Every heading carries its own count in the same shape, so bucket sizes read without counting rows. `render-index.sh` holds the Completed line back and re-prints it beneath the lapsed block, which is why that line is emitted last here. Shape is fixed in `buildCompact` precisely so the skill's paste is a copy, not a composition. The skill reads the working tree live (uncommitted freshness).
+Note: `node --experimental-strip-types .agents/generators/project-index.generate.ts --compact` is invoked by `render-index.ts` (not by the model directly) and produces the slim priority-sorted view as finished markdown: **Active — N**, **Blocked — N** and **Monitoring — N** tables (`glyph | slug | one-line`), then **Completed — N**. The BLANK LINE between each heading and its table header is load-bearing and MUST NOT be tidied away: glued together they are one paragraph, and in common chat markdown renderers a table cannot interrupt a paragraph, so the index collapses into a blob of literal pipes. Every heading carries its own count in the same shape, so bucket sizes read without counting rows. `render-index.ts` holds the Completed line back and re-prints it beneath the lapsed block, which is why that line is emitted last here. Shape is fixed in `buildCompact` precisely so the skill's paste is a copy, not a composition. The skill reads the working tree live (uncommitted freshness).
 
 ## Examples
 
@@ -387,8 +387,8 @@ Note: `node .agents/generators/project-index.generate.ts --compact` is invoked b
 User: `/project`
 
 Actions:
-1. `step-0-resolve-mode` → `parse-arg-mode.sh` returns `mode: blank`.
-2. `step-0.5-render-index` → run `bash .agents/skills/project/scripts/render-index.sh` via Bash.
+1. `step-0-resolve-mode` → `parse-arg-mode.ts` returns `mode: blank`.
+2. `step-0.5-render-index` → run `node --experimental-strip-types .agents/skills/project/scripts/render-index.ts` via Bash.
 3. Paste the entire captured stdout into the assistant response as user-visible text, verbatim — index, lapsed-window block and closing prompt are all already in it. Add nothing.
 
 Output: the reply body itself contains the `**Active — N**`, `**Blocked — N**` and `**Monitoring — N**` markdown tables, then any `**Lapsed — N**` block, then `**Completed — N**`, then the prompt. If the reply is shorter than the script's stdout, step 3 didn't happen.
@@ -399,8 +399,8 @@ User: `/project checkout-retries`
 
 Actions:
 1. `step-0-resolve-mode` → `mode: existing-slug`, payload `checkout-retries`.
-2. `step-1-stage-detect-and-route` → `find-project.sh checkout-retries` → `PATH:projects/web/2026-01-10_checkout-retries`.
-3. `detect-stage.sh projects/web/2026-01-10_checkout-retries` → `stage: needs-planning`.
+2. `step-1-stage-detect-and-route` → `find-project.ts checkout-retries` → `PATH:projects/web/2026-01-10_checkout-retries`.
+3. `detect-stage.ts projects/web/2026-01-10_checkout-retries` → `stage: needs-planning`.
 4. Run the think flow (step-0-goal-alignment first per Critical, then step-1-context-load → step-3.5-categorize → step-4-dispatch-spec, which hands off to `/spec`).
 
 Output: `/spec` writes `projects/web/2026-01-10_checkout-retries/specs/001-{name}/` and its ROADMAP.md row, runs `/spec-audit` on the folder, and auto-closes (commit + push) with the `## SPEC Created` summary — unless a reviewer escalation or spirit DRIFT halts for the user. The session ends; `/implement` runs in a fresh tab.
@@ -410,8 +410,8 @@ Output: `/spec` writes `projects/web/2026-01-10_checkout-retries/specs/001-{name
 User (in a fresh tab): `/project sync-engine`
 
 Actions:
-1. `parse-arg-mode.sh` → `mode: existing-slug`.
-2. `detect-stage.sh` → `stage: ready-to-implement`, active-spec `specs/001-foundation/spec.md`, next-row `R1` (a legacy project shows `foundation.spec.md` and no next-row).
+1. `parse-arg-mode.ts` → `mode: existing-slug`.
+2. `detect-stage.ts` → `stage: ready-to-implement`, active-spec `specs/001-foundation/spec.md`, next-row `R1` (a legacy project shows `foundation.spec.md` and no next-row).
 3. `step-2-turn-count-gate` → short session (< 50 turns). Invoke `/implement sync-engine` inline.
 
 Output: /implement runs end-to-end.
@@ -432,7 +432,7 @@ User: `/project payments-migration`
 
 Actions:
 1-2. `mode: existing-slug`, resolve to `projects/web/2026-01-11_payments-migration`.
-3. `detect-stage.sh` → `stage: blocked`.
+3. `detect-stage.ts` → `stage: blocked`.
 4. Read `blocked-on:` from frontmatter. Report what's blocking. No further action.
 
 Output: "Blocked on: the payment provider approving production API access. No action available until it lands."
@@ -441,9 +441,9 @@ Output: "Blocked on: the payment provider approving production API access. No ac
 
 | Symptom | Likely cause | Fix |
 |---|---|---|
-| `parse-arg-mode.sh` returns `mode: create` for what looks like a slug | Slug has no hyphen (e.g., `test`) so the kebab heuristic doesn't fire | Use the full `domain/slug` form, or rename the project folder to a multi-word kebab slug |
-| `detect-stage.sh` returns `stage: unknown` | README missing, status: frontmatter unrecognized, or a `roadmap-error:` line | Open the project's README.md and verify the frontmatter `status:` line uses one of: active, blocked, monitor, completed; for a `roadmap-error:`, fix the table it names |
+| `parse-arg-mode.ts` returns `mode: create` for what looks like a slug | Slug has no hyphen (e.g., `test`) so the kebab heuristic doesn't fire | Use the full `domain/slug` form, or rename the project folder to a multi-word kebab slug |
+| `detect-stage.ts` returns `stage: unknown` | README missing, status: frontmatter unrecognized, or a `roadmap-error:` line | Open the project's README.md and verify the frontmatter `status:` line uses one of: active, blocked, monitor, completed; for a `roadmap-error:`, fix the table it names |
 | Router invoked /implement from a long session and it ran anyway | Nothing refuses one | `step-2-turn-count-gate` is the only guard; if it was skipped, stop and re-invoke `/implement <slug>` from a fresh tab |
-| Multi-SPEC project: wrong SPEC picked as active | `detect-stage.sh` asks `close/scripts/spec-state.sh` which SPECs are still owed work — a declared `spec-status:`/`**Status**:` beats the filename, and a report named for a slice (`phase-2-sync-freshness-report.md`) counts as `partial`, not done | Read the report's own Status line. If it says the SPEC is finished, say so there rather than renaming the file — the declaration is the SSOT and renaming loses which slice the report covered |
+| Multi-SPEC project: wrong SPEC picked as active | `detect-stage.ts` asks `close/scripts/spec-state.ts` which SPECs are still owed work — a declared `spec-status:`/`**Status**:` beats the filename, and a report named for a slice (`phase-2-sync-freshness-report.md`) counts as `partial`, not done | Read the report's own Status line. If it says the SPEC is finished, say so there rather than renaming the file — the declaration is the SSOT and renaming loses which slice the report covered |
 | `stage: ready-to-close` on a project nobody is closing | A spec was reported complete but the close that should have flipped its row to `done` did not finish | Invoke `/close`; it flips the row and re-derives `next:` |
 | Goal-alignment skipped, went straight to context-load | Critical violation of goal alignment | Stop, restate goal+mechanism, ask "does this match?", wait for explicit yes before continuing |
