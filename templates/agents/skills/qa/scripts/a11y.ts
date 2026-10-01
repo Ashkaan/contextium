@@ -24,9 +24,10 @@
 //         8 axe deps unavailable / install failed / QA_NO_INSTALL=1 with none installed.
 
 import { spawnSync } from "node:child_process";
-import { closeSync, mkdirSync, openSync, rmdirSync, statSync } from "node:fs";
+import { closeSync, mkdirSync, mkdtempSync, openSync, rmdirSync, rmSync, statSync } from "node:fs";
 import { createRequire } from "node:module";
-import { homedir } from "node:os";
+import { homedir, tmpdir } from "node:os";
+import { join } from "node:path";
 import type { Page } from "playwright";
 import { qaAccessHeaders, qaEnvCfAccess, qaErr, qaReadJwtFile, qaResolveCfAccess, qaResolvePages } from "./lib.ts";
 import { exit, runToExit } from "../../../packages/cli-exit/cli-exit.ts";
@@ -169,7 +170,12 @@ async function main(): Promise<void> {
 
   const extraHTTPHeaders = qaAccessHeaders(ACCESS, AUTH_ACT_AS, JWT);
 
-  const browser = await chromium.launch();
+  // Chromium's shared-memory files go in a TMPDIR of the browser's own, removed
+  // on exit: one is left behind whenever a process ends between making and
+  // unlinking it (see interaction-check.browser.ts).
+  const browserTmp = mkdtempSync(join(tmpdir(), "a11y-browser-"));
+  process.on("exit", () => rmSync(browserTmp, { recursive: true, force: true }));
+  const browser = await chromium.launch({ env: { ...process.env, TMPDIR: browserTmp } });
   let graded = 0;
   for (const route of pages) {
     for (const width of widths) {

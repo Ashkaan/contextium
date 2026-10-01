@@ -19,12 +19,14 @@
 // Each block names who argued it (`argued by:`), from the `.voice` file
 // dispatch-agents.ts writes — including a stand-in for a failed voice.
 //
+// The output dir is removed once read: nothing in /debate reads it after this.
+//
 // peers: build-agent-prompts.ts, dispatch-agents.ts, .agents/skills/debate/SKILL.md
 //
 // Usage:
 //   parse-agent-output.ts --output-dir <path> [--round 1|2]
 
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { exit, runToExit } from "../../../packages/cli-exit/cli-exit.ts";
@@ -82,49 +84,57 @@ async function main(): Promise<void> {
     return readdirSync(dir, { recursive: true, encoding: "utf8" }).filter((f) => f.endsWith(".gap")).length;
   }
 
-  let filesFound = 0;
-  let usable = 0;
-  for (const name of outputFiles(outputDir)) {
-    filesFound++;
-    const role = name.slice(0, -".output".length);
-    // The reading dispatch-agents.ts judged the seat by: from the anchor on,
-    // cut at the first footer, trailing blank lines dropped — falling back to
-    // the other round's heading when this round's reading keeps nothing, so a
-    // seat dispatch called answered is always printed here.
-    const { lines: answer, anchored } = roundAnswer(readFileSync(join(outputDir, name), "utf8"), round);
-    // A blank answer — empty, whitespace only, or nothing left once the footer
-    // noise is cut — carries no position. Emitting it as a block made silent
-    // voices read as arguments; it is named on stderr and left out, which is
-    // not dropping an answer, because there is none.
-    if (answer.length === 0) {
-      process.stderr.write(`  ${role}: no usable content in ${name} — skipped\n`);
-      continue;
+  // This is the dir's last reader: /debate's synthesis works from what is
+  // printed here, and dispatch-agents.ts already named every stand-in and gap
+  // on its stderr. So the dir goes once it has been read, whatever the verdict —
+  // one run left one behind, and /tmp held about a thousand of them.
+  try {
+    let filesFound = 0;
+    let usable = 0;
+    for (const name of outputFiles(outputDir)) {
+      filesFound++;
+      const role = name.slice(0, -".output".length);
+      // The reading dispatch-agents.ts judged the seat by: from the anchor on,
+      // cut at the first footer, trailing blank lines dropped — falling back to
+      // the other round's heading when this round's reading keeps nothing, so a
+      // seat dispatch called answered is always printed here.
+      const { lines: answer, anchored } = roundAnswer(readFileSync(join(outputDir, name), "utf8"), round);
+      // A blank answer — empty, whitespace only, or nothing left once the footer
+      // noise is cut — carries no position. Emitting it as a block made silent
+      // voices read as arguments; it is named on stderr and left out, which is
+      // not dropping an answer, because there is none.
+      if (answer.length === 0) {
+        process.stderr.write(`  ${role}: no usable content in ${name} — skipped\n`);
+        continue;
+      }
+      usable++;
+      let text = `=== ${role} ===\n`;
+      const voiceFile = join(outputDir, `${role}.voice`);
+      if (existsSync(voiceFile) && statSync(voiceFile).size > 0) {
+        text += `argued by: ${linesOf(readFileSync(voiceFile, "utf8"))[0] ?? ""}\n`;
+      }
+      if (!anchored) {
+        process.stderr.write(`  ${role}: unstructured output — no '${anchor}' heading; passing it through whole\n`);
+        text += `(unstructured — no '${anchor}' heading)\n`;
+      }
+      text += answer.map((l) => `${l}\n`).join("");
+      process.stdout.write(`${text}\n`);
     }
-    usable++;
-    let text = `=== ${role} ===\n`;
-    const voiceFile = join(outputDir, `${role}.voice`);
-    if (existsSync(voiceFile) && statSync(voiceFile).size > 0) {
-      text += `argued by: ${linesOf(readFileSync(voiceFile, "utf8"))[0] ?? ""}\n`;
-    }
-    if (!anchored) {
-      process.stderr.write(`  ${role}: unstructured output — no '${anchor}' heading; passing it through whole\n`);
-      text += `(unstructured — no '${anchor}' heading)\n`;
-    }
-    text += answer.map((l) => `${l}\n`).join("");
-    process.stdout.write(`${text}\n`);
-  }
 
-  // When no .output files exist at all, count .gap files for diagnostics.
-  if (filesFound === 0) {
-    process.stderr.write(`no .output files in ${outputDir} (gap count: ${gapCount(outputDir)})\n`);
-    exit(1);
-  }
-  // Files, but not one answer in them: the synthesis has nothing to weigh.
-  if (usable === 0) {
-    process.stderr.write(
-      `no usable answer in ${outputDir}: ${filesFound} .output file(s), all blank (gap count: ${gapCount(outputDir)})\n`,
-    );
-    exit(1);
+    // When no .output files exist at all, count .gap files for diagnostics.
+    if (filesFound === 0) {
+      process.stderr.write(`no .output files in ${outputDir} (gap count: ${gapCount(outputDir)})\n`);
+      exit(1);
+    }
+    // Files, but not one answer in them: the synthesis has nothing to weigh.
+    if (usable === 0) {
+      process.stderr.write(
+        `no usable answer in ${outputDir}: ${filesFound} .output file(s), all blank (gap count: ${gapCount(outputDir)})\n`,
+      );
+      exit(1);
+    }
+  } finally {
+    rmSync(outputDir, { recursive: true, force: true });
   }
 }
 

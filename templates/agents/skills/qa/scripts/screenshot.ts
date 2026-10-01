@@ -46,9 +46,10 @@
 // separately, below.
 
 import { createHash } from "node:crypto";
-import { mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
-import { dirname } from "node:path";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
 import type { Browser } from "playwright";
 import {
   qaAccessHeaders,
@@ -208,7 +209,12 @@ async function main(): Promise<void> {
   // (PROBE_ACTS_AS); it means nothing without the token, so it only rides with it.
   const extraHTTPHeaders = qaAccessHeaders(ACCESS, AUTH_ACT_AS, JWT);
 
-  const browser: Browser = await chromium.launch();
+  // Chromium's shared-memory files go in a TMPDIR of the browser's own, removed
+  // on exit: one is left behind whenever a process ends between making and
+  // unlinking it (see interaction-check.browser.ts).
+  const browserTmp = mkdtempSync(join(tmpdir(), "screenshot-browser-"));
+  process.on("exit", () => rmSync(browserTmp, { recursive: true, force: true }));
+  const browser: Browser = await chromium.launch({ env: { ...process.env, TMPDIR: browserTmp } });
 
   // INK: the fraction of sampled pixels that are NOT the image's most common
   // colour. A page that captured as blank white scores ~0; a real page scores

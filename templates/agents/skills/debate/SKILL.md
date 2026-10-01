@@ -66,6 +66,7 @@ node --experimental-strip-types .agents/skills/debate/scripts/build-agent-prompt
   --question "$QUESTION" \
   --context-file "$CTX_FILE"   # optional
 # stdout: prompts_dir=/tmp/debate-prompts-XXXXXX
+rm -f "$CTX_FILE"   # its only reader has run
 ```
 
 The role instructions, steel-man line and output schema live in the script's
@@ -78,11 +79,16 @@ node --experimental-strip-types .agents/skills/debate/scripts/dispatch-agents.ts
   --prompts-dir "$PROMPTS_DIR"
 # stdout: output_dir=/tmp/debate-outputs-XXXXXX
 # stderr: one line per stand-in and per unargued seat
+rm -rf "$PROMPTS_DIR"   # nothing reads it again
 ```
 
 Per seat the output dir holds `<role>.output` and `<role>.voice` (who argued
 it), or `<role>.gap` when nobody could. It exits non-zero only when no seat was
 argued. The default timeout is 300s for each seat; `--timeout-s` overrides it.
+
+The prompts dir is removed here rather than by the dispatcher, because a
+caller of its own may still need the prompts dir after the dispatch returns. The output dir is removed by step-4's parse,
+its last reader, so it can be parsed only once.
 
 ## step-4-synthesize
 
@@ -140,6 +146,7 @@ lands on the same seat, asking for `## Rebuttal` / `## Underweighted Argument` /
 ```bash
 node --experimental-strip-types .agents/skills/debate/scripts/dispatch-agents.ts \
   --prompts-dir "$ROUND2_PROMPTS_DIR"
+rm -rf "$ROUND2_PROMPTS_DIR"
 node --experimental-strip-types .agents/skills/debate/scripts/parse-agent-output.ts \
   --output-dir "$ROUND2_OUTPUT_DIR" \
   --round 2
@@ -162,7 +169,7 @@ User: `/debate red-team this plan: ship a repo-write service as an HTTP daemon w
 | Error | Cause | Solution |
 |---|---|---|
 | A seat's `.voice` says a model stood in | That seat's own model failed (timeout, quota, missing CLI, a model the CLI rejects) | Expected; name it under Gaps. The reason is in the `.voice` line. |
-| A seat ends as `.gap` | Its model failed and so did every eligible stand-in | Name it under Gaps; the `.gap` file carries both reasons. |
+| A seat ends as `.gap` | Its model failed and so did every eligible stand-in | Name it under Gaps; dispatch's stderr line for the seat carries both reasons. |
 | Codex output has header/footer noise leaking into synthesis input | `parse-agent-output.ts` is supposed to strip it — fixtures cover the known patterns | If a new Codex log shape leaks through, add a fixture under `scripts/fixtures/` and extend the `FOOTER` pattern in `answer-block.ts` (the one reading both the parser and the dispatcher use). |
 | A round re-runs the same arguments | The loop should have ended on the work | Stop and synthesize. Do not fire a question; the count was never the signal. |
-| No seat argued → `dispatch-agents.ts` exits non-zero | Network outage, all three CLIs degraded, or invalid prompts | Halt the skill. Surface the failure to the user; do NOT emit a synthesis with zero inputs. |
+| No seat argued → `dispatch-agents.ts` exits non-zero | Network outage, all three CLIs degraded, or invalid prompts | Halt the skill after `rm -rf "$OUTPUT_DIR"` (step-4 never runs to remove it). Surface the failure to the user; do NOT emit a synthesis with zero inputs. |

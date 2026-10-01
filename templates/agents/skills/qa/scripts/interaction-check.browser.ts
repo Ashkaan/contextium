@@ -54,8 +54,10 @@
 //   .agents/skills/qa/scripts/interaction-check.ts
 //   .agents/skills/qa/scripts/tests/interaction-check.browser.test.ts
 
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { createRequire } from "node:module";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import process from "node:process";
 import type { BrowserContext, Page, Request, Route } from "playwright";
 import { type CfAccessPair, qaAccessHeaders } from "./lib.ts";
@@ -168,7 +170,13 @@ async function main(): Promise<void> {
     return [location.href, html, aria, document.body ? document.body.innerText : "", boxes.join("|")].join("\n");
   };
 
-  const browser = await chromium.launch();
+  // Playwright starts Chromium with --disable-dev-shm-usage, so Chromium backs
+  // its shared memory with `.org.chromium.Chromium.*` files in TMPDIR, each
+  // unlinked right after it is made. A process ended between the two, which
+  // browser.close() does, leaves its file behind for good, and test runs piled
+  // them into /tmp. The browser gets a TMPDIR of its own, removed once it closes.
+  const browserTmp = mkdtempSync(join(tmpdir(), "interaction-browser-"));
+  const browser = await chromium.launch({ env: { ...process.env, TMPDIR: browserTmp } });
   const findings: string[] = [];
   const skipped: string[] = [];
   let pressed = 0;
@@ -444,13 +452,16 @@ async function main(): Promise<void> {
 
   // Four routes at a time; each route's own presses stay in order, one fresh page each.
   const queue = [...pages];
-  await Promise.all(
-    Array.from({ length: Math.min(ROUTE_POOL, queue.length) }, async () => {
-      for (let route = queue.shift(); route !== undefined; route = queue.shift()) await checkRoute(route);
-    }),
-  );
-
-  await browser.close();
+  try {
+    await Promise.all(
+      Array.from({ length: Math.min(ROUTE_POOL, queue.length) }, async () => {
+        for (let route = queue.shift(); route !== undefined; route = queue.shift()) await checkRoute(route);
+      }),
+    );
+  } finally {
+    await browser.close();
+    rmSync(browserTmp, { recursive: true, force: true });
+  }
   findings.sort();
   for (const f of findings) process.stdout.write(`${f}\n`);
   for (const s of skipped) process.stdout.write(`${s}\n`);

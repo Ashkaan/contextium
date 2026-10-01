@@ -17,6 +17,11 @@
 // could argue stays a .gap. `--no-stand-in` turns this off for a caller that
 // needs each voice's own answer or nothing.
 //
+// FOLDERS. The prompts dir is the caller's and is left in place: a caller may
+// still need it after this returns. The output dir is handed to the caller on
+// stdout, and its last reader removes it (parse-agent-output.ts in /debate,
+// parallel-research.ts for /explain).
+//
 // peers: build-agent-prompts.ts, parse-agent-output.ts, .agents/skills/debate/SKILL.md
 //
 // Usage:

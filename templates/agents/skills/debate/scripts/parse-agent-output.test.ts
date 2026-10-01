@@ -177,3 +177,15 @@ test("an answer dispatch accepted is printed under either round, even with the o
   assert.ok(r.stdout.includes("(unstructured — no '## Position' heading)"), "an off-round answer is not marked");
   assert.ok(!r.stdout.includes("tokens-in"), "the footer-like line above the heading leaked");
 });
+
+// The parse is the output dir's last reader in /debate; a dir left behind per
+// run is how about a thousand of them piled up in /tmp.
+test("the output dir is removed once read, whether the parse succeeds or fails", () => {
+  const ok = makeOutputDir(["thesis", "clean.output"]);
+  assert.equal(run("--output-dir", ok).code, 0);
+  assert.ok(!existsSync(ok), `a parsed output dir was left behind: ${ok}`);
+  const gapsOnly = scratch();
+  writeFileSync(join(gapsOnly, "thesis.gap"), "timeout after 120s\n");
+  assert.equal(run("--output-dir", gapsOnly).code, 1);
+  assert.ok(!existsSync(gapsOnly), `a failed parse left its output dir behind: ${gapsOnly}`);
+});
