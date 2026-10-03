@@ -223,6 +223,15 @@ test("a wrangler var: the first active line, not a commented one", () => {
   assert.equal(qaWranglerVar(d, "ACCESS_AUD"), "a1,a2");
   assert.equal(qaWranglerVar(d, "MISSING"), "");
 });
+test("a wrangler var: the top-level [vars] only, never an environment's or another table's", () => {
+  const d = repo(
+    "env-vars",
+    "wrangler.toml",
+    '[env.staging.vars]\nACCESS_ISSUER = "https://staging.example.com"\n[other]\nACCESS_AUD = "not-a-var"\n[vars]\nACCESS_ISSUER = "https://team.example.com"\n[env.prod.vars]\nACCESS_AUD = "prod-only"\n',
+  );
+  assert.equal(qaWranglerVar(d, "ACCESS_ISSUER"), "https://team.example.com");
+  assert.equal(qaWranglerVar(d, "ACCESS_AUD"), "");
+});
 
 test("the local token verifies against its own key set and carries Access's claims", () => {
   const { jwks, jwt } = qaLocalAccess("a@example.com", "aud-1", "https://team.example.com", 1_000);

@@ -760,15 +760,21 @@ export function qaProbeActsAs(repo: string): string {
 
 /**
  * The string value of `[vars] <key>` in the repo's wrangler config, or "". In
- * wrangler.toml the first active `<key> = "…"` line counts, so a commented-out
- * value never does.
+ * wrangler.toml the first active `<key> = "…"` line inside the top-level `[vars]`
+ * table counts, so a commented-out value, an environment's, or another table's never does.
  */
 export function qaWranglerVar(repo: string, key: string): string {
   const toml = join(repo, "wrangler.toml");
   if (isFile(toml)) {
+    // Only inside the top-level `[vars]` table: an `[env.<name>.vars]` value is not the one a
+    // local server runs with, and a same-named key in another table is not a var at all.
+    let section = "";
     const line = readFileSync(toml, "utf8")
       .split("\n")
-      .find((l) => new RegExp(`^\\s*${key}\\s*=`).test(l));
+      .find((l) => {
+        if (/^\s*\[/.test(l)) section = l.trim().replace(/\s+/g, "");
+        return section === "[vars]" && new RegExp(`^\\s*${key}\\s*=`).test(l);
+      });
     return line === undefined ? "" : qaTomlValue(line);
   }
   const vars = wranglerConfigObject(repo).vars;
