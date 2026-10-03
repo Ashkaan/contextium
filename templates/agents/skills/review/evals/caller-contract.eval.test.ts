@@ -71,7 +71,7 @@ cat "${REPLY}"
 );
 chmodSync(`${tmp}/reviewer.sh`, 0o755);
 
-const ENV = {
+const ENV: NodeJS.ProcessEnv = {
   ...process.env,
   PATH: `${tmp}/bin:${process.env.PATH ?? ""}`,
   POLICY_JSON: `${tmp}/policy.json`,

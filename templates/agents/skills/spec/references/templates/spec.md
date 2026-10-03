@@ -39,10 +39,11 @@
   built on it. A row whose Source is `user` without a quote is not a decision
   the user made on the record. A question asked and answered may also be written as spec-kit's clarify bullet,
   `- Q: <question> → A: <final answer>`. When no grill ran this section reads
-  `N/A — no grill (ad-hoc spec)`; it is never removed. Anything still open is
-  written where it belongs as `[NEEDS CLARIFICATION: <the question>]`, and no
-  /implement runs while one remains (this note sits in a comment so it is not
-  itself read as an open marker).
+  `N/A — no grill (ad-hoc spec)`; it is never removed. Any item still open
+  stays in the spec as `[NEEDS CLARIFICATION: …]` where it belongs; no
+  `/implement` runs while one remains. This sentence lives in a comment because
+  .agents/skills/close/scripts/open-clarifications.ts counts the marker anywhere outside
+  one: written as prose, a filled spec reports itself open.
 -->
 
 [How we interpreted this, in 2-3 sentences]

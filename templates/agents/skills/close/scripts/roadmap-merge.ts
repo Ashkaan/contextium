@@ -2,32 +2,34 @@
 // roadmap-merge.ts — a git merge driver for ROADMAP.md: merge the table row by row.
 //
 // WHY. Two sessions building two rows of one project each flip their own row
-// (planned → in-progress → done) and re-derive the README's `next:`. The rows are
+// (planned → in-progress → done) and re-derive the README's `status:` and `next:`. The rows are
 // adjacent lines, and git's line merge calls adjacent edits a conflict, so the
 // second of two parallel closes always stopped on NOT CLOSED with a conflict
 // nobody had actually made. Keyed by row ID, the two edits never touch.
 //
 // THE RULES, per row ID across base (O), ours (A) and theirs (B):
 //   - changed on one side only → that side's row (a `blocked: …` or
-//     `absorbed by …` Status arrives exactly as the side that wrote it);
+//     `absorbed by …` or `closed: …` Status arrives exactly as the side that wrote it);
 //   - added on one side → kept; added on both with the same text → kept once;
 //   - deleted on one side and untouched on the other → deleted;
 //   - changed on both → cell by cell: a cell only one side changed takes that
 //     side's value; Status both changed takes the more advanced of
 //     planned < in-progress < done; Sub-spec both changed takes the one that is
 //     not `—`. Anything else — the same cell set to two different texts, a
-//     `blocked:`/`absorbed by` both sides set differently, a row deleted on one
+//     `blocked:`/`absorbed by`/`closed:` both sides set differently, a row deleted on one
 //     side and edited on the other — is a real conflict.
 // Everything outside the table rows (the prose, the header) merges as whole
 // blocks: identical, or changed on one side only. A real conflict anywhere
 // falls back to git's own line merge, markers and all, and exits 1, so the
 // close stops exactly as it did before.
 //
-// A PROJECT README (the path's last part is README.md) is merged by git's own
-// line merge with one line set aside: its front-matter `next:`, which both
-// sessions re-derive from their own copy of the table and so rewrite two ways.
-// Ours is kept here, and land.ts re-derives it from the merged ROADMAP.md right
-// after the merge, so the value that lands describes the merged table.
+// A PROJECT README (the path's last part is README.md, with a ROADMAP.md beside
+// it) is merged by git's own line merge with the front-matter entries roadmap.ts
+// derives set aside, each with its indented continuation lines —
+// `status:`, `next:`, `blocked-on:`, `monitoring-until:` — which both sessions
+// re-derive from their own copy of the table and so rewrite two ways. Ours are
+// kept here, and land.ts re-derives them from the merged ROADMAP.md right after
+// the merge, so the values that land describe the merged table.
 //
 // The table is the one roadmap.ts reads: the first table under `# Roadmap`
 // whose header names both ID and Status; Status and Sub-spec are found by
@@ -35,7 +37,8 @@
 //
 // Usage (git runs it; land.ts registers it before it merges):
 //   roadmap-merge.ts <base> <ours> <theirs> [<path>]    result written to <ours>;
-//   <path> ending in README.md selects the README rule above
+//   <path> ending in README.md selects the README rule above; <path> is read
+//   from the working directory, the worktree top git runs a driver from
 // Exit: 0 merged cleanly · 1 conflict (markers written to <ours>) · 2 usage
 //
 // BYTES. The bash original ran its awk under LC_ALL=C, so it compared and wrote
@@ -50,7 +53,7 @@
 import { spawnSync } from "node:child_process";
 import { mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { exit, runToExit } from "../../../packages/cli-exit/cli-exit.ts";
 
@@ -81,42 +84,62 @@ function gitMergeFile(name: string, current: string, base: string, other: string
   return r.status === 0;
 }
 
-/** The file's lines with its front-matter `next:` line replaced by `want` (removed when that is empty). */
-function nextAside(file: string, want: string): string {
+/** The front-matter keys roadmap.ts --sync-next derives. */
+const DERIVED = ["status", "next", "blocked-on", "monitoring-until"];
+const derivedKey = (line: string): string => DERIVED.find((k) => line.startsWith(`${k}:`)) ?? "";
+
+/** An indented front-matter line: the continuation of the entry above it, as roadmap.ts --sync-next reads one. */
+const continues = (line: string | undefined): boolean => line !== undefined && /^[ \t]/.test(line);
+
+/**
+ * The file's lines with each derived front-matter entry — its key line and
+ * every indented continuation line under it — replaced by ours' entry for that
+ * key (removed when ours has none).
+ */
+function derivedAside(file: string, want: Map<string, string>): string {
   let fm = false;
-  let done = false;
+  const done = new Set<string>();
   let out = "";
-  records(file).forEach((line, i) => {
+  const lines = records(file);
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i] ?? "";
     if (i === 0 && line === "---") {
       fm = true;
       out += `${line}\n`;
-      return;
+      continue;
     }
     if (fm && line === "---") {
       fm = false;
       out += `${line}\n`;
-      return;
+      continue;
     }
-    if (fm && /^next:/.test(line) && !done) {
-      done = true;
-      if (want !== "") out += `${want}\n`;
-      return;
+    const key = fm ? derivedKey(line) : "";
+    if (key !== "" && !done.has(key)) {
+      done.add(key);
+      while (continues(lines[i + 1])) i++;
+      out += want.get(key) ?? "";
+      continue;
     }
     out += `${line}\n`;
-  });
+  }
   return out;
 }
 
-/** Ours' front-matter `next:` line, or "". */
-function oursNext(file: string): string {
+/** Ours' derived front-matter entries, by key, each with its continuation lines and newlines; the first of each wins. */
+function oursDerived(file: string): Map<string, string> {
+  const want = new Map<string, string>();
   const lines = records(file);
-  if (lines[0] !== "---") return "";
+  if (lines[0] !== "---") return want;
   for (let i = 1; i < lines.length; i++) {
     const line = lines[i] ?? "";
-    if (line === "---") return "";
-    if (/^next:/.test(line)) return line;
+    if (line === "---") break;
+    const key = derivedKey(line);
+    if (key === "") continue;
+    let entry = `${line}\n`;
+    while (continues(lines[i + 1])) entry += `${lines[++i]}\n`;
+    if (!want.has(key)) want.set(key, entry);
   }
-  return "";
+  return want;
 }
 
 // ── The table merge, the awk program of the bash original ─────────────────
@@ -371,10 +394,19 @@ async function main(): Promise<void> {
 
   const TMP = mkdtempSync(join(tmpdir(), "roadmap-merge-"));
   try {
+    // Only a project with a table has derived fields: land.ts re-derives a
+    // README only when a ROADMAP.md stands beside it. A legacy project's
+    // README is hand-written, its `status:` included, so it merges by line —
+    // setting ours aside there would drop a concurrent completion for good.
+    // git runs a driver from the worktree's top, so <path> is read from here,
+    // in ours' tree.
+    if (basename(NAME) === "README.md" && !isFile(join(dirname(NAME), "ROADMAP.md"))) {
+      exit(gitMergeFile(NAME, OURS, BASE, THEIRS) ? 0 : 1);
+    }
     if (basename(NAME) === "README.md") {
-      const want = oursNext(OURS);
-      writeBytes(join(TMP, "o"), nextAside(BASE, want));
-      writeBytes(join(TMP, "b"), nextAside(THEIRS, want));
+      const want = oursDerived(OURS);
+      writeBytes(join(TMP, "o"), derivedAside(BASE, want));
+      writeBytes(join(TMP, "b"), derivedAside(THEIRS, want));
       exit(gitMergeFile(NAME, OURS, join(TMP, "o"), join(TMP, "b")) ? 0 : 1);
     }
 

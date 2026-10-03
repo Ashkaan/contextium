@@ -20,8 +20,9 @@
 //
 // Port + listener ownership: with no --port, `up` scans UP from the default for
 // a port with no listener, and never calls the server up until it has proven the
-// listener belongs to the process group it spawned (or that the port was free
-// immediately before spawning). Answering on a port is not evidence of owning it.
+// listener belongs to the process group it spawned (or, when no listener pid can
+// be read, that the port was free immediately before spawning; a pid in another
+// group is refused either way). Answering on a port is not evidence of owning it.
 //   serve.ts down --runfile <path>
 //
 // `up` output (stdout, KEY=VALUE, every value shellQuote'd — the SKILL `eval`s it):
@@ -237,18 +238,30 @@ function pgidOf(pid: number | string): string {
 }
 
 /**
+ * Who holds the port: `ours` (a listener in our process group), `foreign` (a
+ * listener whose pid resolves, in no group of ours), or `unknown` (no pid could
+ * be read). Only `unknown` may lean on "the port was free before we spawned":
+ * a resolved foreign pid is proof the other way, even when the port WAS free —
+ * another session's server can take it between that check and our bind, and
+ * a Vite server then moves to the next port while the probe grades theirs.
+ */
+export function qaPortOwner(port: string | number, pgid: string): "ours" | "foreign" | "unknown" {
+  const pids = qaListenerPids(port);
+  if (pids.length === 0) return "unknown";
+  for (const p of pids) {
+    const g = pgidOf(p);
+    if (g !== "" && g === pgid) return "ours";
+  }
+  return "foreign";
+}
+
+/**
  * True when a listener on `port` belongs to process group `pgid` (the group
  * this run spawned detached); false otherwise, including when no pid is exposed
  * for the listener.
  */
 export function qaPortOwnedBy(port: string | number, pgid: string): boolean {
-  const pids = qaListenerPids(port);
-  if (pids.length === 0) return false;
-  for (const p of pids) {
-    const g = pgidOf(p);
-    if (g !== "" && g === pgid) return true;
-  }
-  return false;
+  return qaPortOwner(port, pgid) === "ours";
 }
 
 /** Signal a whole process group (negative PID) we own, falling back to the pid itself. */
@@ -752,9 +765,10 @@ async function doUp(args: string[]): Promise<void> {
         // Something answers. Prove it is OURS before calling the server up:
         // either the listener is in the process group we just spawned, or the
         // port was verifiably free the moment before we spawned it.
-        if (qaPortOwnedBy(port, pgid)) {
+        const owner = qaPortOwner(port, pgid);
+        if (owner === "ours") {
           up = "yes";
-        } else if (portWasFree) {
+        } else if (owner === "unknown" && portWasFree) {
           qaErr(`qa: listener pid on :${port} not resolvable — accepted (port was free at start)`);
           up = "yes";
         } else {

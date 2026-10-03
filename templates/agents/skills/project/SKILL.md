@@ -69,7 +69,9 @@ Three constraints, each of which is why this is a printed list:
   the all-clear, and a clean run should cost no lines.
 - **It does not change any project's status.** Closing or extending a window is
   `/project <slug>` (report-state for `monitor`) or `/project update <slug>`,
-  both of which the user drives. This step surfaces; it does not decide.
+  both of which the user drives — on a roadmap project by marking the watch row
+  `done` or moving its date, since `status:` is derived from the rows. This
+  step surfaces; it does not decide.
 
 ## Stage Detection & Routing (`step-1-stage-detect-and-route`)
 
@@ -119,8 +121,8 @@ README before the answer arrives.
 | Answer | What /project does |
 |---|---|
 | Start the next chunk | Proceed to `think-step-0-goal-alignment` and run the think flow normally. |
-| Shipped, just needs watching | `status: monitor` + `monitoring-until: YYYY-MM-DD` naming what is being observed, 60 characters at most; drop `next:`. Ask for the date if the remaining item does not carry one. |
-| It is done | The § Complete path: summary + loose ends, `status: completed`, drop `next:` / `blocked-on:`, write `## Outcome`. |
+| Shipped, just needs watching | A row `blocked: YYYY-MM-DD` naming what is being observed; any open row that is not the watch is closed or kept as it truly stands. Ask for the date if the remaining item does not carry one. `--sync-next` then derives `monitor` (legacy project: `status: monitor` + `monitoring-until:` by hand). |
+| It is done | The § Complete path. |
 | Leave it active | Report and stop. Nothing is edited. |
 
 The middle two are status changes the USER asked for, which is the
@@ -247,6 +249,7 @@ An open decision is an unsettled choice that would change at least one of:
 Ask the user — a numbered list, recommendation first; in Claude Code, `AskUserQuestion`:
 
 - **The recommendation goes first**, labelled `(Recommended)`, with a one-line description saying what picking it means for the build. A free-text answer is always available and is recorded verbatim.
+- **The recommendation names the written rule it applies** — a `decisions/` record or an `AGENTS.md` standard. When no rule covers the case, the question proposes the rule first, so the answer settles the class rather than the instance. This is `AGENTS.md § Standards → Recurring choices are made by rule`.
 - **At most 4 questions per round**, and only genuinely independent ones batched together. A decision whose sensible answer depends on another MUST wait for the next round — that is the "one branch at a time" discipline, preserved without paying a turn per question.
 - **Name the thing in plain English** per `AGENTS.md` § Working preferences — the question is read by someone who does not have the repo open.
 - **Make the options tell apart.** Each option says what the user would see differently afterwards, and the question gives one concrete case where the options produce different results. If no such case can be named, the choice fails § 1's filter and is adopted, not asked. Plain words alone do not do this: "they seem the same to me" is the answer a grill question gets when its options differ only in wording.
@@ -341,22 +344,23 @@ The think→do fresh-context boundary is preserved: `/spec`'s auto-close ends th
 Two paths reach `status: completed`, and they differ in who decides:
 
 1. **`/project complete <slug>` — the user asked for it.** Present summary +
-   loose ends, then set `status: completed`, remove `next` / `blocked-on`, and
-   write the `## Outcome` section.
-2. **`/close` § 2 — the last piece of work just landed.** The flip is automatic
-   there and is NOT asked about: when nothing countable is
-   outstanding and the goal is met, `/close` sets `completed` (or `monitor` +
-   `monitoring-until:` when the shipped thing still has to prove itself on a
-   future run) in the same README write as the session update. See
-   `.agents/skills/close/SKILL.md` § 2 — that section is the SSOT for the
-   automatic flip; do not restate its rules here.
+   loose ends — every open roadmap row is one — then mark each `done` or
+   `closed: <why>`, run `roadmap.ts <folder> --sync-next` (which derives
+   `completed` once no row is open), and write the `## Outcome` section. A
+   loose end the user still wants stays an open row, and the project stays
+   open with it. Legacy project: set `status: completed` and remove `next` /
+   `blocked-on` by hand.
+2. **`/close` § 2 — the last piece of work just landed.** The status is
+   derived from the rows there, never asked about. See
+   `.agents/skills/close/SKILL.md` § 2 — that section is the SSOT; do not
+   restate its rules here.
 
 A project reaching this skill already `completed` is a report-state, not a
 re-close.
 
 ## Frontmatter Change
 
-1. Update the relevant field(s) in project frontmatter (`status`, `priority`, `next`, `blocked-on`, `monitoring-until`, `description`, `tags`)
+1. Update the relevant field(s) in project frontmatter (`priority`, `description`, `tags`; on a legacy project also `status`, `next`, `blocked-on`, `monitoring-until`). On a project with `ROADMAP.md` those four are derived from the rows: change a row (`roadmap.ts <folder> --set <ID> <status>`, or add one), then `roadmap.ts <folder> --sync-next`.
 2. For `blocked` status: use `blocked-on` instead of `next`. For `monitor` status: use `monitoring-until: YYYY-MM-DD`. A rewritten `description:` keeps its 60-character budget, and so do `next:`, `blocked-on:` and `monitoring-until:` (the date counts). All three are ONE short human-facing sentence (the single immediate next action / what it's blocked on / the observation window) — never a multi-action backlog or status dump.
 3. Leave the edit uncommitted and dispatch `/close` — it commits the frontmatter
    change along with anything else the session touched, in the session's ONE

@@ -419,8 +419,8 @@ test("10 — policy.json missing", () => {
 });
 
 test("11 — the policy is read at CALL time, never cached", () => {
-  // A stale policy.json is a real hazard (pre-commit only regenerates when the
-  // policy files are STAGED), so the helper must never memoize the table: the
+  // A stale policy.json is a real hazard (nothing regenerates it but a hand-run
+  // regen-policy-json.ts --write), so the helper must never memoize the table: the
   // same process, asked twice, must see an edit made in between.
   const STALE = `${TMP}/stale.json`;
   writeFileSync(

@@ -50,7 +50,7 @@ Then open the matching `references/<type>.md` — it carries the branch's questi
 Ask the user (a numbered list, recommendation first; in Claude Code, `AskUserQuestion`) for the few decisions that determine STRUCTURE (not content):
 
 - **skill** — skill-vs-agent (session history → skill; fresh context → agent) + gated-step-graph-or-single-body + **a determinism inventory of every step** (data → `scripts/`, judgment → body prose). The skill branch's Step 2.5 turns each DATA step into a script + paired test; prose-describing a deterministic step is the failure that makes skills non-deterministic.
-- **hook** — which of the 9 categories + firing surface (PreToolUse/PostToolUse vs pre-commit check).
+- **hook** — which of the 9 categories + firing surface (PreToolUse/PostToolUse vs a check, which is a close gate when it must block).
 - **agent** — confirm it's an agent not a skill.
 - **output-style** — `keep-coding-instructions` true or false (it defaults to FALSE, which strips Claude Code's software-engineering instructions), and whether the style must bind subagents (it does NOT by default — that needs a `SubagentStart` hook in `.agents/hooks/`).
 
@@ -187,14 +187,14 @@ node --experimental-strip-types .agents/skills/author/scripts/verify.ts <type> <
 
 On failure, fix at the source and re-run — never override, never exclude.
 
-`verify.ts hook` WARNs (non-blocking) when no hook manifest names a top-level hook (Claude Code `~/.claude/settings.json`, Codex `~/.codex/hooks.json`, Antigravity `.agents/hooks.json`). It says nothing about what fires a check under `.agents/checks/`: nothing dispatches a new check on its own. `/author` writes the check and its test.
+`verify.ts hook` WARNs (non-blocking) when no hook manifest names a top-level hook (Claude Code `~/.claude/settings.json`, Codex `~/.codex/hooks.json`, Antigravity `.agents/hooks.json`). It says nothing about what fires a check under `.agents/checks/`: a check that must block is a close gate in `.agents/skills/close/scripts/land.ts`. `/author` writes the check and its test.
 
 ## register
 
 Meaningful for exactly one type — **hook** — because hooks are the only artifact that needs explicit wiring to fire:
 
 - **skill** — none; auto-discovered from `.agents/skills/<name>/SKILL.md`.
-- **hook** — a PreToolUse/PostToolUse hook is wired per [references/hook.md](references/hook.md) Step 5: a matcher block in each harness's hook manifest; `verify.ts hook` WARNs (non-blocking) while none names it. A check under `.agents/checks/` is not wired here: nothing fires it until something calls it.
+- **hook** — a PreToolUse/PostToolUse hook is wired per [references/hook.md](references/hook.md) Step 5: a matcher block in each harness's hook manifest; `verify.ts hook` WARNs (non-blocking) while none names it. A check under `.agents/checks/` is not wired here: one that must block becomes a close gate in `.agents/skills/close/scripts/land.ts`.
 - **agent** — none; auto-discovered from `.agents/agents/<name>.md`.
 - **output-style** — NOT auto-selected by existing. To make it the default set `outputStyle` in `~/.claude/settings.json`; to carry it into subagents add the agent types to the fail-closed allowlist of a `SubagentStart` hook in `.agents/hooks/`.
 
@@ -217,4 +217,4 @@ Meaningful for exactly one type — **hook** — because hooks are the only arti
 | `scaffold.ts` exits 1 "exists" | artifact already at the surface path | Pick a new name — never overwrites. |
 | `verify.ts` non-zero | conformance backstop failed | Read the stderr, fix at source, re-run. Never exclude. |
 | `verify.ts hook` WARNs "not wired" | no hook manifest names a top-level hook | Wire it per references/hook.md Step 5, or accept that it will never fire. |
-| A check under `.agents/checks/` never runs | nothing dispatches it yet | Call it from whatever should fire it; run it by hand until then. |
+| A check under `.agents/checks/` never runs | no close gate calls it | Add it to `.agents/skills/close/scripts/land.ts` as a gate with a change predicate; run it by hand until then. |

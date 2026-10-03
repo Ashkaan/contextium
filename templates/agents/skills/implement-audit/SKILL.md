@@ -74,6 +74,8 @@ The model family that writes the code (the `agent=` line of `.agents/harness`) i
 
 `BASE_SHA` is the start of this session's commits (typically `HEAD~N` for N commits this session); `HEAD_SHA` is `HEAD`. Uncommitted work is included and flagged to the reviewer, because this skill runs pre-commit by design.
 
+**When the code is in another repo** (a product worktree `$PRODUCT_WT` from `write-root.sh`, as `/implement` § "A row whose code is in another repo" sets up), both steps read that worktree, never this one: step 1 runs `run-automated-checks.ts --session-base "$BASE_SHA" --repo-dir "$PRODUCT_WT"`, and every `code-review.ts` call here — snapshot, round 1, `--since` — runs with `CODEX_REVIEW_REPO="$PRODUCT_WT"` in its environment. `BASE_SHA` is `git -C "$PRODUCT_WT" merge-base HEAD origin/<its trunk>`. Left to default, both read this repo's worktree, which holds only the spec, and pass.
+
 Interpret the exit code — this is a **gate**, not a best-effort step:
 
 | Exit | Meaning | Action |
@@ -109,7 +111,7 @@ The reviewer emits **triage lines only** — `[must-fix]` / `[should-fix]` / `[n
 Fix EVERY finding whose fix is **ready in this session** — `fix-now` AND `deferred-batch-N`. The triage label orders work within the round; it does NOT schedule across rounds. A `deferred-batch-1` finding with a known fix path ships in the same round as `fix-now`, just lower priority. Defer to a future session ONLY when:
 
 - The fix needs an unmade design decision (architecture, vendor, scope) — track via `projects/<domain>/<date>_<slug>/` README
-- The fix is blocked on an external dependency (vendor response, third-party fix) — `status: blocked` project with `blocked-on:`
+- The fix is blocked on an external dependency (vendor response, third-party fix) — a `blocked: <what>` row in the project's `ROADMAP.md`, from which its `status: blocked` and `blocked-on:` are derived
 - The verdict is `out-of-scope` (wrong reviewer, different domain) — surface to user, do not act
 
 `speculative` findings are documented for counter-pressure, not fixed.

@@ -306,8 +306,8 @@ test("rm-empty", () => {
   assert.equal(field("verdict", out), "no-hard-signal", "rm-empty-verdict");
 });
 
-// Open rows — planned, blocked watch, unknown status — are named; done and
-// absorbed are not.
+// Open rows — planned, blocked watch, unknown status — are named; done,
+// absorbed and closed are not.
 test("rm-open", () => {
   const d = mkproj("2026-09-03_rm-open", "active");
   mkroadmap(
@@ -317,6 +317,7 @@ test("rm-open", () => {
     "| R3 | c | i | s | — | planned | — |",
     "| R4 | d | i | s | — | blocked: 2026-10-02 | — |",
     "| R5 | e | i | s | — | waiting on the vendor | — |",
+    "| R6 | f | i | s | — | closed: superseded | — |",
   );
   const { out } = gen(d);
   assert.equal(field("roadmap_open", out), "3", "rm-open-count");

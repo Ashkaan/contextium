@@ -248,6 +248,7 @@ test("--set", () => {
     "--set missing row lists the IDs",
   );
   assert.equal(rcOf(d, "--set", "R1", "finished"), 2, "--set bad status is usage");
+  assert.equal(rcOf(d, "--set", "R1", "closed: "), 2, "--set closed needs a reason");
   sut(d, "--set", "R1", "blocked: 2026-10-02");
   assert.equal(
     grepLines(read(rm), /^\| R1/, true).join("\n"),
@@ -287,9 +288,11 @@ test("--sync-next", () => {
   sut(d, "--sync-next");
   assert.equal(grepLines(read(readme), /^next:/, true).length, 0, "--sync-next removes when none ready");
   assert.equal(
-    `${grepLines(before, /^next:/, false).join("\n")}\n`,
+    `${grepLines(before, /^next:/, false)
+      .join("\n")
+      .replace("status: active", "status: completed")}\n`,
     read(readme),
-    "--sync-next removal changes nothing else",
+    "--sync-next removal changes nothing but next and status",
   );
 
   const d2 = mk("nodesc", "| R1 | alpha | i | s | — | planned | — |");
@@ -346,6 +349,141 @@ test("--set keeps the bytes of every other line, and a missing final newline", (
   const after = readFileSync(rm);
   const want = Buffer.from(raw.toString("latin1").replace("| planned |", "| done |"), "latin1");
   assert.ok(after.equals(want), "bytes outside the Status cell changed");
+});
+
+// --derive: status from the rows, by the README template's rule
+const derive = (d: string): string => cs(sut(d, "--derive").stdout);
+test("--derive", () => {
+  assert.equal(
+    derive(mk("dv-ready", "| R1 | alpha | i | s | — | done | — |", "| R2 | beta | i | s | R1 | planned | — |")),
+    'status: active\nnext: "R2: beta"',
+    "a ready row is active",
+  );
+  assert.equal(derive(mk("dv-empty")), "status: completed", "no rows is nothing open, so completed");
+  assert.equal(
+    derive(
+      mk(
+        "dv-blocked",
+        "| R1 | watch | i | s | — | blocked: 2026-10-20 | — |",
+        "| R2 | access | i | s | — | blocked: the owner grants access | — |",
+        "| R3 | after | i | s | R2 | planned | — |",
+      ),
+    ),
+    'status: blocked\nblocked-on: "R2: the owner grants access"',
+    "a row waiting on something that is not a date is blocked, ahead of any watch",
+  );
+  assert.equal(
+    derive(
+      mk(
+        "dv-monitor",
+        "| R1 | late watch | i | s | — | blocked: 2026-11-30 | — |",
+        "| R2 | early watch | i | s | — | blocked: 2026-10-20 — the first run | — |",
+        "| R3 | gone | i | s | — | absorbed by R1 | — |",
+      ),
+    ),
+    'status: monitor\nmonitoring-until: "2026-10-20 — R2: early watch"',
+    "only dated watches is monitor, until the earliest",
+  );
+  assert.equal(
+    derive(
+      mk(
+        "dv-done",
+        "| R1 | a | i | s | — | done | — |",
+        "| R2 | b | i | s | — | absorbed by R1 | — |",
+        "| R3 | c | i | s | — | closed: superseded by another project | — |",
+      ),
+    ),
+    "status: completed",
+    "nothing open is completed",
+  );
+  assert.equal(
+    derive(mk("dv-long", `| R12 | x | i | s | — | blocked: ${"word ".repeat(20).trim()} | — |`)),
+    `status: blocked\nblocked-on: "R12: ${"word ".repeat(11).trim()}…"`,
+    "blocked-on is cut to 60 characters at a word",
+  );
+  assert.equal(
+    derive(
+      mk(
+        "dv-after-closed",
+        "| R1 | a | i | s | — | closed: never built | — |",
+        "| R2 | b | i | s | R1 | planned | — |",
+      ),
+    ),
+    'status: active\nnext: "R2: b"',
+    "a closed dependency is satisfied",
+  );
+  const stuck = mk("dv-stuck", "| R1 | a | i | s | — | waiting | — |");
+  assert.equal(rcOf(stuck, "--derive"), 1, "an open row that is neither ready nor blocked cannot be derived");
+  assert.match(errs(stuck, "--derive"), /cannot derive status: R1 open, none ready or blocked/);
+  // A dated watch is monitor only when every other open row waits on one: a
+  // row that can never be ready (a cycle, an unknown status or dependency)
+  // is not watched work, and monitor would call the project's work complete.
+  assert.equal(
+    derive(
+      mk(
+        "dv-waits-on-watch",
+        "| R1 | watch | i | s | — | blocked: 2026-10-20 | — |",
+        "| R2 | after | i | s | R1 | planned | — |",
+      ),
+    ),
+    'status: monitor\nmonitoring-until: "2026-10-20 — R1: watch"',
+    "a planned row waiting on the watch is still monitor",
+  );
+  const cycle = mk(
+    "dv-cycle-watch",
+    "| R1 | watch | i | s | — | blocked: 2026-10-20 | — |",
+    "| R2 | b | i | s | R3, R1 | planned | — |",
+    "| R3 | c | i | s | R2 | planned | — |",
+  );
+  assert.equal(rcOf(cycle, "--derive"), 1, "a dependency cycle beside a dated watch cannot be derived");
+  assert.match(errs(cycle, "--derive"), /cannot derive status: R2, R3 open and never ready/);
+  const unknownBeside = mk(
+    "dv-unknown-watch",
+    "| R1 | watch | i | s | — | blocked: 2026-10-20 | — |",
+    "| R2 | b | i | s | — | waiting | — |",
+    "| R3 | c | i | s | R99 | planned | — |",
+  );
+  assert.equal(rcOf(unknownBeside, "--derive"), 1, "an unknown status or dependency beside a watch cannot be derived");
+  assert.match(errs(unknownBeside, "--derive"), /cannot derive status: R2, R3 open and never ready/);
+});
+
+// --sync-next writes status and its companion, removing the ones it no longer carries
+test("--sync-next writes status", () => {
+  const d = mk(
+    "sync-status",
+    "| R1 | built | i | s | — | done | — |",
+    "| R2 | access | i | s | — | blocked: the owner grants access | — |",
+    "| R3 | seen live | i | s | R1 | blocked: 2026-10-20 | — |",
+  );
+  const readme = join(d, "README.md");
+  writeFileSync(
+    readme,
+    '---\nproject: x\nstatus: monitor\nmonitoring-until: "R2: waiting on him;\n  R3: the first send"\npriority: high\ndescription: A thing\n---\n\n# P\nmonitoring-until: body text is left alone\n',
+  );
+  sut(d, "--sync-next");
+  assert.equal(
+    read(readme),
+    '---\nproject: x\nstatus: blocked\npriority: high\ndescription: A thing\nblocked-on: "R2: the owner grants access"\n---\n\n# P\nmonitoring-until: body text is left alone\n',
+    "monitor waiting on a person becomes blocked; the stale window and its continuation go",
+  );
+  sut(d, "--set", "R2", "done");
+  sut(d, "--sync-next");
+  assert.equal(
+    read(readme),
+    '---\nproject: x\nstatus: monitor\npriority: high\ndescription: A thing\nmonitoring-until: "2026-10-20 — R3: seen live"\n---\n\n# P\nmonitoring-until: body text is left alone\n',
+    "with only a dated watch left it is monitor, the window where blocked-on stood",
+  );
+  sut(d, "--set", "R3", "done");
+  sut(d, "--sync-next");
+  assert.equal(
+    read(readme),
+    "---\nproject: x\nstatus: completed\npriority: high\ndescription: A thing\n---\n\n# P\nmonitoring-until: body text is left alone\n",
+    "every row done is completed, with no companion field",
+  );
+  const stuck = mk("sync-stuck", "| R1 | a | i | s | — | waiting | — |");
+  const before = read(join(stuck, "README.md"));
+  assert.equal(rcOf(stuck, "--sync-next"), 1, "--sync-next refuses a table it cannot derive");
+  assert.equal(read(join(stuck, "README.md")), before, "and leaves the README alone");
 });
 
 // --check: an explicit row may be built only when it is ready, names a spec,

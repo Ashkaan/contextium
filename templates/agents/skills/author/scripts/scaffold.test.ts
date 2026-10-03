@@ -135,6 +135,41 @@ test("hook-write both placements", () => {
   );
 });
 
+// ── Case 6b: a scaffolded check takes the close gates' argument ──
+// land.ts calls every gate as `<check> --since origin/<trunk>`. A check that
+// read those two words as file paths would scan nothing and exit 0 behind a gate.
+test("scaffolded check honours --since", () => {
+  const name = "zz-scaffold-test-since";
+  const r = run("hook", name, "checks");
+  assert.equal(r.rc, 0, r.out);
+  const checks = join(REPO_ROOT, ".agents/checks");
+  const repo = mkdtempSync(join(tmpdir(), "author-since-"));
+  const home = mkdtempSync(join(tmpdir(), "author-home-"));
+  after(() => {
+    rmSync(repo, { recursive: true, force: true });
+    rmSync(home, { recursive: true, force: true });
+  });
+  for (const args of [
+    ["init", "-q"],
+    ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "base"],
+  ]) {
+    assert.equal(spawnSync("git", args, { cwd: repo }).status, 0);
+  }
+  const check = (...args: string[]) =>
+    spawnSync(process.execPath, ["--experimental-strip-types", join(checks, `${name}.ts`), ...args], {
+      cwd: repo,
+      encoding: "utf8",
+      env: { ...process.env, HOME: home },
+    });
+  let c = check("--since", "nosuchref");
+  assert.equal(c.status, 2, `an unresolvable ref must be a caller error:\n${c.stderr}`);
+  assert.ok(c.stderr.includes("nosuchref"), c.stderr);
+  c = check("--since");
+  assert.equal(c.status, 2, c.stderr);
+  c = check("--since", "HEAD");
+  assert.equal(c.status, 0, c.stderr);
+});
+
 // ── Case 7: agent round-trip ──
 test("agent-write round-trip", () => {
   const name = "zz-scaffold-test-agent";

@@ -11,7 +11,7 @@ metadata:
 ## Critical
 
 - **Fresh-context boundary matters, and nothing enforces it.** A session that wrote the SPEC and invested in its choices defends them mid-stream instead of checking them, so open a new session (or `/clear`) before invoking — that is a judgment you make, not one the harness makes for you.
-- **The worktree is mandatory.** Phase 0.5 sets `${WORKTREE_DIR}`; every edit MUST target absolute paths under it. The shared-checkout guard (`.agents/hooks/check-shared-checkout-write.sh`) refuses writes into the checkout other sessions share. Do NOT edit in the main repo.
+- **The worktree is mandatory.** Phase 0.5 sets `${WORKTREE_DIR}`; every edit MUST target absolute paths under it. The shared-checkout guard (`.agents/hooks/check-shared-checkout-write.sh`) refuses writes into the checkout other sessions share. Do NOT edit in the main repo. A row whose code is in ANOTHER repo (a product) adds a second worktree, of that repo, and every edit to its code and every check and review of it target that one — § "A row whose code is in another repo" below.
 - **The check ORDER is a script, not a table.** Phase 4 calls `scripts/validate.ts`, which runs lint → tests → quality → review → re-lint-if-dirty in one fixed sequence. You do not choose the order and there is no argument that spells "review before lint". The table that used to live here put the code review at layer 4, ahead of E2E — so a clean review landed on a session that had run none, and `audit-dedupe.ts` then no-op'd the real review when it finally came.
 - **E2E (Phase 4) is a hard gate, and it always runs.** Static checks + unit tests are never sufficient. Re-read the spec's E2E walk (tasks.md's test tasks) and execute every step against a running app before claiming complete — once after `--phase checks`, and again every time a later phase prints `NEED_E2E=1`. An unchanged review does not buy a skipped E2E.
 - **If it is a UI, `/qa` runs fully (Phase 4.8).** `validate.ts --phase qa-list` says whether a web app changed; that is a lookup, not a judgment. Any target it prints gets a complete `/qa` — the installed impeccable, screenshots, sight-check, visual review — and `--require-qa` refuses the close until every target has a marker for the tree that is about to ship.
@@ -50,6 +50,29 @@ It prints `WORKTREE_DIR=<path>` (and `SLUG=` + `SHARD=` for the two-arg form); P
 - Otherwise single-arg `/implement <slug>` → a worktree named `<slug>` where the recorded harness keeps its own (`close/scripts/harness.sh`; `CLAUDE_WORKTREE_HOME` overrides the folder), on branch `worktree-<slug>` under Claude Code and `session/<slug>` elsewhere.
 - Two-arg `/implement <slug> <row>` → the same, named `<slug>-<row>`. The script prints `SLUG=<slug>` + `SHARD=<row>` so Phase 1 resolves the spec without re-splitting the composite (composite is ambiguous when either part has hyphens). `<row>` is the ROADMAP.md row ID lowercased (`r4`); the flag keeps its old name, `--shard`.
 - **Before any worktree exists**, `setup-worktree.sh` resolves the roadmap row in both forms and REFUSES — creating nothing — when the row does not exist (listing the IDs), when a bare `/implement <slug>` finds the project at any stage but `ready-to-implement`, or when the row's spec still carries a `NEEDS CLARIFICATION` marker (printing each one). Once the worktree exists it sets the row `in-progress` through `roadmap.ts --set`; a failed write only warns.
+
+### A row whose code is in another repo
+
+The spec, report and roadmap stay in this repo's worktree. When the spec says
+the code lives in another repo — a product, named by its absolute path — that
+repo gets a worktree of its own, and the build and its audit read IT:
+
+- `PRODUCT_WT=$(bash .agents/skills/close/scripts/write-root.sh <its absolute path>)` —
+  the worktree, recorded in this thread's ledger so `/close` lands it. Read its
+  nearest `AGENTS.md` first. Every edit to the product's code targets an
+  absolute path under `$PRODUCT_WT`; never its shared checkout, never a copy
+  under this repo.
+- `BASE_SHA=$(git -C "$PRODUCT_WT" merge-base HEAD origin/<its trunk>)`.
+- Every `validate.ts` phase takes `--repo "$PRODUCT_WT"`, and its `--scope` is a
+  pathspec relative to `$PRODUCT_WT` (a glob such as `src/**`);
+  a project slug or `apps/<app>` names nothing there.
+- Every `code-review.ts --snapshot` runs as
+  `CODEX_REVIEW_REPO="$PRODUCT_WT" node --experimental-strip-types .agents/skills/review/code-review.ts --snapshot`.
+- `/implement-audit` takes the same `$PRODUCT_WT` (its own steps say where).
+
+Without these, every command defaults to this repo's worktree, which holds only
+the spec: the checks pass over nothing and the review reads the wrong diff,
+and neither says so.
 
 ## Phase 1 — LOAD (phase-1-load)
 
@@ -215,14 +238,16 @@ node --experimental-strip-types .agents/skills/implement/scripts/validate.ts --p
 That runs layer 1 (each touched package's lint, then its typecheck — halt on
 fail, because type errors mask runtime errors), then layer 2 (each package's own
 tests: its `test` script or make target, else its `*.test.ts` under
-`node --test`), then layer 3 (the `.agents/checks/` land.ts runs, as a dry run,
-advisory). A package that declares no lint or typecheck is a WARN line, not a
-FAIL, and so is a code file that no package owns: nothing lints it, and the
-line names it. `scripts/resolve-scope.ts` turns the
+`node --test`), then layer 3 (the `.agents/checks/` land.ts runs, as a dry run
+of the close's gates, advisory). A package that declares no lint or typecheck is
+a WARN line, not a FAIL, and so is a code file that no package owns: nothing
+lints it, and the line names it. `scripts/resolve-scope.ts` turns the
 scope argument into the file list (blank → staged files; `apps/<name>` or a bare
 name matching `apps/*` → that app; `integrations/<name>` → that integration;
 `projects/<path>` → that project; anything else → glob expansion, a directory
-listed as the files in it).
+listed as the files in it). For a row whose code is in another repo, add
+`--repo "$PRODUCT_WT"` and give `--scope` relative to it (§ "A row whose code is
+in another repo"), here and in every later phase.
 
 A **table** of layers used to live here, and it was a suggestion. It listed the
 code review as "layer 4", BEFORE the E2E row — so a review that came back clean
@@ -319,6 +344,11 @@ node --experimental-strip-types .agents/skills/implement/scripts/validate.ts --p
   --since "$PRE" --scope <arg>
 ```
 
+For a row whose code is in another repo, the snapshot is
+`CODEX_REVIEW_REPO="$PRODUCT_WT" … --snapshot`, both `validate.ts` calls add
+`--repo "$PRODUCT_WT"`, and `BASE_SHA` is that repo's merge-base (§ "A row whose
+code is in another repo").
+
 `--phase review` snapshots, runs `run-automated-checks.ts` (**mandatory** — a
 FAIL there stops the phase before a vendor call is spent), runs `code-review.ts`,
 and parses its stdout. A `[must-fix]` or `[should-fix]` sets `NEED_FIX=1` and
@@ -361,6 +391,11 @@ paths:
 PRE_QA=$(node --experimental-strip-types .agents/skills/review/code-review.ts --snapshot)
 node --experimental-strip-types .agents/skills/implement/scripts/validate.ts --phase qa-list --base "$BASE_SHA"
 ```
+
+For a row whose code is in another repo, every snapshot here and below takes
+`CODEX_REVIEW_REPO="$PRODUCT_WT"` and every `validate.ts` call `--repo
+"$PRODUCT_WT"` (§ "A row whose code is in another repo") — the UI that changed
+is in that repo, and `qa-list` run against this one finds none.
 
 **Pass `--base`.** Without it the enumerator reads `git diff HEAD` plus
 untracked, which is blind to everything the session already COMMITTED — and

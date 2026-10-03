@@ -1,9 +1,9 @@
 #!/usr/bin/env -S node --experimental-strip-types
 // layer-3.ts — Layer 3 of /implement Phase 4 (quality-check dry-run).
 //
-// Runs the workbench's own checks against the change as a pre-commit dry-run,
-// so Phase 4 surfaces the same violations land.ts would refuse the close on —
-// before the close. Advisory: always exits 0.
+// Runs the workbench's own checks against the change as a dry-run of the
+// close's gates, so Phase 4 surfaces the same violations land.ts would refuse
+// the close on — before the close. Advisory: always exits 0.
 //
 // The checks are the ones in `.agents/checks/` that the close runs: decision
 // records, skill manifests and secrets over what changed since the base land.ts
@@ -27,7 +27,7 @@
 //   NO-MATCH: no quality check applies to this scope
 //
 // Exit:
-//   0  always (advisory; land.ts is the blocking surface)
+//   0  always (advisory; the close gate in land.ts is the blocking surface)
 //   1  scope-arg invalid / repo missing
 
 import { spawnSync } from "node:child_process";

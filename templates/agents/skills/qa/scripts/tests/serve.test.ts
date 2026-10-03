@@ -68,19 +68,23 @@ const stub = (name: string, body: string) => {
   chmodSync(join(BIN, name), 0o755);
 };
 // ss: nothing listens, unless STUB_BUSY names ports (":8813 :8814") or "all";
-// a busy port is held by pid 1 — never this run's process group.
+// a busy port is held by pid 1 — never this run's process group. STUB_SQUAT
+// names a file the server stub creates as it starts: from then on pid 1 holds
+// every port, as another session's server that took the port in that gap does.
 stub(
   "ss",
   `#!/bin/sh
 all="$*"; port="\${all##*sport = :}"
 busy="\${STUB_BUSY:-}"
+[ -n "\${STUB_SQUAT:-}" ] && [ -f "\${STUB_SQUAT}" ] && busy="all"
 case " $busy " in
   *" all "*|*" :$port "*) echo "LISTEN 0 4096 *:$port *:* users:((\\"other\\",pid=1,fd=3))" ;;
 esac
 `,
 );
-// curl: the health probe answers unless STUB_DOWN is set
-stub("curl", '#!/bin/sh\n[ -z "${STUB_DOWN:-}" ]\n');
+// curl: the health probe answers unless STUB_DOWN is set, and under STUB_SQUAT
+// only once the squatter is in place, so the ownership check always sees it
+stub("curl", '#!/bin/sh\n[ -z "${STUB_DOWN:-}" ] || exit 1\n[ -z "${STUB_SQUAT:-}" ] || [ -f "${STUB_SQUAT}" ]\n');
 // The stubs' long sleep carries this run's pid, so the kill check below finds
 // only this run's server — a bare `sleep 120` also matches every other suite's.
 const STUB_SLEEP = `120.${process.pid}`;
@@ -89,6 +93,7 @@ stub(
   "python3",
   `#!/bin/sh
 printf '%s\\ncwd=%s\\n' "$*" "$PWD" > "$STUB_SERVER_LOG"
+[ -n "\${STUB_SQUAT:-}" ] && touch "\${STUB_SQUAT}"
 [ -n "\${STUB_DIE:-}" ] && exit 1
 exec sleep ${STUB_SLEEP}
 `,
@@ -357,6 +362,16 @@ test("foreign listener → refused, 5", () => {
   assert.ok(r.out.includes("no free port in 8813-8853"), r.out);
   assert.ok(r.out.includes("NOT this run's process group"), r.out);
   assert.ok(r.out.includes("pass --port <free-port>"), r.out);
+});
+// A port free when the scan read it can be taken by another session's
+// server before ours binds; ours would move elsewhere, and the run would accept
+// the other app on the strength of "it was free at the start".
+test("a port taken between the free check and our bind → refused, 5", () => {
+  const squat = join(TMP, "squat");
+  const r = run(["up", "--repo", SITE, "--mode", "before", "--run-id", "r5b"], { STUB_SQUAT: squat });
+  assert.equal(r.rc, 5, r.out);
+  assert.ok(r.out.includes("NOT this run's process group"), r.out);
+  assert.ok(!r.out.includes("accepted (port was free at start)"), r.out);
 });
 test("foreign attempt's server killed", () => {
   const r = spawnSync("pgrep", ["-f", `sleep ${STUB_SLEEP.replace(".", "\\.")}$`], { encoding: "utf8" });

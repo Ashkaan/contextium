@@ -532,8 +532,11 @@ async function main(): Promise<void> {
   // obligation: a good run clears it, anything else is NOT CLOSED with the
   // obligation kept for the retry. The obligation is already on disk: landOne
   // records it before it pushes. The poller is the repo's own
-  // `.agents/deploy/await-deploy-run.sh`, read from the worktree being landed
-  // (it carries the landed tree) and else from the shared checkout. A repo
+  // `.agents/deploy/await-deploy-run.sh`, and the copy that runs is the landing
+  // worktree's — the tree that holds the landed commit, never the shared
+  // checkout's working tree, which is advanced only when it is clean and on the
+  // trunk. Only an owed deploy retried after that worktree vanished (or one
+  // without it) falls back to the shared checkout's copy. A repo
   // that opted in with no poller to confirm the deploy is NOT CLOSED too — an
   // opt-in nobody can check is the silent case again. It runs IN the checkout
   // that supplies it: a poller asks git or gh about its repo from where it
@@ -541,8 +544,8 @@ async function main(): Promise<void> {
   // about the thread's own repo instead.
   const AWAIT_REL = ".agents/deploy/await-deploy-run.sh";
   const LIST_REL = ".agents/deployable-prefixes.json";
-  const pollDeploy = (shared: string, sha: string, wt = ""): void => {
-    const FROM = wt && isFile(`${wt}/${AWAIT_REL}`) ? wt : shared;
+  const pollDeploy = (shared: string, sha: string, wt: string | null = null): void => {
+    const FROM = wt !== null && wt !== "" && isFile(`${wt}/${AWAIT_REL}`) ? wt : shared;
     const AWAIT = `${FROM}/${AWAIT_REL}`;
     if (!isFile(AWAIT))
       notClosed(`deploy: ${shared} carries ${LIST_REL} but no ${AWAIT_REL} to confirm the deploy of ${sha}`);
@@ -627,16 +630,18 @@ async function main(): Promise<void> {
   };
 
   // The same question for scripts: a file check-scripts.ts would scan — under
-  // .agents/, with one of its five extensions — changed since <base>. `*.test.*`
-  // files count, and DELETED paths count: removing a script's only
-  // test is exactly the change the checker must see (the same reasoning as
+  // .agents/ and outside `node_modules/`, with one of the six extensions it
+  // reads (`.sh`, `.ts`, `.mjs`, `.js`, `.cjs`, `.py`: parts (a) and (b) pair
+  // the scripts, part (c) judges the language of every file there) — changed
+  // since <base>. `*.test.*` files count, and DELETED paths count: removing a
+  // script's only test is exactly the change the checker must see (the same reasoning as
   // changedSkillTree below), and a deleted script whose test survives is the
   // checker's to judge, not this predicate's to wave through. Read as the bash
   // read it, through a process substitution whose failures were not checked.
   const changedScripts = (wt: string, base: string): boolean => {
     const all = `${git(wt, ["diff", "-z", "--name-only", "--no-renames", base]).stdout}${git(wt, ["ls-files", "-z", "--others", "--exclude-standard"]).stdout}`;
     for (const p of all.split("\0").slice(0, -1)) {
-      if (/^\.agents\/.*\.(sh|ts|mjs|js|py)$/s.test(p)) return true;
+      if (/^\.agents\/.*\.(sh|ts|mjs|js|cjs|py)$/s.test(p) && !`/${p}/`.includes("/node_modules/")) return true;
     }
     return false;
   };
@@ -820,7 +825,7 @@ async function main(): Promise<void> {
     }
   };
 
-  // resyncNext <worktree> <trunk ref> — re-derive `next:` for every project whose
+  // resyncNext <worktree> <trunk ref> — re-derive `status:` and `next:` for every project whose
   // ROADMAP.md OR README.md this push changes against the trunk. That is the
   // whole invariant: a push never changes a project's table or README without the
   // README's `next:` matching the table that lands. Both files, because either
@@ -848,7 +853,10 @@ async function main(): Promise<void> {
     const changed: string[] = [];
     for (const dir of dirs) {
       // Only a project with a table has a next: to derive — and a table this push
-      // deletes has none.
+      // deletes has none. A project is a folder under projects/; anything else
+      // holding the pair (the project templates, rows placeholders on purpose)
+      // is not one.
+      if (!/(^|\/)projects\/[^/]+\/[^/]+$/.test(dir)) continue;
       if (!(isFile(`${wt}/${dir}/ROADMAP.md`) && isFile(`${wt}/${dir}/README.md`))) continue;
       const r = run(process.execPath, nodeArgs(`${SCRIPT_DIR}/roadmap.ts`, [`${wt}/${dir}`, "--sync-next"]), {
         out: "ignore",
@@ -929,7 +937,7 @@ async function main(): Promise<void> {
     // rather than quietly closing without it.
     if (!isDir(WT)) {
       if (landedShaFor(SHARED) !== null) {
-        if (OWED_SHA !== null) pollDeploy(SHARED, OWED_SHA);
+        if (OWED_SHA !== null) pollDeploy(SHARED, OWED_SHA, null);
         return;
       }
       notClosed(`worktree missing before landing: ${WT}`);
@@ -1059,8 +1067,11 @@ async function main(): Promise<void> {
 
     // THE SCRIPT-TESTS GATE: check-scripts.ts, over the scripts this worktree
     // changed — every one must carry a paired test, and a program's test must run
-    // it rather than import it. Same shape and reasons as the two gates above;
-    // every repo is asked, and one with no .agents/ has nothing for it to check.
+    // it rather than import it — and over every file under .agents/ for its
+    // language (part (c): no JavaScript or Python, bash only in the tier
+    // AGENTS.md § Standards → Scripts are TypeScript names). Same shape and
+    // reasons as the two gates above; every repo is asked, and one with no
+    // .agents/ has nothing for it to check.
     if (SC_CHECK) {
       refuseOnCheck(SC_CHECK, WT, DR_BASE, "script tests");
     } else if (changedScripts(WT, DR_BASE)) {

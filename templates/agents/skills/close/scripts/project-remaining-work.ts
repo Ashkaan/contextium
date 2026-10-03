@@ -25,7 +25,7 @@
 //   roadmap_table: yes                                (ROADMAP.md present — these three
 //   roadmap_open: N                                    lines appear ONLY then, so a legacy
 //   roadmap: <ID> <status>                             project's output is unchanged; one
-//                                                      `roadmap:` per row not done/absorbed)
+//                                                      `roadmap:` per row not done/absorbed/closed)
 //   roadmap-error: <message>                          (ROADMAP.md malformed; work-remains)
 //   verdict: work-remains|no-hard-signal
 //
@@ -333,7 +333,7 @@ async function main(): Promise<void> {
   // On a spec-kit project the roadmap is the ONE list of outstanding work
   // (project/references/templates/ROADMAP.md), read through roadmap.ts so this
   // cannot disagree with detect-stage.ts or next-implement-command.ts about the
-  // table. Every row that is not `done` or `absorbed by …` is open — a `blocked:`
+  // table. Every row that is not `done`, `absorbed by …` or `closed: …` is open — a `blocked:`
   // watch included, since a watch is exactly what must keep a project from
   // closing. A table roadmap.ts cannot read is also work-remains: a veto that
   // resolves a parse failure toward "nothing left" would flip the project done.
@@ -357,7 +357,7 @@ async function main(): Promise<void> {
         const f = l.split("\t");
         if ((f[0] ?? "") === "") continue;
         const s = lowerAscii(f[1] ?? "");
-        if (s === "done" || /^absorbed by /.test(s)) continue;
+        if (s === "done" || /^absorbed by /.test(s) || /^closed:/.test(s)) continue;
         openRows.push(`${f[0]} ${f[1] ?? ""}`);
       }
       say(`roadmap_open: ${openRows.length}`);

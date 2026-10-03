@@ -182,7 +182,9 @@ async function main(): Promise<void> {
       break;
     }
     case "blocked": {
-      const blockedOn = firstCapture(readmeLines, new RegExp(`^blocked-on:${SP}*([^\\n]+)`));
+      let blockedOn = firstCapture(readmeLines, new RegExp(`^blocked-on:${SP}*([^\\n]+)`));
+      if (blockedOn.length > 1 && blockedOn.startsWith('"') && blockedOn.endsWith('"'))
+        blockedOn = blockedOn.slice(1, -1);
       say(`# ${slug} is blocked — waiting on: ${blockedOn || "(blocked-on not set)"}`);
       exit(0);
       break;
@@ -313,7 +315,13 @@ async function main(): Promise<void> {
       if (!(id !== "" && ready === "no")) continue;
       const lower = lowerAscii(st2);
       if (lower.startsWith("blocked:")) comments.push(`# ${slug} ${id} is ${st2}`);
-      else if (lower === "planned" || lower === "in-progress" || lower === "done" || lower.startsWith("absorbed by ")) {
+      else if (
+        lower === "planned" ||
+        lower === "in-progress" ||
+        lower === "done" ||
+        lower.startsWith("absorbed by ") ||
+        lower.startsWith("closed:")
+      ) {
         // in the vocabulary, and not ready for a reason the table states
       } else comments.push(`# ${slug} ${id} has a Status outside the vocabulary: ${st2}`);
     }

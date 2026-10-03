@@ -447,6 +447,10 @@ test(
       fileHasLine(join(T, ".gitignore"), ".claude/worktrees/") && fileHasLine(join(T, ".gitignore"), ".gemini/worktrees/"),
       ".gitignore keeps both worktree roots out",
     );
+    r.check(
+      fileHasLine(join(T, ".gitignore"), ".agents/skills/synced/"),
+      ".gitignore keeps out the skills a harness syncs through the ~/.claude/skills link",
+    );
     r.hasOut("the links and manifests are checked at the end", "links verified");
     r.check(lines(join(T, "integrations/README.md")).some((l) => l.startsWith("## Manifest")), "integrations/README.md carries the manifest schema the check enforces");
     r.there("the integration-manifest check land.ts runs is installed", ".agents/checks/check-integration-manifest.ts");

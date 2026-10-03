@@ -8,7 +8,7 @@
 
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmodSync, copyFileSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { after, test } from "node:test";
@@ -17,6 +17,12 @@ import { fileURLToPath } from "node:url";
 const SUT = join(dirname(fileURLToPath(import.meta.url)), "roadmap-merge.ts");
 const TMP = mkdtempSync(join(tmpdir(), "roadmap-merge-test-"));
 after(() => rmSync(TMP, { recursive: true, force: true }));
+// The worktree top git runs a driver from: projects/x has a table beside its
+// README, projects/legacy has none.
+const TOP = join(TMP, "top");
+mkdirSync(join(TOP, "projects/x"), { recursive: true });
+mkdirSync(join(TOP, "projects/legacy"), { recursive: true });
+writeFileSync(join(TOP, "projects/x/ROADMAP.md"), "# Roadmap: x\n");
 
 const HDR = `| ID | Sub-feature | Depends on | Status | Sub-spec |
 |----|-------------|------------|--------|----------|`;
@@ -33,6 +39,7 @@ const R3 = "| R3 | third | R1, R2 | planned | — |";
 
 function driver(...args: string[]): number | null {
   return spawnSync(process.execPath, ["--experimental-strip-types", SUT, ...args], {
+    cwd: TOP,
     encoding: "utf8",
     timeout: 30_000,
   }).status;
@@ -269,6 +276,64 @@ test("a README whose next: both sides rewrote merges", () => {
   assert.equal(rc, 0, "a README whose next: both sides rewrote merges");
   assert.ok(out.includes('next: "R2: second"'), "…keeping ours, for land.ts to re-derive");
   assert.ok(out.includes("Body, edited by theirs."), "…and theirs' body edit");
+});
+
+test("a README whose status both sides re-derived merges", () => {
+  const fm = (name: string, lines: string, body: string): void =>
+    writeFileSync(join(TMP, name), `---\nproject: demo\n${lines}description: d\n---\n\n# Project\n\n${body}\n`);
+  fm("rs.o", 'status: active\nnext: "R1: first"\n', "Body.");
+  fm("rs.a", "status: blocked\n", "Body.");
+  fm("rs.b", 'status: monitor\nmonitoring-until: "2026-10-20 — R3: watch"\n', "Body, edited by theirs.");
+  writeFileSync(
+    join(TMP, "rs.a"),
+    readFileSync(join(TMP, "rs.a"), "utf8").replace("description: d\n", 'description: d\nblocked-on: "R2: him"\n'),
+  );
+  const rc = driver(join(TMP, "rs.o"), join(TMP, "rs.a"), join(TMP, "rs.b"), "projects/x/README.md");
+  const out = readFileSync(join(TMP, "rs.a"), "utf8");
+  assert.equal(rc, 0, "a README whose status both sides re-derived merges");
+  assert.equal(
+    out,
+    '---\nproject: demo\nstatus: blocked\ndescription: d\nblocked-on: "R2: him"\n---\n\n# Project\n\nBody, edited by theirs.\n',
+    "…keeping ours' status and companion, dropping theirs' window, taking theirs' body",
+  );
+});
+
+test("a README's multi-line derived entry is set aside whole", () => {
+  const fm = (name: string, lines: string): void =>
+    writeFileSync(join(TMP, name), `---\nproject: demo\n${lines}description: d\n---\n\n# Project\n\nBody.\n`);
+  fm("rm.o", 'status: active\nnext: "R1: first"\n');
+  fm("rm.a", 'status: blocked\nblocked-on: "R2: him"\n');
+  fm("rm.b", 'status: monitor\nmonitoring-until: "2026-10-20 — R3:\n  the first send"\n');
+  const rc = driver(join(TMP, "rm.o"), join(TMP, "rm.a"), join(TMP, "rm.b"), "projects/x/README.md");
+  assert.equal(rc, 0, "a README whose theirs carried a two-line window merges");
+  assert.equal(
+    readFileSync(join(TMP, "rm.a"), "utf8"),
+    '---\nproject: demo\nstatus: blocked\nblocked-on: "R2: him"\ndescription: d\n---\n\n# Project\n\nBody.\n',
+    "…keeping ours, with no orphaned continuation line of theirs' window",
+  );
+  fm("rn.o", 'status: active\nnext: "R1: first"\n');
+  fm("rn.a", "status: completed\n");
+  fm("rn.b", 'status: monitor\nmonitoring-until: "2026-10-20 — R3:\n  the first send"\n');
+  assert.equal(driver(join(TMP, "rn.o"), join(TMP, "rn.a"), join(TMP, "rn.b"), "projects/x/README.md"), 0);
+  assert.equal(
+    readFileSync(join(TMP, "rn.a"), "utf8"),
+    "---\nproject: demo\nstatus: completed\ndescription: d\n---\n\n# Project\n\nBody.\n",
+    "…and where ours carries no companion, theirs' continuation line does not survive alone",
+  );
+});
+
+test("a legacy README, with no ROADMAP.md beside it, merges every line", () => {
+  readme("rl.o", '"R1: first"', "Body.");
+  readme("rl.a", '"R1: first"', "Body, edited by ours.");
+  writeFileSync(
+    join(TMP, "rl.b"),
+    readFileSync(join(TMP, "rl.o"), "utf8").replace("status: active", "status: completed"),
+  );
+  const rc = driver(join(TMP, "rl.o"), join(TMP, "rl.a"), join(TMP, "rl.b"), "projects/legacy/README.md");
+  const out = readFileSync(join(TMP, "rl.a"), "utf8");
+  assert.equal(rc, 0, "a legacy README merges");
+  assert.ok(out.includes("status: completed"), `…keeping theirs' completion, which nothing would re-derive: ${out}`);
+  assert.ok(out.includes("Body, edited by ours."), "…and ours' body edit");
 });
 
 test("a README body both sides rewrote still conflicts", () => {

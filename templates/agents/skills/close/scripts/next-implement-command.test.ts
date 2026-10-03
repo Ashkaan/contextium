@@ -87,6 +87,12 @@ test("blocked-comment", () => {
   assert.equal(gen(d), "# waiting is blocked — waiting on: vendor API access");
 });
 
+// 5b. blocked-on as roadmap.ts derives it, quoted → printed without the quotes.
+test("blocked-comment-quoted", () => {
+  const d = mkproj("2026-04-05_waiting-quoted", "blocked", '"R12: the owner grants access"');
+  assert.equal(gen(d), "# waiting-quoted is blocked — waiting on: R12: the owner grants access");
+});
+
 // 6. monitor with a reason on monitoring-until → date AND what is being watched.
 test("monitor-with-reason", () => {
   const d = mkproj("2026-05-05_observe", "monitor");
@@ -239,6 +245,7 @@ test("rm-parallel-set", () => {
     "| R5 | e | i | s | — | planned | — |",
     "| R6 | f | i | s | — | blocked: vendor reply | — |",
     "| R7 | g | i | s | R6 | planned | `specs/007-g/` |",
+    "| R8 | h | i | s | — | closed: never built | — |",
   );
   spec(d, "002-b");
   spec(d, "003-c");

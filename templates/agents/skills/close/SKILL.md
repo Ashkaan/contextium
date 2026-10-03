@@ -64,13 +64,16 @@ work, so the README gets no `## Current Progress` or `## Next Steps`:
 
 1. **Anything still outstanding becomes a row**, never a README bullet. A watch
    is a row with Status `blocked: <date>`; a manual step or a waiting-on-someone
-   item is a row with Sub-spec `—`. New IDs continue from the highest
-   existing one and are never reused.
+   item is a row with Sub-spec `—`, Status `blocked: <who does what>`. New IDs
+   continue from the highest existing one and are never reused. A row that will
+   not be done is `closed: <why>`, never left open on a finished project.
 2. **Flip each row whose spec is finished** — `spec-state.ts` reads its
    `report.md` as `complete` — to `done`. This close is the only writer of
    `done`; `/implement` only ever sets `in-progress`.
-3. **Re-derive `next:`.** Never hand-write it; the rule is the README
-   template's.
+3. **Re-derive `status:` and `next:`.** Never hand-write either, nor
+   `blocked-on:` or `monitoring-until:`; the rule is the README template's,
+   and `land.ts` re-runs it on every project a push touches. When it derives
+   `completed`, write the README's `## Outcome` in the same pass.
 
 ```bash
 node --experimental-strip-types .agents/skills/close/scripts/spec-state.ts <project-folder>             # which specs are complete
@@ -85,28 +88,19 @@ that state's only writer. Left `in-flight`, `project-remaining-work.ts` keeps
 reporting `work-remains` and `next-implement-command.ts` keeps offering the
 shard it just closed.
 
-**Either way**, flip `status:` to `completed` or `monitor` only when
-`project-remaining-work.ts` says `no-hard-signal` AND the goal is met;
-`work-remains` keeps it `active`. On a ROADMAP project `no-hard-signal` means
-no row is open — every row `done` or `absorbed by …` — and a `roadmap-error:`
-line is `work-remains` until the table is fixed. A project whose only open rows
-are `blocked:` watches is `monitor`, with `monitoring-until:` naming the first
-watch's date.
+**On a ROADMAP project this close never chooses `status:`** — step 3 derives it
+from the rows. When a close chose it, the choice drifted from the table both
+ways: a project went `monitor` while a row waited on the owner to grant access,
+and others sat `completed` over rows still `planned`. To change what a project
+is, change a row.
 
-**`work-remains` does not mean `active` when nothing remaining is implementable.**
-`active` is a claim that a `/implement` run against this project has something to
-do, because that is what step 5's generator turns it into — an `active` project
-with an un-reported SPEC yields a literal `/implement <slug>`. When every open
-item is external or handover work that no run of this repo's tooling can perform
-— rotate a credential, have a vendor disable an account, wait on another firm —
-the project is `monitor` with `monitoring-until:` naming what is being waited on,
-or `completed` when nothing is owed at all. Record the items either way — as
-`blocked: <what>` rows in `ROADMAP.md`, or in a legacy README's `## Next Steps`;
-they are still real, they are just not this project's work.
-
-This exists because a close that reads `work-remains` as `active` prints an
-`/implement` for work that no longer exists — say, a dashboard deleted an hour
-earlier. The generator is correct; `active` is the false input.
+**A project with no `ROADMAP.md`** is still set by hand: `completed` or
+`monitor` only when `project-remaining-work.ts` says `no-hard-signal` AND the
+goal is met; `work-remains` keeps it `active`, or `blocked` with `blocked-on:`
+when every open item waits on someone else — a credential to rotate, a vendor, a
+decision — because `active` makes step 5 print an `/implement` with nothing to
+run. `monitor` is only for a dated watch, with `monitoring-until:` starting with
+that date.
 
 ## 3 — Journal
 

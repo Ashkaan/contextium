@@ -327,7 +327,7 @@ resolve_roadmap_row() {
       exit 1
     fi
     if [[ "$rready" != yes ]]; then
-      err "BLOCKED: $rid is '$rstatus' and not ready (a dependency is not done, or the row is blocked, done or absorbed)"
+      err "BLOCKED: $rid is '$rstatus' and not ready (a dependency is not done, or the row is blocked, done, absorbed or closed)"
       exit 1
     fi
     if [[ "$rsub" == "—" ]]; then

@@ -36,7 +36,7 @@ set -euo pipefail
 
 # --- Constants ---
 
-VERSION="v9.0.0"
+VERSION="v9.0.1"
 
 # The tools the installer knows, in menu order. The first is the recommended one.
 HARNESSES="t3 claude codex cursor vscode gemini antigravity grok"
@@ -99,8 +99,10 @@ projects
 decisions
 "
 
-# Where each tool keeps a session worktree inside the repo, ignored by git.
-GITIGNORE_LINES=".claude/worktrees/ .gemini/worktrees/"
+# Ignored by git: where each tool keeps a session worktree inside the repo, and
+# the skills Claude Code syncs from an account into ~/.claude/skills/synced/,
+# which the home link puts in this repo's .agents/skills/.
+GITIGNORE_LINES=".claude/worktrees/ .gemini/worktrees/ .agents/skills/synced/"
 
 # Files earlier releases installed into places v8 no longer writes, with their
 # checksums: removed only while they still match (see the file's header).

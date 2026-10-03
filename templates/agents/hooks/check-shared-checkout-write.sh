@@ -35,8 +35,9 @@
 # repository all refuse exactly as before. Creating an untracked file
 # (`touch`, `>`) is the original failure and stays refused.
 #
-# WHAT IT ALLOWS. Everything under a worktree, which is the point — a worktree
-# is not inside the shared checkout, so it never matches. Every read. And every
+# WHAT IT ALLOWS. Everything under a worktree, which is the point — including
+# a worktree the harness keeps inside the checkout (.claude/worktrees/,
+# .gemini/worktrees/), which git names as a linked worktree. Every read. And every
 # Bash form not on the list above, including `node --experimental-strip-types <guarded>/close/verify.ts`:
 # merely NAMING a guarded path is not writing to it, and a hook that refused
 # that would be unusable and would be turned off.
@@ -655,6 +656,27 @@ TARGETS="$(printf '%s' "${TARGETS}" | sed '/^$/d')"
 # for every command with a redirect — `2>/dev/null` included — left a session
 # entry behind for writes that reach no checkout at all.
 IN_THREAD=""
+# in_linked_worktree <root> <target> — is the target inside a linked worktree
+# of this checkout? Claude Code's and Gemini CLI's session worktrees live INSIDE
+# the checkout (.claude/worktrees/<id>, .gemini/worktrees/<id> — harness.sh), so
+# the prefix test matches them, and refusing there refuses every write a session
+# makes in its own worktree. Git's answer for the nearest folder that exists
+# tells them apart: another top level that shares this checkout's .git. A repo
+# merely nested in the checkout has its own .git, and still refuses.
+in_linked_worktree() {
+  local root="$1" d="$2" top common
+  while [[ ! -d "${d}" ]]; do
+    d="${d%/*}"
+    [[ -n "${d}" ]] || return 1
+  done
+  top="$(git -C "${d}" rev-parse --show-toplevel 2>/dev/null)" || return 1
+  top="$(canon_missing "${top}" 2>/dev/null)" || return 1
+  [[ -n "${top}" && "${top}" != "${root}" ]] || return 1
+  common="$(git -C "${d}" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" || return 1
+  common="$(canon_missing "${common}" 2>/dev/null)" || return 1
+  [[ "${common}" == "${root}/.git" ]]
+}
+
 in_thread() {
   if [[ -z "${IN_THREAD}" ]]; then
     # thread.ts is TypeScript; this hook stays bash and runs it, never sources it.
@@ -732,6 +754,7 @@ while IFS= read -r TARGET; do
     [[ -n "${ROOT}" ]] || continue
     case "${TARGET}" in
       "${ROOT}" | "${ROOT}"/*)
+        in_linked_worktree "${ROOT}" "${TARGET}" && continue
         if [[ "${VERB}" == rm ]] && untracked_only "${ROOT}" "${TARGET}"; then
           continue
         fi

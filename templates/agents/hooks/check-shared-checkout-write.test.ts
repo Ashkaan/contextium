@@ -403,6 +403,26 @@ describe("removing a tracked symlink", () => {
   bashRefuses("rm of a TRACKED symlink inside a guarded checkout still refuses", `rm ${RECORDS}/tracked-self-link`);
 });
 
+// ── A session's worktree INSIDE the checkout is not the checkout ─────────
+// Claude Code's and Gemini CLI's session worktrees live under the checkout
+// (.claude/worktrees/<id>, .gemini/worktrees/<id> — harness.sh), so a prefix
+// test alone refuses every write a session makes in its own worktree. A
+// repository nested in the checkout that is NOT one of its worktrees still is
+// the checkout's folder, and still refuses.
+describe("a worktree inside the checkout", () => {
+  const INNER = join(RECORDS, ".claude/worktrees/s1");
+  const NESTED = join(RECORDS, "vendor-clone");
+  before(() => {
+    git("worktree", "add", "-q", "-b", "session/s1", INNER);
+    mkdirSync(NESTED, { recursive: true });
+    execFileSync("git", ["-C", NESTED, "init", "-q"], { stdio: "ignore" });
+  });
+  pathAllows("Write into a linked worktree under .claude/worktrees/", "Write", fp(join(INNER, "projects/x/README.md")));
+  bashAllows("a redirect into a linked worktree under the checkout", `echo x > ${INNER}/notes.md`);
+  pathRefuses("Write beside it, in the checkout itself, still refuses", "Write", fp(join(RECORDS, "projects/x/README.md")));
+  pathRefuses("Write into a nested repo that is not a worktree still refuses", "Write", fp(join(NESTED, "f.md")));
+});
+
 // ── A write that reaches no guarded checkout creates nothing ──────────────
 //
 // thread.ts --id records a session (a cache entry per thread) as a side effect.

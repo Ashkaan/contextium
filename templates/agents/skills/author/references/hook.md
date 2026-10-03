@@ -7,7 +7,8 @@ Node start per call); the scaffold writes TypeScript, and a bash hook is
 written by hand. A
 PreToolUse/PostToolUse hook is the one shape with a register step: it fires from
 nothing until it is wired into a harness's hook manifest. A check is not wired
-here — nothing dispatches a new check until something calls it.
+here — one that must block is a close gate in
+`.agents/skills/close/scripts/land.ts`.
 
 ## Step 1 — resolve shape (ask the user: a numbered list, recommendation first; in Claude Code, `AskUserQuestion`)
 
@@ -94,4 +95,4 @@ absolute path matters because a session can be working in a product repo, where
 
 After wiring, re-run `verify.ts hook` — the "not wired" WARN should be gone. If you intentionally leave it unwired, the WARN is non-blocking but the hook will never fire.
 
-A check has no register step here. Nothing dispatches a new check on its own; until something calls it, it runs by hand from the workbench root (say so where the check is documented: an automation nobody can see cannot be trusted).
+A check has no register step here. A check that must block becomes a close gate: `.agents/skills/close/scripts/land.ts` runs it with `--since origin/<trunk>` when a predicate over the branch's changed paths says its inputs moved, and refuses the close on a red result. A check no gate calls runs only by hand from the workbench root; say so where it is documented, because an automation nobody can see cannot be trusted.

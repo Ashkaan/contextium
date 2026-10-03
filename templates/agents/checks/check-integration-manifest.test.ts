@@ -34,8 +34,8 @@ const CREDS = join(TMP, "credentials-fixture.ts");
 writeFileSync(
   CREDS,
   `export const CREDS = {
-  demo: { id: "x", title: "t", fields: {}, consumers: [] },
-  slack: { id: "y", title: "t", fields: {}, consumers: [] },
+  demo: { id: "x", title: "t", fields: {} },
+  slack: { id: "y", title: "t", fields: {} },
 } as const;
 `,
 );

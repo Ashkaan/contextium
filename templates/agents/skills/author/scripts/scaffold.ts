@@ -142,8 +142,8 @@ async function main(): Promise<void> {
     //   default → .agents/hooks/<name>.ts : PreToolUse/PostToolUse, blocks with
     //             exit 2.
     //   checks  → .agents/checks/<name>.ts : a check, fails with exit 1, with
-    //             <name>.test.ts beside it. What fires a check is whatever
-    //             calls it, not this script's question.
+    //             <name>.test.ts beside it. What fires a check is a close gate
+    //             in land.ts, not this script.
     const checks = placement === "checks";
     const rel = checks ? `.agents/checks/${name}.ts` : `.agents/hooks/${name}.ts`;
     const tmpl = join(templateDir, checks ? "hook-precommit.template.ts" : "hook-tooluse.template.ts");

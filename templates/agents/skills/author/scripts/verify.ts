@@ -23,8 +23,8 @@
 //         + top-level (PreToolUse) hooks MUST NOT exit 1 (use exit 2 to block) [P1]
 //         + non-blocking WARN when no harness hook manifest names a top-level
 //           hook                                     [determinism / visibility]
-//         (a check under .agents/checks/ gets no wiring claim: nothing
-//         dispatches a new check on its own, and a WARN against a dispatcher
+//         (a check under .agents/checks/ gets no wiring claim: what fires a
+//         check is a close gate in land.ts, and a WARN against a dispatcher
 //         that does not exist would report every check unwired)
 //   agent → 6-field frontmatter SSOT (references/agent.md)
 //         + description not first-person, ONE sentence   [P1 Anthropic, P2 token]
@@ -433,10 +433,10 @@ function verifyHook(path: string, repoRoot: string): void {
   // harness, each in the file that harness reads — Claude Code
   // `~/.claude/settings.json`, Codex `~/.codex/hooks.json`, Antigravity
   // `<workbench>/.agents/hooks.json` — so ANY of them naming the hook counts.
-  // A check in `.agents/checks/` gets no claim. An unresolvable workbench root
-  // is not evidence of an unwired hook either — saying "not wired" with the
-  // workbench's own manifest unread would be a claim about a file this run
-  // never opened.
+  // A check in `.agents/checks/` gets no claim: what fires it is a close gate
+  // in land.ts. An unresolvable workbench root is not evidence of an unwired
+  // hook either — saying "not wired" with the workbench's own manifest unread
+  // would be a claim about a file this run never opened.
   if (!isCheckPath(path)) {
     if (repoRoot === "") {
       err(`WARN — could not find the workbench, so '${base}' was not checked for`);

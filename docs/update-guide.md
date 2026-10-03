@@ -4,6 +4,26 @@ A newer version of the template will ship better skills, refined standards, new 
 Pulling those in should never put your own work at risk. The installer is built around exactly that
 split: it refreshes the methodology layer and leaves your data alone.
 
+## Upgrading to v9.0.1: building in another repo, status from the roadmap
+
+Re-run the installer; nothing in your data changes.
+
+- `/implement` and `/implement-audit` say how to build a row whose code lives in another repo (a
+  product you work on from this workbench): that repo gets its own worktree from `write-root.sh`,
+  and every check and review takes it (`validate.ts --repo`, `CODEX_REVIEW_REPO`,
+  `run-automated-checks.ts --repo-dir`). Before, they checked and reviewed this workbench's diff,
+  which holds only the spec.
+- With Claude Code or Gemini CLI, the shared-checkout guard no longer refuses writes into the
+  session's own worktree under `.claude/worktrees/` or `.gemini/worktrees/`. Before, every write a
+  session made there was refused as a write into the checkout.
+- `.gitignore` gains `.agents/skills/synced/`: Claude Code syncs skills from your account into
+  `~/.claude/skills/synced/`, which the home link puts in the workbench, where it left the
+  checkout dirty and stopped `/close` from updating it.
+- A project with a `ROADMAP.md` has its `status:` derived from its rows by `/close`
+  (`roadmap.ts --derive`); to change what a project is, change a row.
+- The close's script-language check judges the scripts under `.agents/` only; your own apps may be
+  written in any language.
+
 ## Upgrading to v9.0.0: the scripts are TypeScript
 
 Re-run the installer. Every script the layer ships is now TypeScript, run by Node 22.6 or later as

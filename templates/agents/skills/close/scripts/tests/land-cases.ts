@@ -55,6 +55,7 @@ import {
   openSync,
   readdirSync,
   readFileSync,
+  realpathSync,
   renameSync,
   rmSync,
   statSync,
@@ -737,6 +738,7 @@ function writeAwaitStub(): void {
 sha=""
 while [ $# -gt 0 ]; do case "$1" in --sha) sha="$2"; shift 2 ;; *) shift ;; esac; done
 echo "polled \${sha}" >&2
+echo "cwd $(pwd -P)" >&2
 if [ -n "\${AWAIT_STUB_FAIL_SHA:-}" ] && [ "\${AWAIT_STUB_FAIL_SHA}" = "\${sha}" ]; then
   echo "deploy: failed (run_old)"
   exit 3
@@ -801,6 +803,11 @@ kase("Case 6: the landing CHECKS the push deployed, and never deploys", () => {
   is("a completed deploy run closes", r.rc, "0");
   has("…and the run is named in the report", r.out, "deploy: completed (run_stub)");
   has("…and the poller was asked about the landed commit", cat(threadFile(TID1, "deploy.log")), "polled ");
+  has(
+    "…and it ran from the landing worktree, not the shared checkout",
+    cat(threadFile(TID1, "deploy.log")),
+    `cwd ${realpathSync(F.WT1)}\n`,
+  );
   hasnt(
     "the product repo, which has not opted in, was not polled",
     r.out,
@@ -986,6 +993,76 @@ kase("Case 6r: a failed deploy is re-checked on the retry, never forgotten", () 
   r = land(1, ["killed"], { merge: true, extra: failing });
   is("the retry checks the deploy it never polled, and refuses on a failed run", r.rc, "3");
   is("…having polled it", polledCount(), "1");
+});
+
+// ── Case 6t ───────────────────────────────────────────────────────────────
+//
+// WHETHER A REPO DEPLOYS IS A FACT ABOUT THE LANDED COMMIT, and the poller that
+// runs is the landing worktree's copy. The shared checkout is advanced only
+// when it is clean and on the trunk, so reading the opt-in or the poller off
+// its working tree would turn a deploying landing into "this repo deploys
+// nothing" whenever it is dirty or lagging, with no line printed at all.
+
+kase("Case 6t: whether a repo deploys is read from the landed commit", () => {
+  fixture("c6t");
+  writeAwaitStub();
+  writePrefixList('["apps/"]');
+  rmSync(join(F.CODE, ".agents/deploy/await-deploy-run.sh"));
+  rmSync(join(F.CODE, ".agents/deployable-prefixes.json"));
+  write(join(F.CODE, "stray.txt"), "somebody's uncommitted work\n");
+  write(join(F.WT1, "apps/x/one.ts"), "code\n");
+  let r = land(1, ["shared checkout dirty and missing the poller"], { merge: true });
+  is("a landing whose shared checkout lacks the poller on disk still polls", r.rc, "0");
+  has("…and the run is named", r.out, "deploy: completed (run_stub)");
+  is("…polled exactly once", polledCount(), "1");
+
+  // AN OWED DEPLOY WHOSE WORKTREE IS GONE. The retry has no landed tree to run
+  // the poller from, so the copy that runs is the shared checkout's — and a
+  // failing run keeps the obligation.
+  fixture("c6u");
+  write(
+    join(F.PROD, ".agents/deploy/await-deploy-run.sh"),
+    `#!/usr/bin/env bash
+sha=""
+while [ $# -gt 0 ]; do case "$1" in --sha) sha="$2"; shift 2 ;; *) shift ;; esac; done
+echo "polled \${sha}" >&2
+echo "cwd $(pwd -P)" >&2
+printf '%s\\n' "\${AWAIT_STUB_LINE:-deploy: completed (run_stub)}"
+exit "\${AWAIT_STUB_RC:-0}"
+`,
+  );
+  write(join(F.PROD, ".agents/deployable-prefixes.json"), '["one"]\n');
+  gDo(F.PROD, "add", ".agents");
+  gDo(F.PROD, "commit", "-q", "-m", "the prod poller");
+  gDo(F.PROD, "push", "-q", "origin", "main");
+  const SAT = writeRoot(1, F.PROD).out;
+  write(join(SAT, "one-prod.md"), "prod\n");
+  const failing = { AWAIT_STUB_RC: "3", AWAIT_STUB_LINE: "deploy: failed (run_bad)" };
+  r = land(1, ["thread one"], { merge: true, extra: failing });
+  is("the satellite's failed deploy does not close", r.rc, "3");
+  ok(
+    "…and its satellite ran the poller",
+    cat(threadFile(TID1, "deploy.log")).includes(`cwd ${realpathSync(SAT)}\n`),
+    cat(threadFile(TID1, "deploy.log")),
+  );
+  gDo(F.PROD, "worktree", "remove", "--force", SAT);
+  r = land(1, ["thread one"], { merge: true, extra: failing });
+  is("a retry after the worktree vanished still refuses on a failed run", r.rc, "3");
+  is("…having polled again", polledCount(), "2");
+  is(
+    "…from the shared checkout's copy",
+    lastLine(
+      cat(threadFile(TID1, "deploy.log"))
+        .split("\n")
+        .filter((l) => l.startsWith("cwd "))
+        .join("\n"),
+    ),
+    `cwd ${realpathSync(F.PROD)}`,
+  );
+  has("…with the obligation kept", cat(threadFile(TID1, "deploy-owed")), F.PROD);
+  r = land(1, ["thread one"], { merge: true });
+  is("…and a retry whose run completes closes", r.rc, "0");
+  is("…settling it", cat(threadFile(TID1, "deploy-owed")), "");
 });
 
 kase("Case 6p: a satellite's poller runs in the checkout that supplies it", () => {
@@ -1782,7 +1859,7 @@ kase("Case 13: the integration-manifest gate", () => {
   );
 
   //    A manifest outside integrations/<name>/ is not one: no checker needed.
-  rmSync(join(F.WT1, "integrations"), { recursive: true, force: true });
+  rmSync(join(F.WT1, "integrations/alpha"), { recursive: true, force: true });
   write(join(F.WT1, "docs/integrations/alpha/README.md"), "fine\n");
   r = land(1, ["thread one"], { merge: true });
   is("a README.md outside integrations/<name>/ needs no checker", r.rc, "0");
@@ -2223,6 +2300,20 @@ kase("Case 15c: a table only the trunk changed, a README only we changed", () =>
   has("…and thread two's edit", g(F.CODE, "show", `origin/main:${RMP}/README.md`), "Body, edited by thread two.");
 });
 
+// A folder outside projects/ that holds a README.md and a ROADMAP.md — the
+// project templates, whose rows are placeholders on purpose — is not a project,
+// and editing both must not stop the close on a table that never reads.
+kase("Case 15d: the templates folder is not a project", () => {
+  fixture("c15d");
+  const TPL = ".agents/skills/demo/references/templates";
+  write(join(F.WT2, TPL, "ROADMAP.md"), lines(...tableHead(), "| R1 | <name> | — | planned | — |"));
+  write(join(F.WT2, TPL, "README.md"), "---\nproject: project-name-slug\nstatus: active\n---\n\n# Project\n");
+  entry(jf(2, "templates"), "templates", "thread two's templates");
+  const r = land(2, ["templates"], { merge: true });
+  is("a templates folder with placeholder rows lands", r.rc, "0");
+  hasnt("…without trying to re-derive it", r.out, "could not be re-derived");
+});
+
 // ── Case 12x ──────────────────────────────────────────────────────────────
 
 /** A `git` that fails the reads matching any pattern and passes everything else to the real one. */
@@ -2484,8 +2575,22 @@ kase("Case 17: the script-tests gate", () => {
   write(join(F.WT1, "journal/2026-09-29/1200-x.md"), "entry\n");
   write(join(F.WT1, "projects/x/README.md"), "record\n");
   write(join(F.WT1, "docs/notes.sh"), "prose\n"); // a .sh outside .agents/ is not one
+  write(join(F.WT1, "site/public/app.js"), "x\n"); // nor a .js: part (c) judges .agents/ only
   r = land(1, ["thread one"], { merge: true });
   is("a close that changes no script under .agents/ needs no checker", r.rc, "0");
+
+  //    Part (c) reads every file under .agents/: a .cjs there is the checker's
+  //    to judge, so a worktree without it is refused for one.
+  fixture("c17g", undefined, undefined, false);
+  write(join(F.WT1, ".agents/site/app.cjs"), "x\n");
+  r = land(1, ["thread one"], { merge: true });
+  is("a .agents/site/app.cjs with no checker exits 3", r.rc, "3");
+  has("…for want of the checker", r.out, `scripts changed in ${F.WT1}, but no worktree this thread owns holds`);
+  //    A dependency's file under node_modules/ is never the checker's.
+  fixture("c17i", undefined, undefined, false);
+  write(join(F.WT1, ".agents/site/node_modules/m/index.js"), "x\n");
+  r = land(1, ["thread one"], { merge: true });
+  is("a .js under node_modules/ needs no checker", r.rc, "0");
 });
 
 // ── Case 18 ───────────────────────────────────────────────────────────────

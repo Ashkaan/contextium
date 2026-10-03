@@ -17,8 +17,8 @@
 - Keep the `ID` column immutable once a sub-spec references it — spec-kit's own rule, from the page this template is copied out of.
 - `Sub-spec` holds the spec's folder, `specs/NNN-name/`, or `—` before one exists.
 - `done` means that folder's `report.md` says `spec-status: complete`.
-- Two Status values beyond the legend: `blocked: <what>` and `absorbed by <ID>`. A watch is `blocked: <date>`.
+- Three Status values beyond the legend: `blocked: <what>`, `absorbed by <ID>` and `closed: <why>` — a row finished without being done (superseded, dropped, or shipped with no report), the why saying which. A watch is `blocked: <date>`; anything else after `blocked:` is a wait on someone.
 - Outstanding work that is not a spec — a watch, a manual step — is still a row, with `Sub-spec` left `—`. This table is the project's only list of outstanding work.
-- Which row is ready, and how the README's `next:` is derived from it, is written once in the README template's derivation rule (`README.md` beside this file).
+- Which row is ready, and how the README's `status:` and `next:` are derived from the rows, is written once in the README template's derivation rule (`README.md` beside this file). A project is never complete while a row is open.
 
 <!-- /contextium -->

@@ -6,8 +6,9 @@
 // counted as done in one and as open in the other), and a table read two ways
 // routes a project two ways.
 //
-// WHICH ROW IS READY, AND WHAT `next:` SAYS, IS NOT DEFINED HERE. The rule is
-// written once, in the README template's derivation comment:
+// WHICH ROW IS READY, WHAT `next:` SAYS, AND WHAT `status:` IS, ARE NOT
+// DEFINED HERE. The rules are written once, in the README template's derivation
+// comment:
 //   .agents/skills/project/references/templates/README.md  (the <!-- --> block)
 // This script implements it; if the two ever disagree, the template is right and
 // this file is the bug.
@@ -36,10 +37,15 @@
 //                                               still owed work. Otherwise exit 1 with one
 //                                               `roadmap: <ID> not ready: <reason>` line per
 //                                               reason (each unmet dependency by name)
+//   roadmap.ts <project-folder> --derive        the frontmatter --sync-next would write:
+//                                               `status:`, then `next:`, `blocked-on:` or
+//                                               `monitoring-until:` when the status has one
 //   roadmap.ts <project-folder> --set <ID> <status> [--sub-spec <path>]
 //                                               rewrite that row's Status (and Sub-spec)
 //                                               cells; every other byte is left alone
-//   roadmap.ts <project-folder> --sync-next     rewrite README.md's `next:` line from --next
+//   roadmap.ts <project-folder> --sync-next     rewrite README.md's `status:`, `next:`,
+//                                               `blocked-on:` and `monitoring-until:` lines
+//                                               from --derive (the name predates status)
 //
 // --set and --sync-next take a per-project lock (`.roadmap.lock` beside the
 // table), re-read the files under it, and replace them through a temp file and
@@ -51,7 +57,8 @@
 //
 // Warnings (exit 0) and errors (exit 1) go to stderr as `roadmap: <message>`.
 // Exit: 0 ok · 1 no ROADMAP.md, malformed table, placeholder row, missing row,
-// row not ready (--check), lock timeout, no README (--sync-next) · 2 usage.
+// row not ready (--check), open rows none of which is ready or blocked
+// (--derive, --sync-next), lock timeout, no README (--sync-next) · 2 usage.
 //
 // BYTES, NOT TEXT, ON THE WAY BACK OUT. The bash original was one gawk program
 // under LC_ALL=C.UTF-8: it measured in characters (the 60-character cut) but
@@ -94,7 +101,7 @@ const err = (msg: string): void => {
 
 function usage(): never {
   err(
-    "usage: roadmap.ts <project-folder> [--next | --ready | --check <ID> | --set <ID> <status> [--sub-spec <path>] | --sync-next]",
+    "usage: roadmap.ts <project-folder> [--next | --ready | --check <ID> | --derive | --set <ID> <status> [--sub-spec <path>] | --sync-next]",
   );
   return exit(2);
 }
@@ -317,6 +324,38 @@ function subspecName(s: string): string {
   return t;
 }
 
+/**
+ * `<head><text>`, at most 60 characters: past that, `text` is cut at the last
+ * whole word that fits and `…` appended. Returned quoted, inner quotes escaped,
+ * because every value it makes holds a colon that would break the YAML.
+ */
+function cut60(head: string, text: string): string {
+  let v = `${head}${text}`;
+  if (len(v) > 60) {
+    const room = 60 - len(head) - 1; // 1 for the ellipsis
+    let f = substr(text, 1, room + 1);
+    if (substr(f, room + 1, 1) !== " ") {
+      f = substr(f, 1, room).replace(/[ \t]+[^ \t]*$/, "");
+    } else {
+      f = substr(f, 1, room);
+    }
+    f = f.replace(/[ \t,;:]+$/, "");
+    v = `${head}${f}…`;
+  }
+  return `"${v.replace(/"/g, '\\"')}"`;
+}
+
+/** The README frontmatter the table implies. Empty strings are fields the status does not carry. */
+interface Derived {
+  status: string;
+  next: string;
+  blockedOn: string;
+  monitoringUntil: string;
+}
+const DERIVED_KEYS = ["status", "next", "blocked-on", "monitoring-until"] as const;
+const derivedValue = (d: Derived, key: (typeof DERIVED_KEYS)[number]): string =>
+  key === "status" ? d.status : key === "next" ? d.next : key === "blocked-on" ? d.blockedOn : d.monitoringUntil;
+
 class ParseFail {}
 function fail(msg: string): never {
   err(msg);
@@ -335,7 +374,7 @@ interface SetArgs {
  * TSV rows (list), the next: value (next) or appends the rewritten file to
  * `setOut` (set).
  */
-type ParseMode = "list" | "next" | "ready" | "check" | "set";
+type ParseMode = "list" | "next" | "ready" | "check" | "derive" | "set";
 
 function parse(roadmap: string, mode: ParseMode, set: SetArgs, out: { text: string }): number {
   try {
@@ -431,7 +470,8 @@ function parseOrThrow(roadmap: string, mode: ParseMode, set: SetArgs, out: { tex
     const s = (rstatus[r] ?? "").toLowerCase();
     if (s === "planned" || s === "in-progress" || s === "done") kind[r] = s;
     else if (/^blocked:/.test(s)) kind[r] = "blocked";
-    else if (/^absorbed by /.test(s)) kind[r] = "absorbed";
+    else if (/^absorbed by /.test(s) || /^closed:/.test(s))
+      kind[r] = "closed"; // finished without being done
     else {
       kind[r] = "unknown";
       err(`${rid[r]} has unknown status`);
@@ -452,7 +492,7 @@ function parseOrThrow(roadmap: string, mode: ParseMode, set: SetArgs, out: { tex
         continue;
       }
       const dk = kind[at];
-      if (dk !== "done" && dk !== "absorbed") ready[r] = false;
+      if (dk !== "done" && dk !== "closed") ready[r] = false;
     }
   }
 
@@ -490,7 +530,7 @@ function parseOrThrow(roadmap: string, mode: ParseMode, set: SetArgs, out: { tex
           bad = true;
           continue;
         }
-        if (kind[q] !== "done" && kind[q] !== "absorbed") {
+        if (kind[q] !== "done" && kind[q] !== "closed") {
           err(`${rid[r]} not ready: depends on ${rid[q]}, which is \`${rstatus[q]}\``);
           bad = true;
         }
@@ -504,27 +544,78 @@ function parseOrThrow(roadmap: string, mode: ParseMode, set: SetArgs, out: { tex
     out.text += `${rsub[r]}\n`;
     return 0;
   }
-  if (mode === "next") {
+  if (mode === "next" || mode === "derive") {
+    const d: Derived = { status: "", next: "", blockedOn: "", monitoringUntil: "" };
     let pick = -1;
     for (let r = 0; r < nrow && pick < 0; r++) if (ready[r] && kind[r] === "in-progress") pick = r;
     for (let r = 0; r < nrow && pick < 0; r++) if (ready[r] && kind[r] === "planned") pick = r;
-    if (pick < 0) return 0;
-    const feat = rfeat[pick] ?? "";
-    let v = `${rid[pick]}: ${feat}`;
-    if (len(v) > 60) {
-      const head = `${rid[pick]}: `;
-      const room = 60 - len(head) - 1; // 1 for the ellipsis
-      let f = substr(feat, 1, room + 1);
-      if (substr(f, room + 1, 1) !== " ") {
-        f = substr(f, 1, room).replace(/[ \t]+[^ \t]*$/, "");
-      } else {
-        f = substr(f, 1, room);
-      }
-      f = f.replace(/[ \t,;:]+$/, "");
-      v = `${head}${f}…`;
+    if (pick >= 0) d.next = cut60(`${rid[pick]}: `, rfeat[pick] ?? "");
+    if (mode === "next") {
+      if (d.next !== "") out.text += `${d.next}\n`;
+      return 0;
     }
-    v = v.replace(/"/g, '\\"');
-    out.text += `"${v}"\n`;
+    // status, by the template's rule: a ready row → active; else a row blocked
+    // on something that is not a date → blocked; else rows blocked on dates →
+    // monitor, until the earliest; else nothing open (no rows at all included)
+    // → completed.
+    const what = (r: number): string => trim((rstatus[r] ?? "").replace(/^blocked:/i, ""));
+    const dated = (r: number): string => /^[0-9]{4}-[0-9]{2}-[0-9]{2}/.exec(what(r))?.[0] ?? "";
+    const open: number[] = [];
+    for (let r = 0; r < nrow; r++) if (kind[r] !== "done" && kind[r] !== "closed") open.push(r);
+    const waiting = open.find((r) => kind[r] === "blocked" && dated(r) === "");
+    /** Ready once every blocked row it waits on clears: planned or in-progress, every dependency known and closed, blocked, or itself able to be ready. A row met again on the way (`seen`) is a cycle. */
+    const canBeReady = (r: number, seen: Set<number>): boolean => {
+      if (kind[r] !== "planned" && kind[r] !== "in-progress") return false;
+      if (seen.has(r)) return false;
+      seen.add(r);
+      const deps = trim(rdep[r] ?? "");
+      const ok =
+        deps === "" ||
+        deps === "—" ||
+        deps === "-" ||
+        deps.split(",").every((raw) => {
+          const dep = trim(raw).replace(/`/g, "");
+          if (dep === "") return true;
+          const at = byid.get(dep.toUpperCase());
+          if (at === undefined) return false;
+          const dk = kind[at];
+          return dk === "done" || dk === "closed" || dk === "blocked" || canBeReady(at, seen);
+        });
+      seen.delete(r);
+      return ok;
+    };
+    let watch = -1;
+    for (const r of open) {
+      if (kind[r] !== "blocked" || dated(r) === "") continue;
+      if (watch < 0 || dated(r) < dated(watch)) watch = r;
+    }
+    if (pick >= 0) d.status = "active";
+    else if (waiting !== undefined) {
+      d.status = "blocked";
+      d.blockedOn = cut60(`${rid[waiting]}: `, what(waiting));
+    } else if (watch >= 0) {
+      // Monitor says every open row is a watch or waits on one. A row that can
+      // never be ready — in a dependency cycle, of unknown status, or after an
+      // unknown row — is neither, and is refused as the template's last clause
+      // refuses it, rather than hidden behind the watch.
+      const never = open.filter((r) => kind[r] !== "blocked" && !canBeReady(r, new Set()));
+      if (never.length > 0) {
+        fail(
+          `cannot derive status: ${never.map((r) => rid[r]).join(", ")} open and never ready (a dependency cycle, an unknown status or an unknown Depends on) — give each a status or fix its Depends on`,
+        );
+      }
+      d.status = "monitor";
+      d.monitoringUntil = cut60(`${dated(watch)} — ${rid[watch]}: `, rfeat[watch] ?? "");
+    } else if (open.length === 0) d.status = "completed";
+    else {
+      fail(
+        `cannot derive status: ${open.map((r) => rid[r]).join(", ")} open, none ready or blocked — give each a status or fix its Depends on`,
+      );
+    }
+    for (const key of DERIVED_KEYS) {
+      const v = derivedValue(d, key);
+      if (v !== "") out.text += `${key}: ${v}\n`;
+    }
     return 0;
   }
   // mode === "set"
@@ -552,7 +643,7 @@ async function main(): Promise<void> {
   }
   const roadmap = `${projectDir}/ROADMAP.md`;
 
-  let mode: "list" | "next" | "ready" | "check" | "set" | "sync" = "list";
+  let mode: "list" | "next" | "ready" | "check" | "derive" | "set" | "sync" = "list";
   const set: SetArgs = { id: "", status: "", subspec: "" };
   switch (rest[0] ?? "") {
     case "":
@@ -570,6 +661,10 @@ async function main(): Promise<void> {
       if (!(rest.length === 2 && (rest[1] ?? "") !== "")) usage();
       set.id = rest[1] ?? "";
       break;
+    case "--derive":
+      mode = "derive";
+      if (rest.length !== 1) usage();
+      break;
     case "--sync-next":
       mode = "sync";
       if (rest.length !== 1) usage();
@@ -586,9 +681,10 @@ async function main(): Promise<void> {
         s === "in-progress" ||
         s === "done" ||
         (s.startsWith("blocked: ") && s.length > "blocked: ".length) ||
-        (s.startsWith("absorbed by ") && s.length > "absorbed by ".length);
+        (s.startsWith("absorbed by ") && s.length > "absorbed by ".length) ||
+        (s.startsWith("closed: ") && s.length > "closed: ".length);
       if (!okStatus) {
-        err(`not a status: '${s}' (planned · in-progress · done · blocked: <what> · absorbed by <ID>)`);
+        err(`not a status: '${s}' (planned · in-progress · done · blocked: <what> · absorbed by <ID> · closed: <why>)`);
         exit(2);
       }
       break;
@@ -602,7 +698,7 @@ async function main(): Promise<void> {
     exit(1);
   }
 
-  if (mode === "list" || mode === "next" || mode === "ready") {
+  if (mode === "list" || mode === "next" || mode === "ready" || mode === "derive") {
     const out = { text: "" };
     const rc = parse(roadmap, mode, set, out);
     process.stdout.write(out.text);
@@ -667,60 +763,67 @@ async function main(): Promise<void> {
     err("README.md has no frontmatter");
     exit(1);
   }
-  const nextOut = { text: "" };
-  if (parse(roadmap, "next", set, nextOut) !== 0) exit(1);
-  const value = bytes(nextOut.text.replace(/\n+$/, ""));
+  const derivedOut = { text: "" };
+  if (parse(roadmap, "derive", set, derivedOut) !== 0) exit(1);
+  const want = new Map<string, string>();
+  for (const line of derivedOut.text.split("\n")) {
+    const at = line.indexOf(": ");
+    if (at > 0) want.set(line.slice(0, at), bytes(line.slice(at + 2)));
+  }
   const tmp = mktempBeside(readme);
   if (tmp === null) {
     err(`cannot write beside ${readme}`);
     exit(1);
   }
 
-  // Only frontmatter lines are touched. An existing `next:` is replaced where it
-  // stands (and removed when no row is ready); a missing one goes after the
-  // `description:` entry, or before the closing `---` when there is none.
-  // Two passes over the file, as the gawk original read it twice.
-  let fm = 0;
+  // Only frontmatter lines are touched. Each derived key that exists is replaced
+  // where it stands — with any indented continuation lines it carried — or
+  // removed when the status does not carry it; a missing one goes after the
+  // `description:` entry, or before the closing `---` when there is none, in
+  // the order status, next, blocked-on, monitoring-until.
   let closeAt = 0;
-  let hasNext = false;
-  let descAt = 0;
-  let descEnd = 0;
-  lines.forEach((line, i) => {
-    const FNR = i + 1;
-    if (FNR === 1) {
-      fm = 1;
-      return;
+  for (let i = 1; i < lines.length; i++) {
+    if (lines[i] === "---") {
+      closeAt = i + 1;
+      break;
     }
-    if (fm === 1 && line === "---") {
-      fm = 2;
-      closeAt = FNR;
+  }
+  if (closeAt === 0) {
+    err("README.md frontmatter never closes");
+    exit(1);
+  }
+  const keyOf = (line: string): string => DERIVED_KEYS.find((k) => line.startsWith(`${k}:`)) ?? "";
+  let descEnd = 0; // FNR of the description entry's last line
+  for (let FNR = 2; FNR < closeAt; FNR++) {
+    if (/^description:/.test(lines[FNR - 1] ?? "")) {
+      descEnd = FNR;
+      while (descEnd + 1 < closeAt && /^[ \t]/.test(lines[descEnd] ?? "")) descEnd++;
     }
-    if (fm === 1 && /^next:/.test(line)) hasNext = true;
-    if (fm === 1 && /^description:/.test(line)) descAt = FNR;
-    if (fm === 1 && descAt && FNR > descAt && !descEnd && !/^[ \t]/.test(line)) descEnd = FNR - 1;
-  });
+  }
+  const present = new Set(
+    lines
+      .slice(1, closeAt - 1)
+      .map(keyOf)
+      .filter((k) => k !== ""),
+  );
+  const written = new Set<string>();
   let out = "";
-  let done = false;
-  lines.forEach((line, i) => {
-    const FNR = i + 1;
-    if (FNR === 1 && descAt && !descEnd) descEnd = closeAt - 1;
-    if (FNR < closeAt && /^next:/.test(line)) {
-      if (value !== "" && !done) {
-        out += `next: ${value}\n`;
-        done = true;
+  for (let FNR = 1; FNR <= lines.length; FNR++) {
+    const line = lines[FNR - 1] ?? "";
+    const key = FNR > 1 && FNR < closeAt ? keyOf(line) : "";
+    if (key !== "") {
+      while (FNR < closeAt - 1 && /^[ \t]/.test(lines[FNR] ?? "")) FNR++;
+      const v = want.get(key) ?? "";
+      if (v !== "" && !written.has(key)) out += `${key}: ${v}\n`;
+      written.add(key);
+    } else out += `${line}\n`;
+    if (FNR === (descEnd || closeAt - 1)) {
+      for (const k of DERIVED_KEYS) {
+        const v = want.get(k) ?? "";
+        if (!present.has(k) && v !== "") out += `${k}: ${v}\n`;
       }
-      return;
     }
-    out += `${line}\n`;
-    if (!hasNext && value !== "" && !done && descAt && FNR === descEnd) {
-      out += `next: ${value}\n`;
-      done = true;
-    }
-    if (!hasNext && value !== "" && !done && !descAt && FNR === closeAt - 1) {
-      out += `next: ${value}\n`;
-      done = true;
-    }
-  });
+  }
   if (lacksFinalNewline(raw)) out = out.slice(0, -1);
   if (!replaceAtomic(readme, tmp, out)) {
     err(`cannot write ${readme}`);

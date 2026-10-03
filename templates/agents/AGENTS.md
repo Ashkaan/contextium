@@ -34,7 +34,7 @@ it reads any code, so it is the cheapest place to prevent a wrong assumption.
 | `AGENTS.md` | this file — a link to `.agents/AGENTS.md` |
 | `.agents/skills/` | the skills, each with its scripts and the templates it writes; `review/` is the reviewer chain |
 | `.agents/agents/` | the agent prompts the skills dispatch in a fresh context |
-| `.agents/checks/` | the checks `land.ts` runs before it commits: decision records, skills, integration manifests, script tests, standards citations, secrets |
+| `.agents/checks/` | the checks `land.ts` runs before it commits: decision records, skills, integration manifests, script tests and languages, standards citations, secrets |
 | `.agents/hooks/` | the pre-tool guards: no host change without asking, no write into the shared checkout |
 | `.agents/generators/` | the index generators for `apps/`, `integrations/`, `projects/` |
 | `.agents/output-styles/` | Claude Code output styles `/author` writes, reached through `~/.claude/output-styles` |
@@ -186,18 +186,29 @@ whole.
 - **Simplest mechanism that works.** Inline script before shared module before daemon. "Shared by
   other automations" means a shared function, not a deployed service. Where every caller is your own
   code, defense-in-depth is usually over-engineering.
+- **Recurring choices are made by rule.** A choice that recurs — where something runs, deploys or is
+  placed — is decided by a written rule; a recommendation names the rule it applies, and a case no
+  rule covers gets a rule first.
 - **Plan the four before building.** Downstream consumers, peer files doing the same thing, edge cases
   at 0 / 1 / empty / max / error, and which docs drift.
+- **Scripts are TypeScript.** A script under `.agents/` is TypeScript, and bash only when the harness
+  fires it on every tool call (a hook command in a harness's hook config, such as
+  `.agents/hooks/claude-hooks.json`) or when it makes the tree or the host the TypeScript would run
+  from (`git worktree add`, `git clone`, a `git -C <other tree> reset --hard`, a published
+  `curl | bash` installer, provisioning a stock host) — a file a bash script sources is bash too, one
+  it merely runs is not — and never JavaScript or Python. `.agents/checks/check-scripts.ts` derives
+  that bash tier on every close and refuses every other `.sh`, `.js`, `.mjs`, `.cjs` and `.py` under
+  `.agents/` in the worktree being landed. The language of your own apps is yours to choose.
 - **Tests and evals.** Every new function gets a test, error and boundary cases get tests, and a
   failing test is observed red before it is made green — INCLUDING when the code was written first,
   where the way to see red is to break the code or the fixture on purpose and check that the message
   names the thing the test claims. A test that has never failed is not evidence: it may be asserting
   against a field the code never reads, or against the arguments a function was called with rather
   than what it produced. Any app that calls a model carries an eval suite and re-runs it when its
-  prompt moves. A script's test runs it as a program — `bash x.sh`, `node x.ts`, never `source` or
-  `import` — so the test survives the script changing language, and
-  `.agents/checks/check-scripts.ts` refuses a close that changes a script under `.agents/` without
-  a paired test.
+  prompt moves. A script's test runs it as a program — `node x.ts`, or `bash x.sh` for the bash
+  **Scripts are TypeScript** keeps, never `source` or `import` — so the test survives the script
+  changing language, and `.agents/checks/check-scripts.ts` refuses a close that changes a script
+  under `.agents/` without a paired test.
 - **One fact, one file.** A rule, a step definition, a wire format or a schema lives in exactly one
   place and is referenced from everywhere else, never mirrored as prose.
 - **A decision that would be expensive to reverse gets a record** in the narrowest `decisions/`

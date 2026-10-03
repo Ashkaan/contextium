@@ -490,9 +490,9 @@ test("ref https-ok local-flagged", () => {
 // the workbench's .agents/hooks.json (Antigravity) — so verify.ts WARNs
 // (non-blocking) when none does; with no workbench root it says it could not
 // look rather than claiming "not wired" about a file it never opened. A check
-// under .agents/checks/ gets no wiring claim at all: nothing dispatches a new
-// check on its own, and a WARN against a dispatcher that does not exist would
-// report every check unwired.
+// under .agents/checks/ gets no wiring claim at all: what fires a check is a
+// close gate in land.ts, and a WARN against a dispatcher that does not exist
+// would report every check unwired.
 test("hook-wiring top-level-warns check-silent root-unresolved-says-so", () => {
   const name = "zz-verify-wiring";
   const iso = mkdtempSync(join(TMP, "iso-"));
