@@ -243,7 +243,11 @@ test("a wrangler var: a [vars] header with a trailing comment or quotes is still
   );
 });
 test("a wrangler var: a bracket line inside a multi-line string is not a header, and a quoted other name is not [vars]", () => {
-  const multi = repo("vars-multi", "wrangler.toml", '[vars]\nNOTE = """\n[other]\n"""\nACCESS_AUD = "a3"\n');
+  const multi = repo(
+    "vars-multi",
+    "wrangler.toml",
+    `[vars]\nNOTE = """\n[other]\n"""\n"release notes" = """\n[other]\n"""\nsite."long key" = '''\n[x]\n'''\nACCESS_AUD = "a3"\n`,
+  );
   assert.equal(qaWranglerVar(multi, "ACCESS_AUD"), "a3");
   const spaced = repo("vars-spaced", "wrangler.toml", '["v ars"]\nACCESS_AUD = "no"\n');
   assert.equal(qaWranglerVar(spaced, "ACCESS_AUD"), "");
