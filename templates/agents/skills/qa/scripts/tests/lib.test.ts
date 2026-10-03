@@ -248,6 +248,14 @@ test("a wrangler var: a bracket line inside a multi-line string is not a header,
   const spaced = repo("vars-spaced", "wrangler.toml", '["v ars"]\nACCESS_AUD = "no"\n');
   assert.equal(qaWranglerVar(spaced, "ACCESS_AUD"), "");
 });
+test("a wrangler var: triple quotes in a comment or inside a one-line string open nothing", () => {
+  const d = repo(
+    "vars-tq",
+    "wrangler.toml",
+    '[vars]\n# """ example\nNOTE = "say \\"\\"\\" here"\nONE = """one line"""\nACCESS_AUD = "aud-1"\n',
+  );
+  assert.equal(qaWranglerVar(d, "ACCESS_AUD"), "aud-1");
+});
 
 test("the local token verifies against its own key set and carries Access's claims", () => {
   const { jwks, jwt } = qaLocalAccess("a@example.com", "aud-1", "https://team.example.com", 1_000);
