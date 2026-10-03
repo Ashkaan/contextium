@@ -627,12 +627,24 @@ async function doUp(args: string[]): Promise<void> {
         exit(8);
       }
     };
+    const seedScript = (() => {
+      try {
+        const pkg = JSON.parse(readFileSync(join(buildDir, "package.json"), "utf8"));
+        return typeof pkg?.scripts?.["qa:seed"] === "string" ? pkg.scripts["qa:seed"] : "";
+      } catch {
+        return "";
+      }
+    })();
     let migrated = 0;
     for (const db of qaD1Migrations(buildDir)) {
       if (db.remote) {
         qaErr(`qa: ${db.binding} is remote — left alone; a local server reaches production through it`);
       } else if (!isDir(join(buildDir, db.dir))) {
-        qaErr(`qa: ${db.binding} has no ${db.dir}/ — its local database starts with no tables`);
+        qaErr(
+          seedScript !== ""
+            ? `qa: ${db.binding} has no ${db.dir}/ — its tables come from the app's qa:seed`
+            : `qa: ${db.binding} has no ${db.dir}/ — its local database starts with no tables`,
+        );
       } else {
         process.stderr.write(`qa: applying ${db.binding}'s migrations to its local database…\n`);
         toLocal(`applying ${db.binding}'s migrations`, "npx", [
@@ -648,14 +660,6 @@ async function doUp(args: string[]): Promise<void> {
         migrated++;
       }
     }
-    const seedScript = (() => {
-      try {
-        const pkg = JSON.parse(readFileSync(join(buildDir, "package.json"), "utf8"));
-        return typeof pkg?.scripts?.["qa:seed"] === "string" ? pkg.scripts["qa:seed"] : "";
-      } catch {
-        return "";
-      }
-    })();
     if (seedScript !== "") {
       process.stderr.write("qa: running the app's qa:seed…\n");
       toLocal("the app's qa:seed", "npm", ["run", "qa:seed"], {
@@ -663,7 +667,8 @@ async function doUp(args: string[]): Promise<void> {
         QA_ACT_AS: qaProbeActsAs(buildDir),
       });
     }
-    if (migrated > 0) label = `${label}, local D1: schema from migrations, no production rows`;
+    const from = [migrated > 0 ? "schema from migrations" : "", seedScript !== "" ? "rows from the app's qa:seed" : ""].filter(Boolean);
+    if (from.length > 0) label = `${label}, local D1: ${from.join(", ")}, no production rows`;
   }
 
   // ── a local sign-in, for a Worker served by a Cloudflare runtime ──
@@ -672,9 +677,11 @@ async function doUp(args: string[]): Promise<void> {
   // signs a token for that person (qaLocalAccess), serves the key set on
   // loopback beside the server, and hands the Worker its URL as
   // ACCESS_JWKS_URL, which such an app should honour only on a loopback
-  // request. The issuer is read from the account's Access organization, so
-  // this needs wrangler's CLOUDFLARE_API_TOKEN / CLOUDFLARE_ACCOUNT_ID. The
-  // token goes in a file named by QA_AUTH_JWT_FILE, never on stdout.
+  // request. The token's issuer is the app's own `ACCESS_ISSUER` var when its
+  // wrangler config declares one, so signing in needs no Cloudflare account;
+  // otherwise it is read from the account's Access organization, which needs
+  // wrangler's CLOUDFLARE_API_TOKEN / CLOUDFLARE_ACCOUNT_ID. The token goes in
+  // a file named by QA_AUTH_JWT_FILE, never on stdout.
   let envPrefix = "";
   let preamble = "";
   let jwtFile = "";
@@ -682,7 +689,7 @@ async function doUp(args: string[]): Promise<void> {
     const person = qaProbeActsAs(buildDir);
     const aud = (qaWranglerVar(buildDir, "ACCESS_AUD").split(",")[0] ?? "").trim();
     if (person !== "" && aud !== "") {
-      const issuer = await qaAccessIssuer();
+      const issuer = qaWranglerVar(buildDir, "ACCESS_ISSUER").trim() || (await qaAccessIssuer());
       if (issuer === undefined) {
         qaErr("qa: could not read the account's Cloudflare Access team domain (GET access/organizations)");
         cleanupWorktree();

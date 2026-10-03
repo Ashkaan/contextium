@@ -4,6 +4,18 @@ A newer version of the template will ship better skills, refined standards, new 
 Pulling those in should never put your own work at risk. The installer is built around exactly that
 split: it refreshes the methodology layer and leaves your data alone.
 
+## Upgrading to v9.0.2: local QA without a Cloudflare account
+
+Re-run the installer; nothing in your data changes.
+
+- `/qa`'s local sign-in for an app behind Cloudflare Access takes the token's issuer from the
+  app's own `ACCESS_ISSUER` var in its wrangler config when it declares one, so a teammate with
+  no Cloudflare account can serve and check the app locally. Without the var it still reads the
+  account's Access organization, which needs `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID`.
+- An app whose `qa:seed` script creates its tables (a masked sample of every database, say) no
+  longer has each database without a migrations folder reported as starting empty, and the
+  evidence label says the rows came from the seed.
+
 ## Upgrading to v9.0.1: building in another repo, status from the roadmap
 
 Re-run the installer; nothing in your data changes.

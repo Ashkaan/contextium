@@ -569,6 +569,23 @@ test("gated: down stops the key-set server with the rest of the group", async ()
   await new Promise((res) => setTimeout(res, 300));
   await assert.rejects(fetch(url));
 });
+test("gated: ACCESS_ISSUER in the wrangler config is the issuer, with no Cloudflare account to ask", () => {
+  rmSync(ENV.QA_CF_ACCESS_ORG_CACHE ?? "", { force: true });
+  const toml = readFileSync(join(GATED, "wrangler.toml"), "utf8");
+  writeFileSync(
+    join(GATED, "wrangler.toml"),
+    toml.replace("[vars]\n", '[vars]\nACCESS_ISSUER = "https://own.example.com"\n'),
+  );
+  try {
+    const r = run(["up", "--repo", GATED, "--mode", "before", "--run-id", "g2"]);
+    RUNFILE = runfileOf(r.out);
+    assert.equal(r.rc, 0, r.out);
+    assert.equal(jwtPart(readFileSync(rf("QA_AUTH_JWT_FILE"), "utf8"), 1).iss, "https://own.example.com");
+    down();
+  } finally {
+    writeFileSync(join(GATED, "wrangler.toml"), toml);
+  }
+});
 
 // ── a fresh local D1 database gets the app's schema before the server starts ──
 // Empty local databases have no tables, so every query is a 500 ("no such
@@ -582,15 +599,29 @@ test("d1: each local database with migrations gets them, into the state dir the 
   const log = readFileSync(D1_LOG, "utf8").split("\n");
   assert.equal(log[0], `wrangler d1 migrations apply DB --local --persist-to ${D1APP}/.wrangler/state cwd=${D1APP}`);
   assert.equal(log.filter((l) => l.startsWith("wrangler")).length, 1, log.join("\n"));
-  assert.match(r.out, /CACHE_DB has no db\/cache\/ — its local database starts with no tables/);
+  assert.match(r.out, /CACHE_DB has no db\/cache\/ — its tables come from the app's qa:seed/);
   assert.match(r.out, /PROD_DB is remote — left alone/);
-  assert.match(rf("QA_LABEL"), /local D1: schema from migrations, no production rows/);
+  assert.match(rf("QA_LABEL"), /local D1: schema from migrations, rows from the app's qa:seed, no production rows/);
   assert.match(serverLine(1), /^vite preview --port \d+$/, "the server starts after the schema");
 });
 test("d1: the app's qa:seed runs after the schema, told the state dir and the signed-in person", () => {
   const log = readFileSync(D1_LOG, "utf8").split("\n");
   assert.equal(log[1], `seed persist=${D1APP}/.wrangler/state act_as=probe@example.com cwd=${D1APP}`);
   down();
+});
+test("d1: without a qa:seed, a database with no migrations is named as starting empty", () => {
+  const pkg = readFileSync(join(D1APP, "package.json"), "utf8");
+  writeFileSync(join(D1APP, "package.json"), '{"dependencies":{"vite":"7","wrangler":"4"}}');
+  try {
+    const r = run(["up", "--repo", D1APP, "--mode", "before", "--run-id", "d1b"]);
+    RUNFILE = runfileOf(r.stdout);
+    assert.equal(r.rc, 0, r.out);
+    assert.match(r.out, /CACHE_DB has no db\/cache\/ — its local database starts with no tables/);
+    assert.match(rf("QA_LABEL"), /local D1: schema from migrations, no production rows/);
+    down();
+  } finally {
+    writeFileSync(join(D1APP, "package.json"), pkg);
+  }
 });
 test("d1: a failed migration → 8, no server", () => {
   writeFileSync(SERVER_LOG, "");
