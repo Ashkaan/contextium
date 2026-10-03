@@ -772,7 +772,8 @@ export function qaWranglerVar(repo: string, key: string): string {
     const line = readFileSync(toml, "utf8")
       .split("\n")
       .find((l) => {
-        if (/^\s*\[/.test(l)) section = l.trim().replace(/\s+/g, "");
+        // A header names its table apart from a trailing comment, quotes and spacing: `[vars] # x`, `["vars"]`.
+        if (/^\s*\[/.test(l)) section = l.replace(/\].*$/, "]").replace(/["'\s]/g, "");
         return section === "[vars]" && new RegExp(`^\\s*${key}\\s*=`).test(l);
       });
     return line === undefined ? "" : qaTomlValue(line);

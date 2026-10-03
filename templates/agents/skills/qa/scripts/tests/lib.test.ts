@@ -232,6 +232,10 @@ test("a wrangler var: the top-level [vars] only, never an environment's or anoth
   assert.equal(qaWranglerVar(d, "ACCESS_ISSUER"), "https://team.example.com");
   assert.equal(qaWranglerVar(d, "ACCESS_AUD"), "");
 });
+test("a wrangler var: a [vars] header with a trailing comment or quotes is still [vars]", () => {
+  assert.equal(qaWranglerVar(repo("vars-comment", "wrangler.toml", '[vars] # local\nACCESS_AUD = "a1"\n'), "ACCESS_AUD"), "a1");
+  assert.equal(qaWranglerVar(repo("vars-quoted", "wrangler.toml", '[ "vars" ]\nACCESS_AUD = "a2"\n'), "ACCESS_AUD"), "a2");
+});
 
 test("the local token verifies against its own key set and carries Access's claims", () => {
   const { jwks, jwt } = qaLocalAccess("a@example.com", "aud-1", "https://team.example.com", 1_000);
