@@ -782,8 +782,8 @@ export function qaWranglerVar(repo: string, key: string): string {
         continue;
       }
       if (inVars && new RegExp(`^\\s*${key}\\s*=`).test(l)) return qaTomlValue(l);
-      // A multi-line string opens only as a value, right after `=`, and stays open past this line.
-      const opens = /=\s*("""|''')(.*)$/.exec(l);
+      // A multi-line string opens only as a key's value (never in a comment), and stays open past this line.
+      const opens = /^\s*[\w."'-]+\s*=\s*("""|''')(.*)$/.exec(l);
       if (opens !== null && !(opens[2] ?? "").includes(opens[1] as string)) multi = opens[1];
     }
     return "";

@@ -252,7 +252,7 @@ test("a wrangler var: triple quotes in a comment or inside a one-line string ope
   const d = repo(
     "vars-tq",
     "wrangler.toml",
-    '[vars]\n# """ example\nNOTE = "say \\"\\"\\" here"\nONE = """one line"""\nACCESS_AUD = "aud-1"\n',
+    '[vars]\n# """ example\n# NOTE = """\nNOTE = "say \\"\\"\\" here"\nONE = """one line"""\nACCESS_AUD = "aud-1"\n',
   );
   assert.equal(qaWranglerVar(d, "ACCESS_AUD"), "aud-1");
 });

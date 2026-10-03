@@ -12,9 +12,9 @@ Re-run the installer; nothing in your data changes.
   app's own `ACCESS_ISSUER` var in its wrangler config when it declares one, so a teammate with
   no Cloudflare account can serve and check the app locally. Without the var it still reads the
   account's Access organization, which needs `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID`.
-- An app whose `qa:seed` script creates its tables (a masked sample of every database, say) no
-  longer has each database without a migrations folder reported as starting empty, and the
-  evidence label says the rows came from the seed.
+- For an app with a `qa:seed` script (a masked sample of every database, say), a database with no
+  migrations folder is reported as left to that seed rather than as starting empty, and the
+  evidence label names the seed.
 
 ## Upgrading to v9.0.1: building in another repo, status from the roadmap
 

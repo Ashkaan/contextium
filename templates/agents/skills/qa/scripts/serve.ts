@@ -642,7 +642,7 @@ async function doUp(args: string[]): Promise<void> {
       } else if (!isDir(join(buildDir, db.dir))) {
         qaErr(
           seedScript !== ""
-            ? `qa: ${db.binding} has no ${db.dir}/ — its tables come from the app's qa:seed`
+            ? `qa: ${db.binding} has no ${db.dir}/ — its tables are left to the app's qa:seed`
             : `qa: ${db.binding} has no ${db.dir}/ — its local database starts with no tables`,
         );
       } else {
@@ -667,7 +667,7 @@ async function doUp(args: string[]): Promise<void> {
         QA_ACT_AS: qaProbeActsAs(buildDir),
       });
     }
-    const from = [migrated > 0 ? "schema from migrations" : "", seedScript !== "" ? "rows from the app's qa:seed" : ""].filter(Boolean);
+    const from = [migrated > 0 ? "schema from migrations" : "", seedScript !== "" ? "then the app's qa:seed" : ""].filter(Boolean);
     if (from.length > 0) label = `${label}, local D1: ${from.join(", ")}, no production rows`;
   }
 
