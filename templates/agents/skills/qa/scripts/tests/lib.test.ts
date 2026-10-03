@@ -233,8 +233,20 @@ test("a wrangler var: the top-level [vars] only, never an environment's or anoth
   assert.equal(qaWranglerVar(d, "ACCESS_AUD"), "");
 });
 test("a wrangler var: a [vars] header with a trailing comment or quotes is still [vars]", () => {
-  assert.equal(qaWranglerVar(repo("vars-comment", "wrangler.toml", '[vars] # local\nACCESS_AUD = "a1"\n'), "ACCESS_AUD"), "a1");
-  assert.equal(qaWranglerVar(repo("vars-quoted", "wrangler.toml", '[ "vars" ]\nACCESS_AUD = "a2"\n'), "ACCESS_AUD"), "a2");
+  assert.equal(
+    qaWranglerVar(repo("vars-comment", "wrangler.toml", '[vars] # local\nACCESS_AUD = "a1"\n'), "ACCESS_AUD"),
+    "a1",
+  );
+  assert.equal(
+    qaWranglerVar(repo("vars-quoted", "wrangler.toml", '[ "vars" ]\nACCESS_AUD = "a2"\n'), "ACCESS_AUD"),
+    "a2",
+  );
+});
+test("a wrangler var: a bracket line inside a multi-line string is not a header, and a quoted other name is not [vars]", () => {
+  const multi = repo("vars-multi", "wrangler.toml", '[vars]\nNOTE = """\n[other]\n"""\nACCESS_AUD = "a3"\n');
+  assert.equal(qaWranglerVar(multi, "ACCESS_AUD"), "a3");
+  const spaced = repo("vars-spaced", "wrangler.toml", '["v ars"]\nACCESS_AUD = "no"\n');
+  assert.equal(qaWranglerVar(spaced, "ACCESS_AUD"), "");
 });
 
 test("the local token verifies against its own key set and carries Access's claims", () => {

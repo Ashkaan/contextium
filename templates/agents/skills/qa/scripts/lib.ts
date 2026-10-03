@@ -768,15 +768,24 @@ export function qaWranglerVar(repo: string, key: string): string {
   if (isFile(toml)) {
     // Only inside the top-level `[vars]` table: an `[env.<name>.vars]` value is not the one a
     // local server runs with, and a same-named key in another table is not a var at all.
-    let section = "";
-    const line = readFileSync(toml, "utf8")
-      .split("\n")
-      .find((l) => {
-        // A header names its table apart from a trailing comment, quotes and spacing: `[vars] # x`, `["vars"]`.
-        if (/^\s*\[/.test(l)) section = l.replace(/\].*$/, "]").replace(/["'\s]/g, "");
-        return section === "[vars]" && new RegExp(`^\\s*${key}\\s*=`).test(l);
-      });
-    return line === undefined ? "" : qaTomlValue(line);
+    // A line inside a multi-line string is never a header or a key; a header is `[vars]`,
+    // `["vars"]` or `['vars']`, with any spacing and a trailing comment, and only that.
+    let inVars = false;
+    let multi: string | undefined;
+    for (const l of readFileSync(toml, "utf8").split("\n")) {
+      if (multi !== undefined) {
+        if (l.split(multi).length % 2 === 0) multi = undefined;
+        continue;
+      }
+      if (/^\s*\[/.test(l)) {
+        inVars = /^\s*\[\s*(vars|"vars"|'vars')\s*\]\s*(#.*)?$/.test(l);
+        continue;
+      }
+      if (inVars && new RegExp(`^\\s*${key}\\s*=`).test(l)) return qaTomlValue(l);
+      const opens = /"""|'''/.exec(l);
+      if (opens !== null && l.split(opens[0]).length % 2 === 0) multi = opens[0];
+    }
+    return "";
   }
   const vars = wranglerConfigObject(repo).vars;
   const v = isRecord(vars) ? vars[key] : undefined;
