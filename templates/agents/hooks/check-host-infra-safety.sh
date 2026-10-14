@@ -232,6 +232,16 @@
 #
 #   block: sudo systemctl restart t3code.service
 #   pass: ls -la /tmp
+#
+# non-ASCII outside quotes — awk's substr slices BYTES, so pass 2 of
+# scrub_prose meets half an em dash, and macOS awk dies ("towc: multibyte
+# conversion failure") the moment that half byte reaches a regex. gawk and mawk
+# never fail here, so these only bite on a Mac in a UTF-8 locale; the
+# character test is index(), never ~, for that reason
+#   pass: echo "x" # a — b
+#   pass*: cat <<EOF\na — b\nEOF
+#   pass: ls → x
+#   block: ssh nas 'sudo systemctl restart docker' # restart — again
 #   raw: {"tool_name":"Bash","tool_input":{"command":""}}
 #   raw: {"tool_name":"Read"}
 #   raw: {}
@@ -533,7 +543,7 @@ scrub_prose() {
           i = j + 1
           continue
         }
-        if (c ~ /[;&|(]/) seg = ""; else seg = seg c
+        if (index(";&|(", c)) seg = ""; else seg = seg c
         out = out c
         i++
       }

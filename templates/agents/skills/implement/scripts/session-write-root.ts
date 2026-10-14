@@ -16,8 +16,8 @@
 // scaffolded directory had to be moved by hand.
 //
 // The fix is not "detect the worktree" — at scaffold time there is usually no
-// worktree yet, because nothing has tripped the edit guard. The fix is that a
-// scaffold resolves its write root through the SAME creator the edit guard uses,
+// worktree yet, because nothing has made one. The fix is that a scaffold
+// resolves its write root through the worktree creator, setup-worktree.sh,
 // so the worktree exists before the first byte is written and every later edit
 // is already compliant.
 //
@@ -35,9 +35,7 @@
 //                                           else the main checkout); never
 //                                           creates
 //   session-write-root.ts --slug          — print this session's worktree slug
-//                                           (SSOT for the `session-<key>` rule;
-//                                           a caller reads it instead of
-//                                           rebuilding it)
+//                                           (SSOT for the `session-<key>` rule)
 //   session-write-root.ts --main          — print the MAIN checkout root
 //
 // Library:

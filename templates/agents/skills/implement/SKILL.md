@@ -48,7 +48,7 @@ It prints `WORKTREE_DIR=<path>` (and `SLUG=` + `SHARD=` for the two-arg form); P
 **Worktree naming**:
 - A session that already has a worktree of this repo — the one its harness started it in (a T3 Code thread, `claude -w`, a Codex app thread), or one an earlier call made — builds there, and no second one is made.
 - Otherwise single-arg `/implement <slug>` → a worktree named `<slug>` where the recorded harness keeps its own (`close/scripts/harness.sh`; `CLAUDE_WORKTREE_HOME` overrides the folder), on branch `worktree-<slug>` under Claude Code and `session/<slug>` elsewhere.
-- Two-arg `/implement <slug> <row>` → the same, named `<slug>-<row>`. The script prints `SLUG=<slug>` + `SHARD=<row>` so Phase 1 resolves the spec without re-splitting the composite (composite is ambiguous when either part has hyphens). `<row>` is the ROADMAP.md row ID lowercased (`r4`); the flag keeps its old name, `--shard`.
+- Two-arg `/implement <slug> <row>` → the same, named `<slug>-<row>`. The script prints `SLUG=<slug>` + `SHARD=<row>` so Phase 1 resolves the spec without re-splitting the composite (composite is ambiguous when either part has hyphens). `<row>` is the ROADMAP.md row ID lowercased (`r4`); the flag keeps its old name, `--shard`. A project with no ROADMAP.md, or a `<row>` it does not have, is refused before anything is created.
 - **Before any worktree exists**, `setup-worktree.sh` resolves the roadmap row in both forms and REFUSES — creating nothing — when the row does not exist (listing the IDs), when a bare `/implement <slug>` finds the project at any stage but `ready-to-implement`, or when the row's spec still carries a `NEEDS CLARIFICATION` marker (printing each one). Once the worktree exists it sets the row `in-progress` through `roadmap.ts --set`; a failed write only warns.
 
 ### A row whose code is in another repo
@@ -88,8 +88,8 @@ node --experimental-strip-types .agents/skills/project/scripts/detect-stage.ts p
 
 | Invocation | Spec to run |
 |---|---|
-| `/implement <slug>` | `active-spec:` from `detect-stage.ts`, whose `next-row:` names the row — the first ready row (in-progress before planned) whose spec is still owed work and carries no open `NEEDS CLARIFICATION`. A legacy loose `*.spec.md` still owed work wins over every row, as work already in flight. |
-| `/implement <slug> r4` | Row `R4`, matched case-insensitively; its Sub-spec is column 4 of `node --experimental-strip-types .agents/skills/close/scripts/roadmap.ts <project-folder>`. No such row → HALT listing the IDs. `setup-worktree.sh` printed `SLUG=<slug>` + `SHARD=r4` — read those, never re-split the composite `<slug>-<shard>`. |
+| `/implement <slug>` | `active-spec:` from `detect-stage.ts`, whose `next-row:` names the row — the first ready row (in-progress before planned) whose spec is still owed work and carries no open `NEEDS CLARIFICATION`. |
+| `/implement <slug> r4` | Row `R4`, matched case-insensitively; its Sub-spec is column 4 of `node --experimental-strip-types .agents/skills/close/scripts/roadmap.ts <project-folder>`. No such row → HALT listing the IDs. When `setup-worktree.sh` made the worktree, it printed `SLUG=<slug>` + `SHARD=r4` — read those, never re-split the composite `<slug>-<shard>`. |
 | A spec path | Use it directly. |
 | Stage is not `ready-to-implement` | HALT: "`<slug>` is at stage `<stage>` — run `/project <slug>`" (`setup-worktree.sh` refuses the same case before creating anything). |
 | No project matches the slug | HALT: "no project matches `<name>`" + list nearest slugs. |
@@ -109,25 +109,22 @@ Exit 1 prints each open `NEEDS CLARIFICATION` marker as `file:line: text`. HALT 
 templates (`.agents/skills/spec/references/templates/`). Read it by SECTION
 NAME; the rest of this skill uses these names:
 
-| Name used below | In the spec folder | In a legacy `*.spec.md` |
-|---|---|---|
-| the verbatim ask | spec.md `**Input**` | § 0 |
-| the interpretation + settled decisions | spec.md `## Clarifications` | § 0a |
-| the simplest shape | plan.md `### Simplest shape` | § 0b |
-| the behavior contract | spec.md `## User Scenarios & Testing`, `## Requirements` | § 1 |
-| the boundary cases | spec.md `### Edge Cases` | § 4 |
-| the acceptance commands | spec.md `### Acceptance` | § 5 |
-| the E2E walk (hard gate) | tasks.md's test tasks | § 6 |
-| the tasks | tasks.md's task lines | § 7 |
-| the patterns to mirror | plan.md `### Patterns to follow` | § 8 |
-| the inputs and data sourcing | plan.md `## Technical Context` → Inputs / Outputs, `### Data sourcing` | § 2 / § 2a / § 3 |
-| the validation commands | plan.md `## Validation Commands` | § 11 |
+| Name used below | In the spec folder |
+|---|---|
+| the verbatim ask | spec.md `**Input**` |
+| the interpretation + settled decisions | spec.md `## Clarifications` |
+| the simplest shape | plan.md `### Simplest shape` |
+| the behavior contract | spec.md `## User Scenarios & Testing`, `## Requirements` |
+| the boundary cases | spec.md `### Edge Cases` |
+| the acceptance commands | spec.md `### Acceptance` |
+| the E2E walk (hard gate) | tasks.md's test tasks |
+| the tasks | tasks.md's task lines |
+| the patterns to mirror | plan.md `### Patterns to follow` |
+| the inputs and data sourcing | plan.md `## Technical Context` → Inputs / Outputs, `### Data sourcing` |
+| the validation commands | plan.md `## Validation Commands` |
 
-The legacy column is the fallback for loose `*.spec.md` / `*.plan.md` files
-from projects that predate the spec-folder layout, and nowhere else. A `.plan.md` older than the
-13-section schema holds the same content under Summary, Patterns to Follow,
-Files to Change, Boundary Cases, Tasks, Validation Commands, E2E Verification
-and Acceptance Criteria.
+A loose `*.spec.md` or `*.plan.md` is not a spec this skill runs: that layout
+is retired, and nothing here reads it.
 
 If no spec resolves:
 ```
@@ -161,7 +158,7 @@ If the worktree is missing or on the wrong branch, abort with a pointer back to 
 
 ## Phase 3 — EXECUTE (phase-3-execute)
 
-For each task in tasks.md (§ 7 in a legacy SPEC):
+For each task in tasks.md:
 
 ### 3.1 Verify Assumptions (this is the failure-class fix)
 
@@ -289,7 +286,7 @@ clean — a clean review says the code reads right, which is a different claim f
 the thing working. `--phase checks` prints `NEED_E2E=1` on every run for exactly
 this reason.
 
-Re-read the E2E walk — tasks.md's test tasks (§ 6 in a legacy SPEC). Execute every one as a checklist:
+Re-read the E2E walk — tasks.md's test tasks. Execute every one as a checklist:
 
 - [ ] Start the application (worker, dev server, etc.)
 - [ ] For EACH test task:
@@ -299,6 +296,22 @@ Re-read the E2E walk — tasks.md's test tasks (§ 6 in a legacy SPEC). Execute 
 - [ ] Confirm all E2E tests pass before proceeding
 
 If the spec has no test tasks, perform a basic smoke test of the new behavior.
+
+#### Run it now, don't wait for the schedule
+
+A verification step that says "the morning after", "the next nightly run" or
+"after the next scheduled run" is a wait, and a wait ends the session with the
+thing unproven. Before accepting one, read the task's timing and effects. When
+triggering it now is equivalent to the scheduled run, trigger it now (through
+the scheduler's own on-demand trigger, on the project that owns the task) and
+verify against that run. Wait only for what a run cannot produce on demand:
+
+- data that does not exist yet (a day's readings, a vendor's next export);
+- elapsed time itself (a staleness window, a billing period, a TTL);
+- an effect keyed to the date it runs — an early run of a daily revenue sync
+  would book the wrong day.
+
+The user would rather see the run now than be told to come back tomorrow.
 
 **This is a hard gate.** Static checks + unit tests alone are never sufficient.
 
@@ -310,7 +323,7 @@ Phase 4 verifies the diff WORKS (tests pass, E2E succeeds, code review clean). P
 
 Procedure:
 
-1. Re-read the verbatim ask (spec.md `**Input**`) and the interpretation (`## Clarifications`) — § 0 and § 0a in a legacy SPEC.
+1. Re-read the verbatim ask (spec.md `**Input**`) and the interpretation (`## Clarifications`).
 2. Name the agreed mechanism in plain English in ONE sentence — use the user's own words where possible (e.g., "read the token from the secrets manager", "use a shared SSH function", "make it persistent across token rotation").
 3. Run `git diff --stat HEAD` (or `git log --oneline ${BASE_SHA}..HEAD` for multi-commit work) to inspect what was actually shipped.
 4. Write ONE verification line:
@@ -445,8 +458,7 @@ edited source invalidates an earlier target's marker, and that target runs again
 ## Phase 5 — REPORT (phase-5-report)
 
 Write `report.md` INSIDE the spec folder, `specs/NNN-name/report.md`, with
-`spec: NNN-name`. (For a legacy loose spec, `{spec-name}-report.md` beside it,
-with `spec: {spec-name}`.)
+`spec: NNN-name`.
 
 **The frontmatter is not decoration — it is how every later reader knows whether this spec is finished.** `spec-status:` is `complete` only when nothing in the spec is still owed; anything else (a slice done, code done but not shipped, a task list half-run, a rejected approach) is `partial`. `close/scripts/spec-state.ts` reads it — for a folder, ONLY that folder's `report.md` frontmatter counts — and `/close`, `/project` and this skill's own spec resolution all read spec-state. Asking the filesystem "does `<name>-report.md` exist?" instead calls a SPEC finished the moment any report is filed under its exact name, and unstarted forever when the report is named for the slice it covered.
 
@@ -454,7 +466,9 @@ The report's format is [`references/templates/report.md`](references/templates/r
 
 **The roadmap row is not yours to finish.** Phase 0.5 set it `in-progress`;
 `/close` sets it `done` once `spec-state.ts` reads your report as `complete`,
-and re-derives the README's `next:`. Do not edit ROADMAP.md's Status here.
+and re-derives the README's `next:`. A `partial` report sends the row back to
+`planned` when it lands, so a dispatcher that starts only `planned` rows can start the next landing. Do
+not edit ROADMAP.md's Status here.
 
 ### The spec stays in place
 
@@ -494,14 +508,14 @@ Print the completion summary first:
 {Summary or "Implementation matched the SPEC."}
 
 ### Artifacts
-- Report: `{project-folder}/specs/NNN-name/report.md` (legacy: `{name}-report.md` beside the spec)
+- Report: `{project-folder}/specs/NNN-name/report.md`
 - Spec: `{project-folder}/specs/NNN-name/` (in place)
 ```
 
 Then the auto-close gate:
 
-- **Precondition (all three must hold):** (i) no deferral question to the user is outstanding (a mechanism-match FAIL at phase-4.5 halts here and auto-close does NOT fire — the user must see it); (ii) phase-4.8 either found no web target or `validate.ts --require-qa` exited 0 — an incomplete `/qa` on a changed UI is a halt, not a note on the report; (iii) `node --experimental-strip-types .agents/skills/close/scripts/land.ts --gate` returns `not-fired`.
-- **Action when all three hold:** run `/close` per the gate. `/close` verifies, updates the project, journals, and lands every worktree this thread owns. The `implement-audit:` line is already in the report — see phase-5. The user does NOT type `/close`.
+- **Precondition (all four must hold):** (i) no deferral question to the user is outstanding (a mechanism-match FAIL at phase-4.5 halts here and auto-close does NOT fire — the user must see it); (ii) phase-4.8 either found no web target or `validate.ts --require-qa` exited 0 — an incomplete `/qa` on a changed UI is a halt, not a note on the report; (iii) the gate's open-items sweep is empty — every question, issue and improvement the run surfaced is done or asked (precondition (iii) of the SSOT); (iv) `node --experimental-strip-types .agents/skills/close/scripts/land.ts --gate` returns `not-fired`.
+- **Action when all hold:** run `/close` per the gate. `/close` verifies, updates the project, journals, and lands every worktree this thread owns. The `implement-audit:` line is already in the report — see phase-5. The user does NOT type `/close`.
 - `/close` runs its own internal gates unchanged. See the SSOT for the full halt-case table.
 
 For PR-flow work (rare — most repo work goes direct-to-main), the user can run `gh pr create` after the close instead of the worktree merge.
@@ -530,7 +544,7 @@ A close printed two blocks, `/implement sync-engine r4` and `/implement sync-eng
 |---|---|---|
 | Worktree missing or wrong branch (Phase 2) | `git -C "${WORKTREE_DIR}" rev-parse --abbrev-ref HEAD` doesn't return the branch `setup-worktree.sh` made, or directory doesn't exist | Phase 0.5 didn't run cleanly. Re-run `bash .agents/skills/implement/scripts/setup-worktree.sh <slug>` from the repo (script is idempotent). Do NOT create alternative branches in the main repo. |
 | `setup-worktree.sh` exits 1 "could not record … for the close" | This thread already has a different worktree of this repo | Build in that one: `bash .agents/skills/close/scripts/write-root.sh --existing .` names it. |
-| No spec to run | `detect-stage.ts` says `needs-planning` or `all-specs-reported`, and `setup-worktree.sh` refused | Run `/project <slug>` — the row has no spec yet, or its spec has open clarifications, or nothing is ready. |
+| No spec to run | `detect-stage.ts` says `needs-planning`, `manual-steps` or `all-specs-reported`, and `setup-worktree.sh` refused | Run `/project <slug>` — the row has no spec yet, its spec has open clarifications, the ready rows are manual steps, or nothing is ready. |
 | `r99` refused | No such row in ROADMAP.md; the refusal lists the IDs | Re-run with an ID from the list. |
 | Wrong spec picked | Several rows are ready and the bare slug took the first (in-progress before planned) | Name the row: `/implement <slug> <id>`. |
 | Type check fails (Phase 3.3 / Phase 4) | `FAIL: layer-1 typecheck (<package>)` | Read the error, fix at the source, re-run. |

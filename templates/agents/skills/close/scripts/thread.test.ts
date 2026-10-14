@@ -317,3 +317,54 @@ test("a null branch leaves the other columns where they are", () => {
 test("an unknown flag is refused", () => {
   expect("an unknown flag is refused", 2, "usage:", run(WT_A, ENV_OK, ["--nonsense"]));
 });
+
+// ── T3 0.0.46: statev2.sqlite, and a thread that exists only in its v2 tables ──
+//
+// The v2 file still carries the legacy `projection_threads`, frozen at the cutover.
+// A thread started after it is only in `orchestration_v2_projection_threads`, with its
+// branch and worktree in payload_json. Reading the legacy table (or the legacy file,
+// left beside it here) reported every such thread as "not in a T3 thread".
+
+const T3_V2 = join(TMP, "t3-v2");
+const WT_V2 = join(TMP, "wt-v2");
+const TID_V2 = "eeeeeeee-1111-2222-3333-444444444444";
+mkdirSync(join(T3_V2, "userdata"), { recursive: true });
+mkdirSync(WT_V2, { recursive: true });
+sh("git", ["-C", WT_V2, "init", "-q"]);
+sh(process.execPath, [
+  "--disable-warning=ExperimentalWarning",
+  "-e",
+  `
+const { DatabaseSync } = require("node:sqlite");
+const [dir, wt, tid] = process.argv.slice(1);
+const legacy = new DatabaseSync(dir + "/state.sqlite");
+legacy.exec("create table projection_threads (thread_id TEXT, title TEXT, branch TEXT, worktree_path TEXT, created_at TEXT, deleted_at TEXT)");
+const v2 = new DatabaseSync(dir + "/statev2.sqlite");
+v2.exec("create table projection_threads (thread_id TEXT, title TEXT, branch TEXT, worktree_path TEXT, created_at TEXT, deleted_at TEXT)");
+v2.exec("create table orchestration_v2_projection_threads (thread_id TEXT PRIMARY KEY, title TEXT, created_at TEXT, deleted_at TEXT, payload_json TEXT)");
+const ins = v2.prepare("insert into orchestration_v2_projection_threads values (?, ?, ?, ?, ?)");
+ins.run(tid, "V2", "2026-10-03T17:24:19.290Z", null, JSON.stringify({ branch: "t3code/after-cutover", worktreePath: wt }));
+ins.run("ffffffff-0000-0000-0000-000000000000", "gone", "2026-10-03T00:00:00.000Z", "2026-10-03T01:00:00.000Z",
+  JSON.stringify({ branch: "t3code/gone", worktreePath: dir + "/reused" }));
+`,
+  join(T3_V2, "userdata"),
+  WT_V2,
+  TID_V2,
+]);
+const ENV_V2 = { HOME: FAKE_HOME, T3CODE_HOME: T3_V2 };
+
+test("on statev2.sqlite a post-cutover thread resolves from the v2 table", () => {
+  expect("id", 0, TID_V2, run(WT_V2, ENV_V2));
+  expect("branch from payload_json", 0, "t3code/after-cutover", run(WT_V2, ENV_V2, ["--branch"]));
+  expect("worktree from payload_json", 0, WT_V2, run(WT_V2, ENV_V2, ["--worktree"]));
+  expect("started", 0, "2026-10-03T17:24:19.290Z", run(WT_V2, ENV_V2, ["--started"]));
+});
+
+test("on statev2.sqlite a deleted v2 thread is still no thread", () => {
+  expect(
+    "deleted",
+    2,
+    "no thread",
+    run(TMP, { ...ENV_V2, WORKBENCH_THREAD_ID: "ffffffff-0000-0000-0000-000000000000" }, ["--branch"]),
+  );
+});

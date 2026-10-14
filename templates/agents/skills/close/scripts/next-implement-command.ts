@@ -13,10 +13,9 @@
 // Usage: next-implement-command.ts <project-folder>
 //   <project-folder> — repo-relative or absolute path to projects/<domain>/<date>_<slug>/
 // Output (stdout): zero or more lines, each a literal next command, e.g.
-//   /implement checkout-flow
-//   /implement data-move token-refresher                 (sharded → one per shard)
-//   /project some-slug                                   (active, no pending SPEC)
-//   /implement some-slug r4                              (ROADMAP.md → one per ready row)
+//   /implement some-slug r4                              (one per ready row with a spec owed work)
+//   /project some-slug                                   (a ready row needs planning, nothing
+//                                                         is ready, or there is no ROADMAP.md)
 // Emits a leading `# ` comment line instead of a command for blocked/monitor/
 // completed. For the two finished states that line REPLACES the next-phase
 // pointer with the finish itself — `# <slug> — project complete: <## Outcome
@@ -25,6 +24,11 @@
 // than pointing at a phase that does not exist. A ROADMAP.md row whose spec is
 // complete but whose Status is not yet `done` prints `# <slug> <ID>'s spec is
 // complete — run /close to flip the row to done` in place of a command.
+//
+// An active project is read from its ROADMAP.md alone. Loose `*.spec.md` files
+// and the README's `## Shard Status` table are not read: ROADMAP.md replaced
+// both. A project with no ROADMAP.md gets `/project <slug>`, which scaffolds
+// one.
 //
 // peers:
 //   .agents/skills/close/scripts/next-implement-command.test.ts
@@ -110,7 +114,6 @@ const trim = (s: string): string =>
     .join("\n")
     .replace(/\n+$/, "");
 const lowerAscii = (s: string): string => s.replace(/[A-Z]/g, (c) => c.toLowerCase());
-const byCodePoint = (a: string, b: string): number => Buffer.compare(Buffer.from(a), Buffer.from(b));
 
 async function main(): Promise<void> {
   const argv = process.argv.slice(2);
@@ -213,217 +216,103 @@ async function main(): Promise<void> {
     }
   }
 
-  // active (or unrecognized → treat as active): collect SPECs still owed work.
-  // WHICH SPECS ARE DONE IS NOT A FILENAME QUESTION — see spec-state.ts, which owns
-  // the rule for all three readers. `partial` means a report exists but nobody
-  // claimed the SPEC finished, so the work is still owed and saying so is the whole
-  // point; `none` means no report at all. Both are pending here.
-  const SPEC_STATE = `${SCRIPT_DIR}/spec-state.ts`;
-  const unreported: string[] = [];
-  const partialSpecs: string[] = [];
-  const firstStates = sibling(SPEC_STATE, [projectDir], "pipe");
-  process.stderr.write(firstStates.err);
-  for (const line of firstStates.out === "" ? [] : hereLines(firstStates.out)) {
-    const [name = "", state = ""] = readTab(line, 3);
-    if (name === "") continue;
-    if (state === "none") unreported.push(name);
-    else if (state === "partial") {
-      unreported.push(name);
-      partialSpecs.push(name);
-    }
-  }
-
-  // ── ROADMAP.md: one command per ready row ────────────────────────────────
-  //
-  // A spec-kit project's rows carry their own dependencies, so unlike the shard
-  // table below this CAN say which work may start now: every ready row (the README
-  // template's Ready rule, applied by roadmap.ts — never re-derived here) whose
-  // spec is still owed work is its own `/implement <slug> <id>`, and those lines
-  // are the parallel set the close prints as separate copyable blocks. Ready rows
-  // with no spec yet, or a spec with open NEEDS CLARIFICATION markers, need a
-  // planning session: ONE `/project <slug>` covers them all, because /project picks
-  // the row. A legacy loose SPEC that no row points at is work already in flight
-  // and prints first, as the bare `/implement <slug>` it always was.
-  if (isFile(`${projectDir}/ROADMAP.md`)) {
-    const rm = sibling(`${SCRIPT_DIR}/roadmap.ts`, [projectDir], "pipe");
-    if (rm.rc !== 0) {
-      const msgs = rm.err
-        .split("\n")
-        .filter((l) => l.startsWith("roadmap: "))
-        .map((l) => l.slice("roadmap: ".length));
-      const msg = msgs[msgs.length - 1] ?? "";
-      say(`# ${slug} ROADMAP.md is malformed: ${msg || `roadmap.ts exited ${rm.rc}`}`);
-      exit(0);
-    }
-    const rows = rm.out;
-    // `states="$(spec-state.ts …)"` under `set -e`: a failure ends the script with its status.
-    const st = sibling(SPEC_STATE, [projectDir], "pipe");
-    process.stderr.write(st.err);
-    if (st.rc !== 0) exit(st.rc);
-    const stateOf = (n: string): string => {
-      for (const l of hereLines(st.out)) {
-        const f = l.split("\t");
-        if (f[0] === n) return f[1] ?? "";
-      }
-      return "";
-    };
-    const referenced = hereLines(rows).map((l) => (l.includes("\t") ? (l.split("\t")[3] ?? "") : l));
-    const out: string[] = [];
-    for (const u of unreported) {
-      if (u.startsWith("specs/")) continue;
-      if (referenced.includes(u)) continue;
-      out.push(`/implement ${slug}`);
-      break;
-    }
-    let needsPlanning = false;
-    const comments: string[] = [];
-    const rowFields = hereLines(rows).map((l) => l.split("\t"));
-    const ordered = [
-      ...rowFields.filter((f) => f[2] === "yes" && lowerAscii(f[1] ?? "") === "in-progress"),
-      ...rowFields.filter((f) => f[2] === "yes" && lowerAscii(f[1] ?? "") === "planned"),
-    ].map((f) => f.join("\t"));
-    for (const line of ordered.length === 0 ? [""] : ordered) {
-      const [id = "", , , sub = ""] = readTab(line, 5);
-      if (id === "") continue;
-      if (sub === "—") {
-        needsPlanning = true;
-        continue;
-      }
-      const s = stateOf(sub);
-      // Awaiting /close's `done` flip: say so, rather than fall through to a
-      // `/project` for a row whose work is finished.
-      if (s === "complete") {
-        comments.push(`# ${slug} ${id}'s spec is complete — run /close to flip the row to done`);
-        continue;
-      }
-      if (s !== "none" && s !== "partial") {
-        needsPlanning = true; // the Sub-spec it names is not on disk
-        continue;
-      }
-      if (
-        sub.startsWith("specs/") &&
-        sibling(`${SCRIPT_DIR}/open-clarifications.ts`, [`${projectDir}/${sub}`]).rc !== 0
-      ) {
-        needsPlanning = true;
-        continue;
-      }
-      out.push(`/implement ${slug} ${lowerAscii(id)}`);
-    }
-    if (needsPlanning) out.push(`/project ${slug}`);
-    for (const line of hereLines(rows)) {
-      const [id = "", st2 = "", ready = ""] = readTab(line, 5);
-      if (!(id !== "" && ready === "no")) continue;
-      const lower = lowerAscii(st2);
-      if (lower.startsWith("blocked:")) comments.push(`# ${slug} ${id} is ${st2}`);
-      else if (
-        lower === "planned" ||
-        lower === "in-progress" ||
-        lower === "done" ||
-        lower.startsWith("absorbed by ") ||
-        lower.startsWith("closed:")
-      ) {
-        // in the vocabulary, and not ready for a reason the table states
-      } else comments.push(`# ${slug} ${id} has a Status outside the vocabulary: ${st2}`);
-    }
-    if (out.length === 0 && comments.length === 0) out.push(`/project ${slug}`);
-    process.stdout.write([...out, ...comments].map((l) => `${l}\n`).join(""));
-    exit(0);
-  }
-
-  // Sharded project? The opt-in signal is a `## Shard Status` table — the legacy
-  // layout, still read; the rule today is the README
-  // template's derivation rule (.agents/skills/project/references/templates/README.md,
-  // the <!-- --> block). When present, each <shard>.spec.md is a shard and
-  // the command is `/implement <slug> <shard>`; otherwise the command is the bare
-  // `/implement <slug>` (Phase 1 auto-resolves the single un-reported SPEC, or
-  // AskUserQuestion-disambiguates if several — the argument stays the slug).
-  const isSharded = readmeLines.some((l) => /^## +Shard Status/.test(l));
-
-  // ── The shard table's State column, which is the SSOT ────────────────────────
-  //
-  // WHY THIS EXISTS. The report-presence heuristic below is wrong for a sharded
-  // project the moment one shard is part-done: an `in-flight` shard with task
-  // reports written reads as "has a report", so it drops out of the queue and the
-  // `planned` ones are offered instead — including ones the project's own decided
-  // order says cannot start until the in-flight shard finishes.
-  //
-  // In the legacy layout the table is the SSOT for which shards exist and what
-  // state each is in, so read THAT: an `in-flight` shard is the work in
-  // motion and comes first, exclusively. `planned` shards are only offered when
-  // nothing is in flight. `reported` and `closed` are done. A `blocked` shard is
-  // named either way, because it is waiting on something a human clears.
-  //
-  // (A ROADMAP.md project never reaches this table — its rows declare their
-  // dependencies and are read above. What follows is the legacy shard layout.)
-  //
-  // Ordering BETWEEN planned shards is deliberately not attempted here: it lives
-  // in each project's own prose (a decided order, a dependency column) and
-  // guessing it from a table would be exactly the judgment this script must not
-  // make. What the state column CAN say is which
-  // shard is already underway, and that is enough to stop offering a later one.
-  let shardRowsSeen = false;
-  const inflight: string[] = [];
-  const planned: string[] = [];
-  const blockedShards: string[] = [];
-  if (isSharded) {
-    let inTable = false;
-    for (const line of readmeLines) {
-      if (/^## +Shard Status/.test(line)) {
-        inTable = true;
-        continue;
-      }
-      if (inTable && /^## /.test(line)) break;
-      if (!(inTable && /^\|/.test(line))) continue;
-      // Skip the header row and the |---| separator.
-      if (/\| *Shard *\|/.test(line)) continue;
-      if (/^\|[ :-]*\|/.test(line)) continue;
-      const cell = line.split("|");
-      const n = cell.length;
-      if (n < 4) continue;
-      const name = (cell[1] ?? "").replace(/[` ]/g, "");
-      const state = (cell[n - 2] ?? "").replace(/[` ]/g, "");
-      if (name === "" || state === "") continue;
-      shardRowsSeen = true;
-      if (state === "in-flight") inflight.push(name);
-      else if (state === "planned") planned.push(name);
-      else if (state === "blocked") blockedShards.push(name);
-    }
-  }
-
-  const blockedLine = (shard: string): string => `# ${slug} ${shard} is blocked — see its row in ## Shard Status`;
-  if (shardRowsSeen) {
-    const nextShards = inflight.length > 0 ? inflight : planned;
-    if (nextShards.length > 0) {
-      for (const shard of [...nextShards].sort(byCodePoint)) say(`/implement ${slug} ${shard}`);
-      for (const shard of blockedShards) say(blockedLine(shard));
-      exit(0);
-    }
-    if (blockedShards.length > 0) {
-      for (const shard of blockedShards) say(blockedLine(shard));
-      exit(0);
-    }
-    // Every shard reported or closed → the project needs its next phase decided.
+  // active (or unrecognized → treat as active).
+  if (!isFile(`${projectDir}/ROADMAP.md`)) {
     say(`/project ${slug}`);
     exit(0);
   }
+  // WHICH SPECS ARE DONE IS NOT A FILENAME QUESTION — see spec-state.ts, which owns
+  // the rule for all three readers.
+  const SPEC_STATE = `${SCRIPT_DIR}/spec-state.ts`;
 
-  if (unreported.length > 0) {
-    if (isSharded) {
-      // One line per pending shard (sorted for stable output).
-      for (const shard of [...unreported].sort(byCodePoint)) say(`/implement ${slug} ${shard}`);
-    } else {
-      // Non-sharded: ALWAYS the bare project slug, never the SPEC basename.
-      say(`/implement ${slug}`);
-    }
-    for (const p of partialSpecs) {
-      say(`# ${slug} ${p} is reported but not claimed complete — see its report Status line`);
-    }
+  // ── ROADMAP.md: one command per ready row ────────────────────────────────
+  //
+  // The rows carry their own dependencies, so this CAN say which work may start
+  // now: every ready row (the README template's Ready rule, applied by
+  // roadmap.ts — never re-derived here) whose spec is still owed work is its own
+  // `/implement <slug> <id>`, and those lines
+  // are the parallel set the close prints as separate copyable blocks. Ready rows
+  // with no spec yet, or a spec with open NEEDS CLARIFICATION markers, need a
+  // planning session: ONE `/project <slug>` covers them all, because /project picks
+  // the row. A ready row whose Sub-spec is `manual` has no command at all — no spec
+  // is written for a message or a decision — so it is named as a comment instead.
+  const rm = sibling(`${SCRIPT_DIR}/roadmap.ts`, [projectDir], "pipe");
+  if (rm.rc !== 0) {
+    const msgs = rm.err
+      .split("\n")
+      .filter((l) => l.startsWith("roadmap: "))
+      .map((l) => l.slice("roadmap: ".length));
+    const msg = msgs[msgs.length - 1] ?? "";
+    say(`# ${slug} ROADMAP.md is malformed: ${msg || `roadmap.ts exited ${rm.rc}`}`);
     exit(0);
   }
-
-  // No pending SPEC but the project is active → the next phase needs a SPEC; the
-  // /project router stage-detects and runs the next-phase think flow.
-  say(`/project ${slug}`);
+  const rows = rm.out;
+  // `states="$(spec-state.ts …)"` under `set -e`: a failure ends the script with its status.
+  const st = sibling(SPEC_STATE, [projectDir], "pipe");
+  process.stderr.write(st.err);
+  if (st.rc !== 0) exit(st.rc);
+  const stateOf = (n: string): string => {
+    for (const l of hereLines(st.out)) {
+      const f = l.split("\t");
+      if (f[0] === n) return f[1] ?? "";
+    }
+    return "";
+  };
+  const out: string[] = [];
+  let needsPlanning = false;
+  const comments: string[] = [];
+  const rowFields = hereLines(rows).map((l) => l.split("\t"));
+  const ordered = [
+    ...rowFields.filter((f) => f[2] === "yes" && lowerAscii(f[1] ?? "") === "in-progress"),
+    ...rowFields.filter((f) => f[2] === "yes" && lowerAscii(f[1] ?? "") === "planned"),
+  ].map((f) => f.join("\t"));
+  for (const line of ordered.length === 0 ? [""] : ordered) {
+    const [id = "", , , sub = "", feat = ""] = readTab(line, 5);
+    if (id === "") continue;
+    if (sub === "manual") {
+      comments.push(`# ${slug} ${id} is a manual step: ${feat}`);
+      continue;
+    }
+    if (sub === "—") {
+      needsPlanning = true;
+      continue;
+    }
+    const s = stateOf(sub);
+    // Awaiting /close's `done` flip: say so, rather than fall through to a
+    // `/project` for a row whose work is finished.
+    if (s === "complete") {
+      comments.push(`# ${slug} ${id}'s spec is complete — run /close to flip the row to done`);
+      continue;
+    }
+    if (s !== "none" && s !== "partial") {
+      needsPlanning = true; // the Sub-spec it names is not on disk
+      continue;
+    }
+    if (sibling(`${SCRIPT_DIR}/open-clarifications.ts`, [`${projectDir}/${sub}`]).rc !== 0) {
+      needsPlanning = true;
+      continue;
+    }
+    out.push(`/implement ${slug} ${lowerAscii(id)}`);
+  }
+  if (needsPlanning) out.push(`/project ${slug}`);
+  for (const line of hereLines(rows)) {
+    const [id = "", st2 = "", ready = ""] = readTab(line, 5);
+    if (!(id !== "" && ready === "no")) continue;
+    const lower = lowerAscii(st2);
+    if (lower.startsWith("blocked:")) comments.push(`# ${slug} ${id} is ${st2}`);
+    else if (
+      lower === "planned" ||
+      lower === "in-progress" ||
+      lower === "done" ||
+      lower.startsWith("absorbed by ") ||
+      lower.startsWith("closed:")
+    ) {
+      // in the vocabulary, and not ready for a reason the table states
+    } else comments.push(`# ${slug} ${id} has a Status outside the vocabulary: ${st2}`);
+  }
+  if (out.length === 0 && comments.length === 0) out.push(`/project ${slug}`);
+  process.stdout.write([...out, ...comments].map((l) => `${l}\n`).join(""));
+  exit(0);
 }
 
 if (process.argv[1] && realpathSync(resolve(process.argv[1])) === realpathSync(fileURLToPath(import.meta.url))) {

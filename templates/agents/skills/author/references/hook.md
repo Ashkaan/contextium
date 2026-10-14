@@ -78,7 +78,7 @@ The installer never writes `.agents/user-hooks.json`; every run merges it:
     "PreToolUse": [
       {
         "matcher": "<ToolName or regex>",
-        "hooks": [{ "type": "command", "command": "node --experimental-strip-types \"<workbench>/.agents/hooks/<name>.ts\"" }]
+        "hooks": [{ "type": "command", "command": "h=\"<workbench>/.agents/hooks/<name>.ts\"; [ -f \"$h\" ] || { echo \"guard missing: $h\" >&2; exit 0; }; exec node --experimental-strip-types \"$h\"" }]
       }
     ]
   }
@@ -89,9 +89,11 @@ Name the hook by the workbench's ABSOLUTE path (`<workbench>` is where
 `install.sh` put it, spelled out, e.g. `/Users/you/code/workbench`: a `~` does
 not expand inside the quotes), and keep the escaped quotes around the whole
 path so a workbench under a folder with a space in its name still launches. The
-absolute path matters because a session can be working in a product repo, where
-`$CLAUDE_PROJECT_DIR` is that repo and holds no `.agents/hooks/`. Then re-run
-`install.sh` to merge it.
+absolute path matters because the hooks are home-level and fire in every repo:
+in a product repo `$CLAUDE_PROJECT_DIR` is that repo, which would run its own
+file of that name or none. A missing file passes with `guard missing:` on
+stderr rather than blocking every tool call. Then re-run `install.sh` to merge
+it.
 
 After wiring, re-run `verify.ts hook` — the "not wired" WARN should be gone. If you intentionally leave it unwired, the WARN is non-blocking but the hook will never fire.
 

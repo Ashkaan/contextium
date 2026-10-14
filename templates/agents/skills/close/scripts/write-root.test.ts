@@ -484,7 +484,7 @@ test("thread.ts and trunk.ts are run through node, never the .sh", () => {
   const dir = join(root, ".agents/skills/close/scripts");
   mkdirSync(dir, { recursive: true });
   mkdirSync(join(root, ".agents/packages/cli-exit"), { recursive: true });
-  for (const f of ["write-root.sh", "harness.sh", "lock.sh", "thread.ts", "trunk.ts"]) copyFileSync(join(HERE, f), join(dir, f));
+  for (const f of ["write-root.sh", "harness.sh", "lock.sh", "thread.ts", "t3-db.ts", "trunk.ts"]) copyFileSync(join(HERE, f), join(dir, f));
   copyFileSync(join(HERE, "../../../packages/cli-exit/cli-exit.ts"), join(root, ".agents/packages/cli-exit/cli-exit.ts"));
   const trap = join(TMP, "sh-ran");
   for (const stem of ["thread", "trunk"]) {
@@ -569,4 +569,34 @@ test("--adopt records a named worktree, and every later call answers it", () => 
   const shared = run(T3_WT, ["--adopt", ADOPT]);
   assert.equal(shared.rc, 2, "the shared checkout itself cannot be adopted");
   assert.ok(shared.out.includes("is the shared checkout"), `…and says so: '${shared.out}'`);
+});
+
+// ── A thread id that is not a valid ref name ───────────────────────────────
+// T3 names some threads `mcp:<uuid>`. A colon cannot appear in a git ref, so
+// a branch named for the raw id fails `git worktree add -b` and no satellite of
+// any other repo can be made. The folder takes
+// the same legal name — npm splits a PATH entry on its colon — and the ledger
+// stays under the id as T3 wrote it, which is how thread.ts finds it again.
+test("a thread id with a colon gets a legal branch name", () => {
+  const tid = "mcp:dddddddd-1111-2222-3333-666666666666";
+  const home = join(TMP, "colon-home");
+  mkdirSync(home, { recursive: true });
+  const repo = mkrepo("colon-sat");
+  const r = run(repo, [repo], { ...E, HOME: home, WORKBENCH_THREAD_ID: tid });
+  assert.equal(r.rc, 0, `no satellite for a colon thread id: ${r.out}`);
+  assert.ok(
+    r.stdout.endsWith("/mcp-dddddddd-1111-2222-3333-666666666666"),
+    `the satellite folder holds no colon: ${r.stdout}`,
+  );
+  assert.equal(
+    run(r.stdout, ["."], { ...E, HOME: home }).stdout,
+    r.stdout,
+    "from inside the satellite, the ledger still finds the thread",
+  );
+  assert.equal(git("-C", r.stdout, "rev-parse", "--abbrev-ref", "HEAD"), "session/mcp-dddddddd-1111-2222-3333-666666666666");
+  const ledger = readFileSync(join(home, ".cache/workbench/threads", tid, "worktrees"), "utf8");
+  assert.ok(
+    ledger.includes(`\tsession/mcp-dddddddd-1111-2222-3333-666666666666\n`),
+    `the ledger records that branch: ${ledger}`,
+  );
 });

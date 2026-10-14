@@ -18,10 +18,12 @@ import { createPublicKey, verify } from "node:crypto";
 import {
   chmodSync,
   existsSync,
+  lstatSync,
   mkdirSync,
   mkdtempSync,
   readdirSync,
   readFileSync,
+  readlinkSync,
   rmSync,
   statSync,
   writeFileSync,
@@ -247,6 +249,8 @@ after(() => {
     ["/tmp/qa-shots", qaRepoSlug(join(ODD, "apps", "new"))],
     ["/tmp/qa-worktrees", `${qaRepoSlug(SITE)}-`],
     ["/tmp/qa-worktrees", `${qaRepoSlug(ODD_APP)}-`],
+    ["/tmp/qa-shots", qaRepoSlug(DEPS)],
+    ["/tmp/qa-worktrees", `${qaRepoSlug(DEPS)}-`],
   ] as const) {
     for (const d of existsSync(root) ? readdirSync(root) : []) {
       if (d.startsWith(prefix)) rmSync(join(root, d), { recursive: true, force: true });
@@ -458,6 +462,47 @@ test("down reads a runfile in the earlier double-quoted format", () => {
   assert.ok(r.out.includes(`torn down (pid=none, worktree=${old})`), r.out);
   assert.equal(existsSync(old), false, "down left the old run's worktree");
   assert.equal(git(SITE, "worktree", "list").includes(old), false, "down left the old run's registration");
+});
+
+// ── --mode after builds against the checkout's dependencies ──
+// An app worktree may keep its packages one directory up, in a cache beside the
+// worktrees; the HEAD worktree under /tmp has neither, and its build found none.
+const CACHE = join(TMP, "cache");
+const DEPS = join(CACHE, "app");
+mkdirSync(join(CACHE, "node_modules"), { recursive: true });
+mkdirSync(join(DEPS, "dist"), { recursive: true });
+writeFileSync(join(DEPS, "dist/index.html"), "<h1>deps</h1>\n");
+git(DEPS, "init", "-q");
+git(DEPS, "add", "-A");
+git(DEPS, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "init");
+/** Where the HEAD worktree's node_modules points, or "" when it has none. */
+function upDepsLink(runId: string, env: Record<string, string> = {}): string {
+  const r = run(["up", "--repo", DEPS, "--mode", "after", "--run-id", runId], env);
+  RUNFILE = runfileOf(r.out);
+  assert.equal(r.rc, 0, r.out);
+  const link = join(rf("QA_WORKTREE"), "node_modules");
+  const target = existsSync(link) && lstatSync(link).isSymbolicLink() ? readlinkSync(link) : "";
+  const d = down();
+  assert.equal(d.rc, 0, d.out);
+  return target;
+}
+test("after: the worktree links the node_modules above the checkout", () => {
+  assert.equal(upDepsLink("d1"), join(CACHE, "node_modules"));
+});
+test("after: the checkout's own node_modules wins over one above it", () => {
+  mkdirSync(join(DEPS, "node_modules"));
+  try {
+    assert.equal(upDepsLink("d2"), join(DEPS, "node_modules"));
+  } finally {
+    rmSync(join(DEPS, "node_modules"), { recursive: true });
+  }
+});
+test("after: the search stops short of $HOME", () => {
+  assert.equal(upDepsLink("d3", { HOME: CACHE }), "");
+});
+test("after: down removes the link and leaves the dependencies it pointed at", () => {
+  upDepsLink("d4");
+  assert.ok(existsSync(join(CACHE, "node_modules")), "down followed the link into the cache");
 });
 
 // ── --mode live from a seeded registry cache: no server, no op, no network ──

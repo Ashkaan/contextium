@@ -1,5 +1,5 @@
-// Test harness for resolve-scope.ts — boundary cases mirror SPEC § 4 of
-// validate-rebuild.spec.md. The subject is spawned as a program against a
+// Test harness for resolve-scope.ts — boundary cases mirror the scope rules
+// resolve-scope.ts documents. The subject is spawned as a program against a
 // fixture repo built in a tmpdir.
 //
 // Run: node --test --experimental-strip-types .agents/skills/implement/scripts/resolve-scope.test.ts

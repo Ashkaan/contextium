@@ -13,7 +13,10 @@
 // spelled out and kept inside the escaped quotes:
 //   { "matcher": "<ToolName or regex>",
 //     "hooks": [{ "type": "command",
-//                 "command": "node --experimental-strip-types \"<workbench>/.agents/hooks/{{name}}.ts\"" }] }
+//                 "command": "h=\"<workbench>/.agents/hooks/{{name}}.ts\"; [ -f \"$h\" ] || { echo \"guard missing: $h\" >&2; exit 0; }; exec node --experimental-strip-types \"$h\"" }] }
+// The hooks are home-level, so they fire in EVERY repo: the command runs the
+// workbench's copy, never the project directory's (another repo there),
+// and passes, saying so, when the file is missing.
 //
 // Cost: a hook on a busy matcher starts a Node process on every matching tool
 // call. The bash-vs-TypeScript rule lets a hook the harness fires on every tool

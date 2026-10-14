@@ -378,15 +378,15 @@ describe("case6: the grok seat's invocation", () => {
 
   // All three seats share the default ceiling. An explicit --timeout-s still
   // applies to all three (as above). With the clock seam at 1ms a second, the
-  // 300s default fires at 0.3s, before stubs that sleep 5s answer — and every
+  // 600s default fires at 0.6s, before stubs that sleep 5s answer — and every
   // seat's gap names the ceiling it hit.
-  test("every seat's default ceiling is 300s", () => {
+  test("every seat's default ceiling is 600s", () => {
     const slow = makeTightPath();
     for (const v of ["grok", "claude", "codex"]) mkstub(slow, v, 0, 5, `${v} says late`);
     const r = runScript(slow, ["--prompts-dir", makePromptsDir(3), "--no-stand-in"], { policy: pol, msPerS: "1" });
     const gaps = ["role1", "role2", "role3"].map((role) => readFileSync(join(r.dir, `${role}.gap`), "utf8").trim());
     for (const v of ["grok", "claude", "codex"]) {
-      assert.ok(gaps.includes(`timeout after 300s (${v})`), `default ceilings: ${gaps.join(" | ")} ${r.out}`);
+      assert.ok(gaps.includes(`timeout after 600s (${v})`), `default ceilings: ${gaps.join(" | ")} ${r.out}`);
     }
   });
 });

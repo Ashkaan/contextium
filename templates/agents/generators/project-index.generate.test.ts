@@ -269,6 +269,27 @@ test("--compact renders Active as a markdown table with a backticked slug", () =
   assert.match(r.stdout, /\| \| Project \| One-line \|\n\|---\|---\|---\|\n\|🔴\| `alpha` \|/);
 });
 
+// render-index.ts hands the view a scratch tree (origin/main's READMEs plus the
+// thread's own edits); the checkout's own projects/ must not leak into it.
+test("--projects-dir reads that tree instead of the checkout's projects/", () => {
+  const fx = fixture([{ fm: { project: "here", status: "blocked" } }]);
+  const other = mkdtempSync(join(tmpdir(), "project-index-dir-"));
+  try {
+    mkdirSync(join(other, "ai", "2026-05-25_there"), { recursive: true });
+    writeFileSync(join(other, "ai", "2026-05-25_there", "README.md"), readme({ project: "there" }));
+    const r = run(fx, "--compact", "--projects-dir", other);
+    assert.equal(r.code, 0, r.stderr);
+    assert.match(r.stdout, /\*\*Active — 1\*\*\n\n[^]*`there`/);
+    assert.match(r.stdout, /\*\*Blocked — 0\*\*/, "the checkout's own blocked project is not read");
+    const bare = run(fx, "--compact", "--projects-dir");
+    assert.equal(bare.code, 1);
+    assert.equal(bare.stderr.trim(), "--projects-dir flag requires a path");
+  } finally {
+    rmSync(fx.root, { recursive: true, force: true });
+    rmSync(other, { recursive: true, force: true });
+  }
+});
+
 // The blank line between the heading and the header row is the whole reason the
 // index renders on T3 at all: glued to `**Active — N**` they are one paragraph,
 // and a table that cannot interrupt a paragraph never starts.

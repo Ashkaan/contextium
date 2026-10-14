@@ -19,7 +19,10 @@ cases; each test is observed RED before the code that makes it green, including
 when the code came first, because a test that has never failed is not evidence.
 Non-code work carries its end-to-end checks as tasks with the exact command and
 expected output. When the work calls a model, add an eval task too: a fixture
-and a pass bar, re-run whenever the prompt changes.
+and a pass bar, re-run whenever the prompt changes. A check that would wait for
+a scheduled run is written as "trigger it now" unless it needs something only
+time produces — the rule is `.agents/skills/implement/SKILL.md` § Run it now,
+don't wait for the schedule.
 
 <!-- /contextium -->
 <!-- contextium: live-walk -->

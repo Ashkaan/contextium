@@ -64,47 +64,41 @@ function field(p: string, name: string, env: Record<string, string> = {}): strin
     .join("\n");
 }
 
-// ── Legacy layout ────────────────────────────────────────────────────────
-test("legacy: no spec", () => {
-  const p = mk("never", "active");
-  assert.equal(field(p, "stage"), "needs-planning", "legacy: no spec is needs-planning");
-  assert.equal(
-    run(p)
-      .split("\n")
-      .filter((l) => l.startsWith("next-row"))
-      .join("\n"),
-    "",
-    "legacy: no next-row line",
-  );
+// ── No ROADMAP.md ────────────────────────────────────────────────────────
+// The layout before ROADMAP.md is retired: an
+// active project without one is reported, never staged from loose files.
+test("active with no ROADMAP.md is unknown", () => {
+  for (const [slug, loose] of [
+    ["no-rm", false],
+    ["no-rm-loose", true],
+  ] as const) {
+    const p = mk(slug, "active");
+    if (loose) {
+      touch(`${p}/a.spec.md`);
+      touch(`${p}/b.plan.md`);
+    }
+    assert.equal(field(p, "stage"), "unknown", `${slug}: stage unknown`);
+    assert.equal(field(p, "roadmap-error"), "no ROADMAP.md", `${slug}: names the missing ROADMAP.md`);
+    assert.equal(field(p, "active-spec"), "", `${slug}: no active spec read from loose files`);
+  }
 });
 
-test("legacy: unreported spec", () => {
-  const p = mk("pending", "active");
-  touch(`${p}/a.spec.md`);
-  assert.equal(field(p, "stage"), "ready-to-implement", "legacy: unreported spec is ready-to-implement");
-  assert.equal(field(p, "active-spec"), `${p}/a.spec.md`, "legacy: active-spec is the file");
-});
-
-test("legacy: every spec reported", () => {
-  const p = mk("reported", "active");
+test("specs and reports count folders only", () => {
+  const p = mk("counts", "active");
+  roadmap(p, "| R1 | a | i | s | — | done | `specs/001-a/` |");
   touch(`${p}/a.spec.md`);
   touch(`${p}/a-report.md`, "x\n");
-  assert.equal(field(p, "stage"), "all-specs-reported", "legacy: every spec reported");
+  touch(`${p}/specs/001-a/spec.md`);
+  touch(`${p}/specs/001-a/report.md`, "---\nspec: 001-a\nspec-status: complete\n---\n");
   assert.equal(
     run(p),
-    "stage: all-specs-reported\nstatus: active\nspecs: 1\nreports: 1\nactive-spec: ",
-    "legacy: exact output shape",
+    "stage: all-specs-reported\nstatus: active\nspecs: 1\nreports: 1\nactive-spec: \nnext-row: ",
+    "exact output shape",
   );
-});
-
-test("legacy: an unreported *.plan.md is ready-to-implement", () => {
-  const p = mk("legacy-plan", "active");
-  touch(`${p}/a.plan.md`);
-  assert.equal(`${field(p, "stage")} ${field(p, "active-spec")}`, `ready-to-implement ${p}/a.plan.md`);
 });
 
 for (const st of ["monitor", "blocked", "completed"]) {
-  test(`legacy: status ${st}`, () => {
+  test(`status ${st} wins`, () => {
     assert.equal(field(mk(`s-${st}`, st), "stage"), st);
   });
 }
@@ -127,6 +121,28 @@ test("row with no spec", () => {
   roadmap(p, "| R1 | a | i | s | — | planned | — |");
   assert.equal(field(p, "stage"), "needs-planning", "row with no spec is needs-planning");
   assert.equal(field(p, "next-row"), "R1", "row with no spec names the row");
+});
+
+test("manual rows are never planned", () => {
+  const p = mk("rm-manual", "active");
+  roadmap(p, "| R1 | a | i | s | — | planned | manual |", "| R2 | b | i | s | — | planned | `manual` |");
+  assert.equal(field(p, "stage"), "manual-steps", "only manual rows ready is manual-steps, not needs-planning");
+  assert.equal(field(p, "next-row"), "R1", "manual-steps names the first manual row");
+
+  roadmap(p, "| R1 | a | i | s | — | planned | manual |", "| R2 | b | i | s | — | planned | — |");
+  assert.equal(
+    `${field(p, "stage")} ${field(p, "next-row")}`,
+    "needs-planning R2",
+    "a row with no spec is planned ahead of an earlier manual row",
+  );
+
+  roadmap(p, "| R1 | a | i | s | — | planned | manual |", "| R2 | b | i | s | — | planned | `specs/002-b/` |");
+  touch(`${p}/specs/002-b/spec.md`);
+  assert.equal(
+    `${field(p, "stage")} ${field(p, "next-row")}`,
+    "ready-to-implement R2",
+    "a spec owed work is implemented ahead of an earlier manual row",
+  );
 });
 
 test("row with a folder spec", () => {
@@ -181,32 +197,23 @@ test("only blocked or dependent rows → all-specs-reported", () => {
   assert.equal(field(p, "stage"), "all-specs-reported");
 });
 
-test("legacy loose spec in flight", () => {
-  const p = mk("rm-legacy", "active");
-  roadmap(
-    p,
-    "| R1 | a | i | s | — | planned | `specs/001-a/` |",
-    "| R2 | b | i | s | — | planned | `b.spec.md` → `b-report.md` |",
-  );
-  touch(`${p}/specs/001-a/spec.md`);
-  touch(`${p}/b.spec.md`);
-  assert.equal(field(p, "active-spec"), `${p}/b.spec.md`, "legacy loose spec in flight wins active-spec");
-  assert.equal(field(p, "next-row"), "R2", "legacy loose spec names its row");
-});
-
-test("legacy-form done row is satisfied; next needs planning", () => {
+test("a legacy Sub-spec is a malformed table", () => {
   const p = mk("rm-legrow", "active");
   roadmap(p, "| R1 | a | i | s | — | done | `a.spec.md` → `a-report.md` |", "| R2 | b | i | s | R1 | planned | — |");
   touch(`${p}/a.spec.md`);
   touch(`${p}/a-report.md`, "x\n");
-  assert.equal(`${field(p, "stage")} ${field(p, "next-row")}`, "needs-planning R2");
+  assert.equal(field(p, "stage"), "unknown");
+  assert.equal(
+    field(p, "roadmap-error"),
+    'R1: Sub-spec "`a.spec.md` → `a-report.md`" is not —, manual or specs/NNN-name/',
+  );
 });
 
 test("malformed roadmap", () => {
   const p = mk("rm-bad", "active");
   writeFileSync(join(tmp, p, "ROADMAP.md"), "# Roadmap: t\n\n| ID | Sub-feature |\n|---|---|\n| R1 | a |\n");
   touch(`${p}/a.spec.md`);
-  assert.equal(field(p, "stage"), "unknown", "malformed roadmap is unknown, not the legacy answer");
+  assert.equal(field(p, "stage"), "unknown", "malformed roadmap is unknown, not read from loose files");
   assert.equal(
     field(p, "roadmap-error"),
     "no table under `# Roadmap` with ID and Status columns",
@@ -273,7 +280,7 @@ test("failing helpers: every line printed, exit 0", () => {
   writeFileSync(join(broken, "spec-state.ts"), "process.exit(1);\n");
   writeFileSync(join(broken, "roadmap.ts"), "process.exit(3);\n");
   const p = mk("helpers-fail", "active");
-  touch(`${p}/a.spec.md`);
+  touch(`${p}/specs/001-a/spec.md`);
   roadmap(p, "| R1 | a | i | s | — | planned | — |");
   const r = exec(p, { CONTEXTIUM_CLOSE_SCRIPTS: broken });
   assert.equal(
@@ -297,20 +304,60 @@ test("a crashed spec-state helper", () => {
   assert.equal(field(p, "stage", env), "unknown", "a crashed spec-state.ts is stage unknown");
   assert.equal(field(p, "spec-state-error", env), "spec-state.ts exited 7", "…and names the failure");
   p = mk("ss-crash-mon", "monitor");
-  touch(`${p}/a.spec.md`);
+  touch(`${p}/specs/001-a/spec.md`);
   assert.equal(field(p, "stage", env), "monitor", "a status that wins still wins over a crashed helper");
 });
 
-// Folder specs with no ROADMAP.md: the folder spec owed work is the active one.
-test("folder spec, no roadmap", () => {
-  const p = mk("folders-only", "active");
-  touch(`${p}/specs/001-a/spec.md`);
-  assert.equal(
-    `${field(p, "stage")} ${field(p, "active-spec")}`,
-    `ready-to-implement ${p}/specs/001-a/spec.md`,
-    "folder spec, no roadmap: ready-to-implement",
-  );
-  assert.ok(!run(p).split("\n").some((l) => l.startsWith("next-row")), "folder spec, no roadmap: no next-row line");
+// A worktree is cut when its thread opens. When origin/main has changed the
+// project since, the stage is still this tree's, but `behind-main:` says so, and
+// a project main has not touched carries no such line.
+test("behind-main: only when origin/main changed this project after the cut", () => {
+  const repo = mkdtempSync(join(tmpdir(), "detect-stage-git-"));
+  const git = (...args: string[]): void => {
+    const r = spawnSync("git", ["-C", repo, ...args], {
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        GIT_AUTHOR_NAME: "t",
+        GIT_AUTHOR_EMAIL: "t@t",
+        GIT_COMMITTER_NAME: "t",
+        GIT_COMMITTER_EMAIL: "t@t",
+        GIT_CONFIG_GLOBAL: "/dev/null",
+        GIT_CONFIG_NOSYSTEM: "1",
+      },
+    });
+    assert.equal(r.status, 0, r.stderr);
+  };
+  try {
+    const readme = (slug: string, status: string): string => {
+      const rel = `projects/t/2026-01-01_${slug}`;
+      mkdirSync(join(repo, rel), { recursive: true });
+      writeFileSync(join(repo, rel, "README.md"), `---\nproject: ${slug}\nstatus: ${status}\n---\n`);
+      writeFileSync(join(repo, rel, "ROADMAP.md"), `# Roadmap: t\n\n${HDR}\n| R1 | a | i | s | — | planned | — |\n`);
+      return rel;
+    };
+    git("init", "-q");
+    const moved = readme("moved", "active");
+    const still = readme("still", "active");
+    git("add", "-A");
+    git("commit", "-q", "-m", "cut");
+    readme("moved", "blocked");
+    git("commit", "-q", "-am", "landed after the cut");
+    git("update-ref", "refs/remotes/origin/main", "HEAD");
+    git("reset", "-q", "--hard", "HEAD~1");
+    const env = { CONTEXT_WRITE_ROOT: repo };
+    assert.equal(field(moved, "stage", env), "needs-planning", "the stage is this tree's");
+    assert.equal(
+      field(moved, "behind-main", env),
+      "origin/main changed 1 file(s) in this project after this worktree was cut; merge origin/main and re-run",
+    );
+    assert.equal(field(still, "behind-main", env), "", "a project main did not touch is not behind");
+    git("merge", "-q", "--ff-only", "refs/remotes/origin/main");
+    assert.equal(field(moved, "behind-main", env), "", "after the merge it is current");
+    assert.equal(field(moved, "stage", env), "blocked");
+  } finally {
+    rmSync(repo, { recursive: true, force: true });
+  }
 });
 
 // The status is read from the frontmatter only; a body line is prose.
@@ -322,8 +369,10 @@ test("a body status: line is not the field", () => {
 
 test("a trailing slash on the path reads the same", () => {
   const p = mk("slash", "active");
-  touch(`${p}/a.spec.md`);
-  assert.equal(field(`${p}/`, "active-spec"), `${p}/a.spec.md`);
+  touch(`${p}/specs/001-a/spec.md`);
+  roadmap(p, "| R1 | a | i | s | — | in-progress | `specs/001-a/` |");
+  assert.equal(run(`${p}/`), run(p));
+  assert.equal(field(`${p}/`, "active-spec"), `${p}/specs/001-a/spec.md`);
 });
 
 test("no status field is unknown", () => {

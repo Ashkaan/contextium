@@ -4,6 +4,37 @@ A newer version of the template will ship better skills, refined standards, new 
 Pulling those in should never put your own work at risk. The installer is built around exactly that
 split: it refreshes the methodology layer and leaves your data alone.
 
+## Upgrading to v9.1.0: the guard on macOS, and one project layout
+
+Re-run the installer. One thing in your data may need a step: a project with no `ROADMAP.md`.
+
+- **The host-infra guard no longer blocks commands with non-ASCII characters on macOS.** A
+  command with an em dash, arrow or curly quote outside quotes (`echo "x" # a — b`, a `cat`
+  heredoc whose body has one) made macOS awk fail with `towc: multibyte conversion failure`.
+  The guard then exited 2: Claude Code blocked the command, and Antigravity, which reads a JSON
+  decision instead, let it through unchecked. The guard now tests each character without a
+  regex, and its self-test carries non-ASCII cases. If you set `LC_CTYPE=C` in your settings to
+  work around it, you can remove it.
+- **One project layout.** A project is a `README.md` plus a `ROADMAP.md` whose rows point at
+  `specs/NNN-name/` folders. Loose `*.spec.md` / `*.plan.md` files and `## Next Steps` lists
+  are no longer read: a project without a `ROADMAP.md` reports `stage: unknown`, and `/close`
+  will not complete it. Run `/project <slug>` on such a project to give it a roadmap.
+- **`/close` sweeps before it closes on its own.** An automatic close (after `/spec`,
+  `/implement` or `/implement-audit`) first checks that nothing the run surfaced is left open
+  (a question, a follow-up, a failed step) and stops to ask if something is. A partial
+  implementation report puts its roadmap row back to `planned`.
+- **T3 Code 0.0.46 and later.** The close scripts read T3's new `statev2.sqlite` database, so a
+  thread started after T3's upgrade is found again.
+- **Roadmap rows can be manual.** A row whose Sub-spec is `manual` is a step for you, not a
+  build; `/project` reports `manual-steps` when only manual rows are ready, and `/implement`
+  has no spec to run for them.
+- **Reviews.** `/review` is hidden from automatic invocation (only you start it), and
+  when a review loop hits its round-4 ceiling, the last round's fixes still get one final
+  review (`code-review.ts --final`) instead of shipping unreviewed.
+- **Smaller fixes.** A dated quote inside a blockquote no longer counts as a decision's
+  approval; `check-harness-config-links.ts --fix` replaces an empty folder with its link; the
+  shared-checkout guard reads Grok Build's tool names.
+
 ## Upgrading to v9.0.2: local QA without a Cloudflare account
 
 Re-run the installer; nothing in your data changes.

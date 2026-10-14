@@ -17,6 +17,7 @@
 //   node .agents/generators/project-index.generate.ts            # index to stdout
 //   node .agents/generators/project-index.generate.ts --out FILE # index to a file
 //   node .agents/generators/project-index.generate.ts --compact  # slim view to stdout
+//   ... --compact --projects-dir DIR                                            # the same, from another projects/ tree
 
 import { readdirSync, readFileSync, realpathSync, writeFileSync } from "fs";
 import { dirname, join } from "path";
@@ -574,9 +575,24 @@ export function compactDropLine(discoveryDrops: number, dropped: string[] = []):
 
 function main(): void {
   const argv = process.argv.slice(2);
-  const { projects, discoveryDrops, dropped } = discoverProjects(projectsDirPath());
+  // `--projects-dir <dir>` reads the projects from a tree other than this
+  // checkout: .agents/skills/project/scripts/render-index.ts points it at origin/main's
+  // READMEs with the thread's own edits laid over them, so a thread opened hours
+  // ago does not show the index as it stood when its worktree was made.
+  const dirFlag = argv.indexOf("--projects-dir");
+  let projectsDir = projectsDirPath();
+  if (dirFlag !== -1) {
+    const v = argv[dirFlag + 1];
+    if (!v) {
+      console.error("--projects-dir flag requires a path");
+      process.exit(1);
+    }
+    projectsDir = v;
+  }
+  const { projects, discoveryDrops, dropped } = discoverProjects(projectsDir);
 
-  // --compact: slim stdout view for the /project skill (working-tree freshness).
+  // --compact: slim stdout view for the /project skill, read from --projects-dir
+  // when render-index.ts passes one (origin/main plus the thread's own edits).
   // A drop is named on the view's first line and fails the run.
   if (argv.includes("--compact")) {
     // A project can also be read and still not render: buildIndexData rejects a

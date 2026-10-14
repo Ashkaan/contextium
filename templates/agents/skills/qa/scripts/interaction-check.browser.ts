@@ -62,6 +62,7 @@ import process from "node:process";
 import type { BrowserContext, Page, Request, Route } from "playwright";
 import { type CfAccessPair, qaAccessHeaders } from "./lib.ts";
 import { exit, runToExit } from "../../../packages/cli-exit/cli-exit.ts";
+import { gotoSurvivingNetworkChange } from "./nav.ts";
 
 async function main(): Promise<void> {
   const require = createRequire(`${process.env.QA_PW_PARENT}/`);
@@ -199,7 +200,10 @@ async function main(): Promise<void> {
   // is not the page: its text would pass every check below and stamp a clean
   // run. screenshot.ts's STATUS and OFF-ORIGIN gates refuse the same two cases.
   async function gotoChecked(page: Page, url: string) {
-    const resp = await page.goto(url, { waitUntil: "domcontentloaded", timeout: NAV_TIMEOUT_MS });
+    const resp = await gotoSurvivingNetworkChange(page, url, {
+      waitUntil: "domcontentloaded",
+      timeout: NAV_TIMEOUT_MS,
+    });
     const status = resp ? resp.status() : 0;
     if (status === 0 || status >= 400) throw new Error(`HTTP ${status || "no response"} from ${url}`);
     const landed = new URL(page.url()).origin;

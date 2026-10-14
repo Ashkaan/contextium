@@ -36,7 +36,7 @@ node --experimental-strip-types .agents/skills/close/scripts/land.ts --gate    #
 
 The think→do fresh-context boundary is preserved: `/spec`'s auto-close ENDS the session; the next `/implement` runs in a fresh tab. Auto-close does not roll `/spec` into `/implement`.
 
-## Precondition — proceed to `/close` IFF BOTH hold
+## Precondition — proceed to `/close` IFF ALL THREE hold
 
 **(i) No hard stop or deferral question is outstanding for this verb's run.**
 
@@ -54,7 +54,18 @@ node --experimental-strip-types .agents/skills/close/scripts/land.ts --gate
 
 `not-fired` → proceed. `fired` → everything this thread wrote is already on its repo's trunk and nothing has changed since; do NOT re-invoke. This is the double-fire guard for the resume path: if the user answered a held question and the verb resumes after `/close` had already run, this stops a second dispatch. It says nothing about a close the user asks for.
 
-## Action — when both preconditions hold
+**(iii) Nothing the run surfaced is left open.**
+
+A clean audit is not a clean run. Before the gate, list everything this run surfaced that the diff does not already settle: a question it had, an issue or fault it noticed (in or out of its own scope), a reviewer note it did not act on, and an improvement it saw ("this could also…", "worth tightening…"). Each item leaves the list one of two ways:
+
+- **Done now.** The default, for issues and improvements alike: fix it in this worktree, re-run what the fix touches, and say what changed in the summary. A fix that is scoped and reversible is not a question, and "want me to also…?" is a deferral, not a question (`AGENTS.md` § Standards, No deferral).
+- **Asked.** Only when the answer is genuinely the user's: a choice between real alternatives where their preference decides it, or something only they can clear (money, an outbound message, host infrastructure, a vendor). Ask every such item at once as a numbered list, recommendation first, and HALT. On the user's answer the verb resumes, does the work, re-runs this sweep, and then closes.
+
+An item only the user can ACT on that needs no answer (a draft they must send, a console click) is neither: it rides the close as a `**Blocked:**` line. What never happens is the item parked as prose: a "noticed", "could improve" or "open question" line in the completion summary, the report or the journal, with the close already fired. That is the failure this precondition exists for: a run that closes with open questions, issues or noticed improvements still on its list leaves them where nobody acts on them, because the session that saw them has ended.
+
+This is not the retired sign-off halt. A run whose list empties by doing the work closes unattended; the halt fires only when a question is real, and it asks that question rather than asking for approval.
+
+## Action — when all three preconditions hold
 
 **This block is the only copy.** Callers point at this section rather than restating the commands — if the gate grows a mode or the ledger moves, exactly one place changes.
 
@@ -77,6 +88,7 @@ node --experimental-strip-types .agents/skills/close/scripts/land.ts --gate
 | **Deferral** proposed (a major plan deviation) | Verb halts with the deferral `AskUserQuestion`; auto-close does not fire until the user approves or the work lands. |
 | `implement-audit` / `spec-audit` returned **fix-now** work | Findings are fixed in-flight by the audit's own fix loop; only a clean audit pass reaches this gate. The fix loop never asks the user anything, so it raises no halt of its own. |
 | Mechanism-match **FAIL** (`/implement` phase-4.5) | HALT — the user must see the divergence; auto-close does not fire. |
+| Open-items sweep left a **question** (precondition (iii)) | HALT with the numbered list. Everything else the sweep found was done before asking. After the answers, the verb does the work, re-sweeps, and auto-closes. |
 
 ## Peers / scripts
 

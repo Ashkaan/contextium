@@ -84,7 +84,7 @@ rm -rf "$PROMPTS_DIR"   # nothing reads it again
 
 Per seat the output dir holds `<role>.output` and `<role>.voice` (who argued
 it), or `<role>.gap` when nobody could. It exits non-zero only when no seat was
-argued. The default timeout is 300s for each seat; `--timeout-s` overrides it.
+argued. The default timeout is 600s for each seat; `--timeout-s` overrides it.
 
 The prompts dir is removed here rather than by the dispatcher, because a
 caller of its own may still need the prompts dir after the dispatch returns. The output dir is removed by step-4's parse,
@@ -162,7 +162,7 @@ question — the user asked for these rounds.
 
 ## Example
 
-User: `/debate red-team this plan: ship a repo-write service as an HTTP daemon with bearer auth so other automations can request a git commit on the build server`. The build writes the three role prompts; dispatch runs Claude (pragmatist), Codex (skeptic) and Grok (visionary) in parallel. Grok times out, so Claude argues the visionary seat as well and the parse block reads `argued by: claude (default model) — stood in for grok (timeout after 300s (grok))`. The skeptic's strongest point: "the use case is 'shared SSH execution' — a 30-line bash function would do this; an HTTP daemon with TLS, auth, allowlists, and worktree GC is 100× over-engineered." The synthesis weighs it against the visionary's "future automations might need it", recommends the shared SSH function, and names the stand-in under Gaps.
+User: `/debate red-team this plan: ship a repo-write service as an HTTP daemon with bearer auth so other automations can request a git commit on the build server`. The build writes the three role prompts; dispatch runs Claude (pragmatist), Codex (skeptic) and Grok (visionary) in parallel. Grok times out, so Claude argues the visionary seat as well and the parse block reads `argued by: claude (default model) — stood in for grok (timeout after 600s (grok))`. The skeptic's strongest point: "the use case is 'shared SSH execution' — a 30-line bash function would do this; an HTTP daemon with TLS, auth, allowlists, and worktree GC is 100× over-engineered." The synthesis weighs it against the visionary's "future automations might need it", recommends the shared SSH function, and names the stand-in under Gaps.
 
 ## Troubleshooting
 

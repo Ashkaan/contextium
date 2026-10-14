@@ -16,7 +16,7 @@ Three goal mismatches recur, and each costs hours to unwind once built:
 
 A one-turn "is this what you want?" gate catches all three. The rule in the user's terms: agree on the goal together up front before starting work, then find the simplest way forward.
 
-**What the gate does not reach.** It runs only in sessions that enter `/project`, `/spec` or `/implement`; much task-shaped work never does, and in those sessions the gate is presented no more often than anywhere else. So this step is real enforcement but only for sessions that reach it. Every other session is held to the same gate by the think flow's goal-alignment step.
+**What the gate does not reach.** It runs only in sessions that enter `/project`, `/spec` or `/implement`; much task-shaped work never does, and in those sessions the gate is presented no more often than anywhere else. So this step is real enforcement but only for sessions that reach it. No hook covers the sessions it does not reach, so there the gate holds by judgment alone.
 
 ## `think-step-2-explore` — Primitives & Credentials
 
@@ -40,9 +40,9 @@ A boundary row written from memory — "the store is unreachable → the router 
 
 ### Why "standards made incorrect" must be enumerated
 
-A plan that defers amending a standard its own work makes untrue — even when the standard is one paragraph and the amendment is two lines — commits the deferral `AGENTS.md § Standards → No deferral` forbids, and leaves the next session reading a rule that is no longer so. Any statement in `AGENTS.md` § Standards (or any other standing rule the repo keeps) that will no longer be true after the plan ships MUST be amended in the same commit as the plan's work.
+A plan that defers amending a standard its own work makes untrue — even when the standard is one paragraph and the amendment is two lines — commits the deferral `AGENTS.md § Standards → No deferral` forbids, and leaves the next session reading a rule that is no longer so. Any statement in an `AGENTS.md` — the root one or a folder's — (or any other standing rule the repo keeps) that will no longer be true after the plan ships MUST be amended in the same commit as the plan's work.
 
-The remediation: read `AGENTS.md` § Standards for any statement that will no longer be true after the plan ships (new runtime in an enum, new path-of-use for a primitive, new integration name, retired file path). Document the amendments in the Files-to-Change table.
+The remediation: read the root `AGENTS.md` and every folder's `AGENTS.md` for any statement that will no longer be true after the plan ships (new runtime in an enum, new path-of-use for a primitive, new integration name, retired file path). Document the amendments in the Files-to-Change table.
 
 ## `think-step-4-dispatch-spec` — why the SPEC review is mandatory
 

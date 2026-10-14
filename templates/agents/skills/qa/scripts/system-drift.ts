@@ -381,8 +381,20 @@ async function main(): Promise<void> {
   }
   // `<Input type="date">` counts too: a themed wrapper does not change which
   // widget the browser opens, and the OS date picker is the OS date picker.
+  // A hidden input draws nothing: a file input behind a styled "Choose file"
+  // button opens the OS dialog, which no page can style, and is the pattern a
+  // design system asks for. Hidden is the bare `hidden` attribute,
+  // `hidden={true}`, or a whole `hidden` / `sr-only` class token — not
+  // `sm:hidden`, which draws below sm, and not the word inside another value.
+  // A quoted value, stepping over an escaped quote inside it (`"6\""`).
+  const QUOTED = /(["'`])(?:\\[\s\S]|(?!\1)[^\\])*\1/g;
+  const HIDDEN_ATTR = /(?<![\w-])hidden(?:\s*=\s*\{\s*true\s*\})?(?=\s|\/|>|$)/;
+  const CLASS_VALUE = /(?<![\w-])(?:class|className)\s*=\s*\{?\s*(["'`])((?:(?!\1)[\s\S])*)\1/g;
+  const isHidden = (tag: string): boolean =>
+    HIDDEN_ATTR.test(tag.replace(QUOTED, '""')) ||
+    [...tag.matchAll(CLASS_VALUE)].some((m) => m[2].split(/\s+/).some((t) => t === "hidden" || t === "sr-only"));
   for (const { file, line, tag } of elements("input,Input")) {
-    if (tag.includes("appearance-none")) continue;
+    if (tag.includes("appearance-none") || isHidden(tag)) continue;
     const m = NATIVE_TYPE.exec(tag);
     const t = m?.[1] ?? m?.[2];
     if (!t) continue;

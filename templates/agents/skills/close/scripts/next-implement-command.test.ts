@@ -1,5 +1,5 @@
-// next-implement-command.test.ts — covers the slug-not-SPEC-name guarantee + the
-// status/shard branches.
+// next-implement-command.test.ts — covers the status branches and the ROADMAP.md
+// rows: one command per ready row, the project slug never a spec name.
 // Run: node --test --experimental-strip-types .agents/skills/close/scripts/next-implement-command.test.ts
 //
 // The generator calls spec-state.ts, roadmap.ts and open-clarifications.ts
@@ -36,38 +36,22 @@ function mkproj(folder: string, status: string, blockedOn = ""): string {
   return dir;
 }
 
-// 1. THE BUG: un-reported sub-SPEC → bare project slug, NOT the SPEC basename.
-test("slug-not-spec-name", () => {
+// 1. An active project with no ROADMAP.md needs planning: loose spec files are
+//    not read, so they never become an /implement.
+test("no-roadmap-is-project", () => {
   const d = mkproj("2026-05-05_checkout-flow", "active");
   touch(join(d, "guest-checkout.spec.md"));
   touch(join(d, "saved-cards.spec.md"));
-  touch(join(d, "saved-cards-report.md")); // this one IS reported
-  assert.equal(gen(d), "/implement checkout-flow");
-});
-
-// 2. No pending SPEC + active → /project <slug>.
-test("active-no-pending-spec", () => {
-  const d = mkproj("2026-01-01_done-specs", "active");
-  touch(join(d, "foo.spec.md"));
-  touch(join(d, "foo-report.md"));
-  assert.equal(gen(d), "/project done-specs");
-});
-
-// 3. Sharded → one /implement <slug> <shard> per pending shard, sorted.
-test("sharded-per-shard", () => {
-  const d = mkproj("2026-02-02_big-migration", "active");
-  appendFileSync(join(d, "README.md"), "## Shard Status\n| Shard | SPEC | Report | State |\n");
-  touch(join(d, "token-refresher.spec.md"));
-  touch(join(d, "email-sender.spec.md"));
-  touch(join(d, "foundation.spec.md"));
-  touch(join(d, "foundation-report.md")); // reported — excluded
-  assert.equal(gen(d), "/implement big-migration email-sender\n/implement big-migration token-refresher");
+  appendFileSync(
+    join(d, "README.md"),
+    "## Shard Status\n| Shard | SPEC | Report | State |\n|---|---|---|---|\n| a | — | — | in-flight |\n",
+  );
+  assert.equal(gen(d), "/project checkout-flow");
 });
 
 // 4. completed → says so, quoting the project's own ## Outcome first line.
 test("completed-outcome", () => {
   const d = mkproj("2026-03-03_finished", "completed");
-  touch(join(d, "x.spec.md"));
   appendFileSync(
     join(d, "README.md"),
     "\n## Outcome\n\n- Every order confirmation now arrives within a minute.\n",
@@ -122,79 +106,6 @@ test("monitor-no-date", () => {
   assert.equal(gen(d), "# observe-nodate — work complete, monitor window open (monitoring-until not set)");
 });
 
-// ── The shard-table State column ────────────────────────────────────────────
-// The report-presence heuristic reads a part-done shard as finished, so a close
-// would offer the `planned` shards while the one in motion has reports written.
-function mkshards(folder: string, status: string, ...rows: string[]): string {
-  const dir = join(TMP, "projects/ai", folder);
-  mkdirSync(dir, { recursive: true });
-  let body = `---\nstatus: ${status}\n---\n# project\n## Shard Status\n\n| Shard | SPEC | Report | State |\n|---|---|---|---|\n`;
-  for (const row of rows) {
-    const shard = row.slice(0, row.indexOf(":"));
-    const state = row.slice(row.lastIndexOf(":") + 1);
-    body += `| ${shard} | \`${shard}.spec.md\` | — | ${state} |\n`;
-  }
-  writeFileSync(join(dir, "README.md"), body);
-  return dir;
-}
-
-// An in-flight shard is the work in motion and comes first, ALONE — even when
-// it has reports and the planned ones do not.
-test("in-flight-shard-wins", () => {
-  const d = mkshards(
-    "2026-09-04_data-move",
-    "active",
-    "export-out:in-flight",
-    "archive-repo:planned",
-    "log-split:planned",
-  );
-  touch(join(d, "export-out.spec.md"));
-  touch(join(d, "export-out-report.md"));
-  touch(join(d, "archive-repo.spec.md"));
-  touch(join(d, "log-split.spec.md"));
-  assert.equal(gen(d), "/implement data-move export-out");
-});
-
-// Two in flight (parallel tabs) → both, sorted.
-test("two-in-flight", () => {
-  const d = mkshards("2026-03-03_two-open", "active", "alpha:in-flight", "beta:in-flight", "gamma:planned");
-  assert.equal(gen(d), "/implement two-open alpha\n/implement two-open beta");
-});
-
-// Nothing in flight → the planned ones.
-test("planned-when-nothing-in-flight", () => {
-  const d = mkshards("2026-04-04_nothing-open", "active", "alpha:closed", "beta:planned");
-  assert.equal(gen(d), "/implement nothing-open beta");
-});
-
-// A blocked shard is named alongside whatever is next.
-test("blocked-named-alongside", () => {
-  const d = mkshards("2026-05-05_one-blocked", "active", "alpha:in-flight", "beta:blocked");
-  assert.equal(gen(d), "/implement one-blocked alpha\n# one-blocked beta is blocked — see its row in ## Shard Status");
-});
-
-// Blocked and nothing else open → the block IS the answer, no command.
-test("blocked-only", () => {
-  const d = mkshards("2026-06-06_only-blocked", "active", "alpha:closed", "beta:blocked");
-  assert.equal(gen(d), "# only-blocked beta is blocked — see its row in ## Shard Status");
-});
-
-// Every shard done → the project needs its next phase decided, even though
-// `status:` is still active.
-test("all-shards-done", () => {
-  const d = mkshards("2026-07-07_all-done", "active", "alpha:closed", "beta:reported");
-  assert.equal(gen(d), "/project all-done");
-});
-
-// A table with a header and NO rows keeps the old behaviour — that is what
-// test 3 above covers and this asserts the fallback is deliberate.
-test("header-only-falls-back", () => {
-  const d = mkproj("2026-08-08_header-only", "active");
-  appendFileSync(join(d, "README.md"), "## Shard Status\n| Shard | SPEC | Report | State |\n");
-  touch(join(d, "alpha.spec.md"));
-  assert.equal(gen(d), "/implement header-only alpha");
-});
-
 // ── ROADMAP.md projects ─────────────────────────────────────────────
 const RM_HDR = `| ID | Sub-feature | Intent | Scope boundary | Depends on | Status | Sub-spec |
 |----|-------------|--------|----------------|-----------|--------|----------|`;
@@ -215,6 +126,20 @@ test("rm-row-needs-planning", () => {
   const d = mkproj("2026-09-02_rm-plan", "active");
   mkroadmap(d, "| R1 | a | i | s | — | planned | — |");
   assert.equal(gen(d), "/project rm-plan");
+});
+
+// A manual row has no command: it is named, and never sends the close to /project.
+test("rm-manual-rows-named-not-planned", () => {
+  const d = mkproj("2026-09-02_rm-manual", "active");
+  mkroadmap(
+    d,
+    "| R1 | reply to the vendor | i | s | — | planned | manual |",
+    "| R2 | b | i | s | — | planned | `specs/002-b/` |",
+  );
+  spec(d, "002-b");
+  assert.equal(gen(d), "/implement rm-manual r2\n# rm-manual R1 is a manual step: reply to the vendor");
+  mkroadmap(d, "| R1 | reply to the vendor | i | s | — | planned | manual |");
+  assert.equal(gen(d), "# rm-manual R1 is a manual step: reply to the vendor", "manual rows alone print no command");
 });
 
 test("rm-row-with-spec, then complete awaiting done", () => {
@@ -282,15 +207,6 @@ test("rm-in-progress-first", () => {
   assert.equal(gen(d), "/implement rm-order r2\n/implement rm-order r1");
 });
 
-// A legacy loose spec no row points at prints first; one a row points at is that row.
-test("rm-legacy-loose-first", () => {
-  const d = mkproj("2026-09-07_rm-mixed", "active");
-  mkroadmap(d, "| R1 | a | i | s | — | planned | `a.spec.md` → `a-report.md` |");
-  touch(join(d, "a.spec.md"));
-  touch(join(d, "loose.spec.md"));
-  assert.equal(gen(d), "/implement rm-mixed\n/implement rm-mixed r1");
-});
-
 // Status outside the vocabulary, and only blocked rows left
 test("rm-unknown-status-named", () => {
   const d = mkproj("2026-09-08_rm-blk", "active");
@@ -302,13 +218,17 @@ test("rm-unknown-status-named", () => {
 test("rm-malformed", () => {
   const d = mkproj("2026-09-09_rm-bad", "active");
   writeFileSync(join(d, "ROADMAP.md"), "# Roadmap: t\n\n| ID | Sub-feature |\n|---|---|\n| R1 | a |\n");
-  touch(join(d, "x.spec.md"));
   assert.equal(gen(d), "# rm-bad ROADMAP.md is malformed: no table under `# Roadmap` with ID and Status columns");
 });
 
-// ROADMAP beats a legacy shard table
-test("rm-beats-shard-table", () => {
-  const d = mkshards("2026-09-10_rm-shards", "active", "alpha:planned");
+// A README shard table is not read: the rows decide
+test("rm-ignores-shard-table", () => {
+  const d = mkproj("2026-09-10_rm-shards", "active");
+  appendFileSync(
+    join(d, "README.md"),
+    "## Shard Status\n| Shard | SPEC | Report | State |\n|---|---|---|---|\n| alpha | — | — | in-flight |\n",
+  );
+  touch(join(d, "alpha.spec.md"));
   mkroadmap(d, "| R1 | a | i | s | — | planned | — |");
   assert.equal(gen(d), "/project rm-shards");
 });

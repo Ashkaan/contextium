@@ -267,13 +267,30 @@ test("--fix repoints a link that points elsewhere", async (t) => {
   await t.test("to the workbench", () => says(readlinkSync(`${F}/home/.agents/skills`), `${F}/repo/.agents/skills`));
 });
 
-test("--fix refuses a real directory", async (t) => {
+test("--fix refuses a real directory with files in it", async (t) => {
   const F = mkfix();
   rmSync(`${F}/home/.claude/skills`);
   mkdirSync(`${F}/home/.claude/skills`);
+  writeFileSync(`${F}/home/.claude/skills/mine.md`, "kept\n");
   const r = run(F, "--fix");
   await t.test("exits 1", () => assert.equal(r.rc, 1, r.out));
-  await t.test("and says to move it aside", () => says(r.out, "it is a real directory"));
+  await t.test("and says to move it aside", () => says(r.out, "it is a real directory with files in it"));
+  await t.test("and leaves its files where they were", () =>
+    assert.equal(readFileSync(`${F}/home/.claude/skills/mine.md`, "utf8"), "kept\n"),
+  );
+});
+
+test("--fix replaces an EMPTY real directory with the link", async (t) => {
+  const F = mkfix();
+  rmSync(`${F}/home/.claude/agents`);
+  mkdirSync(`${F}/home/.claude/agents`);
+  const r = run(F, "--fix");
+  await t.test("exits 0", () => assert.equal(r.rc, 0, r.out));
+  await t.test("and the folder is a link to the workbench afterwards", () =>
+    assert.equal(readlinkSync(`${F}/home/.claude/agents`), `${F}/repo/.agents/agents`),
+  );
+  const again = run(F);
+  await t.test("so a plain run passes", () => assert.equal(again.rc, 0, again.out));
 });
 
 test("--fix refuses a target that does not exist", async (t) => {

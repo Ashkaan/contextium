@@ -99,6 +99,7 @@ import { dirname, join, resolve } from "node:path";
 import type { DatabaseSync, SQLOutputValue } from "node:sqlite";
 import { fileURLToPath } from "node:url";
 import { exit, runToExit } from "../../../packages/cli-exit/cli-exit.ts";
+import { legacyViews, t3Database } from "./t3-db.ts";
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const THREAD = join(SCRIPT_DIR, "thread.ts");
@@ -411,7 +412,8 @@ function windowMode(db: DatabaseSync, arg1: string, arg2: string): void {
 }
 
 async function main(): Promise<void> {
-  const DB = `${process.env.T3CODE_HOME || `${process.env.HOME ?? homedir()}/.t3`}/userdata/state.sqlite`;
+  // statev2.sqlite since T3 0.0.46; t3-db.ts says why and what moved.
+  const DB = t3Database(process.env.T3CODE_HOME || `${process.env.HOME ?? homedir()}/.t3`);
 
   let FULL = false;
   let TID = "";
@@ -512,6 +514,9 @@ async function main(): Promise<void> {
   } catch (e) {
     return die(`cannot read ${DB}: ${e instanceof Error ? e.message : String(e)}`);
   }
+  // On the v2 file, the legacy table names this script queries become views over live data.
+  const views = legacyViews(DB);
+  if (views !== "") db.exec(views);
 
   if (mode === "thread") threadMode(db, TID, FULL);
   else windowMode(db, SINCE, UNTIL);

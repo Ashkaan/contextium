@@ -39,7 +39,17 @@
 //       or local sign-in failed.
 
 import { spawn, spawnSync } from "node:child_process";
-import { closeSync, mkdirSync, openSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
+import {
+  closeSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  statSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { createServer } from "node:net";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -72,6 +82,20 @@ const isDir = (p: string): boolean => {
     return false;
   }
 };
+
+/**
+ * The node_modules a build in `from` resolves from: the nearest at or above it,
+ * stopping short of $HOME and the root. An --after worktree under /tmp has none
+ * beside it or above it, so its build finds no dependencies at all (`vite: not
+ * found` on an app whose packages live beside its checkout).
+ */
+function nearestNodeModules(from: string): string | undefined {
+  const home = process.env.HOME ?? "";
+  for (let d = resolve(from); d !== dirname(d) && d !== home; d = dirname(d)) {
+    if (isDir(join(d, "node_modules"))) return join(d, "node_modules");
+  }
+  return undefined;
+}
 
 /** A string bash reads back as itself: `printf %q`, as the runfile was always written. */
 function shellQuote(s: string): string {
@@ -402,6 +426,14 @@ async function doUp(args: string[]): Promise<void> {
     const prefix = spawnSync("git", ["-C", REPO, "rev-parse", "--show-prefix"], { encoding: "utf8" });
     src = join(worktree, (prefix.stdout ?? "").trim()).replace(/\/+$/, "");
     label = "HEAD worktree";
+    // node_modules is never committed, so the worktree builds against the
+    // dependencies the checkout itself would; `worktree remove` unlinks the
+    // link without following it.
+    const deps = nearestNodeModules(REPO);
+    if (deps !== undefined && isDir(src) && !isDir(join(src, "node_modules"))) {
+      symlinkSync(deps, join(src, "node_modules"));
+      qaErr(`serve up: HEAD worktree builds with ${deps}`);
+    }
   }
   // Remove the --after worktree on any early exit below (fail-safe cleanup).
   const cleanupWorktree = () => {

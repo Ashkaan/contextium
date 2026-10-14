@@ -311,6 +311,21 @@ test("explicit files: one case per part", async (t) => {
     assert.ok(r.err.includes("0023-quote-then-date.md: (g) accepted"), r.err),
   );
 
+  // A backfilled record quotes its ledger entry verbatim, and that entry often
+  // carries dated words about something else; a blockquote is a citation.
+  rec("decisions/0030-blockquote-quote.md");
+  edit("decisions/0030-blockquote-quote.md", (s) =>
+    s.replace(
+      /^Pat Doe 2026-09-22: "agreed"$/m,
+      '## More Information\n\n> | 7 | Pat Doe 2026-09-22: *"agreed"* | settled |',
+    ),
+  );
+  r = run(["decisions/0030-blockquote-quote.md"]);
+  await t.test("a dated quote inside a blockquote is not an approval", () => assert.equal(r.rc, 1));
+  await t.test("blockquote quote is part (g)", () =>
+    assert.ok(r.err.includes("0030-blockquote-quote.md: (g) accepted"), r.err),
+  );
+
   rec("decisions/0021-curly.md");
   edit("decisions/0021-curly.md", (s) => s.replace(/^Pat Doe 2026-09-22: "agreed"$/m, "Pat Doe 2026-09-22: “agreed”"));
   r = run(["decisions/0021-curly.md"]);

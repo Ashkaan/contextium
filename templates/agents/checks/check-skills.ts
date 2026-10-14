@@ -20,6 +20,12 @@
 //   (d) a `state/` folder holds `_doc.md`, and SKILL.md never names a
 //       `state/` path — state is what a skill has learned, never loaded at
 //       activation (AGENTS.md § Skill shape)
+//   (e) a skill only the user types carries `disable-model-invocation: true`
+//       AND `agents/openai.yaml` reading exactly OPENAI_YAML — both or
+//       neither, and `agents/` holds nothing else (AGENTS.md § Skill shape).
+//       The key is the one the validator does not know, so (b) validates a
+//       copy of SKILL.md without that one line; every other key still meets
+//       the validator.
 //
 // WHAT IT SCANS. With no arguments: every top-level folder with ANY path
 // changed beneath it in this worktree, staged or not, plus untracked — a new
@@ -65,8 +71,20 @@
 // Exit: 0 clean · 1 one or more violations · 2 caller error
 
 import { spawnSync } from "node:child_process";
-import { accessSync, constants, existsSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
-import { homedir } from "node:os";
+import {
+  accessSync,
+  constants,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
+import { homedir, tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { exit, runToExit } from "../packages/cli-exit/cli-exit.ts";
@@ -534,6 +552,11 @@ function builtinValidate(dir: string): string {
   return `Validation failed for ${dir}:\n${errs.map((e) => `  - ${e}\n`).join("")}`;
 }
 
+// (e) The one frontmatter key outside the specification, and the Codex file
+// that mirrors it (AGENTS.md § Skill shape).
+const HIDE_KEY = /^disable-model-invocation:(.*)$/;
+const OPENAI_YAML = "policy:\n  allow_implicit_invocation: false\n";
+
 // A path-like token holding `state/`, as `grep -oE` read it.
 const STATE_TOKEN = /[^\s"'`()<>[]*state\/[^\s"'`()<>[]*/g;
 
@@ -558,16 +581,35 @@ function checkSkill(dir: string, validatorBin: string, home: string): void {
   //     A multi-line error (a YAML parse failure quotes the offending line)
   //     is folded onto the `  - ` line that opened it, one violation each.
   //     The built-in reading answers in the same shape.
+  //     A frontmatter carrying the hide key is validated as a copy without
+  //     that one line, so the validator still judges every other key.
+  const fm = frontmatter(join(dir, "SKILL.md"));
+  const fmLines = fm === null ? [] : fm.split("\n");
+  const hideLine = fmLines.findIndex((l) => HIDE_KEY.test(l));
+  let validateDir = dir;
+  let scratch = "";
+  if (hideLine >= 0) {
+    scratch = mkdtempSync(join(tmpdir(), "check-skills-"));
+    validateDir = join(scratch, name);
+    mkdirSync(validateDir);
+    const all = readFileSync(join(dir, "SKILL.md"), "utf8").split("\n");
+    all.splice(hideLine + 1, 1); // +1: line 0 is the opening `---`
+    writeFileSync(join(validateDir, "SKILL.md"), all.join("\n"));
+  }
   let failed: boolean;
   let vout: string;
   if (validatorBin === "builtin") {
-    vout = builtinValidate(dir);
+    vout = builtinValidate(validateDir);
     failed = vout !== "";
   } else {
-    const v = spawnSync(validatorBin, ["validate", dir], { encoding: "utf8", stdio: ["inherit", "ignore", "pipe"] });
+    const v = spawnSync(validatorBin, ["validate", validateDir], {
+      encoding: "utf8",
+      stdio: ["inherit", "ignore", "pipe"],
+    });
     failed = v.status !== 0;
     vout = v.stderr ?? "";
   }
+  if (scratch !== "") rmSync(scratch, { recursive: true, force: true });
   if (failed) {
     let cur = "";
     for (const raw of vout.replace(/\n+$/, "").split("\n")) {
@@ -586,7 +628,7 @@ function checkSkill(dir: string, validatorBin: string, home: string): void {
 
   // (c) metadata: only peers, a non-empty string. The built-in reader, so a
   //     block map and an inline `{…}` map read the same.
-  if (frontmatter(join(dir, "SKILL.md")) !== null) {
+  if (fm !== null) {
     for (const f of parseFm(join(dir, "SKILL.md"))) {
       if (f.tag === "MT") {
         violation(name, `metadata must be a map of string keys to string values, got ${f.type}`);
@@ -604,6 +646,30 @@ function checkSkill(dir: string, validatorBin: string, home: string): void {
           );
         }
       }
+    }
+  }
+
+  // (e) hidden from the model: the key and agents/openai.yaml, both or neither.
+  const hideValue = hideLine >= 0 ? (HIDE_KEY.exec(fmLines[hideLine] ?? "")?.[1] ?? "").trim() : null;
+  if (hideValue !== null && hideValue !== "true") {
+    violation(name, `disable-model-invocation may only be true — drop the key to let the model invoke ${name}`);
+  }
+  const agentsDir = join(dir, "agents");
+  const openaiYaml = join(agentsDir, "openai.yaml");
+  const hasYaml = isFile(openaiYaml);
+  if (hideValue === "true" && !hasYaml) {
+    violation(name, "disable-model-invocation: true needs agents/openai.yaml, which hides the skill on Codex");
+  }
+  if (hasYaml && hideValue !== "true") {
+    violation(name, "agents/openai.yaml without disable-model-invocation: true — both or neither");
+  }
+  if (hasYaml && readFileSync(openaiYaml, "utf8") !== OPENAI_YAML) {
+    violation(name, `agents/openai.yaml must read exactly ${JSON.stringify(OPENAI_YAML)}`);
+  }
+  if (isDir(agentsDir)) {
+    for (const f of readdirSync(agentsDir).sort()) {
+      if (f !== "openai.yaml")
+        violation(name, `agents/${f} is not a file a skill carries — agents/ holds only openai.yaml`);
     }
   }
 

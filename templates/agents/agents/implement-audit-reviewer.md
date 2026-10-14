@@ -29,7 +29,7 @@ Your caller provides:
 - **Automated-check results** — summary of lint/fmt/shellcheck/check-refs/gitleaks/find-peers already run by the caller (treat as ground truth; don't re-run)
 
 You MAY additionally:
-- Read any file in the repo for context (especially `AGENTS.md § Standards` for the imperative repo rules)
+- Read any file in the repo for context (especially `AGENTS.md` at its root — § Standards, and § Skill shape for a skill — for the imperative repo rules)
 - Grep the repo to check for downstream consumers, drift, or sibling files
 - Read the `git diff BASE_SHA..HEAD_SHA` yourself
 

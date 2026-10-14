@@ -74,7 +74,7 @@ The model family that writes the code (the `agent=` line of `.agents/harness`) i
 
 `BASE_SHA` is the start of this session's commits (typically `HEAD~N` for N commits this session); `HEAD_SHA` is `HEAD`. Uncommitted work is included and flagged to the reviewer, because this skill runs pre-commit by design.
 
-**When the code is in another repo** (a product worktree `$PRODUCT_WT` from `write-root.sh`, as `/implement` § "A row whose code is in another repo" sets up), both steps read that worktree, never this one: step 1 runs `run-automated-checks.ts --session-base "$BASE_SHA" --repo-dir "$PRODUCT_WT"`, and every `code-review.ts` call here — snapshot, round 1, `--since` — runs with `CODEX_REVIEW_REPO="$PRODUCT_WT"` in its environment. `BASE_SHA` is `git -C "$PRODUCT_WT" merge-base HEAD origin/<its trunk>`. Left to default, both read this repo's worktree, which holds only the spec, and pass.
+**When the code is in another repo** (a product worktree `$PRODUCT_WT` from `write-root.sh`, as `/implement` § "A row whose code is in another repo" sets up), both steps read that worktree, never this one: step 1 runs `run-automated-checks.ts --session-base "$BASE_SHA" --repo-dir "$PRODUCT_WT"`, and every `code-review.ts` call here — snapshot, round 1, `--since` — runs with `CODEX_REVIEW_REPO="$PRODUCT_WT"` in its environment. `BASE_SHA` is `git -C "$PRODUCT_WT" merge-base HEAD origin/<its trunk>`. Left to default, both read this repo's worktree, which holds only the spec, and pass. When the change has a half in BOTH repos, each repo's review names the other half's worktree in `CODEX_REVIEW_COMPANIONS` — `$PRODUCT_WT` when reviewing this worktree, this worktree when reviewing `$PRODUCT_WT` (`.agents/skills/review/SKILL.md` § Where things are found) — or the reviewer reads the landed copy of the other half and reports what the worktree already changed.
 
 Interpret the exit code — this is a **gate**, not a best-effort step:
 
@@ -82,7 +82,7 @@ Interpret the exit code — this is a **gate**, not a best-effort step:
 |---|---|---|
 | 0 | Reviewed. stdout carries zero or more `[must-fix]` / `[should-fix]` / `[nit]` lines. | Proceed to step-3. Empty stdout here means reviewed-clean. |
 | 4 | `--since` only: nothing changed between the snapshot and now, so the fix loop has CONVERGED. | Not a failure. Stop the loop, fix any held nits, emit an APPROVE trailer. Never re-run a full review to "confirm" it. |
-| 5 | `--since` only: the loop hit the round-4 ceiling. | Not a failure either. Stop, fix held nits, and name what is still open in the trailer and summary. Do NOT switch to the two-arg form to get another round — that is the same call the ceiling just refused. |
+| 5 | `--since` only: the loop hit the round-4 ceiling, or its final review already ran. | Not a failure either. The first time, run the ONE final review of the fixes since the last round — `code-review.ts --since <tree> --final` (`validate.ts --phase review` does this itself) — fix what it finds, and do not review again. The second time, stop: fix held nits and name what is still open in the trailer and summary. Do NOT switch to the two-arg form to get another round — that is the same call the ceiling just refused. |
 | 1 | CHAIN EXHAUSTED — every declared slot answered unusably (non-zero, or empty output with no `NO_FINDINGS` sentinel). On the `adversarial-review` row, slots that were merely absent, failing or timed out end in exit 3 instead (below). | The audit FAILED. Report the reviewer unavailable and do NOT emit an approving trailer. Do not re-run: the fall-through already happened. |
 | 124 | Chain exhausted, last slot timed out. | Treat exactly like exit 1. |
 | 3 | No independent reviewer answered (every vendor in the row unavailable, or the chain reached a CLAUDE slot). | NOT a failure, and NOT independent (Contextium). Run `.agents/agents/implement-audit-reviewer.md` in a FRESH context on the same diff, work its findings through steps 3-4 as usual, and record `implement-audit: round-<N>; claude-fallback (fresh context, NOT independent); <findings>; <verdict>`. Inside `/implement`, `validate.ts` exits 3 (pending) until `validate.ts --fallback-review <file>` has read those findings. |
@@ -127,7 +127,7 @@ Stop on **whichever of these comes first**:
 1. **Converged** — `--since` exits 4: nothing changed since the last snapshot, so there is nothing left to review.
 2. **Clean** — the round returns zero findings.
 3. **Self-inflicted** — most of the round's must-fix findings re-open ground an earlier round already touched (same file, within ~25 lines of an earlier finding). The loop is now reviewing its own fixes.
-4. **Round 4** — a hard ceiling. Stop, fix the held nits, and report what is still open.
+4. **Round 4** — a hard ceiling on churn. Round 4's own fixes still get ONE final review (`--since <tree> --final`, once per loop): fix what it finds, never review again, then fix the held nits and report what is still open. Without that review, the last round's fixes would ship unreviewed.
 
 Test 3 is the real signal and usually fires first; test 4 is the backstop for when it does not. Test 4 is **also enforced by the script**, which refuses a 5th round with exit 5 — a ceiling stated only in prose is one a long loop runs straight past.
 
@@ -168,7 +168,7 @@ One line, written into `report.md` § Validation Results, or printed for a stand
 
 **Where the line goes** — a record in the artifact folder, never a gate on a commit (a trailer is a record, not a gate):
 
-- Inside `/implement`: phase-5 writes this line into the report's validation section — `specs/NNN-name/report.md`, or a legacy `{name}-report.md`. `/close` does not read it out of the report, and nothing checks a commit for it.
+- Inside `/implement`: phase-5 writes this line into the report's validation section — `specs/NNN-name/report.md`. `/close` does not read it out of the report, and nothing checks a commit for it.
 - Standalone `/implement-audit` (no report): print the line; `/close` § 3 quotes it under the journal entry's `**Changes:**`, which is where it survives the session.
 
 ## step-6-auto-close
@@ -180,7 +180,7 @@ phase-6 closes, so nothing is missing. Run standalone — which is what happens 
 ad-hoc change — and the skill's last act was to print a trailer whose only purpose is to
 ride a commit that then never got made. The session ends holding it.
 
-So: **if a report exists for this work — `specs/NNN-name/report.md` in the spec's folder, or a legacy sibling `*-report.md` — do nothing** — `/implement` owns
+So: **if a report exists for this work — `specs/NNN-name/report.md` in the spec's folder — do nothing** — `/implement` owns
 the tail and a second `/close` would double-fire against the gate. Otherwise,
 when the verdict is `APPROVE` or `SHIP-with-deferred`:
 

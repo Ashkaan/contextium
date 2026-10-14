@@ -296,6 +296,10 @@ function copyScripts(destRoot: string): void {
   }
 }
 
+// The harness-links check land.ts runs from the shared checkout after every
+// landing (Case 22).
+const HL_CHECK_REL = ".agents/checks/check-harness-config-links.ts";
+
 // ── Fixture ───────────────────────────────────────────────────────────────
 
 const TID1 = "aaaa1111-0000-0000-0000-000000000001";
@@ -350,6 +354,11 @@ function fixture(
         write(join(dir, ".agents/checks/check-scripts.ts"), 'console.log("OK — stub");\n');
         gDo(dir, "add", ".agents");
       }
+      // The harness-links check every landing runs from the shared checkout,
+      // as a stub that finds nothing. Case 22 replaces it where it is what is
+      // being tested.
+      write(join(dir, HL_CHECK_REL), 'console.log("OK — stub");\n');
+      gDo(dir, "add", ".agents");
     }
     gDo(dir, "commit", "-q", "-m", "seed");
     gDo(dir, "remote", "add", "origin", bare);
@@ -2153,6 +2162,60 @@ kase("Case 15: two threads land adjacent roadmap rows", () => {
   has("the driver is registered in the repo's config", g(F.CODE, "config", "merge.roadmap.driver"), "roadmap-merge.ts");
 });
 
+// A ROW WHOSE LANDING WAS PARTIAL GOES BACK TO `planned`. `/implement` flips a
+// row `in-progress`; only a `complete` report ever made the close move it on,
+// so a row built over two landings stayed `in-progress` with nobody working it,
+// and a dispatcher that starts only `planned` rows never started its next
+// landing. A row
+// whose report this push did not touch is someone else's and stays as it is.
+kase("Case 15p: a partial report releases its in-progress row to planned", () => {
+  fixture("c15p");
+  write(
+    join(F.CODE, RMP, "ROADMAP.md"),
+    lines(
+      ...tableHead(),
+      "| R1 | first | — | in-progress | `specs/001-first/` |",
+      "| R2 | second | — | in-progress | `specs/002-second/` |",
+      "| R3 | third | — | in-progress | `specs/003-third/` |",
+    ),
+  );
+  for (const s of ["001-first", "002-second", "003-third"]) write(join(F.CODE, RMP, `specs/${s}/spec.md`), "# spec\n");
+  // R2 already carries a partial report from an earlier landing; another thread
+  // is on it now, and this push does not touch its report.
+  write(join(F.CODE, RMP, "specs/002-second/report.md"), "---\nspec: x\nspec-status: partial\n---\n");
+  write(
+    join(F.CODE, RMP, "README.md"),
+    '---\nproject: rows\nstatus: active\nnext: "R1: first"\n---\n\n# Project: rows\n',
+  );
+  gDo(F.CODE, "add", "-A");
+  gDo(F.CODE, "commit", "-q", "-m", "roadmap");
+  gDo(F.CODE, "push", "-q", "origin", "main");
+  gDo(F.WT1, "fetch", "-q", "origin");
+  gDo(F.WT1, "reset", "-q", "--hard", "origin/main");
+  const report = (status: string) => `---\nspec: x\nspec-status: ${status}\n---\n\n# Implementation Report\n`;
+  write(join(F.WT1, RMP, "specs/001-first/report.md"), report("partial"));
+  write(join(F.WT1, RMP, "specs/003-third/report.md"), report("complete"));
+  entry(jf(1, "partial"), "partial", "landing one of R1");
+  const r = land(1, ["landing one of R1"], { merge: true });
+  is("the partial landing lands", r.rc, "0");
+  if (r.rc !== "0") process.stdout.write(`${r.out.split("\n").slice(-3).join("\n")}\n`);
+  gOk(F.CODE, "fetch", "-q", "origin");
+  const rows = g(F.CODE, "show", `origin/main:${RMP}/ROADMAP.md`)
+    .split("\n")
+    .filter((l) => l.startsWith("| R"))
+    .map((l) => {
+      const f = l.split("|");
+      return `${(f[1] ?? "").replace(/ /g, "")}=${(f[4] ?? "").replace(/^ +| +$/g, "")} `;
+    })
+    .join("");
+  is(
+    "R1 (partial report in this push) is planned; R2 (partial, but not in this push) and R3 (complete) are untouched",
+    rows,
+    "R1=planned R2=in-progress R3=in-progress ",
+  );
+  has("…and the close says so", r.out, "R1 back to planned");
+});
+
 // THE NEXT ACTION IS THE MERGED PROJECT'S. The same two parallel rows, each
 // close naming the project: thread two's own table, before the merge, still
 // shows R1 ready, and the Next line used to be derived from that copy — so the
@@ -2815,4 +2878,157 @@ kase("Case 20: every kill point in a landing leaves a retry that polls or refuse
   r = land(1, ["push fails"], { merge: true });
   is("the next close pushes and closes", r.rc, "0");
   is("…polling once", polledCount(), "1");
+});
+
+// ── Case 21: land.ts's script roots are check-scripts.ts's ROOTS ─────────
+//
+// changedScripts decides whether a close runs check-scripts.ts at all, by a
+// regex of the checker's roots — a second copy of a list the checker owns. A
+// root moved in one and left behind in the other would let a script-only
+// change close without its tests ever being asked for. Read from both
+// sources, so neither can move alone.
+kase("Case 21: land.ts's script roots are check-scripts.ts's ROOTS", () => {
+  const land = readFileSync(join(HERE, "land.ts"), "utf8");
+  const m = /\/\^(.*?)\\\/\.\*\\\.\(sh\|ts\|mjs\|js\|cjs\|py\)\$\/s/.exec(land);
+  assert.ok(m?.[1], "land.ts: the changedScripts root regex was not found");
+  // `\.agents` or `(a|b(c|d))` → the plain paths it matches.
+  const body = m[1].replace(/\\\//g, "/").replace(/\\\./g, ".");
+  const inner = body.startsWith("(") && body.endsWith(")") ? body.slice(1, -1) : body;
+  const roots: string[] = [];
+  for (const alt of inner.split(/\|(?![^(]*\))/)) {
+    const group = /^(.*)\((.*)\)$/.exec(alt);
+    if (group) for (const g of (group[2] ?? "").split("|")) roots.push(`${group[1]}${g}`);
+    else roots.push(alt);
+  }
+  const checker = readFileSync(join(REPO, "checks/check-scripts.ts"), "utf8");
+  const block = /const ROOTS = \[([\s\S]*?)\];/.exec(checker);
+  assert.ok(block?.[1], "check-scripts.ts: ROOTS was not found");
+  const want = [...block[1].matchAll(/"([^"]+)"/g)].map((x) => x[1] ?? "");
+  is(
+    "land.ts's script roots match check-scripts.ts's ROOTS",
+    JSON.stringify([...roots].sort()),
+    JSON.stringify([...want].sort()),
+  );
+});
+
+// ── Case 22: every landing checks the harness home links ─────────────────
+//
+// The close runs check-harness-config-links.ts from the shared checkout after
+// it lands, and on drift its `--fix`, printing one line per relinked path and
+// one per displaced file it kept. Drift, a failed fix, a missing check and a
+// crashing one are all lines in the close's output, never a refusal: the links
+// are host state, not the thread's diff. The check here is a stub speaking the
+// real one's protocol (`fixed: <link> -> <target>`, `kept the displaced file
+// at <path>`, `Error: …` and a `Relink with:` footer); what the real check
+// finds is check-harness-config-links.test.ts's to test.
+
+/** A links-check stub that records each run in HOME and behaves as HL_STUB_MODE says. */
+const HL_STUB = `import { appendFileSync } from "node:fs";
+const fix = process.argv.includes("--fix");
+const H = process.env.HOME ?? "";
+appendFileSync(\`\${H}/.hl-runs\`, fix ? "fix\\n" : "report\\n");
+const mode = process.env.HL_STUB_MODE ?? "clean";
+if (mode === "clean") process.exit(0);
+if (!fix) {
+  console.error("Error: a link drifted");
+  console.error("Relink with: node --experimental-strip-types check-harness-config-links.ts --fix");
+  process.exit(1);
+}
+if (mode === "drift") {
+  console.log(\`fixed: \${H}/.grok/config.toml -> /the/target\`);
+  console.log(\`kept the displaced file at \${H}/.grok/config.toml.pre-link\`);
+  process.exit(0);
+}
+console.error(\`Error: refusing to relink \${H}/.grok/config.toml — it is a real directory with files in it.\`);
+console.error("Relink with: node --experimental-strip-types check-harness-config-links.ts --fix");
+process.exit(1);
+`;
+
+function commitOnTrunk(subject: string): void {
+  gDo(F.CODE, "add", "-A");
+  gDo(F.CODE, "commit", "-q", "-m", subject);
+  gDo(F.CODE, "push", "-q", "origin", "HEAD:main");
+}
+
+const linkLines = (out: string): string[] => out.split("\n").filter((l) => l.includes("harness-links:"));
+const hlRuns = (): string => {
+  const p = join(F.HOME_DIR, ".hl-runs");
+  return isFile(p) ? cat(p).split("\n").join(" ") : "";
+};
+
+kase("Case 22: every landing checks the harness home links, relinks drift, never refuses", () => {
+  // (a) Clean: the check runs once, in report mode, and the close says nothing.
+  fixture("c22-clean");
+  write(join(F.CODE, HL_CHECK_REL), HL_STUB);
+  commitOnTrunk("the links check stub");
+  write(join(F.WT1, "one.txt"), "one\n");
+  let r = land(1, ["clean links"], { merge: true, extra: { HL_STUB_MODE: "clean" } });
+  is("(a) a close over clean links lands", r.rc, "0");
+  is("(a) …and prints no harness-links line", linkLines(r.out).join("\n"), "");
+  is("(a) …having run the check once, in report mode, and never its --fix", hlRuns(), "report");
+
+  // (b) Drift the fix repairs: it prints both lines, and the close still lands.
+  fixture("c22-drift");
+  write(join(F.CODE, HL_CHECK_REL), HL_STUB);
+  commitOnTrunk("the links check stub");
+  write(join(F.WT1, "one.txt"), "one\n");
+  r = land(1, ["drifted links"], { merge: true, extra: { HL_STUB_MODE: "drift" } });
+  is("(b) drift does not stop the close", r.rc, "0");
+  has("(b) …which prints the proof line", r.out, "— closing this tab loses nothing.");
+  is("(b) …having run the report, then the fix", hlRuns(), "report fix");
+  is(
+    "(b) …and prints one relinked line and one kept-file line",
+    linkLines(r.out).join("\n"),
+    [
+      "  harness-links: relinked ~/.grok/config.toml -> /the/target",
+      `  harness-links: the file that stood there is kept at ${F.HOME_DIR}/.grok/config.toml.pre-link — inspect it`,
+    ].join("\n"),
+  );
+
+  // (c) Drift the fix refuses: the refusal is printed, and the close still lands.
+  fixture("c22-unfixable");
+  write(join(F.CODE, HL_CHECK_REL), HL_STUB);
+  commitOnTrunk("the links check stub");
+  write(join(F.WT1, "one.txt"), "one\n");
+  r = land(1, ["unfixable links"], { merge: true, extra: { HL_STUB_MODE: "unfixable" } });
+  is("(c) an unfixable link does not stop the close", r.rc, "0");
+  has("(c) …which prints the proof line", r.out, "— closing this tab loses nothing.");
+  has(
+    "(c) …and names what was not fixed",
+    r.out,
+    `  harness-links: NOT FIXED — refusing to relink ${F.HOME_DIR}/.grok/config.toml — it is a real directory with files in it.`,
+  );
+  has(
+    "(c) …and how to see the details",
+    r.out,
+    `  harness-links: details: node --experimental-strip-types ${join(F.CODE, HL_CHECK_REL)}`,
+  );
+
+  // (d) The check is missing from the shared checkout: a warning, then the close.
+  fixture("c22-missing");
+  gDo(F.CODE, "rm", "-q", HL_CHECK_REL);
+  commitOnTrunk("the links check is gone");
+  write(join(F.WT1, "one.txt"), "one\n");
+  r = land(1, ["no links check"], { merge: true });
+  is("(d) a missing check does not stop the close", r.rc, "0");
+  has("(d) …which prints the proof line", r.out, "— closing this tab loses nothing.");
+  is(
+    "(d) …and warns, naming the check",
+    linkLines(r.out).join("\n"),
+    `  harness-links: WARNING not checked — no checkout this thread landed holds ${HL_CHECK_REL}`,
+  );
+
+  // (e) The check crashes: a warning carrying its error, then the close.
+  fixture("c22-crash");
+  write(join(F.CODE, HL_CHECK_REL), 'throw new TypeError("the links check blew up");\n');
+  commitOnTrunk("a crashing links check");
+  write(join(F.WT1, "one.txt"), "one\n");
+  r = land(1, ["crashing links check"], { merge: true });
+  is("(e) a crashing check does not stop the close", r.rc, "0");
+  has("(e) …which prints the proof line", r.out, "— closing this tab loses nothing.");
+  is(
+    "(e) …and warns with the error it threw",
+    linkLines(r.out).join("\n"),
+    "  harness-links: WARNING the check failed (exit 1): TypeError: the links check blew up — links not checked",
+  );
 });

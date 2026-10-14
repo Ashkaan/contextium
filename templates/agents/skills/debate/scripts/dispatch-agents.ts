@@ -73,7 +73,7 @@ async function main(): Promise<void> {
   }
 
   let promptsDir = "";
-  let timeoutS = "300";
+  let timeoutS = "600";
   let standIn = true;
   let research = false;
 
@@ -354,7 +354,7 @@ async function main(): Promise<void> {
   // debate open, or outlive it.
   const KILL_GRACE_MS = 3000;
   // TEST SEAM, like DEBATE_POLICY_JSON: milliseconds per second of the ceiling,
-  // so a suite can run the 300s default in a fraction of a second. Unset in
+  // so a suite can run the 600s default in a fraction of a second. Unset in
   // every real run.
   const MS_PER_S = Number(process.env.DEBATE_MS_PER_S ?? "") || 1000;
   // One entry per timed-out seat, settled once its process group is empty or

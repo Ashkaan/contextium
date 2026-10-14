@@ -33,7 +33,7 @@
 //        hook config or a sourcing file may sit outside ROOTS), never from a
 //        list of names. A `.sh` is in it when it is
 //          - named by a hook `command` in any JSON hook config of the repo
-//            (`.claude/settings.json`, `.agents/hooks.json`, …) — the harness
+//            (`.agents/hooks/claude-hooks.json`, `.agents/hooks.json`, …) — the harness
 //            fires it on every tool call;
 //          - a maker of the tree TypeScript runs from: a command line (not a
 //            comment, not inside a string) running `git … worktree add` or
@@ -1168,10 +1168,10 @@ function hookCommands(node: unknown, underHooks: boolean, out: string[]): string
 }
 
 /** The `.sh` files a JSON hook config names. A path in a command is read from
- *  the repo root, then from the config's folder (`bash ../.agents/hooks/x.sh`
- *  in `.agents/hooks.json`); a path that names neither — an installed layout
- *  such as `$d/.agents/hooks/x.sh` in a template repo — matches the bash file
- *  whose last two path parts it ends with. */
+ *  the repo root, then from the config's folder (`bash hooks/x.sh` in
+ *  `.agents/hooks.json`); a path that names neither — an installed layout such
+ *  as `$d/.agents/hooks/x.sh` in `.agents/hooks/claude-hooks.json`, or the
+ *  installed workbench's `__WORKBENCH__/.agents/hooks/x.sh` — matches the bash file whose last two path parts it ends with. */
 function hookFiles(files: string[], bash: Set<string>): Set<string> {
   const found = new Set<string>();
   for (const cfg of files) {

@@ -102,7 +102,9 @@ and explicitly `true` or `false`.
 existing. Two wirings, neither automatic:
 
 1. To make it the default, set `outputStyle: "<name>"` in
-   `~/.claude/settings.json`.
-2. To carry it into subagents, add the agent types to the allowlist of the
+   `~/.claude/settings.json`, so it is the user default in every repo. Never in
+   `.agents/hooks/claude-hooks.json`: a key there besides `hooks` makes Codex
+   discard the guards.
+2. To carry it into subagents, add the agent types to the allowlist of a
    `SubagentStart` hook in `.agents/hooks/`. Its allowlist fails closed — an
    unlisted agent type gets nothing.

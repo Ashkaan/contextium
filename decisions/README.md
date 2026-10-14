@@ -41,7 +41,10 @@ Your Name 2026-01-10: "the words that accepted it"
 * Bad, because …
 ```
 
-`### Consequences` is optional. Everything else is required.
+`### Consequences` is optional, and so is a last `## More Information` section
+(MADR 4.0.0 full template's), which a backfilled record uses for its source
+entry, quoted verbatim, and the line that says where it came from. Everything
+else is required.
 
 - **`status`** is one of `proposed`, `rejected`, `accepted`, `deprecated`, or
   `superseded by <path>` — the repo-relative path of the record that replaced
@@ -53,8 +56,9 @@ Your Name 2026-01-10: "the words that accepted it"
 - **`accepted` needs the words that accepted it.** The body carries at least
   one line with a `YYYY-MM-DD` date followed by the decision-maker's words in
   quotes, straight (`"…"`) or typographic (`“…”`) — `Your Name 2026-01-10: "…"`.
-  Frontmatter does not count, and neither does a quote with its date after it,
-  which is how a discussion gets cited. A record that cannot quote an approval
+  Frontmatter does not count, a blockquote (`> …`) does not count, and
+  neither does a quote with its date after it, which is how a discussion gets
+  cited. A record that cannot quote an approval
   is `proposed`: an agent that writes `accepted` over a conversation that never
   decided anything has invented a decision.
 - **Filename** is `NNNN-title-with-dashes.md`, lowercase: `NNNN` is the next
@@ -82,6 +86,17 @@ new folder. When the content is replaced, **supersede** it: write the new record
 and set the old one's status to `superseded by <new path>`. A record is not
 edited into a different decision.
 
+## Revisiting a proposed record
+
+A `proposed` record is not settled: an agent wrote it, and you have not
+approved it. A session about to rely on one, or to contradict it, asks you
+first — `/project`'s grill does this for every row it designs
+(`.agents/skills/project/SKILL.md` `think-step-2.5-grill`). Your answer either sets
+`status: accepted`, `decision-makers: Your Name` and your quoted words with the
+day's date, or sets `status: rejected`; either way `date` becomes the day of
+the answer. Nothing schedules a review of every proposed record: one no work
+touches stays proposed.
+
 ## The check
 
 `.agents/checks/check-decision-records.ts` holds every record to this format,
@@ -97,7 +112,7 @@ refuses the close. Each violation names its part:
 | (d) | a blank `decision-makers` |
 | (e) | a filename that is not `NNNN-title-with-dashes.md` in lowercase |
 | (f) | an `NNNN` already used by another record in the same folder, committed or not |
-| (g) | an `accepted` record whose body has no line with a date followed by quoted words |
+| (g) | an `accepted` record whose body has no line, outside a blockquote, with a date followed by quoted words |
 
 Placement is not checked: no script can list who could act contrary to a
 decision.

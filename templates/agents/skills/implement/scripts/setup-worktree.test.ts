@@ -167,6 +167,17 @@ test("create-fresh (worktree+branch absent → -b new branch)", () => {
   assert.equal(branchOf(wt(repo, "my-slug")), "worktree-my-slug", "wrong branch");
 });
 
+// ── Mode 1: the session identity an ordinary Bash call carries ──
+// No hook runs this script, so a direct call from the skill body has only the
+// harness's own CLAUDE_CODE_SESSION_ID. (No id at all is not a refusal: the
+// generated-id case below covers it.)
+test("session-id falls back to CLAUDE_CODE_SESSION_ID", () => {
+  const repo = makeRepo();
+  const r = runSetup(["my-slug"], { CLAUDE_PROJECT_DIR: repo, CLAUDE_CODE_SESSION_ID: "xyz" });
+  assert.equal(r.rc, 0, r.all);
+  assert.ok(existsSync(join(wt(repo, "my-slug"), ".claude-session-xyz")), "marker missing");
+});
+
 // ── Mode 1: branch survives prior worktree removal ──
 test("branch-survives (no -B reset, local commits preserved)", () => {
   const repo = makeRepo();
@@ -357,6 +368,11 @@ test("slug-shard-fresh (composite worktree + branch)", () => {
   );
   assert.ok(existsSync(wt(repo, "my-slug-foo")), "composite worktree dir missing");
   assert.equal(branchOf(wt(repo, "my-slug-foo")), "worktree-my-slug-foo", "wrong branch");
+  assert.equal(
+    existsSync(join(wt(repo, "my-slug-foo"), ".claude-slug-shard")),
+    false,
+    "a slug/shard marker nobody reads",
+  );
 });
 
 // ── Mode 1b: composite overflows 64-char regex → fail ──
@@ -522,6 +538,7 @@ test("roadmap r99 refuses with the ID list, nothing created", () => {
 test("roadmap named row that is not ready, has no spec, or is complete refuses", async (t) => {
   for (const [sid, want] of [
     ["r2", "has no spec yet"],
+    ["r2-manual", "is a manual step"],
     ["r1-done", "not ready"],
     ["r1-blocked", "not ready"],
   ] as const) {
@@ -529,7 +546,12 @@ test("roadmap named row that is not ready, has no spec, or is complete refuses",
       const repo = makeRepo();
       const lib = makeRecords();
       const road = join(rmxDir(lib), "ROADMAP.md");
-      if (sid === "r1-done") {
+      if (sid === "r2-manual") {
+        writeFileSync(
+          road,
+          readFileSync(road, "utf8").replace("| R2 | b | — | planned | — |", "| R2 | b | — | planned | manual |"),
+        );
+      } else if (sid === "r1-done") {
         writeFileSync(road, readFileSync(road, "utf8").replace("| R1 | a | — | planned |", "| R1 | a | — | done |"));
       } else if (sid === "r1-blocked") {
         writeFileSync(
@@ -597,7 +619,55 @@ test("roadmap read-only ROADMAP.md warns, worktree still created", () => {
   assert.ok(existsSync(wt(repo, "rmx-r1")), `rc ${r.rc}; err: ${r.err}`);
 });
 
-// ── The helpers run as TypeScript, through node ─────────────────────────────
+// The README shard table and a project with no ROADMAP.md are a retired
+// layout: both refuse, and nothing is created.
+const SHARD_README = [
+  "---",
+  "status: active",
+  "---",
+  "",
+  "## Shard Status",
+  "",
+  "| Shard | SPEC | Report | State |",
+  "|---|---|---|---|",
+  "| alpha | `alpha.spec.md` | — | planned |",
+  "",
+].join("\n");
+
+test("a README shard row is not a ROADMAP row: refused, nothing created", () => {
+  const repo = makeRepo();
+  const lib = makeRecords();
+  writeFileSync(join(rmxDir(lib), "README.md"), SHARD_README);
+  writeFileSync(join(rmxDir(lib), "alpha.spec.md"), "# spec\n");
+  const r = runSetup(["--slug", "rmx", "--shard", "alpha"], {
+    CONTEXT_WRITE_ROOT: lib,
+    CLAUDE_PROJECT_DIR: repo,
+    CLAUDE_SESSION_ID: "abc",
+  });
+  assert.equal(r.rc, 1, `rc ${r.rc}; err: ${r.err}`);
+  assert.ok(r.err.includes("BLOCKED: no row 'alpha'"), `rc ${r.rc}; err: ${r.err}`);
+  assert.equal(leftBehind(repo), false, "a worktree or branch was left behind");
+  assert.ok(readFileSync(join(rmxDir(lib), "README.md"), "utf8").includes("| planned |"), "the shard table was edited");
+});
+
+test("a project with no ROADMAP.md is refused in both forms, nothing created", async (t) => {
+  for (const args of [["--slug", "shx", "--shard", "alpha"], ["shx"]]) {
+    await t.test(args.join(" "), () => {
+      const repo = makeRepo();
+      const lib = mktemp();
+      const p = join(lib, "projects/t/2026-01-01_shx");
+      mkdirSync(p, { recursive: true });
+      writeFileSync(join(p, "README.md"), SHARD_README);
+      writeFileSync(join(p, "alpha.spec.md"), "# spec\n");
+      const r = runSetup(args, { CONTEXT_WRITE_ROOT: lib, CLAUDE_PROJECT_DIR: repo, CLAUDE_SESSION_ID: "abc" });
+      assert.equal(r.rc, 1, `rc ${r.rc}; err: ${r.err}`);
+      assert.ok(r.err.includes(`BLOCKED: ${p} has no ROADMAP.md`), `rc ${r.rc}; err: ${r.err}`);
+      assert.equal(leftBehind(repo), false, "a worktree or branch was left behind");
+    });
+  }
+});
+
+// ── The helpers run as TypeScript, through node ────────────────────────────
 //
 // setup-worktree.sh stays bash, but every helper it runs became a `.ts` file:
 // session-key, session-write-root (this skill), thread, roadmap, spec-state,
@@ -732,7 +802,6 @@ test("the resolver sources only harness.sh, and names no retired .sh helper", ()
     "spec-state",
     "open-clarifications",
     "detect-stage",
-    "update-shard-status",
   ]) {
     const code = text
       .split("\n")

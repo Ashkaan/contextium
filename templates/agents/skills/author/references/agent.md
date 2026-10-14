@@ -59,4 +59,4 @@ Gates (deterministic, per SKILL.md § The four principles): the five required fr
 
 ## Step 5 — register
 
-None. Agents are auto-discovered from `.agents/agents/<name>.md` (the installer links `~/.claude/agents` to it). The dispatching skill names the agent in the body section that dispatches it and in `metadata.peers`.
+None. Agents are auto-discovered from `.agents/agents/<name>.md`, which Claude Code and Grok read at user scope through the `~/.claude/agents` home link the installer makes — so an agent is available in every repo. The dispatching skill names the agent in the body section that dispatches it and in `metadata.peers`.

@@ -90,7 +90,8 @@
 //   - reviewer [nit] only:         NEED_FIX=0 — a nit is not a change request
 //   - reviewer [must-fix]:         NEED_FIX=1, exit 1
 //   - reviewer exit 4 (converged): NEED_FIX=0, exit 0, with a note
-//   - reviewer exit 5 (ceiling):   NEED_FIX=0, exit 0, with a note
+//   - reviewer exit 5 (ceiling):   the one `--final` review runs instead;
+//                                  a second exit 5 is NEED_FIX=0, exit 0, with a note
 //   - reviewer exit 1/3/124:       exit 1 — the audit did not happen
 //   - tree unchanged over review:  NEED_E2E=0
 //   - tree changed over review:    layers 1+2 re-run, NEED_E2E=1
@@ -545,8 +546,21 @@ async function main(): Promise<void> {
       }
       review = runTs(REVIEW, [BASE, HEAD_REF], { env: reviewEnv, capture: true });
     }
-    const reviewRc = statusOf(review);
-    const reviewOut = review.stdout ?? "";
+    let reviewRc = statusOf(review);
+    let reviewOut = review.stdout ?? "";
+
+    // At the ceiling, the fixes made since the last round still get their one
+    // review: `--final`, once per loop. Its findings count like a
+    // round's; a second ceiling — the final pass already spent — is the note.
+    if (reviewRc === 5 && SINCE !== "") {
+      const finalReview = runTs(REVIEW, ["--since", SINCE, "--final"], { env: reviewEnv, capture: true });
+      const finalRc = statusOf(finalReview);
+      if (finalRc !== 5) {
+        out("NOTE: the round-4 ceiling was reached — this is the final review of the fixes since the last round");
+        reviewRc = finalRc;
+        reviewOut = finalReview.stdout ?? "";
+      }
+    }
 
     switch (reviewRc) {
       case 0:
@@ -565,7 +579,7 @@ async function main(): Promise<void> {
         PENDING_FALLBACK = true;
         break;
       case 5:
-        out("NOTE: the fix loop hit the round-4 ceiling — report what is still open");
+        out("NOTE: the fix loop hit the round-4 ceiling and its final review already ran — report what is still open");
         break;
       case 2:
         err("validate: the reviewer was called wrong (exit 2). Fix the range and re-run.");

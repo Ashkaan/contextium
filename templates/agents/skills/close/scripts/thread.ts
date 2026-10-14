@@ -75,6 +75,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, statSyn
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { exit, runToExit } from "../../../packages/cli-exit/cli-exit.ts";
+import { t3Database, threadsSource } from "./t3-db.ts";
 
 function fail(msg: string): never {
   process.stderr.write(`thread: ${msg}\n`);
@@ -256,7 +257,9 @@ function harnessRow(LEDGER_HOME: string, tid: string, fresh: boolean): string {
 async function main(): Promise<void> {
   const HOME = process.env.HOME ?? "";
   const T3_HOME = process.env.T3CODE_HOME || `${HOME}/.t3`;
-  const DB = `${T3_HOME}/userdata/state.sqlite`;
+  // statev2.sqlite since T3 0.0.46; t3-db.ts says why and what moved.
+  const DB = t3Database(T3_HOME);
+  const THREADS = threadsSource(DB);
   const LEDGER_HOME = `${HOME}/.cache/workbench/threads`;
   const SESSIONS_HOME = `${HOME}/.cache/workbench/sessions`;
 
@@ -303,7 +306,7 @@ async function main(): Promise<void> {
     if (isFile(DB)) {
       const r = dbRow(
         DB,
-        `select ${COLUMNS} from projection_threads where thread_id = ? and deleted_at is null`,
+        `select ${COLUMNS} from ${THREADS} where thread_id = ? and deleted_at is null`,
         override,
       );
       row = rowOrNone(DB, r);
@@ -324,11 +327,7 @@ async function main(): Promise<void> {
     TOP = realpathSync(TOP);
 
     if (isFile(DB)) {
-      const r = dbRow(
-        DB,
-        `select ${COLUMNS} from projection_threads where worktree_path = ? and deleted_at is null`,
-        TOP,
-      );
+      const r = dbRow(DB, `select ${COLUMNS} from ${THREADS} where worktree_path = ? and deleted_at is null`, TOP);
       row = rowOrNone(DB, r);
     }
 
@@ -368,7 +367,7 @@ async function main(): Promise<void> {
         }
         // A T3 thread's satellite reads T3's row; any other session's, its own.
         if (isFile(DB)) {
-          const r = dbRow(DB, `select ${COLUMNS} from projection_threads where thread_id = ? and deleted_at is null`, TID);
+          const r = dbRow(DB, `select ${COLUMNS} from ${THREADS} where thread_id = ? and deleted_at is null`, TID);
           row = rowOrNone(DB, r);
         }
         if (row === "") row = harnessRow(LEDGER_HOME, TID, false);

@@ -59,17 +59,19 @@ node --experimental-strip-types .agents/skills/close/scripts/project-remaining-w
 For each project this session touched, under `projects/` of the worktree
 `write-root.sh .` names:
 
-**A project with `ROADMAP.md`** — the roadmap is its only list of outstanding
-work, so the README gets no `## Current Progress` or `## Next Steps`:
+Every project has a `ROADMAP.md`, and the roadmap is its only list of
+outstanding work, so the README gets no `## Current Progress` or `## Next Steps`:
 
 1. **Anything still outstanding becomes a row**, never a README bullet. A watch
-   is a row with Status `blocked: <date>`; a manual step or a waiting-on-someone
-   item is a row with Sub-spec `—`, Status `blocked: <who does what>`. New IDs
+   is a row with Status `blocked: <date>`; a manual step is a row with Sub-spec
+   `manual`, and Status `blocked: <who does what>` while it waits on someone. New IDs
    continue from the highest existing one and are never reused. A row that will
    not be done is `closed: <why>`, never left open on a finished project.
 2. **Flip each row whose spec is finished** — `spec-state.ts` reads its
    `report.md` as `complete` — to `done`. This close is the only writer of
-   `done`; `/implement` only ever sets `in-progress`.
+   `done`; `/implement` only ever sets `in-progress`. A row whose report this
+   push writes as `partial` goes back to `planned` by itself — `land.ts`
+   `releasePartialRows` — so the next landing can be started; leave it alone.
 3. **Re-derive `status:` and `next:`.** Never hand-write either, nor
    `blocked-on:` or `monitoring-until:`; the rule is the README template's,
    and `land.ts` re-runs it on every project a push touches. When it derives
@@ -81,26 +83,15 @@ node --experimental-strip-types .agents/skills/close/scripts/roadmap.ts <project
 node --experimental-strip-types .agents/skills/close/scripts/roadmap.ts <project-folder> --sync-next
 ```
 
-**A project with no `ROADMAP.md`** — update `## Current Progress` and
-`## Next Steps` in its README. When it has a `## Shard Status` table, set this
-shard's State cell (the row's last column) to `closed`, last — this close is
-that state's only writer. Left `in-flight`, `project-remaining-work.ts` keeps
-reporting `work-remains` and `next-implement-command.ts` keeps offering the
-shard it just closed.
+**A project with no `ROADMAP.md`** is a retired layout: the readers report it
+(`roadmap-error: no ROADMAP.md`, which vetoes completion) rather than read its
+loose specs or README sections. Give it a roadmap with `/project <slug>` first.
 
-**On a ROADMAP project this close never chooses `status:`** — step 3 derives it
-from the rows. When a close chose it, the choice drifted from the table both
-ways: a project went `monitor` while a row waited on the owner to grant access,
-and others sat `completed` over rows still `planned`. To change what a project
-is, change a row.
-
-**A project with no `ROADMAP.md`** is still set by hand: `completed` or
-`monitor` only when `project-remaining-work.ts` says `no-hard-signal` AND the
-goal is met; `work-remains` keeps it `active`, or `blocked` with `blocked-on:`
-when every open item waits on someone else — a credential to rotate, a vendor, a
-decision — because `active` makes step 5 print an `/implement` with nothing to
-run. `monitor` is only for a dated watch, with `monitoring-until:` starting with
-that date.
+**This close never chooses `status:`** — step 3 derives it from the rows. When
+a close chose it, the choice drifted from the table both ways: a project went
+`monitor` while a row waited on the owner to grant access, and others sat
+`completed` over rows still `planned`. To change what a project is, change a
+row.
 
 ## 3 — Journal
 
@@ -158,9 +149,12 @@ Runs the workbench's checks (decision records, skills, secrets, standards
 citations) and the journal check, commits, merges the repo's trunk, pushes,
 confirms the push deployed where the repo opts in
 (`.agents/deployable-prefixes.json`), removes the worktrees it made, then
-re-fetches and checks. `ROADMAP.md` merges row by row (`roadmap-merge.ts`), so
-two sessions closing two rows of one project do not conflict; a real clash in
-one row still does. On any failure it prints one
+re-fetches and checks. It also checks the harness home links
+(`check-harness-config-links.ts`) and relinks any that drifted; inspect each
+`.pre-link` file a `harness-links:` line names and put those lines in the report
+— they never refuse the close. `ROADMAP.md` merges row by row
+(`roadmap-merge.ts`), so two sessions closing two rows of one project do not
+conflict; a real clash in one row still does. On any failure it prints one
 `NOT CLOSED: <reason>` and exits 3; the worktrees are intact and re-running resumes.
 For a repairable error within the authorized work (such as this thread's journal
 format), fix the cause, re-run affected checks, update the journal, and retry Land.

@@ -206,17 +206,50 @@ test("multi-byte next is cut by characters", () => {
   );
 });
 
-// Sub-spec forms
+// Sub-spec forms: `—` or `specs/NNN-name/`, ticked or not, and nothing else
 test("Sub-spec forms", () => {
   const d = mk(
     "subs",
-    "| R1 | a | i | s | — | done | `decision-records.spec.md` → `decision-records-report.md` |",
+    "| R1 | a | i | s | — | done | — |",
     "| R2 | b | i | s | — | planned | `specs/004-mech/` |",
     "| R3 | c | i | s | — | planned | specs/005-bare/ |",
   );
-  assert.equal(field(d, "R1", 4), "decision-records", "legacy Sub-spec gives the stem");
+  assert.equal(field(d, "R1", 4), "—", "— gives —");
   assert.equal(field(d, "R2", 4), "specs/004-mech", "folder Sub-spec gives specs/NNN-name");
   assert.equal(field(d, "R3", 4), "specs/005-bare", "unticked folder Sub-spec");
+});
+
+// The legacy backticked form, and anything else, is a malformed table
+test("a Sub-spec that is not —, manual or specs/NNN-name/ is refused", () => {
+  for (const cell of ["`a.spec.md` → `a-report.md`", "`a-report.md`", "specs/1-a/", "-", "see R2"]) {
+    const d = mk(
+      `bad-${cell.replace(/[^a-z0-9]/gi, "")}`,
+      "| R1 | a | i | s | — | done | — |",
+      `| R4 | b | i | s | — | done | ${cell} |`,
+    );
+    const r = sut(d);
+    assert.equal(r.rc, 1, `${cell} exits 1`);
+    assert.equal(
+      cs(r.stderr),
+      `roadmap: R4: Sub-spec "${cell}" is not —, manual or specs/NNN-name/`,
+      `${cell} names row and cell`,
+    );
+  }
+});
+
+// --set --sub-spec takes the same rule, and writes nothing when it fails
+test("--set --sub-spec refuses a path that is not specs/NNN-name/", () => {
+  const d = mk("set-sub", "| R1 | a | i | s | — | planned | — |");
+  const rm = join(d, "ROADMAP.md");
+  const before = read(rm);
+  for (const bad of ["a.spec.md", "specs/1-a/", ""]) {
+    const r = sut(d, "--set", "R1", "done", "--sub-spec", bad);
+    assert.equal(r.rc, 2, `--sub-spec "${bad}" exits 2`);
+    assert.match(r.stderr, /is not specs\/NNN-name\//, `--sub-spec "${bad}" says why`);
+    assert.equal(read(rm), before, `--sub-spec "${bad}" leaves ROADMAP.md byte-identical`);
+  }
+  assert.equal(rcOf(d, "--set", "R1", "done", "--sub-spec", "specs/001-a/"), 0, "--sub-spec specs/001-a/ is written");
+  assert.match(read(rm), /\| R1 \| a \| i \| s \| — \| done \| `specs\/001-a\/` \|/);
 });
 
 // --set changes only the target row's Status and Sub-spec cells
@@ -263,6 +296,19 @@ test("--set", () => {
     grepLines(read(rm), /^\| R3/, true).join("\n"),
     "| R3 | c | i | s | — | done | — |",
     "--set on a no-newline file still rewrote",
+  );
+  sut(d, "--set", "R3", "planned", "--sub-spec", "manual");
+  assert.equal(
+    grepLines(read(rm), /^\| R3/, true).join("\n"),
+    "| R3 | c | i | s | — | planned | manual |",
+    "--set writes the manual marker bare, not as a path",
+  );
+  assert.equal(
+    sut(d)
+      .stdout.split("\n")
+      .find((l) => l.startsWith("R3\t")),
+    "R3\tplanned\tyes\tmanual\tc",
+    "a manual row lists its Sub-spec as manual",
   );
 });
 

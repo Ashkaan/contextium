@@ -31,6 +31,7 @@ import { join } from "node:path";
 import type { Page } from "playwright";
 import { qaAccessHeaders, qaEnvCfAccess, qaErr, qaReadJwtFile, qaResolveCfAccess, qaResolvePages } from "./lib.ts";
 import { exit, runToExit } from "../../../packages/cli-exit/cli-exit.ts";
+import { gotoSurvivingNetworkChange } from "./nav.ts";
 
 async function main(): Promise<void> {
   const CACHE_DIR = `${process.env.HOME || homedir()}/.local/lib/qa-a11y`;
@@ -183,7 +184,7 @@ async function main(): Promise<void> {
       const page = await ctx.newPage();
       const url = base.replace(/\/$/, "") + (route.startsWith("/") ? route : `/${route}`);
       try {
-        const resp = await page.goto(url, { waitUntil: "networkidle", timeout: 30000 });
+        const resp = await gotoSurvivingNetworkChange(page, url, { waitUntil: "networkidle", timeout: 30000 });
         const status = resp ? resp.status() : 0;
         if (status >= 400) {
           process.stdout.write(`a11y ${route} @${width}: error — HTTP ${status}, not the page; not graded\n`);

@@ -38,10 +38,12 @@ import {
   cpSync,
   existsSync,
   lstatSync,
+  readdirSync,
   readFileSync,
   readlinkSync,
   realpathSync,
   renameSync,
+  rmdirSync,
   rmSync,
   statSync,
   symlinkSync,
@@ -101,20 +103,31 @@ function stamp(): string {
 }
 
 /** Replace <link> with a link to <target> in one rename(2), so a concurrent
- *  reader sees the old entry or the new link and never a missing path.
- *  Returns 0 relinked · 1 failed · 2 target missing · 3 a real directory
- *  stands there. */
+ *  reader sees the old entry or the new link and never a missing path. An
+ *  EMPTY real directory is removed first (rename(2) cannot replace a directory
+ *  with a link): it holds nothing to lose, and a harness that creates its
+ *  folders on first run leaves exactly that where a folder link belongs.
+ *  Returns 0 relinked · 1 failed · 2 target missing · 3 a non-empty real
+ *  directory stands there. */
 function relink(link: string, target: string): number {
   const tmp = `${link}.tmp-link`;
   // BEFORE anything is renamed. A link to a target that does not exist leaves
   // the harness with nothing to read, and preserving the displaced file does
   // not help a harness about to start. Return 2 so the caller can say WHY.
   if (!existsSync(target)) return 2;
-  // A real DIRECTORY is never relinked here: moving one aside is the
-  // installer's step, said out loud, not a side effect of a check. Return 3.
-  if (isDir(link) && !isLink(link)) return 3;
+  // A real DIRECTORY with anything in it is never relinked here: moving one
+  // aside is the installer's step, said out loud, not a side effect of a
+  // check. Return 3. An EMPTY one holds nothing to lose and is replaced.
+  const emptyDir = isDir(link) && !isLink(link);
+  if (emptyDir && readdirSync(link).length > 0) return 3;
   try {
     rmSync(tmp, { force: true });
+    if (emptyDir) {
+      symlinkSync(target, tmp);
+      rmdirSync(link);
+      renameSync(tmp, link);
+      return existsSync(link) ? 0 : 1;
+    }
     if (existsSync(link) && !isLink(link)) {
       // NEVER clobber an existing .pre-link: it may be the only copy of content
       // a harness wrote and that never reached the workbench.
@@ -428,7 +441,7 @@ function main(): void {
     harness with nothing to read. Install the layer first, then re-run --fix.`);
           break;
         case 3:
-          err(`Error: refusing to relink ${link} — it is a real directory.
+          err(`Error: refusing to relink ${link} — it is a real directory with files in it.
     Move it aside (the installer does: <path>.pre-link) and re-run --fix;
     this script does not copy or rename a directory.`);
           break;

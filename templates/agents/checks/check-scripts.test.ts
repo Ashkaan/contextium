@@ -14,7 +14,7 @@
 // Part (c) refuses bash outside its tier under .agents/, so the (a)/(b) rows
 // plant TypeScript programs (`prog`), and the rows that are about how a shell
 // `source` resolves make their bash files tier 1 the way a workbench does — a
-// hook command in a harness's hook config, here `.claude/settings.json`
+// hook command in a harness's hook config, here `.agents/hooks/claude-hooks.json`
 // (`tier`).
 
 import assert from "node:assert/strict";
@@ -90,7 +90,7 @@ function prog(repo: string, rel: string, body = "process.argv;"): void {
 }
 
 /** Every `.sh` in the fixture named by a hook command in
- *  `.claude/settings.json`, so part (c) puts it in the tier and the row tests
+ *  `.agents/hooks/claude-hooks.json`, so part (c) puts it in the tier and the row tests
  *  only what it was written for. Called again after the fixture changes. */
 function tier(repo: string): void {
   const out = execFileSync("git", ["-C", repo, "ls-files", "--cached", "--others", "--exclude-standard"], {
@@ -98,7 +98,7 @@ function tier(repo: string): void {
   });
   const shs = out.split("\n").filter((p) => p.endsWith(".sh") && !p.includes("node_modules/"));
   const hooks = shs.map((p) => ({ type: "command", command: `bash "$CLAUDE_PROJECT_DIR/${p}"` }));
-  f(repo, ".claude/settings.json", JSON.stringify({ hooks: { PreToolUse: [{ matcher: "Bash", hooks }] } }));
+  f(repo, ".agents/hooks/claude-hooks.json", JSON.stringify({ hooks: { PreToolUse: [{ matcher: "Bash", hooks }] } }));
 }
 
 /** The stderr lines of one part. */
@@ -654,14 +654,14 @@ test("stdout is exactly one line in every mode", async (t) => {
 // files there. A bash file under .agents/ is a part-(a) script as well, so a
 // row about the tier reads part (c)'s lines (`cErr`), not all of stderr.
 
-/** A `.claude/settings.json` whose hooks run these commands, in the real
+/** A `.agents/hooks/claude-hooks.json` whose hooks run these commands, in the real
  *  file's shape: the path sits inside a longer shell string. */
 function settings(repo: string, ...paths: string[]): void {
   const hooks = paths.map((p) => ({
     type: "command",
     command: `d="\${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel 2>/dev/null)}"; h="$d/${p}"; [ -f "$h" ] || exit 0; exec bash "$h"`,
   }));
-  f(repo, ".claude/settings.json", JSON.stringify({ hooks: { PreToolUse: [{ matcher: "Bash", hooks }] } }));
+  f(repo, ".agents/hooks/claude-hooks.json", JSON.stringify({ hooks: { PreToolUse: [{ matcher: "Bash", hooks }] } }));
 }
 
 const BASH_OUT = "bash outside the hook/bootstrap tier — AGENTS.md § Standards → Scripts are TypeScript";
@@ -690,7 +690,7 @@ test("part (c): a hook, its sourced library, a worktree maker, and a stray", asy
 
   // (c9) The settings entry deleted, nothing else changed: incremental mode
   // re-derives the tier and the hook and its library fall out of it.
-  f(repo, ".claude/settings.json", JSON.stringify({ hooks: {} }));
+  f(repo, ".agents/hooks/claude-hooks.json", JSON.stringify({ hooks: {} }));
   r = run(repo);
   await t.test("(c9) incremental: deleting the hook entry puts the hook in (c)", () =>
     assert.ok(cErr(r).includes(`.agents/hooks/h.sh: (c) ${BASH_OUT}`), r.err),
@@ -698,7 +698,7 @@ test("part (c): a hook, its sourced library, a worktree maker, and a stray", asy
   await t.test("…and the library it sourced", () =>
     assert.ok(cErr(r).includes(`.agents/hooks/lib/l.sh: (c) ${BASH_OUT}`), r.err),
   );
-  git(repo, "checkout", "-q", "--", ".claude/settings.json");
+  git(repo, "checkout", "-q", "--", ".agents/hooks/claude-hooks.json");
 
   f(repo, ".agents/w.sh", 'repo="$1"\n# git -C "$repo" worktree add "$2" — moved to w2.ts');
   r = run(repo);
@@ -804,13 +804,13 @@ test("part (c): the tier's shapes", async (t) => {
     assert.equal(cErr(r), `.agents/apt.sh: (c) ${BASH_OUT}`),
   );
 
-  // Hook configs other than .claude/settings.json: a path relative to the
+  // Hook configs other than .agents/hooks/claude-hooks.json: a path relative to the
   // config's folder, and an installed layout matched by its last two parts.
   repo = newrepo();
   f(
     repo,
     ".agents/hooks.json",
-    JSON.stringify({ g: { PreToolUse: [{ hooks: [{ type: "command", command: "bash ../.agents/hooks/x.sh" }] }] } }),
+    JSON.stringify({ g: { PreToolUse: [{ hooks: [{ type: "command", command: "bash hooks/x.sh" }] }] } }),
   );
   f(repo, ".agents/hooks/x.sh", "echo x");
   f(repo, ".agents/hooks/x.test.ts", 'spawnSync("bash", ["x.sh"]);');
@@ -994,7 +994,7 @@ test("part (c): resolution and matching edges", async (t) => {
   repo = newrepo();
   f(
     repo,
-    ".claude/settings.json",
+    ".agents/hooks/claude-hooks.json",
     JSON.stringify({
       hooks: {
         Stop: [{ hooks: [{ type: "command", command: 'echo ".agents/old.sh migrated"; bash .agents/hooks/h.sh' }] }],
@@ -1013,7 +1013,7 @@ test("part (c): resolution and matching edges", async (t) => {
   repo = newrepo();
   f(
     repo,
-    ".claude/settings.json",
+    ".agents/hooks/claude-hooks.json",
     JSON.stringify({
       hooks: {
         Stop: [
@@ -1045,7 +1045,7 @@ test("part (c): resolution and matching edges", async (t) => {
     repo = newrepo();
     f(
       repo,
-      ".claude/settings.json",
+      ".agents/hooks/claude-hooks.json",
       JSON.stringify({
         hooks: {
           Stop: [
@@ -1071,7 +1071,7 @@ test("part (c): resolution and matching edges", async (t) => {
     ["x=$(true; echo .agents/old.sh); bash .agents/hooks/h.sh", "an echo inside an assignment's $( )"],
   ] as [string, string][]) {
     repo = newrepo();
-    f(repo, ".claude/settings.json", JSON.stringify({ hooks: { Stop: [{ hooks: [{ type: "command", command }] }] } }));
+    f(repo, ".agents/hooks/claude-hooks.json", JSON.stringify({ hooks: { Stop: [{ hooks: [{ type: "command", command }] }] } }));
     f(repo, ".agents/hooks/h.sh", "echo h");
     f(repo, ".agents/old.sh", "echo old");
     r = run(repo, "--all");
@@ -1080,7 +1080,7 @@ test("part (c): resolution and matching edges", async (t) => {
   repo = newrepo();
   f(
     repo,
-    ".claude/settings.json",
+    ".agents/hooks/claude-hooks.json",
     JSON.stringify({
       hooks: { Stop: [{ hooks: [{ type: "command", command: 'echo ok # "\nbash .agents/hooks/h.sh' }] }] },
     }),
@@ -1097,7 +1097,7 @@ test("part (c): resolution and matching edges", async (t) => {
     'if true; then echo "`bash .agents/hooks/h.sh`"; fi',
   ]) {
     repo = newrepo();
-    f(repo, ".claude/settings.json", JSON.stringify({ hooks: { Stop: [{ hooks: [{ type: "command", command }] }] } }));
+    f(repo, ".agents/hooks/claude-hooks.json", JSON.stringify({ hooks: { Stop: [{ hooks: [{ type: "command", command }] }] } }));
     f(repo, ".agents/hooks/h.sh", "echo h");
     r = run(repo, "--all");
     await t.test(`a hook run inside an echo — ${command}`, () => assert.deepEqual(part(r.err, "c"), [], r.err));
@@ -1132,6 +1132,41 @@ test("part (c): a tier-1 hook answers to part (a), not (c)", async (t) => {
   f(repo, ".agents/hooks/g.test.ts", 'spawnSync("bash", ["g.sh"]);');
   r = run(repo, "--all");
   await t.test("…and passes with its test", () => assert.equal(r.out, "OK — 1 script(s) checked"));
+});
+
+// An installed hook manifest names the workbench by an absolute path (the
+// installer fills in __WORKBENCH__), so the tier must find a guard by that
+// spelling too — the guard with no test is (a), never (c).
+test("part (c): a guard named at an installed workbench's .agents/hooks/ is in the tier", async (t) => {
+  const repo = newrepo();
+  f(
+    repo,
+    ".agents/hooks/claude-hooks.json",
+    JSON.stringify({
+      hooks: {
+        PreToolUse: [
+          {
+            matcher: "Bash",
+            hooks: [
+              {
+                type: "command",
+                command:
+                  'h="/opt/workbench/.agents/hooks/g.sh"; [ -f "$h" ] || exit 0; exec bash "$h"',
+              },
+            ],
+          },
+        ],
+      },
+    }),
+  );
+  f(repo, ".agents/hooks/g.sh", "echo guard");
+  const r = run(repo, "--all");
+  await t.test("the guard is (a) for want of a test, not (c)", () =>
+    assert.equal(
+      r.err,
+      ".agents/hooks/g.sh: (a) no test — expected g.test.ts beside it, or tests/g.test.ts in its folder or parent",
+    ),
+  );
 });
 
 // ── Contextium's own scripts: tested in its repo, until edited here ──────

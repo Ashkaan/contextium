@@ -15,6 +15,8 @@
 // Usage:
 //   code-review.ts <base-sha> <head-sha>      full review (round 1)
 //   code-review.ts --since <tree>             follow-up round: ONLY what changed
+//   code-review.ts --since <tree> --final     the one review past the round-4
+//                                             ceiling, of the fixes still unreviewed
 //                                             since <tree>
 //   code-review.ts --snapshot                 print a tree SHA capturing the
 //                                             current working tree
@@ -60,7 +62,8 @@
 //        to review and the fix loop has converged. NOT a failure — the caller
 //        stops the loop and approves. Distinct from the empty-diff exit 1 below,
 //        which means a FULL review was pointed at the wrong tree.
-//   5    `--since` only: the fix loop hit the round-4 ceiling
+//   5    `--since` only: the fix loop hit the round-4 ceiling, or `--final`
+//        already ran once in this loop
 //        Also not a failure — the caller stops
 //        the loop and reports what is still open. Session-keyed (the
 //        worktree stands in when no session id is set); see the ceiling block in
@@ -211,6 +214,25 @@ function sessionKey(repoRoot: string): string {
   return sid.replace(/[^A-Za-z0-9_-]/g, "_");
 }
 
+// One fix loop's round counter: the session AND the repo it reviews. A row
+// whose code is in other repos runs one loop per repo (CODEX_REVIEW_REPO), and
+// keyed on the session alone they share one budget — parallel loops in one
+// session reach "round 5" after one follow-up apiece, and each repo's full
+// review resets the others. Empty (no counter) only when sessionKey is empty.
+function loopKey(repoRoot: string): string {
+  const sid = sessionKey(repoRoot);
+  if (sid === "") return "";
+  return `${sid}-${createHash("sha256").update(realpathOr(repoRoot)).digest("hex").slice(0, 12)}`;
+}
+
+function realpathOr(path: string): string {
+  try {
+    return realpathSync(path);
+  } catch {
+    return path;
+  }
+}
+
 // The shell's $PWD: the inherited PWD when it still names the working
 // directory (it keeps a symlinked path as typed), else the real one.
 function logicalCwd(): string {
@@ -301,6 +323,7 @@ async function main(): Promise<void> {
     const me = basename(process.argv[1] ?? "code-review.ts");
     err(`Usage: ${me} <base-sha> <head-sha>   full review`);
     err(`       ${me} --since <tree>          follow-up round`);
+    err(`       ${me} --since <tree> --final  the one review past the ceiling`);
     err(`       ${me} --snapshot              print a tree SHA`);
     err(`       ${me} --fixture <dir>`);
   }
@@ -441,6 +464,10 @@ async function main(): Promise<void> {
   }
 
   let MODE = "";
+
+  /** `--since <tree> --final`: the one review past the ceiling. */
+
+  let FINAL = false;
   let FIXTURE_DIR = "";
   let BASE_SHA = "";
   let HEAD_SHA = "";
@@ -475,10 +502,11 @@ async function main(): Promise<void> {
       err(`Error: fixture dir not found: ${FIXTURE_DIR}`);
       exit(2);
     }
-  } else if (argv.length === 2 && argv[0] === "--since") {
+  } else if ((argv.length === 2 || (argv.length === 3 && argv[2] === "--final")) && argv[0] === "--since") {
     requireRepo();
     MODE = "since";
     PREV_TREE = argv[1] as string;
+    FINAL = argv.length === 3;
   } else if (argv.length === 2) {
     requireRepo();
     MODE = "range";
@@ -545,7 +573,7 @@ the committed range PLUS uncommitted work; you are NOT reviewing a clean tree.`;
     // Reset here rather than expiring the counter on a timer, because "a new full
     // review" is exactly the event that means a new loop — no clock has to guess.
     const resetDir = process.env.CODE_REVIEW_ROUND_STATE_DIR || "/tmp/code-review-rounds";
-    const resetKey = sessionKey(REPO_ROOT);
+    const resetKey = loopKey(REPO_ROOT);
     if (resetKey !== "") {
       try {
         mkdirSync(resetDir, { recursive: true });
@@ -554,6 +582,7 @@ the committed range PLUS uncommitted work; you are NOT reviewing a clean tree.`;
       }
       try {
         rmSync(`${resetDir}/${resetKey}`, { force: true });
+        rmSync(`${resetDir}/${resetKey}.final`, { force: true });
       } catch {
         // fail open
       }
@@ -728,14 +757,14 @@ ${diffBody}`;
     // the vendor calls were already spent. Round 1 is the two-arg full review, so
     // the Nth `--since` call is round N+1 and the 4th one is round 5 — refused.
     //
-    // Keyed on sessionKey: the session id, or the worktree when a harness sets
-    // none — so the cap holds on every harness.
+    // Keyed on `loopKey`: the session id (or the worktree when a harness sets
+    // none, so the cap holds on every harness) and the repo under review.
     //
     // It counts rounds within ONE fix loop, not within the session. The two-arg
     // branch above clears it, because a full review IS the start of a loop — see
     // the reset there for what keying it on the session alone cost.
     const ROUND_STATE_DIR = process.env.CODE_REVIEW_ROUND_STATE_DIR || "/tmp/code-review-rounds";
-    const key = sessionKey(REPO_ROOT);
+    const key = loopKey(REPO_ROOT);
     if (key !== "") {
       mkdirSync(ROUND_STATE_DIR, { recursive: true });
       const counter = `${ROUND_STATE_DIR}/${key}`;
@@ -750,7 +779,27 @@ ${diffBody}`;
         prior = /^[0-9]+$/.test(raw) ? Number(raw) : 0;
       }
       const round = prior + 2;
-      if (round > 4) {
+      // ── One final review past the ceiling ──
+      // The ceiling stops the CHURN, but without this round 4's own fixes ship
+      // with no review at all, or the loop stalls on them. `--final` reviews
+      // exactly those fixes, once per
+      // loop; its findings are fixed and reported, never another round.
+      if (FINAL) {
+        const marker = `${counter}.final`;
+        if (round <= 4) {
+          err(
+            `Error: --final is the one review past the round-4 ceiling, and this loop is at round ${round} — a normal round is the call.`,
+          );
+          exit(2);
+        }
+        if (existsSync(marker)) {
+          err("Error: the final review already ran in this fix loop. Stop: fix what it found, then report");
+          err("what is still open in the implement-audit: trailer and the summary.");
+          exit(5);
+        }
+        writeFileSync(marker, `${new Date().toISOString()}\n`);
+        err("[code-review] final review past the round-4 ceiling — the loop ends after it");
+      } else if (round > 4) {
         err(
           "Error: the fix loop has reached the round-4 ceiling — a fifth round mostly re-opens ground earlier rounds already touched.",
         );
@@ -758,11 +807,13 @@ ${diffBody}`;
         err("what is still open in the implement-audit: trailer and the summary.");
         err("Past round 4 the majority of findings re-open ground an earlier round");
         err("already touched — measured across 225 audits — so another");
-        err("vendor call buys churn, not coverage.");
+        err("vendor call buys churn, not coverage. The fixes made since the last round");
+        err("still get one review: --since <tree> --final, once per loop.");
         exit(5);
+      } else {
+        writeFileSync(counter, `${prior + 1}\n`);
+        err(`[code-review] round ${round} of at most 4`);
       }
-      writeFileSync(counter, `${prior + 1}\n`);
-      err(`[code-review] round ${round} of at most 4`);
     }
 
     SUBJECT_LABEL = `fixes since ${PREV_TREE.slice(0, 8)}`;
@@ -785,6 +836,13 @@ Review these fixes for two things specifically:
 If the fixes are correct, emit NO_FINDINGS. Do not hunt for something to say
 about the surrounding file: code outside this diff is out of scope for this
 round.`;
+    if (FINAL) {
+      ROUND_NOTE = `THIS IS THE FINAL REVIEW of this fix loop: the round-4 ceiling has been
+reached and no further round will run. Report only real defects in these
+fixes — anything you report is fixed and closed without another review.
+
+${ROUND_NOTE}`;
+    }
 
     // A follow-up round packs ONLY this round's files. Re-packing the original
     // diff's files would put the settled code back in front of the reviewer that
@@ -824,6 +882,41 @@ ${body}
     }
     SUBJECT = `FILES UNDER REVIEW:
 ${fixtureBody}`;
+  }
+
+  // ── Companion worktrees ───────────────────────────────────────────────
+  //
+  // A change that spans repos is reviewed one repo at a time, and the reviewer
+  // reads the OTHER repo for context. Left to itself it reads the landed
+  // checkout, which does not carry this change yet, and a round is lost to
+  // findings about code the session's worktree has already changed.
+  // CODEX_REVIEW_COMPANIONS lists those worktrees, comma-separated; each must be
+  // a git checkout or the review is refused, since a wrong path would send the
+  // reviewer to the same stale tree with false confidence.
+  let COMPANION_NOTE = "";
+  const companions = (process.env.CODEX_REVIEW_COMPANIONS ?? "")
+    .split(/[,\n]/)
+    .map((c) => c.trim())
+    .filter((c) => c !== "");
+  if (companions.length > 0) {
+    const lines: string[] = [];
+    for (const c of companions) {
+      const top = git(["-C", c, "rev-parse", "--show-toplevel"], { quiet: true });
+      if (top.status !== 0) {
+        err(`Error: CODEX_REVIEW_COMPANIONS names ${c}, which is not a git checkout`);
+        exit(2);
+      }
+      const branch = chomp(git(["-C", c, "rev-parse", "--abbrev-ref", "HEAD"], { quiet: true }).stdout ?? "");
+      lines.push(`- ${chomp(top.stdout ?? "")} (branch ${branch || "unknown"})`);
+    }
+    COMPANION_NOTE = `
+COMPANION WORKTREES — this change spans more than one repo. The diff below is
+from ${REPO_ROOT}. Its other half lives in these worktrees; when you need a
+file from one of those repos, read it from the worktree listed here, not from
+the landed checkout, which does not carry this change yet. Keep every finding
+about the diff under review.
+${lines.join("\n")}
+`;
   }
 
   // ── Prompt ────────────────────────────────────────────────────────────
@@ -890,7 +983,7 @@ review rather than a pass. Never emit an empty response.
 Be concise. No prose introduction. No summary at the end. Just findings.
 
 REVIEW SUBJECT: ${SUBJECT_LABEL}
-${DIRTY_NOTE}
+${DIRTY_NOTE}${COMPANION_NOTE}
 ${ROUND_NOTE}
 
 ${SUBJECT}`;

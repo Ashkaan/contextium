@@ -773,3 +773,73 @@ test("a directory that does not exist → exit 4", () => {
   test("and the summary line after them", () => has(r.stdout, "system-drift: P1=0 P2=0 P3=2500 claims=0"));
   test("and the exit status is still 1", () => has(r.stderr, "rc=1"));
 }
+
+// ── 35. A hidden input renders no widget ──────────────────────────────────
+// A file input hidden behind a styled button is how a design-system page opens
+// the OS file dialog: the dialog is the OS's whatever the page does, and the
+// input itself never draws, so reporting it as an unstyled platform control is
+// a false positive. `hidden={false}` still draws.
+{
+  const repo = newRepo("hidden-input");
+  realDesign(repo, FOUR_STEP);
+  writeApp(
+    repo,
+    [
+      "export const App = () => (",
+      "  <div>",
+      '    <input type="file" hidden accept=".pdf" />',
+      '    <input\n      type="file"\n      className="hidden"\n      multiple\n    />',
+      '    <input type="file" className="sr-only" />',
+      '    <input type="number" hidden={true} />',
+      '    <input type="date" hidden={false} />',
+      '    <input type="time" className="hidden-on-print" />',
+      "  </div>",
+      ");",
+      "",
+    ].join("\n"),
+  );
+  const r = drift(repo);
+  test("a file input with the hidden attribute or class is not reported", () => lacks(r.out, "type=file"));
+  test("hidden={true} is hidden", () => lacks(r.out, "type=number"));
+  test("hidden={false} still draws", () => has(r.out, "native <input type=date>"));
+  test("a class that merely starts with hidden is not the hidden class", () => has(r.out, "native <input type=time>"));
+}
+
+// ── 36. Hidden means hidden at every width, and only on a hiding attribute ──
+// `sm:hidden` draws the widget on a phone. A title that says "hidden" and a
+// data attribute named like a class hide nothing. `hidden={ true }` is
+// `hidden={true}` with spaces.
+{
+  const repo = newRepo("hidden-input-edges");
+  realDesign(repo, FOUR_STEP);
+  writeApp(
+    repo,
+    [
+      "export const App = () => (",
+      "  <div>",
+      '    <input type="date" className="sm:hidden" />',
+      '    <input type="time" title="A hidden time" />',
+      '    <input type="color" data-class="hidden" />',
+      '    <input type="file" hidden={ true } />',
+      "  </div>",
+      ");",
+      "",
+    ].join("\n"),
+  );
+  const r = drift(repo);
+  test("sm:hidden still draws below sm", () => has(r.out, "native <input type=date>"));
+  test("the word hidden inside a title hides nothing", () => has(r.out, "native <input type=time>"));
+  test("data-class is not class", () => has(r.out, "native <input type=color>"));
+  test("hidden={ true } is hidden", () => lacks(r.out, "type=file"));
+}
+
+// ── 37. An escaped quote does not end a value ─────────────────────────────
+// Blanking quoted values must step over `\"`, or the rest of the tag reads as
+// inside a string and its real `hidden` attribute is lost.
+{
+  const repo = newRepo("hidden-escaped-quote");
+  realDesign(repo, FOUR_STEP);
+  writeApp(repo, 'export const App = () => <input title={"6\\""} hidden type="file" />;\n');
+  const r = drift(repo);
+  test("a hidden attribute after an escaped quote is still read", () => lacks(r.out, "type=file"));
+}

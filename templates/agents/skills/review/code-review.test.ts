@@ -322,8 +322,8 @@ test("--since: caller errors, and the byte budget", () => {
 
 const CEIL_STATE = `${TMP}/rounds`;
 let CEIL_ERR = "";
-function ceilReview(snap: string, sid = "ceiling-test"): Result {
-  return review(["--since", snap], {
+function ceilReview(snap: string, sid = "ceiling-test", extra: string[] = []): Result {
+  return review(["--since", snap, ...extra], {
     ...BASE_ENV,
     CODE_REVIEW_ROUND_STATE_DIR: CEIL_STATE,
     CLAUDE_CODE_SESSION_ID: sid,
@@ -397,6 +397,81 @@ test("the round-4 ceiling", () => {
   const SNAP_OTHER = snapshot();
   appendFileSync(`${REPO}/alpha.txt`, "other session edit\n");
   rcIs("a second session starts at round 2", 0, ceilReview(SNAP_OTHER, "a-different-session").rc);
+});
+
+// ── One final review past the ceiling ─────────────────────────────────
+// Round 4's fixes used to ship unreviewed: the ceiling refused round 5 and the
+// skill said stop, so final fixes were either approved without review or the
+// loop stalled on them. `--final` reviews just those fixes, once.
+function finalRound(n: string, sid = "ceiling-test"): Result {
+  const snap = snapshot();
+  appendFileSync(`${REPO}/alpha.txt`, `final ${n} edit\n`);
+  return ceilReview(snap, sid, ["--final"]);
+}
+test("past the ceiling, --final reviews the outstanding fixes exactly once", () => {
+  rmSync(CEIL_STATE, { recursive: true, force: true });
+  const early = finalRound("early");
+  rcIs("--final before the ceiling is a caller error", 2, early.rc);
+  has("and says a normal round is the call", "normal round", early.err);
+
+  rmSync(CEIL_STATE, { recursive: true, force: true });
+  for (const n of [2, 3, 4]) ceilRound(n);
+  rcIs("round 5 is still refused", 5, ceilRound(5));
+  has("the refusal points at the final review", "--final", CEIL_ERR);
+
+  writeFileSync(SEEN, "");
+  const fin = finalRound("one");
+  rcIs("the final review runs past the ceiling", 0, fin.rc);
+  has("the reviewer is told it is the final pass", "FINAL REVIEW", seen());
+
+  writeFileSync(SEEN, "");
+  const again = finalRound("two");
+  rcIs("a second final review is refused", 5, again.rc);
+  has("and says why", "final review already ran", again.err);
+  eq("a refused final review spends no vendor call", "", seen());
+});
+
+// ── One fix loop per repo ─────────────────────────────────────────────
+//
+// A row whose code is in another repo reviews each repo as its own loop
+// (CODEX_REVIEW_REPO). Keyed on the session alone, the loops shared one budget:
+// a row that reviewed three repos in parallel had the third round of each
+// refused as "round 5" after one
+// follow-up apiece — and each repo's full review reset the others' counts.
+test("each repo's fix loop has its own ceiling", () => {
+  rmSync(CEIL_STATE, { recursive: true, force: true });
+  const REPO2 = `${TMP}/repo2`;
+  mkdirSync(REPO2, { recursive: true });
+  const g2 = (...args: string[]) => spawnSync("git", ["-C", REPO2, ...args], { encoding: "utf8" });
+  g2("init", "-q", ".");
+  g2("config", "user.email", "t@t");
+  g2("config", "user.name", "t");
+  writeFileSync(`${REPO2}/gamma.txt`, "gamma\n");
+  g2("add", "-A");
+  g2("commit", "-qm", "init");
+  const env2 = {
+    ...BASE_ENV,
+    CODE_REVIEW_ROUND_STATE_DIR: CEIL_STATE,
+    CLAUDE_CODE_SESSION_ID: "ceiling-test",
+    CODEX_REVIEW_REPO: REPO2,
+    POLICY_JSON: POLICY,
+    CODEX_BIN: STUB,
+    GROK_BIN: STUB,
+  };
+  const round2 = (n: number): number | null => {
+    // Taken as snapshot() takes them, so this repo adds nothing to the test
+    // session's snapshot ledger that the first repo's rounds are checked against.
+    const snap = review(["--snapshot"], { ...BASE_ENV, CODEX_REVIEW_REPO: REPO2 }).out.replace(/\n+$/, "");
+    appendFileSync(`${REPO2}/gamma.txt`, `round ${n} edit\n`);
+    return review(["--since", snap], env2).rc;
+  };
+  rcIs("the first repo's loop runs to its ceiling", 0, ceilRound(2));
+  ceilRound(3);
+  ceilRound(4);
+  rcIs("the second repo's first fix round is round 2, not 5", 0, round2(2));
+  rcIs("and its own fourth round is allowed", 0, (round2(3), round2(4)));
+  rcIs("its fifth is refused like any other", 5, round2(5));
+  rcIs("the first repo is still at its own ceiling", 5, ceilRound(5));
 });
 
 // ── Round 1 is unchanged ──────────────────────────────────────────────
@@ -678,6 +753,32 @@ test("--fixture gets no pack; the two-arg full review carries one", () => {
   has("the full review carries the pack", "BLAST RADIUS", SEEN_TEXT);
   has("the full review's pack names the caller", "pack/consumer.ts", SEEN_TEXT);
   has("the full review still carries the committed range", "CHANGED FILES (committed range)", SEEN_TEXT);
+});
+
+// ── Companion worktrees: the other half of a cross-repo change ──
+// A change reviewed from the product repo had the reviewer read the LANDED
+// workbench for the workbench half — findings about code the active worktree
+// had already changed.
+test("companion worktrees reach the reviewer, named with their branch; a non-repo is refused", () => {
+  const COMP = `${TMP}/companion`;
+  mkdirSync(COMP, { recursive: true });
+  const gc = (...args: string[]) => spawnSync("git", ["-C", COMP, ...args], { encoding: "utf8" });
+  gc("init", "-q", "-b", "t3/companion-half", ".");
+  gc("-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "c");
+  writeFileSync(`${REPO}/companion-subject.txt`, "under review\n");
+  g("add", "companion-subject.txt");
+  g("commit", "-qm", "companion subject");
+  let r = runReview(["HEAD~1", "HEAD"], { CODEX_REVIEW_COMPANIONS: COMP });
+  rcIs("a review with a companion still works", 0, r.rc);
+  const SEEN_TEXT = seen();
+  has("the prompt names the companion section", "COMPANION WORKTREES", SEEN_TEXT);
+  has("the prompt names the companion path", COMP, SEEN_TEXT);
+  has("the prompt names the companion branch", "t3/companion-half", SEEN_TEXT);
+  has("the prompt says to read it, not the landed checkout", "which does not carry this change yet", SEEN_TEXT);
+
+  r = runReview(["HEAD~1", "HEAD"], { CODEX_REVIEW_COMPANIONS: `${TMP}/no-such-worktree` });
+  rcIs("a companion that is not a git repo is refused", 2, r.rc);
+  has("the refusal names the path", `${TMP}/no-such-worktree`, r.err);
 });
 
 // ── No repo anywhere: a one-line failure, never the script's own checkout ──

@@ -9,10 +9,10 @@ description: TODO third person, what this skill does AND when to fire it (trigge
 # {{name}}
 
 TODO one-paragraph statement of what `/{{name}}` does and when to reach for it.
-The shape this file must keep — the six frontmatter keys, `metadata.peers`,
+The shape this file must keep — the six frontmatter keys and the one hide key, `metadata.peers`,
 the learned-state folder convention, the body standard — is
 `AGENTS.md` § Skill shape; `check-skills.ts` holds it to that. Whether only the user may
-fire it is `skillOverrides` in `~/.claude/settings.json`, not a field here.
+fire it is `disable-model-invocation: true` plus `agents/openai.yaml`, as that section says.
 
 ## Critical
 

@@ -12,6 +12,7 @@ import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { after, test } from "node:test";
 import { fileURLToPath } from "node:url";
 
@@ -588,4 +589,43 @@ test("invoked through a symlink, the script still runs", () => {
   const out = `${r.stdout ?? ""}${r.stderr ?? ""}`;
   assert.equal(r.status, 2, `through a symlink: exit ${r.status}, output '${out}'`);
   assert.match(out, /usage: corrections\.ts/);
+});
+
+// ── T3 0.0.46: statev2.sqlite───────────────────────────
+//
+// The v2 file keeps the legacy tables frozen at the cutover and writes new turns only
+// to `orchestration_v2_projection_messages`, which also holds an imported copy of the
+// old ones. A turn typed after the cutover must appear, and an imported one only once.
+
+test("on statev2.sqlite, post-cutover turns are read and imported ones are not doubled", () => {
+  const V2 = join(TMP, "v2");
+  mkdirSync(join(V2, "userdata"), { recursive: true });
+  const T = "12345678-1111-2222-3333-444444444444";
+  const db = new DatabaseSync(join(V2, "userdata/statev2.sqlite"));
+  db.exec(MESSAGES);
+  db.exec(ACTIVITIES);
+  db.exec("create table projection_thread_sessions (thread_id TEXT, provider_name TEXT)");
+  db.exec("create table projection_threads (thread_id TEXT, title TEXT, deleted_at TEXT)");
+  db.exec(
+    "create table orchestration_v2_projection_threads (thread_id TEXT, title TEXT, created_at TEXT, deleted_at TEXT, payload_json TEXT)",
+  );
+  db.exec(
+    "create table orchestration_v2_projection_messages (message_id TEXT, thread_id TEXT, role TEXT, created_at TEXT, payload_json TEXT)",
+  );
+  db.exec("create table orchestration_v2_projection_provider_sessions (thread_id TEXT, provider TEXT)");
+  db.exec(
+    "create table orchestration_v2_projection_turn_items (turn_item_id TEXT, thread_id TEXT, type TEXT, status TEXT, updated_at TEXT, payload_json TEXT)",
+  );
+  adders(db).add(T, "user", "Typed before the cutover.", "2026-10-03T09:00:00.000Z");
+  const v2 = db.prepare("insert into orchestration_v2_projection_messages values (?, ?, ?, ?, ?)");
+  v2.run("x1", T, "user", "2026-10-03T09:00:00.000Z", JSON.stringify({ text: "Typed before the cutover." }));
+  v2.run("x2", T, "user", "2026-10-03T17:31:34.079Z", JSON.stringify({ text: "Can you send it today?" }));
+  v2.run("x3", T, "assistant", "2026-10-03T17:32:00.000Z", JSON.stringify({ text: "an answer" }));
+  db.close();
+
+  const { out, rc } = run({ T3CODE_HOME: V2, HOME: join(TMP, "home"), WORKBENCH_THREAD_ID: T });
+  is("exits 0", String(rc), "0");
+  has("the post-cutover turn", out, "10:31\tCan you send it today?");
+  is("the imported turn once", String(out.split("Typed before the cutover.").length - 1), "1");
+  hasnt("no assistant text", out, "an answer");
 });

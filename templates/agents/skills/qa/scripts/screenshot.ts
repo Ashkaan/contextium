@@ -61,6 +61,7 @@ import {
   qaResolvePages,
 } from "./lib.ts";
 import { exit, runToExit } from "../../../packages/cli-exit/cli-exit.ts";
+import { gotoSurvivingNetworkChange } from "./nav.ts";
 
 async function main(): Promise<void> {
   const SHOTS_ROOT = process.env.QA_SHOTS_ROOT || "/tmp/qa-shots";
@@ -293,7 +294,7 @@ async function main(): Promise<void> {
       let status = 0;
       let landedOrigin = "";
       try {
-        const resp = await page.goto(url, { waitUntil: "networkidle", timeout: 30000 });
+        const resp = await gotoSurvivingNetworkChange(page, url, { waitUntil: "networkidle", timeout: 30000 });
         status = resp ? resp.status() : 0;
         // T5: an auth wall answers 200 from a DIFFERENT origin. Route-count
         // guards miss it on single-page sites; the landed origin never does.

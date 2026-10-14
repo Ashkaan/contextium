@@ -54,4 +54,4 @@ next: DERIVED from ROADMAP.md, never hand-written — the first ready row's ID a
 
 [Written at close: what was achieved, key learnings]
 
-<!-- Everything else has its own file: outstanding work → ROADMAP.md, specs → specs/NNN-name/, decisions → decisions/. -->
+<!-- Everything else has its own file: outstanding work → ROADMAP.md, specs → specs/NNN-name/, decisions → decisions/, findings → research.md. -->

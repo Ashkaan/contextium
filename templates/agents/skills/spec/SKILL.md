@@ -79,12 +79,11 @@ to planning.
 | An app's living contract | `apps/{name}/SPEC.md`, seeded once code exists by mirroring an existing app's `SPEC.md`; it is not a project spec, and `/implement` never executes it |
 | Genuinely one-off, too small for a spec | Skip — do the work directly and journal it |
 
-**Legacy projects.** A project with loose `*.spec.md` files and no
-`ROADMAP.md` gets its next spec in the new layout all the same — a folder plus a
-`ROADMAP.md` created from the template. The two layouts may sit side by side;
-every reader (`spec-state.ts`,
+**One layout.** Every project has a `ROADMAP.md` and one `specs/NNN-name/`
+folder per spec. The older layout of loose `*.spec.md` / `*.plan.md` files is
+retired: no reader (`spec-state.ts`,
 `detect-stage.ts`, `project-remaining-work.ts`, `next-implement-command.ts`)
-reads both.
+reads it, and `land.ts`'s project-shape gate refuses a close that writes it.
 
 ## step-2-spec-audit — dispatch /spec-audit
 
@@ -103,9 +102,9 @@ The line is a record in plan.md, never a gate on a commit; the close's journal e
 
 ## step-3-auto-close — auto-invoke /close
 
-Per the shared SSOT [close/references/auto-close-gate.md](../close/references/auto-close-gate.md). On clean completion — every folder written + audited, no escalation / DRIFT / hard stop / deferral outstanding, and `land.ts --gate` is `not-fired` — run `/close` per the gate. `/close` commits + pushes the specs and the ROADMAP/README edits, prints each ready row's command in its own block, and folds the `## SPEC Created` summary (below) into the close output.
+Per the shared SSOT [close/references/auto-close-gate.md](../close/references/auto-close-gate.md). On clean completion — every folder written + audited, no escalation / DRIFT / hard stop / deferral outstanding, the gate's open-items sweep (precondition (iii)) empty, and `land.ts --gate` is `not-fired` — run `/close` per the gate. `/close` commits + pushes the specs and the ROADMAP/README edits, prints each ready row's command in its own block, and folds the `## SPEC Created` summary (below) into the close output.
 
-**HALT instead of closing** iff a hard stop (a held reviewer escalation or spirit DRIFT the user must adjudicate) or a deferral question to the user is outstanding. After the user answers, the verb resumes and then auto-closes (the gate prevents a double-fire).
+**HALT instead of closing** iff a hard stop (a held reviewer escalation or spirit DRIFT the user must adjudicate) or a deferral question to the user is outstanding, or the open-items sweep left a question only the user can answer. After the user answers, the verb resumes and then auto-closes (the gate prevents a double-fire).
 
 The `## SPEC Created` summary `/close` surfaces (no sign-off halt):
 
@@ -166,6 +165,6 @@ Working together, it turns out a small change needs a spec. `/spec "<scope hint>
 | Auto-close fired while a DRIFT was unresolved | `step-2` surfaced DRIFT but `step-3` proceeded | Precondition (i) was violated — an outstanding decision means HALT; re-open the decision with the user before any close |
 | `/close` ran twice | the gate was not consulted before dispatch | `step-3` MUST run `land.ts --gate` BEFORE dispatching `/close`, and proceed only on `not-fired` |
 | plan.md still holds the `- spec-audit: [...]` placeholder | `step-2` was skipped, or printed the line without writing it | Run `/spec-audit <spec-folder>`; it replaces the whole list item with the line |
-| Spec written as a loose `*.spec.md` | The legacy layout was followed | Move it into `specs/NNN-name/` split across the four templates, and point its row's Sub-spec at the folder with `roadmap.ts --set` |
+| Spec written as a loose `*.spec.md` (the close refuses it: `project shape rejected`) | The retired layout was followed | Move it into `specs/NNN-name/` split across the four templates, and point its row's Sub-spec at the folder with `roadmap.ts --set` |
 | `roadmap.ts` exits 1 `placeholder row R1` | ROADMAP.md was created from the template and the placeholder rows were appended to, not replaced | Delete the `<name>` rows; the real rows take their place |
 | `/implement` refuses with `NEEDS CLARIFICATION` | A marker was left in spec.md, plan.md or tasks.md | That is the gate working: settle the question in `/project <slug>`, then edit the marker out |

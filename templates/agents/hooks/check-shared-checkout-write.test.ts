@@ -575,6 +575,22 @@ codexRefuses(
 *** End Patch`,
 );
 
+// Grok Build: Claude's payload shape under Grok's own tool names. Read from
+// grok 1.0.46: a hook on a Claude `Bash` matcher receives
+// `"tool_name":"run_terminal_command"` with `tool_input.command`, and one on
+// `Write` receives `"tool_name":"write"` with `tool_input.file_path`. Unmapped,
+// both would reach the tool switch with no branch and leave through its
+// default — the guard would fire on Grok and pass every write.
+test("grok run_terminal_command touching a file in a shared checkout", () =>
+  assert.equal(runTool("run_terminal_command", { command: `touch ${WORKBENCH}/x` }), 2));
+pathRefuses("grok write into a shared checkout", "write", fp(`${RECORDS}/journal/2026-10-02/grok.md`));
+pathRefuses("grok search_replace in a shared checkout", "search_replace", fp(`${SKILLS}/qa/SKILL.md`));
+pathRefuses("grok edit in a shared checkout", "edit", fp(`${SKILLS}/qa/SKILL.md`));
+pathRefuses("grok multi_edit in a shared checkout", "multi_edit", fp(`${SKILLS}/qa/SKILL.md`));
+pathAllows("grok write into this thread's worktree", "write", fp(`${WORKTREE}/journal/grok.md`));
+test("grok write naming no path refuses rather than fails open", () =>
+  assert.equal(runTool("write", { content: "x" }), 2));
+
 // Antigravity: `toolCall`, camelCase, and a JSON verdict on stdout. The exit
 // code is ignored there, so asserting on it would pass while the model was told
 // nothing — these helpers read stdout, which is the channel that decides.
@@ -710,37 +726,38 @@ function dispatches(label: string, tool: string, matchers: () => string[]) {
   });
 }
 
+// The three manifests ship beside these hooks. A missing one FAILS rather than
+// printing `skipping` and passing: a manifest that moved away from under the
+// suite would otherwise leave the dispatch unasserted with a green run.
 const CLAUDE_MANIFEST = join(MANIFEST_DIR, "claude-hooks.json");
 const AGY_MANIFEST = join(MANIFEST_DIR, "..", "hooks.json");
 const GEMINI_MANIFEST = join(MANIFEST_DIR, "..", "gemini-settings.json");
 
-if (existsSync(CLAUDE_MANIFEST)) {
-  const mx = () => matchersFor(CLAUDE_MANIFEST);
+test(`the Claude Code / Codex / Grok manifest exists at ${CLAUDE_MANIFEST}`, () =>
+  assert.ok(existsSync(CLAUDE_MANIFEST), `${CLAUDE_MANIFEST} is missing`));
+{
+  const mx = () => (existsSync(CLAUDE_MANIFEST) ? matchersFor(CLAUDE_MANIFEST) : []);
   dispatches("manifest routes Codex apply_patch to this guard", "apply_patch", mx);
   dispatches("manifest still routes Claude Write to this guard", "Write", mx);
   dispatches("manifest still routes Claude Bash to this guard", "Bash", mx);
   dispatches("manifest routes Grok's write to this guard", "write", mx);
   dispatches("manifest routes Grok's search_replace to this guard", "search_replace", mx);
   dispatches("manifest routes Grok's run_terminal_command to this guard", "run_terminal_command", mx);
-} else {
-  console.error(`note: ${CLAUDE_MANIFEST} not found, skipping dispatch check`);
 }
 
-// The Gemini manifest ships beside hooks.json, so its absence is a failure, not
-// a skip.
 test("the gemini manifest exists", () => assert.ok(existsSync(GEMINI_MANIFEST), `${GEMINI_MANIFEST} not found`));
-if (existsSync(GEMINI_MANIFEST)) {
-  const mx = () => matchersFor(GEMINI_MANIFEST, "BeforeTool");
+{
+  const mx = () => (existsSync(GEMINI_MANIFEST) ? matchersFor(GEMINI_MANIFEST, "BeforeTool") : []);
   dispatches("gemini manifest routes write_file here", "write_file", mx);
   dispatches("gemini manifest routes replace here", "replace", mx);
   dispatches("gemini manifest routes run_shell_command here", "run_shell_command", mx);
 }
 
-if (existsSync(AGY_MANIFEST)) {
-  const mx = () => agyMatchersFor(AGY_MANIFEST);
+test(`Antigravity's manifest exists at ${AGY_MANIFEST}`, () =>
+  assert.ok(existsSync(AGY_MANIFEST), `${AGY_MANIFEST} is missing`));
+{
+  const mx = () => (existsSync(AGY_MANIFEST) ? agyMatchersFor(AGY_MANIFEST) : []);
   dispatches("agy manifest routes write_to_file here", "write_to_file", mx);
   dispatches("agy manifest routes replace_file_content here", "replace_file_content", mx);
   dispatches("agy manifest routes run_command here", "run_command", mx);
-} else {
-  console.error(`note: ${AGY_MANIFEST} not found, skipping agy dispatch check`);
 }

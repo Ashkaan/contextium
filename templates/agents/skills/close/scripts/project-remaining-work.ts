@@ -1,9 +1,8 @@
 #!/usr/bin/env -S node --experimental-strip-types
 // project-remaining-work.ts — emit the HARD signals of unfinished work in a
 // project, so /close step-2.1 can decide whether the project just finished.
-// Counting files and table rows is DATA, not judgment;
-// the judgment left to the agent is only "does the remaining Next Steps prose
-// describe real work, and does the shipped thing need a watch window?".
+// Counting specs and table rows is DATA, not judgment; the judgment left to
+// the agent is only "does the shipped thing need a watch window?".
 //
 // Usage: project-remaining-work.ts <project-folder>
 //   <project-folder> — repo-relative or absolute path to projects/<domain>/<date>_<slug>/
@@ -14,26 +13,22 @@
 //                                                      per spec-state.ts; printed before the count)
 //   unreported_specs: N                               (how many such SPECs)
 //   spec-state-error: spec-state.ts exited N          (the SPEC scan failed; work-remains)
-//   shard_table: yes|no                               (## Shard Status present)
-//   shard_open: N                                     (rows whose State cell is not closed)
-//   shard: <name> <state>                             (one line per open shard row)
-//   next_steps_section: yes|no                        (always no on a ROADMAP.md project)
-//   next_steps_unchecked: N                           (`- [ ]` under ## Next Steps)
-//   todo: <text>                                      (one line per unchecked box)
-//   next_steps_unparsed: N                            (list items that are NOT checkboxes)
-//   unparsed: <text>                                  (one line per such item)
-//   roadmap_table: yes                                (ROADMAP.md present — these three
-//   roadmap_open: N                                    lines appear ONLY then, so a legacy
-//   roadmap: <ID> <status>                             project's output is unchanged; one
-//                                                      `roadmap:` per row not done/absorbed/closed)
-//   roadmap-error: <message>                          (ROADMAP.md malformed; work-remains)
+//   roadmap_table: yes|no                             (ROADMAP.md present)
+//   roadmap_open: N                                   (rows not done/absorbed/closed)
+//   roadmap: <ID> <status>                            (one line per such row)
+//   roadmap-error: <message>                          (ROADMAP.md missing or malformed;
+//                                                      work-remains)
 //   verdict: work-remains|no-hard-signal
 //
 // `verdict: no-hard-signal` does NOT mean "the project is done" — it means
 // nothing countable is outstanding, so the completion call is now the agent's to
-// make by reading the README goal against whatever prose sits in Next Steps
-// (numbered backlogs carry no done-state and cannot be counted). `work-remains`
-// is the deterministic veto: never flip a project holding one.
+// make by reading the README goal against what shipped. `work-remains` is the
+// deterministic veto: never flip a project holding one.
+//
+// The README's `## Shard Status` table and `## Next Steps` list are not read:
+// ROADMAP.md replaced both, so a leftover list cannot hold a roadmap project
+// open, and a project without ROADMAP.md reports `roadmap-error` (work-remains)
+// until `/project <slug>` gives it one.
 //
 // peers:
 //   .agents/skills/close/scripts/project-remaining-work.test.ts
@@ -53,7 +48,6 @@ const err = (msg: string): void => {
 };
 // [[:space:]] under the C locales.
 const SP = "[ \\t\\n\\r\\f\\v]";
-const trim = (s: string): string => s.replace(new RegExp(`^${SP}+`), "").replace(new RegExp(`${SP}+$`), "");
 const lowerAscii = (s: string): string => s.replace(/[A-Z]/g, (c) => c.toLowerCase());
 const isDir = (p: string): boolean => {
   try {
@@ -95,14 +89,6 @@ function readTab(line: string, n: number): string[] {
   }
   out.push(rest.replace(/\t+$/, ""));
   return out;
-}
-
-/** `IFS='|' read -r -a cells` — each `|` ends a field, and one at the very end makes no empty field after it. */
-function readPipes(s: string): string[] {
-  if (s === "") return [];
-  const parts = s.split("|");
-  if (parts.length > 1 && parts[parts.length - 1] === "") parts.pop();
-  return parts;
 }
 
 async function main(): Promise<void> {
@@ -188,156 +174,21 @@ async function main(): Promise<void> {
     remains = true;
   }
 
-  // ── Shard table rows not yet closed ────────────────────────────────────
-  // The State cell is the LAST non-empty column of each `| ... |` row under
-  // ## Shard Status. A shard counts as done only when that cell reads closed/
-  // done/complete(d)/shipped/dropped; anything else (in-flight, pending,
-  // blocked, —) is open.
-  const shardRows: string[] = [];
-  if (lines.some((l) => /^## +Shard Status/.test(l))) {
-    say("shard_table: yes");
-    let inSection = false;
-    for (const l of lines) {
-      if (/^## +Shard Status/.test(l)) {
-        inSection = true;
-        continue;
-      }
-      if (inSection && /^## /.test(l)) inSection = false;
-      if (inSection && /^\|/.test(l)) shardRows.push(l);
-    }
-  } else {
-    say("shard_table: no");
-  }
-
-  const openShards: string[] = [];
-  for (const row of shardRows) {
-    if (row === "") continue;
-    // Skip the |---|---| separator and the header row.
-    if (new RegExp(`^\\|${SP}*:?-+`).test(row)) continue;
-    if (new RegExp(`^\\|${SP}*Shard${SP}*\\|`).test(row)) continue;
-    // Split on |, trim; first cell = shard name, last non-empty = state.
-    const cells = readPipes(row.startsWith("|") ? row.slice(1) : row);
-    if (cells.length < 2) continue;
-    let name = trim(cells[0] ?? "");
-    if (name.startsWith("`")) name = name.slice(1);
-    if (name.endsWith("`")) name = name.slice(0, -1);
-    let state = "";
-    for (let i = cells.length - 1; i >= 0; i--) {
-      const candidate = trim(cells[i] ?? "");
-      if (candidate !== "") {
-        state = candidate;
-        break;
-      }
-    }
-    if (name === "") continue;
-    switch (lowerAscii(state)) {
-      // `state` is the header row's own last cell — matched case-insensitively
-      // so a lowercase `| shard | ... | state |` header is not read as an open
-      // shard named "shard".
-      case "state":
-      case "closed":
-      case "done":
-      case "complete":
-      case "completed":
-      case "shipped":
-      case "dropped":
-        break;
-      default:
-        openShards.push(`${name} ${state}`);
-    }
-  }
-
-  say(`shard_open: ${openShards.length}`);
-  for (const row of openShards) say(`shard: ${row}`);
-  if (openShards.length > 0) remains = true;
-
-  // ── Remaining work under ## Next Steps ─────────────────────────────────
-  //
-  // TWO counts, not one, and the second exists because counting only unchecked boxes
-  // silently misses real work: a backlog written as a numbered or bulleted list, or under
-  // the heading "## Next steps" with a lowercase s, would report `next_steps_section: no`
-  // and `verdict: no-hard-signal` — indistinguishable, to a caller, from a project with an
-  // empty backlog.
-  //
-  // The heading match is case-insensitive, and a list item that is not an unchecked box
-  // is counted as UNPARSED rather than ignored. Unparsed items still set `work-remains`:
-  // this script is the deterministic VETO, and a veto that resolves ambiguity toward
-  // "nothing left" is the wrong direction for a gate whose whole job is refusing to close
-  // a project with work in it. A checked box (`- [x]`) is done and counts as neither.
-  //
-  // A project WITH ROADMAP.md is read from its rows alone (below): the roadmap is
-  // its one list of outstanding work, and a leftover README list must not hold it
-  // open. Its section is reported as absent.
-  const todos: string[] = [];
-  const unparsed: string[] = [];
-  const hasRoadmap = isFile(`${projectDir}/ROADMAP.md`);
-  if (!hasRoadmap && lines.some((l) => /^## +next steps/i.test(l))) {
-    say("next_steps_section: yes");
-    let inSection = false;
-    const box = new RegExp(`^${SP}*[-*+] \\[ \\]`);
-    const boxPrefix = new RegExp(`^${SP}*[-*+] \\[ \\]${SP}*`);
-    const done = new RegExp(`^${SP}*[-*+] \\[[xX]\\]`);
-    // All three bullet markers, in the unchecked rule and the checked one. Markdown
-    // allows `-`, `*` and `+` interchangeably, and recognizing only two of them means
-    // a `+ [ ]` is not a checkbox to this scanner. That was survivable while the
-    // unparsed rule scanned every indent (it caught the item as backlog either way),
-    // but narrowing unparsed to column zero re-opened it for NESTED `+` boxes, which
-    // would then be counted as nothing at all.
-    //
-    // Any other TOP-LEVEL list item — numbered, lettered in either case, or a plain
-    // bullet — is real backlog the counters cannot read a done-state from. Named, not
-    // dropped. `[A-Za-z]`, not `[a-z]`: an "A. …" list is the same backlog as an "a. …"
-    // one, and matching only one case is how the checkbox-only version missed work.
-    //
-    // UNINDENTED only, and that is the guard against the opposite failure. An indented
-    // item is a CHILD — most often explanatory sub-bullets under a `- [x]` that is
-    // already done — and counting those would pin a finished checklist `work-remains`
-    // forever, which is the same defect as under-counting pointed the other way. An
-    // unchecked `- [ ]` still counts at ANY depth, because a box is an explicit
-    // done-state and a nested one is still open work.
-    const item = new RegExp(`^([0-9]+[.)]|[A-Za-z][.)]|[-*+])${SP}+`);
-    for (const l of lines) {
-      if (/^## +next steps/.test(l.toLowerCase())) {
-        inSection = true;
-        continue;
-      }
-      if (inSection && /^## /.test(l)) inSection = false;
-      if (!inSection) continue;
-      if (box.test(l)) {
-        todos.push(l.replace(boxPrefix, ""));
-        continue;
-      }
-      // A completed box is done: neither a todo nor unparsed.
-      if (done.test(l)) continue;
-      if (item.test(l)) {
-        const text = l.replace(item, "");
-        if (text !== "") unparsed.push(text);
-      }
-    }
-  } else {
-    say("next_steps_section: no");
-  }
-
-  // Counted and printed as `grep -c .` and `[[ -n "$line" ]]` read them: an
-  // empty box text is neither a todo line nor a count. `$(…)` also dropped the
-  // trailing empty ones before the count.
-  const todoLines = todos.filter((t) => t !== "");
-  say(`next_steps_unchecked: ${todoLines.length}`);
-  for (const t of todoLines) say(`todo: ${t}`);
-  say(`next_steps_unparsed: ${unparsed.length}`);
-  for (const u of unparsed) say(`unparsed: ${u}`);
-  if (unparsed.length > 0) remains = true;
-  if (todoLines.length > 0) remains = true;
-
   // ── ROADMAP.md rows not done ───────────────────────────────────────────
-  // On a spec-kit project the roadmap is the ONE list of outstanding work
+  // The roadmap is the project's ONE list of outstanding work
   // (project/references/templates/ROADMAP.md), read through roadmap.ts so this
   // cannot disagree with detect-stage.ts or next-implement-command.ts about the
   // table. Every row that is not `done`, `absorbed by …` or `closed: …` is open — a `blocked:`
   // watch included, since a watch is exactly what must keep a project from
-  // closing. A table roadmap.ts cannot read is also work-remains: a veto that
-  // resolves a parse failure toward "nothing left" would flip the project done.
-  if (hasRoadmap) {
+  // closing. A table roadmap.ts cannot read, or no table at all, is also
+  // work-remains: a veto that resolves a parse failure toward "nothing left"
+  // would flip the project done.
+  if (!isFile(`${projectDir}/ROADMAP.md`)) {
+    say("roadmap_table: no");
+    say("roadmap_open: 0");
+    say("roadmap-error: no ROADMAP.md");
+    remains = true;
+  } else {
     say("roadmap_table: yes");
     const rm = sibling(`${SCRIPT_DIR}/roadmap.ts`, [projectDir], "pipe");
     if (rm.rc !== 0) {

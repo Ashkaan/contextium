@@ -17,7 +17,17 @@
 
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { accessSync, constants, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
+import {
+  accessSync,
+  constants,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { after, test } from "node:test";
@@ -196,4 +206,50 @@ test("output-style-write round-trip", () => {
   assert.equal(existsSync(join(REPO_ROOT, ".claude")), false, "output-style-write: wrote an in-repo .claude/");
   ({ out, rc } = run("output-style", name));
   assert.equal(rc, 1, `output-style-write: a second scaffold must refuse the collision, got rc=${rc}`);
+});
+
+// ── Case 9: the template's registration command, run from another repo ──
+// Hooks are home-level: Claude Code, Codex and Grok Build fire them in EVERY
+// repo, so the command the template tells an author to register must run the
+// workbench's copy — never $CLAUDE_PROJECT_DIR's, which is another repo there —
+// and must pass, saying so, when the file is missing.
+test("the hook template's registration command runs the workbench's hook from any repo", () => {
+  const tmpl = readFileSync(join(dirname(SCRIPT), "../references/templates/hook-tooluse.template.ts"), "utf8");
+  const m = /"command": ("(?:[^"\\]|\\.)*")/.exec(tmpl);
+  assert.ok(m?.[1], "the template carries no registration command");
+  const name = "zz-reg";
+  const template = (JSON.parse(m[1]) as string).replaceAll("{{name}}", name);
+  const root = mkdtempSync(join(tmpdir(), "author-reg-"));
+  try {
+    // A space in the workbench path: the escaped quotes must keep it one word.
+    const workbench = join(root, "the workbench");
+    const product = join(root, "product");
+    for (const [repo, who] of [
+      [workbench, "workbench"],
+      [product, "product repo"],
+    ] as const) {
+      mkdirSync(join(repo, ".agents/hooks"), { recursive: true });
+      writeFileSync(
+        join(repo, `.agents/hooks/${name}.ts`),
+        `process.stderr.write("ran: ${who}\\n");\nprocess.exitCode = 2;\n`,
+      );
+    }
+    const env = { ...process.env, CLAUDE_PROJECT_DIR: product, NODE_NO_WARNINGS: "1" };
+    let r = spawnSync("sh", ["-c", template.replaceAll("<workbench>", workbench)], {
+      cwd: product,
+      encoding: "utf8",
+      env,
+    });
+    assert.equal(r.status, 2, `the hook did not run (exit ${r.status}): ${r.stderr}`);
+    assert.ok(r.stderr.includes("ran: workbench"), `ran the wrong copy: ${r.stderr}`);
+    r = spawnSync("sh", ["-c", template.replaceAll("<workbench>", join(root, "missing"))], {
+      cwd: product,
+      encoding: "utf8",
+      env,
+    });
+    assert.equal(r.status, 0, `a missing hook must pass: ${r.stderr}`);
+    assert.ok(r.stderr.includes("guard missing:"), `a missing hook must say so: ${r.stderr}`);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });

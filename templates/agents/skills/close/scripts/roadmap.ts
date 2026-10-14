@@ -21,9 +21,12 @@
 //
 // Sub-spec is printed as the NAME spec-state.ts gives that spec, so a caller can
 // join the two outputs on it directly:
-//   `specs/004-x/`                               → specs/004-x
-//   `` `x.spec.md` → `x-report.md` `` (legacy)   → x   (the first backticked *.spec.md)
-//   `—`, `-` or empty                            → —
+//   `specs/004-x/`, ticked or not                → specs/004-x
+//   `—`                                          → —
+//   `manual`, ticked or not (a step no spec is written for) → manual
+// Any other cell is a malformed table (exit 1, naming the row and the cell), and
+// `--set … --sub-spec` refuses anything but `specs/NNN-name/` or `manual` before
+// it writes.
 //
 // Usage:
 //   roadmap.ts <project-folder>                 one TSV line per row:
@@ -310,18 +313,16 @@ function cells(line: string): string[] {
   return cell;
 }
 
-function subspecName(s: string): string {
-  const m = /`[^`]*\.(spec|plan)\.md`/.exec(s);
-  if (m) {
-    return m[0]
-      .slice(1, -1)
-      .replace(/.*\//, "")
-      .replace(/\.(spec|plan)\.md$/, "");
-  }
-  let t = trim(s.replace(/`/g, ""));
-  if (t === "" || t === "—" || t === "-") return "—";
-  t = t.replace(/\/+$/, "");
-  return t;
+/** A spec folder as a Sub-spec names it: `specs/NNN-name/`, the slash included. */
+const SPEC_FOLDER = /^specs\/[0-9]{3}-[^/`\s]+\/$/;
+
+/** A Sub-spec cell's name — `—`, `manual`, or `specs/NNN-name` — or null when the cell is none of them. */
+function subspecName(s: string): string | null {
+  const t = trim(s);
+  if (t === "—") return "—";
+  const bare = /^`([^`]*)`$/.exec(t)?.[1] ?? t;
+  if (bare === "manual") return "manual";
+  return SPEC_FOLDER.test(bare) ? bare.replace(/\/$/, "") : null;
 }
 
 /**
@@ -452,7 +453,9 @@ function parseOrThrow(roadmap: string, mode: ParseMode, set: SetArgs, out: { tex
       rline.push(NR);
       rstatus.push(c[colStatus - 1] ?? "");
       rfeat.push(feat);
-      rsub.push(colSub ? subspecName(c[colSub - 1] ?? "") : "—");
+      const sub = colSub ? subspecName(c[colSub - 1] ?? "") : "—";
+      if (sub === null) fail(`${id}: Sub-spec "${c[colSub - 1] ?? ""}" is not —, manual or specs/NNN-name/`);
+      rsub.push(sub);
       rdep.push(colDep ? (c[colDep - 1] ?? "") : "");
       byid.set(id.toUpperCase(), rid.length - 1);
     }
@@ -626,7 +629,8 @@ function parseOrThrow(roadmap: string, mode: ParseMode, set: SetArgs, out: { tex
   // Segments of the RAW line, so every byte of every other cell is kept.
   const seg = segs(lines[ln] ?? "");
   seg[colStatus] = ` ${bytes(set.status)} `;
-  if (set.subspec !== "") seg[colSub] = ` \`${bytes(set.subspec)}\` `;
+  if (set.subspec === "manual") seg[colSub] = " manual ";
+  else if (set.subspec !== "") seg[colSub] = ` \`${bytes(set.subspec)}\` `;
   lines[ln] = seg.join("|");
   for (const l of lines) out.text += `${l}\n`;
   return 0;
@@ -675,6 +679,10 @@ async function main(): Promise<void> {
       set.id = rest[1] ?? "";
       set.status = rest[2] ?? "";
       set.subspec = rest[4] ?? "";
+      if (rest.length === 5 && set.subspec !== "manual" && !SPEC_FOLDER.test(set.subspec)) {
+        err(`--sub-spec '${set.subspec}' is not specs/NNN-name/ or manual`);
+        exit(2);
+      }
       const s = set.status;
       const okStatus =
         s === "planned" ||

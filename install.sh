@@ -36,7 +36,7 @@ set -euo pipefail
 
 # --- Constants ---
 
-VERSION="v9.0.2"
+VERSION="v9.1.0"
 
 # The tools the installer knows, in menu order. The first is the recommended one.
 HARNESSES="t3 claude codex cursor vscode gemini antigravity grok"

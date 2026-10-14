@@ -494,18 +494,25 @@ INPUT="$(cat)"
 # of Claude's shape alone — `.tool_name` — would let an Antigravity call
 # (`toolCall.name`) leave at the emptiness check below having examined no path
 # at all, and Codex's write tool is named `apply_patch`, which would match no
-# branch. Both would look guarded and not be.
+# branch. Both would look guarded and not be. Newer Grok Build sends Claude's
+# shape under its own tool names, which would also match no branch unless
+# mapped: the guard would fire on Grok and pass every write.
 #
-# Read from codex-cli 0.155.0 and agy 1.2.7:
+# Read from codex-cli 0.155.0, agy 1.2.7 and grok 1.0.46:
 #
-#   | field   | Claude / Codex                     | Antigravity                   |
-#   |---------|------------------------------------|-------------------------------|
-#   | tool    | .tool_name                         | .toolCall.name                |
-#   | command | .tool_input.command                | .toolCall.args.CommandLine    |
-#   | path    | .tool_input.{file_path,notebook_path} | .toolCall.args.TargetFile  |
-#   |         | Codex: parsed out of the patch envelope |                          |
-#   | cwd     | .cwd                               | .toolCall.args.Cwd            |
-#   |         |                                    |   // .workspacePaths[0]       |
+#   | field   | Claude / Codex          | Grok                    | Antigravity                |
+#   |---------|-------------------------|-------------------------|----------------------------|
+#   | tool    | .tool_name              | .tool_name:             | .toolCall.name             |
+#   |         |                         |   run_terminal_command, |                            |
+#   |         |                         |   write, search_replace,|                            |
+#   |         |                         |   edit, multi_edit      |                            |
+#   | command | .tool_input.command     | .tool_input.command     | .toolCall.args.CommandLine |
+#   | path    | .tool_input.{file_path, | .tool_input.file_path   | .toolCall.args.TargetFile  |
+#   |         |   notebook_path}        |                         |                            |
+#   |         | Codex: parsed out of    |                         |                            |
+#   |         |   the patch envelope    |                         |                            |
+#   | cwd     | .cwd                    | .cwd                    | .toolCall.args.Cwd         |
+#   |         |                         |                         |   // .workspacePaths[0]    |
 #
 # `.toolCall` is the discriminator, the same one check-host-infra-safety.sh:301
 # uses, so the two guards beside each other cannot disagree about which harness
@@ -549,8 +556,15 @@ elif [[ -n "$(printf '%s' "${INPUT}" | jq --raw-output '.toolName // empty' 2>/d
   CWD="$(printf '%s' "${INPUT}" \
     | jq --raw-output '.cwd // .workspaceRoot // empty' 2>/dev/null)"
 else
-  TOOL="$(printf '%s' "${INPUT}" \
+  RAW_TOOL="$(printf '%s' "${INPUT}" \
     | jq --raw-output '.tool_name // empty' 2>/dev/null)"
+  # Grok's names map onto Claude's, as Antigravity's do above; every other name
+  # (Claude's own, Codex's apply_patch) passes through unchanged.
+  case "${RAW_TOOL}" in
+    run_terminal_command) TOOL="Bash" ;;
+    write | search_replace | edit | multi_edit) TOOL="Write" ;;
+    *) TOOL="${RAW_TOOL}" ;;
+  esac
   COMMAND="$(printf '%s' "${INPUT}" \
     | jq --raw-output '.tool_input.command // empty' 2>/dev/null)"
   # ONE expression covering both field names. A guard that read only

@@ -395,9 +395,9 @@ async function main(): Promise<void> {
   const TMP = mkdtempSync(join(tmpdir(), "roadmap-merge-"));
   try {
     // Only a project with a table has derived fields: land.ts re-derives a
-    // README only when a ROADMAP.md stands beside it. A legacy project's
-    // README is hand-written, its `status:` included, so it merges by line —
-    // setting ours aside there would drop a concurrent completion for good.
+    // README only when a ROADMAP.md stands beside it. A README with none — a
+    // domain README such as projects/legal/README.md — is hand-written, so it
+    // merges by line; setting ours aside there would drop a concurrent edit.
     // git runs a driver from the worktree's top, so <path> is read from here,
     // in ours' tree.
     if (basename(NAME) === "README.md" && !isFile(join(dirname(NAME), "ROADMAP.md"))) {

@@ -1,5 +1,6 @@
 ---
 name: review
+disable-model-invocation: true
 description: "The vendor review chain the loop skills run and never the model itself — code-review.ts over a git diff, spec-audit.ts over a SPEC or spec folder, policy-review.ts over any artifact — each walking a row of the policy table (policy.json here: Codex first, its declared backup next, never the vendor that wrote the code, and a fresh-context fallback labelled NOT independent only when no vendor answers), with blast-radius.ts packing the callers of what a diff changed and find-peers.ts sweeping a mechanism for the siblings a fix left behind. Invoked by /implement (Phase 4.7), /implement-audit, /spec-audit and /author through the paths in this folder; run by hand only to review a diff or SPEC outside those loops or to run the chain's own suites (run-tests.ts) and its eval (evals/)."
 allowed-tools: "Bash(.agents/skills/review/*:*) Read"
 metadata:
@@ -27,6 +28,12 @@ holds every folder here to.
   `CODEX_REVIEW_REPO`, else `git rev-parse --show-toplevel` from the cwd, and
   exits 2 with one line when neither names a repo. It never falls back to the
   checkout this script sits in — that reviews the wrong tree.
+- **The other half of a cross-repo change** is named by
+  `CODEX_REVIEW_COMPANIONS` (worktree paths, comma-separated): the prompt lists
+  each with its branch and tells the reviewer to read that repo there, not from
+  the landed checkout, which does not carry the change yet. A path that is not a
+  git checkout exits 2. Without it, a reviewer spends rounds on findings about
+  code the companion worktree has already changed.
 - **The policy** is `policy.json` beside these scripts: rows `adversarial-review`,
   `judgment`, `panel` and `repo-investigation`, each an ordered list of vendor
   CLIs (`codex`, `grok`; a `claude` slot means "dispatch your own agent").

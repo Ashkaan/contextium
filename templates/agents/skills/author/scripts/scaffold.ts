@@ -165,11 +165,11 @@ async function main(): Promise<void> {
   } else if (type === "output-style") {
     // Body is APPENDED TO THE SYSTEM PROMPT, so it is in force every turn of
     // every session that selects it. Single file, no registration side effects:
-    // existing does NOT select it (settings.json `outputStyle`) and does NOT
-    // reach subagents (a SubagentStart hook's allowlist). Both are register-step
-    // work per references/output-style.md. Output styles are Claude Code's
-    // alone; the file goes in the shared layer, which the installer links from
-    // ~/.claude/output-styles (there is no in-repo .claude/).
+    // existing does NOT select it (`outputStyle` in ~/.claude/settings.json)
+    // and does NOT reach subagents (a SubagentStart hook's allowlist). Both are
+    // register-step work per references/output-style.md. Output styles are
+    // Claude Code's alone; the file goes in the shared layer, which the
+    // installer links from ~/.claude/output-styles (there is no in-repo .claude/).
     const rel = `.agents/output-styles/${name}.md`;
     const dest = `${repoRoot}/${rel}`;
     if (existsSync(dest)) {

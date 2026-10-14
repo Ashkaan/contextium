@@ -44,8 +44,7 @@
 
 set -euo pipefail
 
-# SSOT: every caller (this script, session-key.test.ts, the skill body) routes
-# through --validate-slug; the regex MUST NOT be duplicated elsewhere.
+# SSOT: every caller routes through --validate-slug; the regex MUST NOT be duplicated elsewhere.
 readonly SLUG_REGEX='^[a-z][a-z0-9-]{0,63}$'
 
 err() { echo "$@" >&2; }
@@ -293,15 +292,19 @@ find_project_dir() {
 #   --slug x --shard r4 → the row whose ID is `r4`, case-insensitively.
 #   bare x              → the row detect-stage.ts names in `next-row:` when the
 #                         stage is ready-to-implement; any other stage refuses.
-#                         A legacy loose SPEC in flight wins, as it does there,
-#                         and takes the old path with no row to flip.
 # Then the row's spec folder must carry no open NEEDS CLARIFICATION marker.
-# A project with no ROADMAP.md takes the old path untouched.
+# A project with no ROADMAP.md refuses: its loose specs and README shard table
+# are a retired layout, and nothing reads them. A
+# slug that names no project (a `session-<key>` worktree) has no row to resolve.
 roadmap_project="" roadmap_row=""
 resolve_roadmap_row() {
   local proj rows rc=0 errf msg row sub
   proj="$(find_project_dir)"
-  [[ -n "$proj" && -f "$proj/ROADMAP.md" ]] || return 0
+  [[ -n "$proj" ]] || return 0
+  if [[ ! -f "$proj/ROADMAP.md" ]]; then
+    err "BLOCKED: $proj has no ROADMAP.md — run /project $original_slug"
+    exit 1
+  fi
   errf="$(mktemp)"
   rows="$(node --experimental-strip-types "$CLOSE_SCRIPTS/roadmap.ts" "$proj" 2>"$errf")" || rc=$?
   msg="$(sed -n 's/^roadmap: //p' "$errf" | tail -n1)"; rm -f "$errf"
@@ -334,6 +337,10 @@ resolve_roadmap_row() {
       err "BLOCKED: $rid has no spec yet — run /project $original_slug"
       exit 1
     fi
+    if [[ "$rsub" == "manual" ]]; then
+      err "BLOCKED: $rid is a manual step — no spec is written for it, so there is nothing to implement"
+      exit 1
+    fi
     # awk reads to the end rather than `exit` on the match: spec-state.ts
     # writes a line per spec, and a reader that quits early kills it with
     # SIGPIPE — under `set -e` and pipefail that took this script down, silent,
@@ -345,10 +352,9 @@ resolve_roadmap_row() {
       *) err "BLOCKED: $rid's Sub-spec '$rsub' is not on disk — run /project $original_slug"; exit 1 ;;
     esac
   else
-    local stage_out stage active next_row
+    local stage_out stage next_row
     stage_out="$(node --experimental-strip-types "$SELF_DIR/../../project/scripts/detect-stage.ts" "$proj" 2>/dev/null || true)"
     stage="$(sed -n 's/^stage: //p' <<<"$stage_out")"
-    active="$(sed -n 's/^active-spec: \{0,1\}//p' <<<"$stage_out")"
     next_row="$(sed -n 's/^next-row: \{0,1\}//p' <<<"$stage_out")"
     if [[ "$stage" != "ready-to-implement" ]]; then
       err "BLOCKED: $original_slug is at stage '${stage:-unknown}', not ready-to-implement — run /project $original_slug${next_row:+ (row $next_row)}"
@@ -359,22 +365,16 @@ resolve_roadmap_row() {
       fi
       exit 1
     fi
-    case "$active" in
-      */specs/*/spec.md) ;;
-      *) return 0 ;;    # a legacy loose SPEC in flight: the old path
-    esac
     row="$(printf '%s\n' "$rows" | awk -F'\t' -v w="$next_row" '$1==w && !f {print; f=1}')"
     [[ -n "$row" ]] || return 0
   fi
   sub="$(cut -f4 <<<"$row")"
-  if [[ "$sub" == specs/* ]]; then
-    local markers mrc=0
-    markers="$(node --experimental-strip-types "$CLOSE_SCRIPTS/open-clarifications.ts" "$proj/$sub" 2>&1)" || mrc=$?
-    if [[ "$mrc" -ne 0 ]]; then
-      err "BLOCKED: $(cut -f1 <<<"$row") has open NEEDS CLARIFICATION markers in $proj/$sub — settle them with /project $original_slug first:"
-      printf '%s\n' "$markers" | sed 's/^/  /' >&2
-      exit 1
-    fi
+  local markers mrc=0
+  markers="$(node --experimental-strip-types "$CLOSE_SCRIPTS/open-clarifications.ts" "$proj/$sub" 2>&1)" || mrc=$?
+  if [[ "$mrc" -ne 0 ]]; then
+    err "BLOCKED: $(cut -f1 <<<"$row") has open NEEDS CLARIFICATION markers in $proj/$sub — settle them with /project $original_slug first:"
+    printf '%s\n' "$markers" | sed 's/^/  /' >&2
+    exit 1
   fi
   roadmap_project="$proj"; roadmap_row="$(cut -f1 <<<"$row")"
 }

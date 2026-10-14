@@ -71,7 +71,7 @@ if [ -z "${PAGES// /}" ]; then
 fi
 ```
 
-`--before` serves the working tree; `--after` builds a clean `git worktree` of HEAD so uncommitted edits don't leak into the shot; `--live` hits the deployed URL and skips the build.
+`--before` serves the working tree; `--after` builds a clean `git worktree` of HEAD so uncommitted edits don't leak into the shot, linking in the nearest `node_modules` at or above the checkout (below `$HOME`), since a worktree under `/tmp` has none; `--live` hits the deployed URL and skips the build.
 
 **`/qa` is zero-config — every repo runs with no per-repo config file.** Astro / Vite / static targets get convention defaults. For `--live`, `--live-url <url>` (or `QA_LIVE_URL`) names the deployed site; without it, `serve.ts` resolves the URL from a Cloudflare Pages registry lookup (`qaDeriveLiveUrlFromCf` in `lib.ts`, using wrangler's `CLOUDFLARE_API_TOKEN` + `CLOUDFLARE_ACCOUNT_ID`) that matches the repo against each project's `source.config.repo_name` and returns that project's custom domain — cached 6h per account at `/tmp/qa-cf-pages-cache.<account id>.json`. That is a lookup in an authoritative registry, not inference from the directory name; the two genuinely differ (a repo named `site-web` deploying to `example.com`), which is why the heuristic would be wrong and the API is not. A site behind Cloudflare Access gets a service token when you name its 1Password item in `QA_ACCESS_OP_ITEM` (or set `QA_CF_ACCESS_ID` / `QA_CF_ACCESS_SECRET`). The only per-repo declaration `/qa` ever reads is a `qa:*` script in `package.json` for the non-convention types (`node-server`, `cli`, `render`), plus an optional `qa:seed` for local D1 rows (below); a CF-deployed Astro app needs nothing. Build/serve failures halt with the log tail. If detection returned `render`/`cli`, skip to `step-5b-render`/`step-5-cli`.
 
@@ -415,9 +415,7 @@ Rubric (thresholds, severity ladder, edge-state axes, known false positives):
 MOTION. `<run-dir>/motion/manifest.json` lists what each route DECLARED
 (name, target, duration, delay) and `<run-dir>/motion/<route>-<width>-t*.png` is
 a frame burst at 0/120/260/520ms with animations running. Work the rubric's
-Motion section against both. A route with no declared animations, or with
-declared animations whose frames are identical, is a P1 — this product should
-move, and move in several places, not just fade the page in once.
+Motion section against both; its severities are the only ones that apply.
 
 Design intent: <paste the SPEC/design or describe the page's purpose>.
 

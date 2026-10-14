@@ -533,9 +533,19 @@ test("hook-wiring top-level-warns check-silent root-unresolved-says-so", () => {
   );
   rmSync(join(fakeHome, ".claude/settings.json"));
 
+  // A project .claude/settings.json counts for nothing: the hooks are
+  // home-level, and no harness takes them from one in the workbench.
+  mkdirSync(join(fake, ".claude"));
+  writeFileSync(
+    join(fake, ".claude/settings.json"),
+    `{"hooks":{"PreToolUse":[{"hooks":[{"type":"command","command":"/wb/.agents/hooks/${name}.ts"}]}]}}\n`,
+  );
   r = node(isoVerify, ["hook", join(REPO_ROOT, path)], { env });
   assert.equal(r.rc, 0, `hook-wiring: the wiring WARN must not block; got ${r.rc}: ${r.out}`);
-  assert.ok(r.out.includes("not wired"), `hook-wiring: unwired top-level hook should WARN: ${r.out}`);
+  assert.ok(
+    r.out.includes("not wired"),
+    `hook-wiring: a hook wired only in a project .claude/settings.json should WARN: ${r.out}`,
+  );
 
   // A check gets no wiring claim, wired or not.
   const cpath = scaffold("hook", "zz-verify-wiring-chk", "checks");

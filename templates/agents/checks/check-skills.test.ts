@@ -379,6 +379,53 @@ test("SKILL.md naming state/entity-map.json", () => {
   rmSync(join(ROOT, "notes"), { recursive: true, force: true });
 });
 
+// 11c. A skill only the user types: `disable-model-invocation: true`
+//      in the frontmatter (Claude Code, Antigravity, Grok) and the fixed
+//      `agents/openai.yaml` beside it (Codex) — both or neither, nothing else.
+const HIDDEN = "name: hidden\ndisable-model-invocation: true\ndescription: Does one thing, typed by name only.";
+const OPENAI_YAML = "policy:\n  allow_implicit_invocation: false\n";
+function makeHidden(fm: string, openaiYaml: string | null): void {
+  rmSync(join(ROOT, "hidden"), { recursive: true, force: true });
+  makeSkill("hidden", fm);
+  if (openaiYaml !== null) {
+    mkdirSync(join(ROOT, "hidden/agents"), { recursive: true });
+    writeFileSync(join(ROOT, "hidden/agents/openai.yaml"), openaiYaml);
+  }
+}
+test("disable-model-invocation: true with its agents/openai.yaml", () => {
+  makeHidden(HIDDEN, OPENAI_YAML);
+  expect("ok", "OK — 1 skill(s) checked", "hidden");
+});
+test("disable-model-invocation: true without agents/openai.yaml", () => {
+  makeHidden(HIDDEN, null);
+  expect("violation", "hidden/SKILL.md: disable-model-invocation: true needs agents/openai.yaml", "hidden");
+});
+test("agents/openai.yaml without disable-model-invocation", () => {
+  makeHidden(HIDDEN.replace("disable-model-invocation: true\n", ""), OPENAI_YAML);
+  expect("violation", "hidden/SKILL.md: agents/openai.yaml without disable-model-invocation: true", "hidden");
+});
+test("disable-model-invocation: false is refused", () => {
+  makeHidden(HIDDEN.replace(": true", ": false"), null);
+  expect("violation", "hidden/SKILL.md: disable-model-invocation may only be true", "hidden");
+});
+test("agents/openai.yaml with any other content", () => {
+  makeHidden(HIDDEN, `interface:\n  short_description: "x"\n${OPENAI_YAML}`);
+  expect("violation", "hidden/SKILL.md: agents/openai.yaml must read exactly", "hidden");
+});
+test("agents/ holding another file", () => {
+  makeHidden(HIDDEN, OPENAI_YAML);
+  writeFileSync(join(ROOT, "hidden/agents/claude.yaml"), "x: 1\n");
+  expect("violation", "hidden/SKILL.md: agents/claude.yaml", "hidden");
+});
+test("the key does not shield another retired key from the validator", () => {
+  makeHidden(`${HIDDEN}\nwhen_to_use: always`, OPENAI_YAML);
+  const { out, rc } = runCheck(["hidden"]);
+  assert.equal(rc, 1, out);
+  assert.ok(out.includes("Unexpected fields in frontmatter: when_to_use."), out);
+  assert.ok(!out.includes("disable-model-invocation, "), out);
+  rmSync(join(ROOT, "hidden"), { recursive: true, force: true });
+});
+
 // 12. --all over 0 skills.
 test("--all over an empty root", () => {
   const saved = ROOT;

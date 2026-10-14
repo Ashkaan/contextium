@@ -19,7 +19,8 @@
 //   (f) NNNN is unique among every record ON DISK in the same folder — not
 //       among the arguments, or a new 0003 beside a committed 0003 passes
 //   (g) an `accepted` record's BODY has a line holding a YYYY-MM-DD date
-//       followed by a quoted run ("…" or “…”); frontmatter does not count
+//       followed by a quoted run ("…" or “…”); frontmatter and blockquote
+//       (`> `) lines do not count
 //
 // WHAT IT SCANS. With no path arguments: the decision files changed in this
 // work tree, staged or not, measured from HEAD — or with `--since <ref>` from
@@ -222,7 +223,10 @@ function parseRecord(file: string): DecisionRecord {
     // The date must come BEFORE the opening quote — `Your Name 2026-01-10: "…"`.
     // Either order would let a line quoting a discussion and dating it after
     // stand in for an approval.
-    if (closed && !quoted) {
+    // A blockquote line (`> …`) is a citation, not an approval: a backfilled
+    // record may quote its source entry verbatim under ## More Information, and
+    // that entry can carry dated words about other things.
+    if (closed && !quoted && !/^\s*>/.test(line)) {
       const d = /[0-9]{4}-[0-9]{2}-[0-9]{2}/.exec(line);
       if (d) {
         const rest = line.slice(d.index + d[0].length);

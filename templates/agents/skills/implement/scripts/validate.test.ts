@@ -290,6 +290,35 @@ test("and the phase passes on a nit", () => assert.equal(reviewCase("nit2", "[ni
 
 test("exit 4 (converged) is not a failure", () => assert.equal(reviewCase("conv", "", 4).rc, 0));
 test("and says so", () => assert.ok(reviewCase("conv2", "", 4).out.includes("converged")));
+// At the ceiling the validator runs the one final review of the
+// outstanding fixes itself, and its findings count like a round's.
+function finalReviewer(name: string, finalOut: string, finalRc: number): string {
+  return tsWrap(
+    writeExec(
+      join(TMP, `reviewer-${name}.sh`),
+      `#!/bin/sh
+${SNAPSHOT_BLOCK}printf '%s\\n' "$@" >>${shq(join(TMP, `calls-${name}.log`))}
+case " $* " in *" --final "*) ${finalOut !== "" ? `printf '%s\\n' ${shq(finalOut)}; ` : ""}exit ${finalRc};; esac
+exit 5
+`,
+    ),
+  );
+}
+test("at the ceiling, the final review runs and its findings count", async (t) => {
+  const stub = finalReviewer("final1", "[must-fix] f.ts:1: the round-4 fix missed a case — x", 0);
+  const r = runValidate(["--phase", "review", "--since", snapshot(stub), "--scope", "seed.txt"], { STUB_REVIEW: stub });
+  await t.test("the final pass was asked for", () =>
+    assert.ok(readFileSync(join(TMP, "calls-final1.log"), "utf8").includes("--final")),
+  );
+  await t.test("its finding is passed through", () => assert.ok(r.out.includes("[must-fix] f.ts:1"), r.out));
+  await t.test("and sets NEED_FIX=1", () => assert.ok(r.out.includes("NEED_FIX=1"), r.out));
+});
+test("a final review already spent is a note: report what is still open", async (t) => {
+  const stub = finalReviewer("final2", "", 5);
+  const r = runValidate(["--phase", "review", "--since", snapshot(stub), "--scope", "seed.txt"], { STUB_REVIEW: stub });
+  await t.test("the phase passes", () => assert.equal(r.rc, 0, r.out + r.err));
+  await t.test("and says what is still open", () => assert.ok(r.out.includes("still open"), r.out));
+});
 test("exit 5 (round ceiling) is not a failure", () => assert.equal(reviewCase("ceil", "", 5).rc, 0));
 test("and says what to do", () => assert.ok(reviewCase("ceil2", "", 5).out.includes("still open")));
 

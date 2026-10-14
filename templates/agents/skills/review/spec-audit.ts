@@ -23,7 +23,7 @@
 //                          split across them. report.md is not design and is
 //                          never sent. A file that cannot be read is exit 2.
 //       spec-or-plan-file  Or the absolute path to one draft SPEC / plan file
-//                          (app SPECs and legacy project SPECs).
+//                          (app SPECs and feature SPECs).
 //   $2  brief              Short description of what the SPEC is for.
 //   $3  pushback-file      (optional, round 2) Path to file containing
 //                          Claude's pushbacks against round-1 findings.
@@ -285,10 +285,13 @@ Be concise. No prose introduction. No summary at the end. Just findings.`;
   }
 
   const PROMPT = `You are an adversarial reviewer of an app SPEC. You're reviewing a SPEC, not
-code. The repo conventions you must hold the SPEC to are documented in
-AGENTS.md, section Standards (data is fetched and judgment is prompted, read
-before asserting, a class fix is atomic, no deferral, simplest mechanism that
-works, plan the four before building, tests and evals).
+code. The repo conventions you must hold the SPEC to are the Standards in
+AGENTS.md at the repo root, and in particular: data is fetched and judgment is
+prompted; read before asserting; a class fix is atomic; no deferral; every new
+function gets a test, and any work that calls a model carries an eval; the
+quality gates are planned before building, with behaviour enumerated at
+0 / 1 / empty / max / error inputs; no enforcement for a failure that has not
+happened; and the simplest mechanism that works wins.
 
 BRIEF: ${BRIEF}
 ${ROUND_INSTRUCTIONS}

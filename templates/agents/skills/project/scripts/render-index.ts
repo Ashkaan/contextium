@@ -14,6 +14,17 @@
 // scripts that together cost half a second. This composes them once so the render is a
 // copy (or a plain terminal command with no model in the loop at all).
 //
+// READ FROM origin/main, NOT FROM THIS WORKTREE. A thread's worktree is cut
+// from main when the thread opens and is not updated until its close, so an
+// index read from it shows every project as it stood then: a project blocked
+// on main hours ago still renders as Active. Both halves therefore
+// read a scratch copy of every project README as origin/main has it (fetched
+// first), with this worktree's own edits to those READMEs — committed on its
+// branch or not yet — laid over it, since those are newer than main for this
+// thread. A fetch that fails falls back to the last fetched origin/main and
+// says so on stderr; a root that is not a git checkout (a test fixture) has no
+// main to be behind and is read as it is.
+//
 // Composition only: no formatting decision lives here that was not already
 // specified in SKILL.md § "Lapsed monitor windows". Zero lapsed windows print
 // NOTHING — the block's absence is the all-clear.
@@ -30,7 +41,8 @@
 //   .agents/skills/project/SKILL.md  (step-0.5-render-index + scripts table)
 
 import { spawnSync } from "node:child_process";
-import { realpathSync, statSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, statSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { exit, runToExit } from "../../../packages/cli-exit/cli-exit.ts";
@@ -49,6 +61,72 @@ const die = (msg: string, code = 1): never => {
   process.stderr.write(`${msg}\n`);
   exit(code);
 };
+
+/** Every project README; the only files either half reads with --expired-only. */
+const README_GLOB = ":(glob)projects/*/*/README.md";
+
+const git = (repo: string, args: string[]) =>
+  spawnSync("git", ["-C", repo, ...args], {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+    maxBuffer: 256 * 1024 * 1024,
+    timeout: 30_000,
+  });
+
+/**
+ * A scratch root holding `projects/*\/*\/README.md` as origin/main has them,
+ * with this worktree's own changes to those files over the top, or null when
+ * the root is read as it is (not a git checkout, or no origin/main to read).
+ * The caller removes it.
+ */
+function freshView(repo: string): string | null {
+  if (git(repo, ["rev-parse", "--git-dir"]).status !== 0) return null;
+  const warn = (msg: string): void => {
+    process.stderr.write(`render-index: ${msg}\n`);
+  };
+  if (git(repo, ["fetch", "-q", "origin", "main"]).status !== 0) {
+    warn("could not fetch origin/main; rendering from the last fetched copy");
+  }
+  const MAIN = "refs/remotes/origin/main";
+  if (git(repo, ["rev-parse", "--verify", "-q", MAIN]).status !== 0) {
+    warn(`no origin/main in ${repo}; rendering this checkout as it is, which may be behind main`);
+    return null;
+  }
+  const base = git(repo, ["merge-base", "HEAD", MAIN]);
+  const archive = spawnSync("git", ["-C", repo, "archive", "--format=tar", MAIN, "--", README_GLOB], {
+    stdio: ["ignore", "pipe", "pipe"],
+    maxBuffer: 256 * 1024 * 1024,
+  });
+  if (base.status !== 0 || archive.status !== 0) {
+    warn("could not read the project READMEs from origin/main; rendering this checkout as it is");
+    return null;
+  }
+  const view = mkdtempSync(join(tmpdir(), "project-index-view."));
+  if (spawnSync("tar", ["-x", "-C", view], { input: archive.stdout }).status !== 0) {
+    rmSync(view, { recursive: true, force: true });
+    die("render-index: could not unpack origin/main's project READMEs");
+  }
+  // This worktree's own edits: every README that differs from where it left
+  // main (committed, staged or not), and every one it added and never staged.
+  const changed = git(repo, ["diff", "--name-only", "--no-renames", base.stdout.trim(), "--", README_GLOB]);
+  const added = git(repo, ["ls-files", "--others", "--exclude-standard", "--", README_GLOB]);
+  if (changed.status !== 0 || added.status !== 0) {
+    rmSync(view, { recursive: true, force: true });
+    die("render-index: could not list this worktree's own project edits");
+  }
+  for (const rel of `${changed.stdout}\n${added.stdout}`.split("\n").filter(Boolean)) {
+    const dest = join(view, rel);
+    if (existsSync(join(repo, rel))) {
+      mkdirSync(dirname(dest), { recursive: true });
+      copyFileSync(join(repo, rel), dest);
+    } else {
+      // The folder goes with it: the generator counts a project folder with no
+      // README as a project it could not read.
+      rmSync(dirname(dest), { recursive: true, force: true });
+    }
+  }
+  return view;
+}
 
 async function main(): Promise<void> {
   // ONE CHECKOUT FOR BOTH HALVES. The generator indexes the projects of the repo
@@ -82,15 +160,23 @@ async function main(): Promise<void> {
     die(`render-index: cd: ${CODE_REPO}: No such file or directory`);
   }
 
+  const VIEW = freshView(CODE_REPO);
+  if (VIEW !== null) process.on("exit", () => rmSync(VIEW, { recursive: true, force: true }));
+  const ROOT = VIEW ?? CODE_REPO;
+
   // A non-zero exit still carries a view worth showing: the generator names the
   // projects it could not read on its first line and renders the rest. Print that
   // and stop, so /project shows the warning and the partial index rather than
   // nothing at all.
-  const gen = spawnSync(process.execPath, ["--experimental-strip-types", GENERATOR, "--compact"], {
-    encoding: "utf8",
-    stdio: ["inherit", "pipe", "inherit"],
-    maxBuffer: 256 * 1024 * 1024,
-  });
+  const gen = spawnSync(
+    process.execPath,
+    ["--experimental-strip-types", GENERATOR, "--compact", "--projects-dir", join(ROOT, "projects")],
+    {
+      encoding: "utf8",
+      stdio: ["inherit", "pipe", "inherit"],
+      maxBuffer: 256 * 1024 * 1024,
+    },
+  );
   const INDEX = (gen.stdout ?? "").replace(/\n+$/, "");
   const INDEX_RC = gen.status ?? 1;
   if (INDEX_RC !== 0) {
@@ -128,7 +214,7 @@ async function main(): Promise<void> {
     ["--experimental-strip-types", join(SCRIPT_DIR, "check-staleness.ts"), "--expired-only"],
     {
       encoding: "utf8",
-      env: { ...process.env, CONTEXT_WRITE_ROOT: CODE_REPO },
+      env: { ...process.env, CONTEXT_WRITE_ROOT: ROOT },
       stdio: ["inherit", "pipe", "inherit"],
     },
   );

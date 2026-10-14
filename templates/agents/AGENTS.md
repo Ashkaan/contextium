@@ -118,8 +118,10 @@ and nothing more. The rules below are checked by `.agents/checks/check-skills.ts
 points here rather than restating them (one fact, one file).
 
 **Frontmatter** is the specification's six keys — `name`, `description`, `license`, `compatibility`,
-`metadata`, `allowed-tools` — and no other top-level key. The published validator, not this prose, is
-the list: a key it does not allow fails the check, whatever this section says. `description` carries
+`metadata`, `allowed-tools` — plus `disable-model-invocation: true` on a skill only the user types
+(below), and no other top-level key. The published validator, not this prose, is the list: a key it
+does not allow fails the check, whatever this section says; the check hands it the file without the
+`disable-model-invocation` line. `description` carries
 both what the skill does and when to use it, at most 1,024 characters; there is no separate trigger
 field. `allowed-tools` is one space-separated string. A YAML frontmatter uses block form only — the
 validator rejects flow syntax such as `[a, b]` and `{k: v}`.
@@ -129,11 +131,19 @@ dispatches (its references, scripts, the skills and agents it calls), each relat
 root (`.agents/skills/<skill>/…`, `apps/…`, `knowledge/…`). No other `metadata` key is allowed, and
 an empty string is a violation — name the peers or drop the key.
 
-**Which skills the model may fire on its own is harness configuration, never a file field.** On
-Claude Code it is `skillOverrides` in `~/.claude/settings.json`; other harnesses list every skill by
-name and description or hide skills by path in their own settings. `disable-model-invocation`,
-`when_to_use`, `argument-hint`, `steps`, `enforces`, `handoffs_to` and `handoffs_from` are not skill
-fields, and the check refuses them.
+**A skill only the user types carries `disable-model-invocation: true` and `agents/openai.yaml`;
+every other skill carries neither.** The user can still invoke every skill by name, and the model
+needs nothing more than the name loaded for it. Each harness's settings-side hide — Codex
+`[[skills.config]] enabled = false`, Antigravity `skills.json` `exclude`, Grok `[skills] ignore` —
+also stops the user typing the name, so the switch lives in the skill folder. The frontmatter key
+hides the skill from the model on Claude Code, Antigravity and Grok; Codex ignores it and reads
+`agents/openai.yaml`, which reads exactly `policy:` / `  allow_implicit_invocation: false` and nothing
+else. On all four the typed name (`/name`, Codex `$name`) still runs it. The key is `true` or absent,
+the two come together, `agents/` holds only that file, and the check refuses anything else. Every
+other skill is listed for the model to fire: on Claude Code by name only, `skillOverrides`
+`"name-only"` in `~/.claude/settings.json`; Codex, Antigravity and Grok have no setting that lists a
+skill without its description. `when_to_use`, `argument-hint`, `steps`, `enforces`, `handoffs_to` and
+`handoffs_from` are not skill fields, and the check refuses them.
 
 **`assets/` is what a skill ships with; `state/` is what it has learned.** Data a skill accumulates
 across sessions — a learned map, a track record — lives in `<skill>/state/`, written in the session's

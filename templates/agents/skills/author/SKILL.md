@@ -83,7 +83,7 @@ Batch the uncertain rows into ONE question set, then record every answer so
 | Field | Set it when | Ask when |
 |---|---|---|
 | trigger text in `description` | always — the description says what the skill does AND when to fire it, trigger phrases included, since a skill file has no separate trigger field (Agent Skills spec). Where the skill fires on words that don't resemble its job ("make this sound less AI" → the voice check), those words go in the description | the trigger set isn't obvious from the job |
-| `skillOverrides: "user-invocable-only"` in `~/.claude/settings.json` | only the user should fire it (spend, outbound, deploy). This is harness configuration, not a file field: the file may not carry `disable-model-invocation`, and Codex/Antigravity/Grok each have their own hide (`AGENTS.md § Skill shape`) | **ALWAYS.** This is the one setting that stops a skill firing on its own, so it is never inferred — not from "the user always types it by name anyway," a guess that has mis-planned a migration before. The user names the skill or it stays listed |
+| `disable-model-invocation: true` in the frontmatter plus `agents/openai.yaml` (Codex's copy of the switch) — the exact shape is `AGENTS.md § Skill shape`, and `check-skills.ts` refuses one without the other | only the user should fire it (spend, outbound, deploy). The model then never sees the skill on any harness, and the user can still type it | **ALWAYS.** This is the one setting that stops a skill firing on its own, so it is never inferred — not from "the user always types it by name anyway," a guess that has mis-planned a migration before. The user names the skill or it stays listed |
 | `allowed-tools` | the skill's own commands would otherwise prompt the user every run; one space-separated string | the grant would widen beyond what the skill itself runs |
 | `metadata.peers` | always — the references, scripts and dispatched skills/agents the body loads, as one space-separated string | — |
 
@@ -194,9 +194,9 @@ On failure, fix at the source and re-run — never override, never exclude.
 Meaningful for exactly one type — **hook** — because hooks are the only artifact that needs explicit wiring to fire:
 
 - **skill** — none; auto-discovered from `.agents/skills/<name>/SKILL.md`.
-- **hook** — a PreToolUse/PostToolUse hook is wired per [references/hook.md](references/hook.md) Step 5: a matcher block in each harness's hook manifest; `verify.ts hook` WARNs (non-blocking) while none names it. A check under `.agents/checks/` is not wired here: one that must block becomes a close gate in `.agents/skills/close/scripts/land.ts`.
-- **agent** — none; auto-discovered from `.agents/agents/<name>.md`.
-- **output-style** — NOT auto-selected by existing. To make it the default set `outputStyle` in `~/.claude/settings.json`; to carry it into subagents add the agent types to the fail-closed allowlist of a `SubagentStart` hook in `.agents/hooks/`.
+- **hook** — a PreToolUse/PostToolUse hook is wired per [references/hook.md](references/hook.md) Step 5: a matcher block in each harness's hook manifest, its command running the workbench's copy by absolute path; `verify.ts hook` WARNs (non-blocking) while none names it. A check under `.agents/checks/` is not wired here: one that must block becomes a close gate in `.agents/skills/close/scripts/land.ts`.
+- **agent** — none; auto-discovered from `.agents/agents/<name>.md` through the `~/.claude/agents` home link.
+- **output-style** — NOT auto-selected by existing. To make it the default set `outputStyle` in `~/.claude/settings.json` (the user default; never `.agents/hooks/claude-hooks.json`); to carry it into subagents add the agent types to the fail-closed allowlist of a `SubagentStart` hook in `.agents/hooks/`.
 
 ## Examples
 

@@ -39,9 +39,9 @@ Before filling prose, act on the determinism inventory from Step 1. This is the 
 
 Fill every `TODO` in the scaffold — this is the only AI-judgment step:
 
-- The frontmatter is the Agent Skills specification's six keys and nothing else; `AGENTS.md § Skill shape` is the one statement of the shape, the `metadata.peers` key, the `state/` convention and the body standard — read it, do not restate it here.
+- The frontmatter is the Agent Skills specification's six keys, plus `disable-model-invocation: true` on a skill only the user types, and nothing else; `AGENTS.md § Skill shape` is the one statement of the shape, the `metadata.peers` key, the `state/` convention and the body standard — read it, do not restate it here.
 - `description:` is the **invocation trigger**, not a label — the model reads it to decide when to fire the skill. Write it in **third person** ("Scaffolds…", not "I scaffold…"); state WHAT it does AND WHEN to use it, trigger phrases included, in as many sentences as that takes and at most **1,024 characters** — the spec's cap, and `check-skills.ts` fails past it. There is no separate trigger field.
-- Whether only the user may fire the skill is not a file field: set `skillOverrides` in `~/.claude/settings.json` (`"user-invocable-only"`) — the activation-fields step in SKILL.md is the SSOT for when.
+- Whether only the user may fire the skill: `disable-model-invocation: true` plus `agents/openai.yaml`, in the shape `AGENTS.md § Skill shape` gives — the activation-fields step in SKILL.md is the SSOT for when.
 - `allowed-tools:` (one space-separated string) when the skill's own commands would otherwise prompt every run; remove the field otherwise.
 - `metadata:` → `peers:` lists, as one space-separated string, the co-located files the skill loads (references, scripts, dispatched agents/skills).
 - **Low-context determinism — inline data, not fetch-instructions.** When the skill needs live repo state, prefer dynamic context injection (`` !`command` `` inline, or a `` ```! `` block) so the command's OUTPUT lands in the skill body, instead of writing prose telling Claude to "run X to get context." Actual data beats an instruction to go get it — lower latency, deterministic, and it keeps the judgment step about the data, not about fetching it. This is the SKILL.md analogue of Step 2.5's script extraction.

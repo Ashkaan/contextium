@@ -265,13 +265,19 @@ fi
 # for the same reason — an 8-character prefix is shared by two threads sooner
 # than it looks.
 KEY="$(harness_repo_key "${SHARED}")"
-TARGET="${HOME}/.cache/workbench/worktrees/${KEY}/${TID}"
+# The id with every character a ref cannot hold made a hyphen, for the branch
+# AND the folder: T3 names some threads `mcp:<uuid>`. A colon is refused by
+# `git worktree add -b`, splits the PATH entry npm builds from the folder, and
+# makes vitest's jsdom environment read `mcp:` as a URL scheme. The ledger keeps
+# the id as the harness wrote it.
+SAFE_TID="$(printf '%s' "${TID}" | tr -c 'A-Za-z0-9._-' '-')"
+TARGET="${HOME}/.cache/workbench/worktrees/${KEY}/${SAFE_TID}"
 # A recorded harness puts the worktree where that harness keeps its own
 # (harness.sh), so its worktree tools see it; with none recorded, ~/.cache.
 if [ "$(harness_name "${SHARED}")" != "default" ]; then
-  TARGET="$(harness_worktree_root "${SHARED}")/${TID}"
+  TARGET="$(harness_worktree_root "${SHARED}")/${SAFE_TID}"
 fi
-BRANCH="$(harness_worktree_branch "${TID}" "${SHARED}")"
+BRANCH="$(harness_worktree_branch "${SAFE_TID}" "${SHARED}")"
 
 # Not under $T3CODE_HOME/worktrees/: that folder is T3's, and its stale-worktree
 # sweep would reap these.

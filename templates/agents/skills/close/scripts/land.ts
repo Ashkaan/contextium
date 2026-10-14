@@ -74,6 +74,9 @@
 //   .agents/checks/check-secrets.ts              (run before each commit, when present)
 //   .agents/checks/check-standards-refs.ts       (run before each commit, when present)
 //   .agents/deploy/await-deploy-run.sh           (polled, per repo, on landing — opt-in)
+//   .agents/checks/check-harness-config-links.ts (run after each landing, from the
+//                                                 shared checkout; `--fix` on drift,
+//                                                 never refuses)
 //
 // Exit: 0 landed and checked (the line on stdout) · 2 no thread · 3 NOT CLOSED
 
@@ -93,7 +96,7 @@ import {
 } from "node:fs";
 import { basename, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { exit, runToExit } from "../../../packages/cli-exit/cli-exit.ts";
+import { Exit, exit, runToExit } from "../../../packages/cli-exit/cli-exit.ts";
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const THREAD = `${SCRIPT_DIR}/thread.ts`;
@@ -266,6 +269,79 @@ function say(line: string): void {
 
 function warn(line: string): void {
   process.stderr.write(`${line}\n`);
+}
+
+// ── The harness home links, on every close ─────────────────────────────────
+//
+// The home links that point each harness home (~/.claude/agents,
+// ~/.agents/skills, …) into the workbench's shared checkout. A check that only
+// reports into a log nobody reads lets them dangle unnoticed: a second install
+// that repoints them at a temporary tree leaves the safety hooks and reviewer
+// agents gone while every report says so.
+//
+// So every landing runs the check, and on drift runs its `--fix`, which parks
+// whatever stood at a link at <path>.pre-link before relinking — nothing is
+// lost, and the line naming that file is how the session gets to inspect it.
+// It NEVER refuses: drift is host state, not this thread's diff, and a close
+// that could not land over it would only strand the work. A missing or
+// crashing check is a warning for the same reason. A clean check prints
+// nothing, the way an already-current shared checkout does.
+//
+// The copy that runs is the SHARED checkout's — the trunk checkout this close
+// has just advanced and the tree the links point into — resolved from the
+// ledger, so a thread opened on any repo finds it. Run in that checkout,
+// because the check names the main checkout by `git rev-parse` from where it
+// stands. The lines it prints (`fixed: <link> -> <target>`, `kept the displaced
+// file at <path>`, `Error: …`) are check-harness-config-links.ts's.
+const HL_CHECK_REL = ".agents/checks/check-harness-config-links.ts";
+
+function harnessLinks(ledgerLines: string[]): void {
+  try {
+    const shared = [...new Set(ledgerLines.map((l) => tabFields(l, 3)[1] ?? "").filter((s) => s !== ""))];
+    const home = shared.find((s) => isFile(`${s}/${HL_CHECK_REL}`));
+    if (!home) {
+      say(`  harness-links: WARNING not checked — no checkout this thread landed holds ${HL_CHECK_REL}`);
+      return;
+    }
+    const check = `${home}/${HL_CHECK_REL}`;
+    const opt = {
+      cwd: home,
+      env: { ...process.env, PWD: home },
+      out: "pipe" as const,
+      err: "pipe" as const,
+    };
+    if (run(process.execPath, nodeArgs(check, []), opt).ok) return;
+
+    const fix = run(process.execPath, nodeArgs(check, ["--fix"]), opt);
+    const H = process.env.HOME ?? "";
+    const tilde = (p: string): string => (H && p.startsWith(`${H}/`) ? `~${p.slice(H.length)}` : p);
+    const kept: string[] = [];
+    for (const l of chomp(fix.stdout).split("\n")) {
+      const f = /^fixed: (.+?) -> (.+)$/.exec(l);
+      if (f) say(`  harness-links: relinked ${tilde(f[1] ?? "")} -> ${f[2] ?? ""}`);
+      const k = /^kept the displaced file at (.+)$/.exec(l);
+      if (k) kept.push(k[1] ?? "");
+    }
+    for (const p of kept) say(`  harness-links: the file that stood there is kept at ${p} — inspect it`);
+    if (fix.ok) return;
+    const errLines = chomp(fix.stderr)
+      .split("\n")
+      .filter((l) => l.trim() !== "");
+    // The check's own refusal ends with its `Relink with:` footer; anything
+    // else that exits non-zero is the program failing, not a finding.
+    if (fix.stderr.includes("Relink with: ")) {
+      for (const e of errLines.filter((l) => l.startsWith("Error: ")))
+        say(`  harness-links: NOT FIXED — ${e.slice("Error: ".length)}`);
+      say(`  harness-links: details: node --experimental-strip-types ${check}`);
+      return;
+    }
+    // A crash's stderr ends with a stack and `Node.js v…`; its error line is the news.
+    const why = [...errLines].reverse().find((l) => /^[A-Za-z]*Error\b/.test(l)) ?? lastLine(fix.stderr, "no message");
+    say(`  harness-links: WARNING the check failed (exit ${fix.status}): ${why} — links not checked`);
+  } catch (e) {
+    if (e instanceof Exit) throw e;
+    say(`  harness-links: WARNING the check could not run: ${e instanceof Error ? e.message : String(e)}`);
+  }
 }
 
 // NOT CLOSED is the one phrase the skill looks for, so every refusal uses it and
@@ -825,6 +901,69 @@ async function main(): Promise<void> {
     }
   };
 
+  // releasePartialRows <worktree> <trunk ref> — a row whose report this push
+  // writes as `partial` goes back from `in-progress` to `planned`. `/implement`
+  // flips a row `in-progress` and the close moves it on only to `done`, so a row
+  // built over several landings sat `in-progress` between them with no thread on
+  // it, and a dispatcher that starts only `planned` rows never started the next
+  // landing. Only
+  // a report in THIS push counts: an `in-progress` row whose report it does not
+  // touch belongs to a thread still working it. A `blocked:` row is left alone.
+  // Committed here so resyncNext, which reads base..HEAD, sees the table move.
+  const releasePartialRows = (wt: string, base: string): void => {
+    const d = git(wt, ["diff", "--name-only", base, "HEAD", "--", "projects/*/specs/*/report.md"], { err: "inherit" });
+    if (!d.ok) notClosed(`could not list the reports this push changes in ${wt}`);
+    const touched = new Map<string, Set<string>>();
+    for (const p of chomp(d.stdout).split("\n")) {
+      const m = /^(projects\/[^/]+\/[^/]+)\/(specs\/[^/]+)\/report\.md$/.exec(p);
+      if (!m || !isFile(`${wt}/${p}`)) continue;
+      const set = touched.get(m[1]) ?? new Set<string>();
+      set.add(m[2]);
+      touched.set(m[1], set);
+    }
+    const changed: string[] = [];
+    for (const [dir, specs] of [...touched].sort()) {
+      if (!isFile(`${wt}/${dir}/ROADMAP.md`)) continue;
+      const read = (script: string, ...args: string[]): string[] => {
+        const r = run(process.execPath, nodeArgs(`${SCRIPT_DIR}/${script}`, [`${wt}/${dir}`, ...args]), {
+          out: "pipe",
+          err: "pipe",
+        });
+        if (!r.ok) {
+          const why = chomp(r.stderr).split("\n");
+          notClosed(`${script} failed for ${dir}: ${why[why.length - 1]} — fix it in ${wt}, then re-run`);
+        }
+        return chomp(r.stdout)
+          .split("\n")
+          .filter((l) => l !== "");
+      };
+      const partial = new Set(
+        read("spec-state.ts")
+          .map((l) => l.split("\t"))
+          .filter((f) => f[1] === "partial" && specs.has(f[0] ?? ""))
+          .map((f) => f[0]),
+      );
+      if (partial.size === 0) continue;
+      const ids = read("roadmap.ts")
+        .map((l) => l.split("\t"))
+        .filter((f) => f[1] === "in-progress" && partial.has((f[3] ?? "").replace(/\/$/, "")))
+        .map((f) => f[0] ?? "");
+      for (const id of ids) {
+        read("roadmap.ts", "--set", id, "planned");
+        say(`  roadmap: ${dir} ${id} back to planned — this push's report for it is partial`);
+      }
+      if (ids.length > 0) changed.push(`${dir}/ROADMAP.md`);
+    }
+    if (changed.length === 0) return;
+    if (
+      !git(wt, ["add", "--", ...changed], { out: "inherit", err: "inherit" }).ok ||
+      !git(wt, ["commit", "-q", "-m", `${SUBJECT} (partial rows back to planned)`], { out: "inherit", err: "inherit" })
+        .ok
+    ) {
+      notClosed(`could not commit the released rows in ${wt}`);
+    }
+  };
+
   // resyncNext <worktree> <trunk ref> — re-derive `status:` and `next:` for every project whose
   // ROADMAP.md OR README.md this push changes against the trunk. That is the
   // whole invariant: a push never changes a project's table or README without the
@@ -1179,6 +1318,7 @@ async function main(): Promise<void> {
     }
     // Every attempt, not only the one that merged: a re-run after a failed
     // re-derive finds trunk already merged, and must not push past it.
+    releasePartialRows(WT, `origin/${TRUNK}`);
     resyncNext(WT, `origin/${TRUNK}`);
     // The Next line, from the project as it is about to land (see PROJECT_REL).
     if (PROJECT_REL && holdsJournal(WT)) deriveNext(`${WT}/${PROJECT_REL}`);
@@ -1457,6 +1597,7 @@ async function main(): Promise<void> {
       if (!WT) continue;
       await landOne(WT, SHARED, BRANCH);
     }
+    harnessLinks(LEDGER_LINES);
   }
 
   // ── The three checks ─────────────────────────────────────────────────────
