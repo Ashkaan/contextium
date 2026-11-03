@@ -68,6 +68,7 @@
 //   - the worktree root is web:   the root is a target
 //   - shared package, 2 consumers: both consumers
 //   - deleted file:               kept; its app is still a target if it survives
+//   - an app's root AGENTS/CLAUDE/DESIGN/README.md alone: no target
 //   - detect-app.ts missing:      exit 2
 //   - detect-app.ts exit 2 / >3:  exit 2
 
@@ -164,7 +165,13 @@ async function main(): Promise<void> {
     return run.stdout;
   }
 
+  // Two input formats, kept apart until they are paths. Every git read runs with
+  // -z and is split on NUL: without it git C-quotes `café.astro` as
+  // `"caf\303\251.astro"`, the walk-up starts from a directory named `"apps`, and
+  // a UI change whose only file had an accent skipped /qa. A --files-file and the
+  // argv list are a person's or a caller's, one path per line, and stay so.
   let raw = "";
+  let gitOut = "";
   if (FILES_FILE) {
     if (FILES_FILE === "-") raw = readFileSync(0, "utf8");
     else if (isFile(FILES_FILE)) raw = readFileSync(FILES_FILE, "utf8");
@@ -174,7 +181,7 @@ async function main(): Promise<void> {
     // base is given, the working-tree edits, and the untracked files git diff
     // cannot see.
     if (BASE) {
-      const diff = git("diff", "--name-only", BASE);
+      const diff = git("diff", "-z", "--name-only", BASE);
       if (diff.status !== 0) {
         halt(
           `qa-targets: --base '${BASE}' does not resolve in this worktree.`,
@@ -182,21 +189,21 @@ async function main(): Promise<void> {
           "is already committed would silently read as 'no UI changed'.",
         );
       }
-      raw += diff.stdout;
+      gitOut += diff.stdout;
     } else {
       // `rev-parse --verify -q HEAD` exits 1 for "no commit yet" and 128 for a
       // git error. Only the first is an unborn repo; reading the second as one
       // would scan the staged set alone and miss an unstaged UI edit.
       const head = git("rev-parse", "--verify", "-q", "HEAD");
       if (head.status === 0) {
-        raw += gitRead("git diff --name-only HEAD", "diff", "--name-only", "HEAD");
+        gitOut += gitRead("git diff --name-only HEAD", "diff", "-z", "--name-only", "HEAD");
       } else if (head.status === 1) {
         // Unborn: prove the repository itself reads, then take the staged set
         // (against the empty tree) and the unstaged edits on top of it; the
         // untracked files follow below.
         gitRead("git rev-parse --git-dir", "rev-parse", "--git-dir");
-        raw += gitRead("git diff --cached --name-only", "diff", "--cached", "--name-only");
-        raw += gitRead("git diff --name-only", "diff", "--name-only");
+        gitOut += gitRead("git diff --cached --name-only", "diff", "-z", "--cached", "--name-only");
+        gitOut += gitRead("git diff --name-only", "diff", "-z", "--name-only");
       } else {
         halt(
           `qa-targets: git rev-parse --verify HEAD failed (exit ${head.status ?? "?"}) — refusing to report 'no UI changed' on a git error:`,
@@ -204,7 +211,7 @@ async function main(): Promise<void> {
         );
       }
     }
-    raw += gitRead("git ls-files --others", "ls-files", "--others", "--exclude-standard");
+    gitOut += gitRead("git ls-files --others", "ls-files", "-z", "--others", "--exclude-standard");
   }
   if (ARG_FILES.length > 0) raw += `${ARG_FILES.join("\n")}\n`;
 
@@ -214,7 +221,9 @@ async function main(): Promise<void> {
   // them meant a deletion-only UI change enumerated zero targets and skipped /qa
   // entirely. `webTargetFor` walks up from the path either way and simply finds
   // nothing when the whole tree is gone.
-  const CHANGED = sortC(new Set(raw.split("\n").filter((l) => !/^\s*$/.test(l))));
+  const CHANGED = sortC(
+    new Set([...raw.split("\n").filter((l) => !/^\s*$/.test(l)), ...gitOut.split("\0").filter((p) => p !== "")]),
+  );
   if (CHANGED.length === 0) exit(0);
 
   // ── Classification ────────────────────────────────────────────────────
@@ -281,10 +290,22 @@ async function main(): Promise<void> {
     return target;
   }
 
+  // An app's own instruction docs — AGENTS.md, CLAUDE.md, DESIGN.md, README.md
+  // sitting beside its package.json — are read by agents and people and never
+  // served as a page, so a change to one alone puts no pixels in front of anyone.
+  // Counting each one made its app a target: a change that added an AGENTS.md to
+  // three sites and a section to another's DESIGN.md was asked for four full /qa
+  // passes over pages nothing changed.
+  // A markdown PAGE lives under src/ and is not in this set.
+  const APP_DOCS = new Set(["AGENTS.md", "CLAUDE.md", "DESIGN.md", "README.md"]);
+  const isAppDoc = (file: string, target: string): boolean =>
+    APP_DOCS.has(file.slice(file.lastIndexOf("/") + 1)) && resolve(REPO, parentDir(file)) === target;
+
   const TARGETS: string[] = [];
   const ORPHANS: string[] = [];
   for (const f of CHANGED) {
     const t = webTargetFor(f);
+    if (t && isAppDoc(f, t)) continue;
     if (t) TARGETS.push(t);
     else ORPHANS.push(f);
   }

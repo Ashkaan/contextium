@@ -112,6 +112,8 @@ function hermeticEnv(): NodeJS.ProcessEnv {
   const e: NodeJS.ProcessEnv = { ...process.env, QA_NO_INSTALL: "1" };
   for (const k of ["OP_CONNECT_HOST", "OP_CONNECT_TOKEN", "OP_SERVICE_ACCOUNT_TOKEN", "QA_CF_ACCESS_ID", "QA_CF_ACCESS_SECRET"])
     delete e[k];
+  // Snapshot checks belong to this fixture, independently of the calling review.
+  e.CODE_REVIEW_LOOP_ID = `qa-interaction-test-${process.pid}`;
   return e;
 }
 
@@ -121,21 +123,86 @@ test("no --url → 2 with usage", async () => {
   assert.equal(r.rc, 2);
   assert.match(r.out, /usage: interaction-check\.ts/);
 });
-test("blank --pages → 2", async () => assert.equal((await run(SCRIPT, ["--url", "http://x", "--pages", "  "])).rc, 2));
+test("blank --pages → 2", async () =>
+  assert.equal((await run(SCRIPT, ["--url", "http://127.0.0.1:1", "--pages", "  "])).rc, 2));
 test("unknown flag → 2", async () => {
-  const r = await run(SCRIPT, ["--url", "http://x", "--pages", "/", "--bogus", "1"]);
+  const r = await run(SCRIPT, ["--url", "http://127.0.0.1:1", "--pages", "/", "--bogus", "1"]);
   assert.equal(r.rc, 2);
   assert.match(r.out, /interaction-check: unknown flag: --bogus/);
 });
 test("--auth-op-item unresolved → 2", async () => {
-  const r = await run(SCRIPT, ["--url", "http://x", "--pages", "/", "--auth-op-item", "item1"], { STUB_OP: "fail" });
+  const r = await run(SCRIPT, ["--url", "http://127.0.0.1:1", "--pages", "/", "--auth-op-item", "item1"], {
+    STUB_OP: "fail",
+  });
   assert.equal(r.rc, 2);
   assert.match(r.out, /service token unresolved from 1Password item item1/);
+});
+// Pressing buttons on a deployed site can change real records, so a host off
+// this machine is refused before any credential or browser work.
+test("a deployed host → 2, naming the host and serve.ts --before/--after", async () => {
+  const r = await run(SCRIPT, ["--url", "https://app.example.com", "--pages", "/"]);
+  assert.equal(r.rc, 2);
+  assert.match(r.out, /interaction-check: app\.example\.com is not this machine/);
+  assert.match(r.out, /serve\.ts --before\/--after/);
+});
+test("a LAN address is not this machine either → 2", async () => {
+  const r = await run(SCRIPT, ["--url", "http://192.168.1.57:4321", "--pages", "/"]);
+  assert.equal(r.rc, 2);
+  assert.match(r.out, /192\.168\.1\.57 is not this machine/);
+});
+test("a --pages route that is an absolute URL off this machine → 2", async () => {
+  // new URL(route, base) lets an absolute route replace the base entirely.
+  for (const pages of ["/ https://app.example.com/reviews", "//app.example.com/"]) {
+    const r = await run(SCRIPT, ["--url", "http://127.0.0.1:1", "--pages", pages]);
+    assert.equal(r.rc, 2, pages);
+    assert.match(r.out, /app\.example\.com is not this machine/);
+  }
+});
+test("an --url that is not a URL → 2", async () => {
+  const r = await run(SCRIPT, ["--url", "not a url", "--pages", "/"]);
+  assert.equal(r.rc, 2);
+  assert.match(r.out, /--url not a url is not a URL/);
+});
+for (const url of ["http://localhost:1/", "http://[::1]:9/", "http://127.0.0.1:1"]) {
+  test(`${url} passes the host check (stops later, at Playwright)`, async () => {
+    const empty = join(TMP, "empty-loop");
+    mkdirSync(join(empty, "home"), { recursive: true });
+    const r = await run(SCRIPT, ["--url", url, "--pages", "/"], {
+      PATH: BIN,
+      HOME: join(empty, "home"),
+      PLAYWRIGHT_BROWSERS_PATH: empty,
+    });
+    assert.equal(r.rc, 7, r.out);
+    assert.doesNotMatch(r.out, /is not this machine/);
+  });
+}
+test("--checks with anything but cut-off → 2, naming cut-off", async () => {
+  const r = await run(SCRIPT, ["--url", "http://127.0.0.1:1", "--pages", "/", "--checks", "nonsense"]);
+  assert.equal(r.rc, 2);
+  assert.match(r.out, /interaction-check: --checks nonsense is not a check — the one is cut-off/);
+});
+// The cut-off check presses nothing, so it may read a deployed site; the full
+// run on the same URL is still refused (the case above, app.example.com).
+test("--checks cut-off on a deployed host passes the host check (stops later, at Playwright)", async () => {
+  const empty = join(TMP, "empty-live");
+  mkdirSync(join(empty, "home"), { recursive: true });
+  const r = await run(SCRIPT, ["--url", "https://example.com", "--pages", "/", "--checks", "cut-off"], {
+    PATH: BIN,
+    HOME: join(empty, "home"),
+    PLAYWRIGHT_BROWSERS_PATH: empty,
+  });
+  assert.equal(r.rc, 7, r.out);
+  assert.doesNotMatch(r.out, /is not this machine/);
+});
+test("the full run on that same deployed host is still refused → 2", async () => {
+  const r = await run(SCRIPT, ["--url", "https://example.com", "--pages", "/"]);
+  assert.equal(r.rc, 2);
+  assert.match(r.out, /example\.com is not this machine/);
 });
 test("no Playwright, and installing one forbidden → 7, said plainly", async () => {
   const empty = join(TMP, "empty");
   mkdirSync(join(empty, "home"), { recursive: true });
-  const r = await run(SCRIPT, ["--url", "http://x", "--pages", "/"], {
+  const r = await run(SCRIPT, ["--url", "http://127.0.0.1:1", "--pages", "/"], {
     PATH: BIN,
     HOME: join(empty, "home"),
     PLAYWRIGHT_BROWSERS_PATH: empty,
@@ -186,6 +253,25 @@ describe("interaction-check.ts with a browser", { skip: SKIP }, () => {
     assert.equal(r.rc, 0, r.out);
     assert.equal(existsSync(done), false);
   });
+  test("--checks cut-off passes its verdict through: a cut-off box → 9, nothing pressed", async () => {
+    const r = await run(SCRIPT, ["--url", base(), "--pages", "/cutoff/", "--checks", "cut-off"]);
+    assert.equal(r.rc, 9, r.out);
+    assert.match(r.out, /INTERACTION \/cutoff\/ cut-off div\.box shows 7, hides 13/);
+    assert.match(r.out, /pressed 0 of 0/);
+  });
+  // A cut-off-only run is not the step-3.7 check: it must not mark QA done.
+  test("--checks cut-off with --repo on a clean page → 0, and nothing is stamped", async () => {
+    const done = join(TMP, "done-cutoff");
+    const repo = join(TMP, "cutoff-repo");
+    mkdirSync(repo);
+    execFileSync("git", ["-C", repo, "init", "-q"]);
+    const r = await run(SCRIPT, ["--url", base(), "--pages", "/good/", "--checks", "cut-off", "--repo", repo], {
+      QA_DONE_DIR: done,
+    });
+    assert.equal(r.rc, 0, r.out);
+    assert.doesNotMatch(r.out, /stamped/);
+    assert.equal(existsSync(done), false);
+  });
 
   // ── mark-qa-done --tree refuses a served app until the check passes on that tree ──
   describe("the stamp mark-qa-done.ts --tree reads", () => {
@@ -196,6 +282,7 @@ describe("interaction-check.ts with a browser", { skip: SKIP }, () => {
       execFileSync(process.execPath, ["--experimental-strip-types", CODE_REVIEW, "--snapshot"], {
         cwd: APP,
         encoding: "utf8",
+        env: hermeticEnv(),
       }).trim();
     let TREE = "";
     before(() => {

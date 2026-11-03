@@ -268,7 +268,7 @@ that this file is an extraction rather than a design.
   test("caps the examples at five", () => has(r.out, "and 7 more"));
 }
 
-// ── 11. A native widget is P1 whatever the count, and is always armed ─────
+// ── 11. Native widgets are claims; only the app can require custom ones ──
 {
   const repo = newRepo("native");
   realDesign(repo, FOUR_STEP);
@@ -293,10 +293,14 @@ that this file is an extraction rather than a design.
 `,
   );
   const r = drift(repo);
-  test("a raw select is P1", () => has(r.out, "[P1] native-widget  native <select>"));
+  test("a raw select needs design adjudication, not automatic replacement", () => {
+    has(r.out, "[claim] native-widget  native <select>");
+    lacks(r.out, "[P1] native-widget");
+    has(r.out, "P1=0");
+  });
   // The attributes are three lines below the tag. A line-based scan sees none
   // of them, which is how 34 of 35 native inputs went unreported before this.
-  test("a multi-line native input is found", () => has(r.out, "[P1] native-widget  native <input type=date>"));
+  test("a multi-line native input is found", () => has(r.out, "[claim] native-widget  native <input type=date>"));
   test("a plain text input is not a platform widget", () => lacks(r.out, "type=text"));
 }
 
@@ -332,6 +336,41 @@ export const App = () => (
   test("so is an undeclared literal", () => has(r.out, "off-palette-colour  #abcdef"));
   test("a declared literal is not", () => lacks(r.out, "off-palette-colour  #101010"));
   test("and neither is one named in a comment", () => lacks(r.out, "#ffeedd"));
+}
+
+// ── 13b. A number written with # in prose is not a colour ────────────────
+// A footer reading "Reference No #246802" has six hex digits after a #, so a
+// literal match would report a reference number as an off-palette colour.
+// A colour sits where code puts one — after [ " ' : = ( or , —
+// never straight after a word.
+{
+  const repo = newRepo("prose-hash");
+  realDesign(repo, FOUR_STEP);
+  writeApp(
+    repo,
+    `export const App = () => (
+  <footer>
+    <p>Example Co · Reference No #246802</p>
+    <p>See case #123456 for the docket.</p>
+    <p>State license: No #654321</p>
+    <p style="color: black">License No #777777</p>
+    <p className="text-[#abcdef]">arbitrary class</p>
+    <span style={{ border: "1px solid #a1b2c3" }}>shorthand</span>
+    <span style={{ border: "solid thin #b1b2b3" }}>keyword width</span>
+    <span style={{ boxShadow: "0 0 2pt #c1c2c3" }}>pt length</span>
+  </footer>
+);
+`,
+  );
+  const r = drift(repo);
+  test("a reference number after a word is not a colour", () => lacks(r.out, "#246802"));
+  test("nor is a case number", () => lacks(r.out, "#123456"));
+  test("nor one after a prose label with a colon", () => lacks(r.out, "#654321"));
+  test("nor one after a closed style attribute", () => lacks(r.out, "#777777"));
+  test("an arbitrary-value class still is", () => has(r.out, "off-palette-colour  #abcdef"));
+  test("and so is a hex inside a style value", () => has(r.out, "off-palette-colour  #a1b2c3"));
+  test("after a width keyword too", () => has(r.out, "off-palette-colour  #b1b2b3"));
+  test("and after any CSS length", () => has(r.out, "off-palette-colour  #c1c2c3"));
 }
 
 // ── 14. A recipe claim is never counted as a defect ───────────────────────

@@ -45,6 +45,67 @@ export function qaErr(...msg: string[]): void {
   process.stderr.write(`${msg.join(" ")}\n`);
 }
 
+/**
+ * The widest viewport /qa treats as a phone, and so opens as a touchscreen
+ * (qaContextOptions, qaBrowsers).
+ * A site whose DESIGN.md floors every control at 44px under
+ * `@media (pointer: coarse)` and keeps compact sizes for a mouse treats reach
+ * as a pointer question, not a width question: a mouse browser at 390 measures
+ * the mouse sizes and reports correct buttons as too small to tap. 820 stays
+ * a mouse: it is a tablet beside a side rail and also a narrow desktop window,
+ * so only the phone shot is unambiguous.
+ */
+export const QA_TOUCH_MAX_WIDTH = 480;
+
+/**
+ * The Playwright context options every width-looping /qa script starts from:
+ * the viewport, and touch events at phone widths. `isMobile` is left off: it
+ * changes how a page without a `width=device-width` viewport tag lays out, and
+ * /qa runs on such sites too. `hasTouch` alone is not what makes the pointer
+ * coarse in a shot (see QA_TOUCH_BROWSER_ARGS); it gives the page touch events.
+ */
+export function qaContextOptions(width: number): { viewport: { width: number; height: number }; hasTouch: boolean } {
+  return { viewport: { width, height: 1600 }, hasTouch: width <= QA_TOUCH_MAX_WIDTH };
+}
+
+/**
+ * Chromium switches that make every page in the browser report
+ * `(pointer: coarse)` and `(hover: none)` (Blink's PointerType coarse = 2,
+ * HoverType none = 1). `hasTouch` does the same through DevTools emulation, but
+ * a full-page capture of a page taller than the window resizes the frame and
+ * drops that emulation: the shot, and every check after it, sees a mouse
+ * (Playwright 1.62.0, screenshot-touch.test.ts). A launch setting
+ * survives the capture, so phone widths get a browser of their own.
+ */
+export const QA_TOUCH_BROWSER_ARGS = [
+  "--blink-settings=primaryPointerType=2,availablePointerTypes=2,primaryHoverType=1,availableHoverTypes=1",
+];
+
+/**
+ * One browser per pointer, launched on first use: `forWidth` hands back the
+ * touchscreen browser at phone widths and the mouse browser above them.
+ * `launch` receives the extra Chromium args (none for the mouse browser).
+ */
+export function qaBrowsers<B extends { close(): Promise<void> }>(
+  launch: (args: string[]) => Promise<B>,
+): { forWidth(width: number): Promise<B>; close(): Promise<void> } {
+  const open = new Map<boolean, Promise<B>>();
+  return {
+    forWidth(width: number): Promise<B> {
+      const touch = width <= QA_TOUCH_MAX_WIDTH;
+      let b = open.get(touch);
+      if (b === undefined) {
+        b = launch(touch ? QA_TOUCH_BROWSER_ARGS : []);
+        open.set(touch, b);
+      }
+      return b;
+    },
+    async close(): Promise<void> {
+      for (const b of open.values()) await (await b).close();
+    },
+  };
+}
+
 // POSIX `cksum`: CRC-32 (polynomial 0x04C11DB7, unreflected) over the bytes and
 // then the length, complemented. The slugs and change-set keys below were
 // written by `cksum` before this file existed, so the same input has to keep
@@ -292,10 +353,13 @@ export function qaPlaywrightNodeModules(app = ""): string | undefined {
     const c = join(npx, e, "node_modules");
     if (isDir(join(c, "playwright"))) candidates.push(c);
   }
-  // The first candidate whose chromium revision is installed.
+  // The first candidate that holds `playwright` itself (every caller requires
+  // it; `playwright-chromium` ships the core and the browser but not it) and
+  // whose chromium revision is installed.
   const cache = process.env.PLAYWRIGHT_BROWSERS_PATH || join(home, ".cache", "ms-playwright");
   for (const dir of candidates) {
     try {
+      if (!isDir(join(dir, "playwright"))) continue;
       const bj = join(dir, "playwright-core", "browsers.json");
       if (!existsSync(bj)) continue;
       const j = readJson(bj);

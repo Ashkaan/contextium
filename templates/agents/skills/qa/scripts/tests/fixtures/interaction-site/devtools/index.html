@@ -1,0 +1,10 @@
+<!doctype html><html><body><h1>Dev tools</h1>
+<button onclick="this.textContent='Saving…'">Save</button>
+<nextjs-portal></nextjs-portal>
+<script>
+// `next dev` draws its own tools button inside this element's shadow root; a
+// production build has no such element. It answers nothing within 150 ms.
+const root = document.querySelector('nextjs-portal').attachShadow({ mode: 'open' });
+root.innerHTML = '<button aria-label="Open Next.js Dev Tools" style="width:36px;height:36px"></button>';
+</script>
+</body></html>

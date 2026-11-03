@@ -1,0 +1,8 @@
+<!doctype html><html><body><h1>Not behind a modal</h1>
+<div aria-hidden="true"><button>Save</button></div>
+<dialog id="d"><p>A non-modal dialog</p></dialog>
+<dialog id="r" role="dialog"><p>A non-modal dialog with an explicit role</p></dialog>
+<div role="dialog" aria-modal="false">A dialog that says it is not modal</div>
+<div role="dialog" style="visibility:hidden">An invisible dialog</div>
+<script>document.getElementById("d").show();document.getElementById("r").show();</script>
+</body></html>

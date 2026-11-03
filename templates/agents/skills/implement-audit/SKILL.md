@@ -3,7 +3,7 @@ name: implement-audit
 description: Adversarial review of freshly-built code — find what was missed, what's inconsistent, what breaks. The single code reviewer for the loop. Auto-fired by /implement (phase-4.7); standalone-callable after any substantial change. Writes an `implement-audit:` line into the report.
 allowed-tools: Bash Read Grep Glob
 metadata:
-  peers: ".agents/agents/implement-audit-reviewer.md .agents/skills/implement/SKILL.md"
+  peers: ".agents/agents/implement-audit-reviewer.md .agents/skills/implement/SKILL.md .agents/skills/implement/scripts/validate.ts .agents/skills/review/SKILL.md"
 ---
 
 # implement-audit — the loop's code reviewer
@@ -16,81 +16,80 @@ Review code just built in this conversation. Be adversarial — assume things we
 
 **Only review work from this conversation.** Do NOT flag unrelated uncommitted changes, review full `git status`, comment on other sessions' work, or pad findings with non-issues. One exception, per that rule: a security or data-loss defect read in passing (exposed credential, injection, destructive-by-default path) is still reported — with the `out-of-scope` verdict, so it never holds the patch.
 
-The skill has two reasoning halves. Step 1 runs automated checks in the main conversation (they need Bash + the session's tool access). Step 2 runs the adversarial-reasoning half on **a different vendor from the author — whichever one the `adversarial-review` policy row selects** — a reviewer from the model family that wrote the code has a prior commitment to "this is fine because I wrote it" that fresh context alone does not remove. The two halves merge into a single numbered list of findings with triage verdicts.
+The skill has two halves. Step 1 runs automated checks in the main conversation. Step 2 runs adversarial reasoning on a policy-assigned vendor after excluding the original authors — a reviewer from the model family that wrote the code has a prior commitment to "this is fine because I wrote it" that fresh context alone does not remove — after reading `.agents/skills/review/SKILL.md` § Where things are found (including T3 execution lineage). The two halves merge into a numbered list of findings.
 
-**Runs at most once per session.** Step 0's dedupe guard (`scripts/audit-dedupe.ts`) makes a hand-typed `/implement-audit` after `/implement` phase-4.7 a no-op that re-emits the first run's trailer, not a second full review.
+**Reviews each piece of content once.** Every review leaves a receipt (`scripts/audit-dedupe.ts`): the content it read — the changed source plus every entry point, unchanged dependency, instruction and test record the report's coverage block declares — the answering reviewer, its findings and what it checked. A hand-typed `/implement-audit` after `/implement` phase-4.7, or a post-QA review over records alone, reuses a receipt that still matches and makes no review call. Content the receipt does not cover — a fix, a held nit fixed at the end, /qa's edits, a trunk merge, an unchanged caller or instruction that moved — is reviewed, within the allowance below, before the close lands it.
 
 ## Expected State
 
-/implement's Phase 4 layers (`validate.ts --phase checks`) should have already run. If implement-audit consistently finds 3+ issues, flag this as a process failure — the layers aren't catching what they should, and the fix for that must reach the cause.
+The producer’s quality checks (/implement's Phase 4 layers, `validate.ts --phase checks`) should have already run. If implement-audit consistently finds 3+ issues, flag this as a process failure — the layers aren't catching what they should, and its fix is bound by root `AGENTS.md` § Standards, **Fix the cause**.
 
-## step-0-session-dedupe
+## step-0-receipt
+
+In T3, resolve the audit owner from the `parentThreadId` in this thread’s required `orchestrator_capabilities` result (reuse it if already called). Read `.agents/skills/review/SKILL.md` before dispatch. Fill the command placeholders from actual T3 context; substitute literal values in a child’s task, never leave shell variables for it to inherit. Outside T3, omit T3-only prefixes and leave `CODE_REVIEW_LOOP_ID` unset: the owner is then the close's own thread id (`.agents/skills/close/scripts/thread.ts`), the id the close checks the receipt under.
 
 ```bash
-node --experimental-strip-types .agents/skills/implement-audit/scripts/audit-dedupe.ts status
+CODE_REVIEW_LOOP_ID="<audit-owner thread id>" node --experimental-strip-types .agents/skills/implement-audit/scripts/audit-dedupe.ts status --repo "$REVIEW_REPO"
 ```
 
-- Line 1 `fresh` → no audit ran this session; proceed to `step-1-automated-checks`.
-- Line 1 `done` → an audit already ran (the trailer is on line 2+). Re-emit that stored trailer for the caller and **exit the skill** — do not dispatch a second review. This is how `/implement` audits exactly once (phase-4.7) and a later hand-typed `/implement-audit` no-ops instead of double-reviewing.
+- Line 1 `done` → a receipt of this owner still covers this repo's content as it is now (its trailer or summary is line 2). Re-emit it for the caller and **exit the skill** — no review is owed.
+- Line 1 `fresh` → no receipt covers the content as it is now; stderr says why (none yet, the last attempt did not complete, unresolved findings, or the paths that changed since). Proceed to `step-1-automated-checks`. A trailer written earlier is never a reason to skip: it is a record, not proof.
 
 ## step-1-automated-checks
 
-Run the 5 deterministic checks against the diff between `$BASE_SHA` (start of this session's commits) and HEAD via the extracted script:
+The existing validation driver in step 2 runs the deterministic checks before each review. Capture its PASS/FAIL/WARN output as ground truth; do not run a separate duplicate review or duplicate check pass. A failed check stops before any vendor call.
 
-```bash
-node --experimental-strip-types .agents/skills/implement-audit/scripts/run-automated-checks.ts --session-base "$BASE_SHA"
-```
-
-The script emits TAP-ish `PASS: <check>` / `FAIL: <check> <detail>` / `WARN: <check> missing` lines plus a final `SUMMARY:` line. The 5 checks: each touched package's own lint and typecheck (`implement/scripts/layer-1.ts`), shellcheck on changed `.sh`, `.agents/checks/check-standards-refs.ts` on changed files, `.agents/skills/review/find-peers.ts --base $BASE_SHA`, and `.agents/checks/check-secrets.ts --since $BASE_SHA` — the same citation and secrets scans `land.ts` runs before it commits. A check whose program is absent (a product repo carries no `.agents/checks/`) is a `WARN`, never a `FAIL`. Capture stdout verbatim — Step 2 passes it to the agent as ground truth so the agent doesn't duplicate the work.
+The checks are `run-automated-checks.ts --session-base "$BASE_SHA"`, which the driver runs: each touched package's own lint and typecheck (`implement/scripts/layer-1.ts`), shellcheck on changed `.sh`, `.agents/checks/check-standards-refs.ts` on changed files, `.agents/skills/review/find-peers.ts --base $BASE_SHA`, and `.agents/checks/check-secrets.ts --since $BASE_SHA` — the same citation and secrets scans `land.ts` runs before it commits. Each prints a TAP-ish `PASS:` / `FAIL:` / `WARN:` line, then a final `SUMMARY:` line. A check whose program is absent (a product repo carries no `.agents/checks/`) is a `WARN`, never a `FAIL`.
 
 ## step-2-dispatch-reviewer
 
-The review runs on **the vendor the policy assigns, never the session model**.
+Before any review, supply verified original authors per `.agents/skills/review/SKILL.md` § Where things are found. Preserve the input through every round and the post-QA review, adding any provider that writes fixes. A child executor must use the original authors, not its own provider.
+
+**Inside `/implement`, pass the report.** `--report` names the spec's `report.md`, whose coverage block (`.agents/skills/implement/SKILL.md` § phase-5) lists what the reviewer must check; the driver refuses before any review call when the block is missing, malformed, names a path that does not exist, or omits an `AGENTS.md` at or above a changed path (the root included). A follow-up round is shown the must-fix and should-fix findings still open; one stays open until a round reviews a change to the file it names and does not re-report it, and a path an earlier receipt left unreviewed stays unreviewed until a round's diff carries it. The reviewer then answers in one frame — its findings and a checked/unchecked line, with evidence, for every declared item — and the receipt approves only when no must-fix or should-fix is open and every required item was checked. A standalone audit with no report reviews the diff alone; its receipt covers the changed paths and nothing declared.
 
 **Snapshot before every review, and review only the fixes after round 1.** Take the snapshot FIRST — it has to capture the tree the reviewer is about to read, not the tree after you fix what it says.
 
 ```bash
-# Every round, before dispatching:
-SNAP=$(node --experimental-strip-types .agents/skills/review/code-review.ts --snapshot)
-
-# Round 1 — the whole change:
-node --experimental-strip-types .agents/skills/review/code-review.ts "$BASE_SHA" "$HEAD_SHA"
-
-# Rounds 2+ — only what changed since the round before:
-node --experimental-strip-types .agents/skills/review/code-review.ts --since "$PREV_SNAP"
+# Round 1. REVIEW_REPO is this worktree or the product worktree under review.
+CODE_REVIEW_LOOP_ID="<audit-owner thread id>" POLICY_CHAIN_AUTHOR_THREAD_ID="<writing thread id>" POLICY_CHAIN_AUTHOR_VENDORS="<all writer providers>" \
+node --experimental-strip-types .agents/skills/implement/scripts/validate.ts --repo "$REVIEW_REPO" --phase review \
+  --base "$BASE_SHA" --head HEAD --scope <scope> --report "$REPORT"
+# Rounds 2+: use PRE_TREE printed by the previous invocation.
+CODE_REVIEW_LOOP_ID="<audit-owner thread id>" POLICY_CHAIN_AUTHOR_THREAD_ID="<writing thread id>" POLICY_CHAIN_AUTHOR_VENDORS="<all writer providers>" \
+node --experimental-strip-types .agents/skills/implement/scripts/validate.ts --repo "$REVIEW_REPO" --phase review \
+  --base "$BASE_SHA" --since "$PREV_SNAP" --scope <scope> --report "$REPORT"
 ```
 
-`PREV_SNAP` is the `SNAP` captured before the PREVIOUS round. Keep the current one for the next round.
+The driver snapshots before each review and prints PRE_TREE; keep it for the next round. A `NOTE: … still covers this content — no review call` line means the receipt was reused and nothing was spent; `RECEIPT: approved` or `RECEIPT: not approved` follows every completed review. Parse triage lines separately from its check output and NEED_FIX/NEED_E2E fields. NEED_FIX=1 means fix before continuing; NEED_E2E=1 requires the producer’s E2E walk again. This is the only review invocation per round. The exit table below describes the review result. The driver preserves convergence and spent-limit exits 4 and 5; neither is a fresh clean review.
 
 Rounds 2+ are scoped this way: a follow-up round that re-reads the cumulative diff spends a full vendor call re-deciding settled code, and its own earlier fixes become the next round's findings. The snapshot is a git tree object written through a temp index — it does not touch HEAD, the index, the stash, or any file, which matters because this skill runs against uncommitted work by design. Untracked files ARE captured, so a file created by a fix does not read as new surface forever.
 
 **The reviewer sees more than the diff, and none of it is your job to assemble.** `code-review.ts` splices a BLAST-RADIUS PACK into its own prompt, between the file list and the DIFF: who imports each changed file, what that file imports, and who calls each symbol the diff actually changed, with a real parser finding the enclosing symbol (`.agents/skills/review/blast-radius.ts`). That is the whole-repo context a hosted code-review bot sells, computed per review from this worktree rather than read out of an index that goes stale while the session edits — so there is no GitHub app to install and nothing to buy. Do NOT paste a caller list into the prompt yourself and do not pass the packer a file list: the script derives it from the same union of changed and working files the reviewer is about to read, which is what keeps the pack from citing a file the diff never showed. It fails open — a missing or broken packer costs the review its context and nothing else, because an unknown caller is not by itself a defect.
 
-**The post-QA re-review is NOT a second `/implement-audit`.** When `/qa` edits source during `/implement` phase-4.8, those edits are code nobody has reviewed, and `audit-dedupe.ts` would turn a second dispatch of this skill into a no-op that re-emits the stored trailer — a clean-looking audit over unreviewed bytes. So `/implement` routes that round through `.agents/skills/implement/scripts/validate.ts --phase qa-revalidate`, which calls `code-review.ts --since` directly. The dedupe stays exactly as it is: this skill reviews once per session, and that is still right.
+**The post-QA review is the same path on another bucket.** When `/qa` edits source during `/implement` phase-4.8, `.agents/skills/implement/scripts/validate.ts --phase qa-revalidate` reviews what it moved through the same receipt: records alone reuse it, anything else is reviewed with `--since`, spending the qa bucket rather than the build one.
 
-The model family that writes the code (the `agent=` line of `.agents/harness`) is not an independent reviewer of it in the sense the assignment asks for. Putting the review on a different vendor by construction is the point — and WHICH vendor is the `adversarial-review` row's business (`.agents/skills/review/policy.json`, walked by `policy-chain.ts`, which skips the author's vendor), not this skill's. The script walks that row's chain itself, so a primary that is absent, non-zero, or hung falls through to the declared backup INSIDE the one call. The script reads the diff and the repo itself through its sandbox, so it needs no curated file list.
+The model family that writes the code is not an independent reviewer of it in the sense the assignment asks for, so the caller names every original author (`POLICY_CHAIN_AUTHOR_VENDORS`, above) and the chain leaves them out. WHICH eligible vendor answers is the `adversarial-review` row's business (`.agents/skills/review/policy.json`, walked by `policy-chain.ts`), not this skill's. The script walks eligible slots in that row, with fallback inside the same call. It reads the diff and repo through its sandbox, so it needs no curated file list.
 
 **One invocation, not two.** Do not re-run a failed review through `policy-review.ts` by hand: the chain walk is in-script, so exit 1 means the chain is ALREADY exhausted, and re-running it cannot help.
 
 `BASE_SHA` is the start of this session's commits (typically `HEAD~N` for N commits this session); `HEAD_SHA` is `HEAD`. Uncommitted work is included and flagged to the reviewer, because this skill runs pre-commit by design.
 
-**When the code is in another repo** (a product worktree `$PRODUCT_WT` from `write-root.sh`, as `/implement` § "A row whose code is in another repo" sets up), both steps read that worktree, never this one: step 1 runs `run-automated-checks.ts --session-base "$BASE_SHA" --repo-dir "$PRODUCT_WT"`, and every `code-review.ts` call here — snapshot, round 1, `--since` — runs with `CODEX_REVIEW_REPO="$PRODUCT_WT"` in its environment. `BASE_SHA` is `git -C "$PRODUCT_WT" merge-base HEAD origin/<its trunk>`. Left to default, both read this repo's worktree, which holds only the spec, and pass. When the change has a half in BOTH repos, each repo's review names the other half's worktree in `CODEX_REVIEW_COMPANIONS` — `$PRODUCT_WT` when reviewing this worktree, this worktree when reviewing `$PRODUCT_WT` (`.agents/skills/review/SKILL.md` § Where things are found) — or the reviewer reads the landed copy of the other half and reports what the worktree already changed.
+**For another repo**, set REVIEW_REPO to that thread-owned product worktree and BASE_SHA to its merge-base. Use the same validate.ts --repo invocation above for every round; it runs checks, snapshot and review against that repo. When a change spans repos, name each companion worktree through CODEX_REVIEW_COMPANIONS per .agents/skills/review/SKILL.md. Do not run a separate checks/reviewer pair.
 
 Interpret the exit code — this is a **gate**, not a best-effort step:
 
-| Exit | Meaning | Action |
+| Driver exit | Meaning | Action |
 |---|---|---|
-| 0 | Reviewed. stdout carries zero or more `[must-fix]` / `[should-fix]` / `[nit]` lines. | Proceed to step-3. Empty stdout here means reviewed-clean. |
-| 4 | `--since` only: nothing changed between the snapshot and now, so the fix loop has CONVERGED. | Not a failure. Stop the loop, fix any held nits, emit an APPROVE trailer. Never re-run a full review to "confirm" it. |
-| 5 | `--since` only: the loop hit the round-4 ceiling, or its final review already ran. | Not a failure either. The first time, run the ONE final review of the fixes since the last round — `code-review.ts --since <tree> --final` (`validate.ts --phase review` does this itself) — fix what it finds, and do not review again. The second time, stop: fix held nits and name what is still open in the trailer and summary. Do NOT switch to the two-arg form to get another round — that is the same call the ceiling just refused. |
-| 1 | CHAIN EXHAUSTED — every declared slot answered unusably (non-zero, or empty output with no `NO_FINDINGS` sentinel). On the `adversarial-review` row, slots that were merely absent, failing or timed out end in exit 3 instead (below). | The audit FAILED. Report the reviewer unavailable and do NOT emit an approving trailer. Do not re-run: the fall-through already happened. |
-| 124 | Chain exhausted, last slot timed out. | Treat exactly like exit 1. |
-| 3 | No independent reviewer answered (every vendor in the row unavailable, or the chain reached a CLAUDE slot). | NOT a failure, and NOT independent (Contextium). Run `.agents/agents/implement-audit-reviewer.md` in a FRESH context on the same diff, work its findings through steps 3-4 as usual, and record `implement-audit: round-<N>; claude-fallback (fresh context, NOT independent); <findings>; <verdict>`. Inside `/implement`, `validate.ts` exits 3 (pending) until `validate.ts --fallback-review <file>` has read those findings. |
-| 2 | Caller error (bad arity, unresolvable SHA, base not an ancestor of head). | Fix the SHA range and re-run; not a review outcome. |
+| 0 | Checks passed; no must-fix or should-fix; the receipt approves (or was reused). | Merge any nits in step 3. |
+| 1 | Findings, failed checks, or unavailable review. | Read triage/check output and stderr. Fix ready findings or checks, then re-enter the scoped round. If diagnostics say no reviewer answered, report unavailable without approval; restore the reviewer before retrying. |
+| 2 | Invalid range or review-role inputs. | Correct the named input; no review round was spent. |
+| 3 | No independent reviewer: the row's declared fresh-context fallback found no eligible vendor, or the chain reached a `claude` slot. The driver prints `NEED_FALLBACK_REVIEW=1`. | Pending, NOT a failure, and NOT independent (Contextium). Run `.agents/agents/implement-audit-reviewer.md` in a FRESH context on the same diff, with the coverage items file the note names; save its whole reply and run `validate.ts --fallback-review <file>`, which records it against the receipt. Work its findings through steps 3-4 as usual and record `implement-audit: round-<N>; claude-fallback (fresh context, NOT independent); <findings>; <verdict>`. |
+| 4 | Converged with checks passing, and the receipt approves. | Stop the loop; no new review is claimed. A converged round whose receipt does not approve (open findings, an unchecked item) is exit 1 with NEED_FIX=1: nothing changed, so nothing was resolved. |
+| 5 | Final review allowance already spent, or the counter is unreadable or missing after this audit registered one. | BLOCK; no approval. Never reset the counter, never start another owner for the same change. Recover by restoring the reviewed bytes, or ask the user to authorize spending past the allowance. |
 
-**A reviewer that cannot run is a FAILED review, never a silent substitution.** On exit 1 or 124 you MUST NOT fall back to a subagent of the authoring model — that voids the independence this gate exists to create while still carrying the gate's assurance, which is worse than having no gate. Exit 3 is the one sanctioned fallback (Contextium): the policy row itself says no independent vendor could answer, and the fresh-context review it asks for is recorded with `claude-fallback (fresh context, NOT independent)` in the line, so nobody reads it as independent.
+**A reviewer that cannot run is a FAILED review, never a silent substitution.** When diagnostics report an unavailable reviewer, you MUST NOT fall back to an undeclared provider or artifact author — doing so voids the independence this gate exists to create while still carrying the gate's assurance, which is worse than having no gate. Exit 3 is the one sanctioned fallback (Contextium): the policy row itself declares it, and the fresh-context review it asks for is recorded with `claude-fallback (fresh context, NOT independent)` in the line and in the receipt, so nobody reads it as independent.
 
-**The prohibition is on CLAUDE specifically, not on any one non-Claude vendor.** Every non-Claude slot the row declares is walked automatically; the script names each one it tried on stderr and ends with `answered: <vendor>/<model>`. Do NOT stop to ask whether the backup is permitted — the policy table already answered that, and asking only pauses a finished diff for a permission that was already granted. Record which vendor answered in the `implement-audit:` trailer so the commit says who reviewed it.
+**Never fall back to an artifact author.** The chain names exclusions and attempted vendors on stderr and ends with `answered: <vendor>/<model>` on success. Eligible backups are already authorized by policy; do not ask again. Record the answering vendor in the trailer. A Claude slot remains unavailable in this script executor, whether or not Claude authored the artifact.
 
 The loop's stopping rule is the review round cap and lives in step-4. Bound the ROUND 1 pass to ~400 changed lines; split a larger diff into separate passes. Rounds 2+ are self-bounding — they only carry the fixes.
 
@@ -104,21 +103,24 @@ Emit the user-facing list using the Output Format below.
 
 The reviewer emits **triage lines only** — `[must-fix]` / `[should-fix]` / `[nit]`, one per line, or empty stdout on a clean review. It does NOT emit a structured YAML telemetry block; the retired Claude-subagent reviewer did, and callers must not wait for or try to parse one. Compose the telemetry block in this step from the triage lines instead, mapping `[must-fix]` → `fix-now`, `[should-fix]` → `deferred-batch-1`, and `[nit]` → `deferred-batch-2`, so the aggregator's input shape is unchanged.
 
-`[nit]` maps to its own batch because nits are handled differently from everything else: they are held, not fixed in-round, and they never justify another round. See step-4.
+`[nit]` maps to its own batch because nits are handled differently from everything else: they are held, not fixed in-round, and they never justify another round of their own. See step-4.
 
 ## step-4-fix-round
 
-Fix EVERY finding whose fix is **ready in this session** — `fix-now` AND `deferred-batch-N`. The triage label orders work within the round; it does NOT schedule across rounds. A `deferred-batch-1` finding with a known fix path ships in the same round as `fix-now`, just lower priority. Defer to a future session ONLY when:
+Fix EVERY finding whose fix is **ready in this session** — `fix-now` AND `deferred-batch-N`. The triage label orders work within the round; it does NOT schedule across rounds. A `deferred-batch-1` finding with a known fix path ships in the same round as `fix-now`, just lower priority. Defer nothing yourself (root `AGENTS.md` § Standards, **No deferral**):
 
-- The fix needs an unmade design decision (architecture, vendor, scope) — track via `projects/<domain>/<date>_<slug>/` README
-- The fix is blocked on an external dependency (vendor response, third-party fix) — a `blocked: <what>` row in the project's `ROADMAP.md`, from which its `status: blocked` and `blocked-on:` are derived
-- The verdict is `out-of-scope` (wrong reviewer, different domain) — surface to user, do not act
+- A technical choice (architecture, vendor, library, location) is yours: make it, name the rule applied, and fix.
+- A fix that needs what only the user can answer — their preference, money, an outbound message, infrastructure they have not allowed — is asked now, as a numbered list, per `.agents/skills/close/references/auto-close-gate.md` precondition (iii); the run halts there and never closes around it.
+- A fix blocked on someone else (a vendor response, a third-party fix) becomes a `blocked: YYYY-MM-DD <what>` row in the project's `ROADMAP.md` only when that date is real; never invent one. A wait with no known date holds the close (the gate's § What "open" means), so say it in the reply as what is open.
+- An `out-of-scope` verdict is surfaced to the user, not acted on.
 
 `speculative` findings are documented for counter-pressure, not fixed.
 
-**Nits are held, not fixed in-round.** Keep a running list of every `[nit]` across all rounds. Do not fix them mid-loop and do not let one justify another round — a nit is an unbounded supply, and re-reviewing after fixing one is how the loop finds the next one forever. When the loop stops, fix the whole held list in a single pass. They still land this session, so "no deferral" is satisfied.
+**Nits are held, and land inside a reviewed round.** Keep a running list of every `[nit]` across all rounds; do not let one justify a round of its own — a nit is an unbounded supply. Fix the held nits you will fix together with the last round's must-fix and should-fix edits, so the review that round already spends reads them; a nit you leave unfixed is written down with why (its disposition) in the report. Never edit source after the last review you have allowance for: that content has no receipt, and the close refuses it.
 
-Then re-invoke Step 1 + Step 2, Step 2 now scoped with `--since` to the fixes alone.
+**A finding you believe is wrong is not dismissed by converging.** An open must-fix or should-fix keeps the receipt from approving, and a round with nothing changed resolves nothing. Change the code so the next round can review your answer, or ask the user, as a numbered question, to accept it.
+
+Then re-enter step 2 with `--since` for the fixes alone; the driver re-runs the deterministic checks.
 
 ### When to stop
 
@@ -127,7 +129,7 @@ Stop on **whichever of these comes first**:
 1. **Converged** — `--since` exits 4: nothing changed since the last snapshot, so there is nothing left to review.
 2. **Clean** — the round returns zero findings.
 3. **Self-inflicted** — most of the round's must-fix findings re-open ground an earlier round already touched (same file, within ~25 lines of an earlier finding). The loop is now reviewing its own fixes.
-4. **Round 4** — a hard ceiling on churn. Round 4's own fixes still get ONE final review (`--since <tree> --final`, once per loop): fix what it finds, never review again, then fix the held nits and report what is still open. Without that review, the last round's fixes would ship unreviewed.
+4. **Round 4** — a hard ceiling on churn. Round 4's own fixes, with the held nits you fix, still get ONE final review (`--since <tree> --final`, once per loop). What it finds is open work the receipt will not approve: fix it only within allowance you still have, else report it open and BLOCK. Without that review the last round's fixes shipped unreviewed, and so did the final review's own fixes. A repeated full review is a round, not a new loop: it never renews the allowance.
 
 Test 3 is the real signal and usually fires first; test 4 is the backstop for when it does not. Test 4 is **also enforced by the script**, which refuses a 5th round with exit 5 — a ceiling stated only in prose is one a long loop runs straight past.
 
@@ -143,11 +145,11 @@ Class-fix discipline: ready fixes ship atomically. The "fix everything ready in 
 
 ## step-5-emit-trailer
 
-When the fix loop stops — for any of step-4's four reasons — compose the one-line trailer and record it:
+When the loop stops, compose the trailer. APPROVE requires a receipt that covers the content as it is now — the last driver run printed `RECEIPT: approved` or reused the receipt, and nothing has been edited since. An unfixed blocker, an unchecked declared item, a source edit after the last review, or a driver exit 5 is BLOCK: print that verdict, write nothing, and keep auto-close blocked. Do not turn a review-limit note into approval. On APPROVE, attach the trailer to the receipt; `mark` refuses (exit 1, the reasons on stderr) when no receipt covers this content, because a trailer is a record and never the proof:
 
 ```bash
-node --experimental-strip-types .agents/skills/implement-audit/scripts/audit-dedupe.ts mark \
-  "implement-audit: round-<N>; <M findings: K fix-now + L deferred fixed, R remaining>; <APPROVE|SHIP-with-deferred>"
+CODE_REVIEW_LOOP_ID="<audit-owner thread id>" node --experimental-strip-types .agents/skills/implement-audit/scripts/audit-dedupe.ts mark \
+  "implement-audit: round-<N>; <M findings: K fix-now + L deferred fixed, R remaining>; APPROVE" --repo "$REVIEW_REPO"
 ```
 
 Then print the trailer line. Examples:
@@ -158,11 +160,7 @@ Then print the trailer line. Examples:
 
 The leading `round-<N>` is a machine field, not prose. Keep it first and keep the hyphen form.
 
-**When the loop stopped at the round-4 ceiling with work still open**, say which findings are unfixed in the same line and use the `SHIP-with-deferred` verdict:
-
-```
-implement-audit: round-4 (ceiling); 12 findings, 2 remaining (contract drift in sync.ts, unverified KV shape); SHIP-with-deferred
-```
+**At the ceiling with work still open**, identify each unresolved finding or verification gap and print a BLOCK trailer. Do not reset the counter or ask another reviewer in the same loop.
 
 One line, written into `report.md` § Validation Results, or printed for a standalone run. The round number is a record of how long the loop ran, not a gated field. The ceiling is enforced in step-4, where the loop actually runs; a commit-time round gate can only ask for an override after the calls have already been spent.
 
@@ -173,16 +171,10 @@ One line, written into `report.md` § Validation Results, or printed for a stand
 
 ## step-6-auto-close
 
-**Standalone runs only.** The producer skills hand off to `/close` on clean completion,
-and a session that ends at this skill's trailer is a session that stops one step short of
-landing. Inside `/implement` the audit is phase-4.7 and
-phase-6 closes, so nothing is missing. Run standalone — which is what happens after any
-ad-hoc change — and the skill's last act was to print a trailer whose only purpose is to
-ride a commit that then never got made. The session ends holding it.
-
-So: **if a report exists for this work — `specs/NNN-name/report.md` in the spec's folder — do nothing** — `/implement` owns
-the tail and a second `/close` would double-fire against the gate. Otherwise,
-when the verdict is `APPROVE` or `SHIP-with-deferred`:
+Follow close/references/auto-close-gate.md § Caller ownership. When this audit
+is a step in another producer, return the verdict and evidence to that caller;
+it owns the close. A report file alone does not establish that relationship.
+For a standalone run with verdict `APPROVE`:
 
 ```bash
 node --experimental-strip-types .agents/skills/close/scripts/land.ts --gate    # proceed on `not-fired`
@@ -190,8 +182,9 @@ node --experimental-strip-types .agents/skills/close/scripts/land.ts --gate    #
 
 then run `/close` per the gate; the journal entry carries the step-5 line.
 
-**HALT rather than close when the review FAILED** — step-2 exits 1, 3 or 124, the chain
-exhausted. Closing there would land an unreviewed diff under a commit that claims a
+**HALT rather than close on BLOCK or an unavailable review.** A driver exit 1
+with fixable findings/check failures goes through the fix loop first; exit 5 is
+a spent review limit and remains blocked. Closing there would land an unreviewed diff under a commit that claims a
 review, which is worse than not closing at all.
 
 **If the line does go on a commit, put it in the SAME paragraph as any other trailer.**
@@ -225,17 +218,17 @@ findings:
 - Ship assessment: **BLOCK** | **APPROVE**
 ```
 
-If nothing found: say so explicitly ("Zero findings within reviewed scope"). Do not pad —.
+If nothing found: say so explicitly ("Zero findings within reviewed scope"). Do not pad.
 
 ## Examples
 
 ### Example 1 — /implement phase-4.7 (substantial change)
 
-`/implement` reaches phase-4.7 after mechanism-match and dispatches `/implement-audit`. Step 0 dedupe is `fresh`. Step 1 runs `run-automated-checks.ts --session-base $BASE_SHA`; output: `PASS: lint (6 files)`, `FAIL: standards-refs — see stderr` naming `apps/foo/handler.ts:42` citing a standard that does not exist, rest PASS. Step 2 snapshots the tree (`SNAP1`), then runs `code-review.ts $BASE_SHA HEAD`; it exits 0 with 3 `[must-fix]` + 1 `[should-fix]` + 1 `[nit]` on stdout. Step 3 merges the standards-refs FAIL (fix-now) + the reviewer's 5 = 6 findings. Step 4 fixes the 5 must-fix/should-fix items in one pass and holds the nit. Round 2 snapshots again (`SNAP2`) and runs `code-review.ts --since $SNAP1` — the reviewer sees only the fixes, not the original 6 files — and returns zero findings → stop on test 2. Step 4 fixes the held nit. Step 5 marks + prints `implement-audit: round-2; 6 findings (5 fixed + 1 nit), 0 remaining; APPROVE`. /implement phase-5 writes the line into the report.
+`/implement` invokes this skill after mechanism-match. The validation driver stops on a deterministic check failure before any vendor call. After that is fixed, it prints PRE_TREE and the reviewer’s triage lines. Fix the must-fix/should-fix findings, hold nits, then run the driver with `--since` using that PRE_TREE. On convergence, fix held nits and record the trailer; `/implement` puts it in the report.
 
-### Example 2 — a hand-typed /implement-audit after /implement (the dedupe no-op)
+### Example 2 — a hand-typed /implement-audit after /implement (the receipt is reused)
 
-`/implement` phase-4.7 dispatched `/implement-audit`; later in the same session the user types `/implement-audit` again. The first run did the full review and `audit-dedupe.ts mark`ed the trailer; the second one's Step 0 sees `done` and re-emits the stored trailer without a second review. Net: exactly one audit per session.
+`/implement` phase-4.7 dispatched `/implement-audit`; later in the same thread the user types `/implement-audit` again. If nothing the receipt covers has changed, Step 0 sees `done` and re-emits the trailer without a review call. If a file moved since — say the journal entry and one more source fix — Step 0 says `fresh`, names the source fix, and the driver reviews that content within the allowance left; the journal entry alone would not have counted.
 
 ### Example 3 — zero findings (the explicit empty case)
 
@@ -248,7 +241,7 @@ Round 1 Step 1 returns all PASS; Step 2's agent returns no findings. Step 3 emit
 | `code-review.ts` exits 1 — "the chain is exhausted" | EVERY declared slot failed: container down, auth expired, CLI not installed, or usage quota exhausted. The stderr above names each one and why. | The audit FAILED. Do NOT re-run through `policy-review.ts` — that walks the same chain, which has already been walked. Falling back to a CLAUDE reviewer stays forbidden. Restore a vendor (install or re-authenticate its CLI) and re-run. |
 | `code-review.ts` exits 1 — "no parseable findings and no NO_FINDINGS sentinel" | A vendor answered but said nothing usable; indistinguishable from a crash, so it is NOT chain fallthrough | Treat as NOT reviewed. Re-run; if it repeats, inspect the stderr tail the script prints. Never read empty stdout as a clean pass. |
 | `code-review.ts` exits 124 | Review exceeded the timeout (default 900s) | Same handling as exit 1. Raise `CODEX_REVIEW_TIMEOUT_S` only if the diff is genuinely large; a hang usually means a stdin-wait regression (the script redirects stdin from `/dev/null` to prevent it). |
-| `code-review.ts` exits 2 | Bad arity, unresolvable SHA, or base is not an ancestor of head | Caller error, not a review outcome. Re-derive `BASE_SHA` from `git log --oneline` and re-run. |
+| `code-review.ts` exits 2 | Invalid range or original-author provenance | Correct the specific input named on stderr. |
 | Diff exceeds the byte budget (exit 1) | The change is larger than the prompt budget | Split the range and review in parts. The script refuses rather than reviewing a truncated slice, because a partial review reported as clean is the failure mode this gate exists to prevent. |
 | Rounds keep returning findings near ones already fixed | The loop is reviewing its own fixes, not the change | Stop — this is step-4's test 3. Do not fire a question, and do not read the finding COUNT as a reason to continue; it stays flat at ~1.2/round however deep the loop goes |
 | A round returns findings about code the session never touched | Round 2+ was run as a full review instead of `--since` | Re-scope: rounds 2+ take `--since <the snapshot from before the previous round>`. A full re-review hands the reviewer settled code and it will find something in it |
@@ -256,4 +249,6 @@ Round 1 Step 1 returns all PASS; Step 2's agent returns no findings. Step 3 emit
 | `WARN: shellcheck missing` / `WARN: check-secrets.ts missing` / `WARN: lint missing` | Tool not installed on this machine, or a repo that carries no `.agents/checks/` | Continue — env diff, not a finding. Install the tool locally if you want full coverage; the script does not block on it |
 | `unparseable session-base: <SHA>` | `BASE_SHA` env var was empty, malformed, or referred to a commit not in this clone | Re-derive `BASE_SHA = HEAD~N` from `git log --oneline -n N` showing this session's commits; pass via `--session-base` |
 | Round 1 produces only `speculative` findings | The agent is padding | The linter flags speculative-only as probable padding; re-emit as `Zero findings within reviewed scope` |
-| Second invocation re-ran the full review | `audit-dedupe.ts` marker absent (no session id — `CONTEXTIUM_SESSION`, `CLAUDE_CODE_SESSION_ID`, `CLAUDE_SESSION_ID` — set → dedupe fails safe, or `mark` not called at step-5) | Confirm step-5 ran `audit-dedupe.ts mark`; check `/tmp/implement-audit-done/<session-id>` exists |
+| Second invocation re-ran the review | Something the receipt covers changed (stderr of `status` names it), the owner differed (CODE_REVIEW_LOOP_ID not the audit owner's thread id), or the writer set differed | Read `status --repo` stderr; restore the owner or accept that changed content needs its review |
+| `RECEIPT: not approved` on a clean review | A declared item was reported `unchecked`, a changed path was outside the reviewed range, or a follow-up round did not cover a path that moved since the last receipt | Read the `implement-audit:` lines above it; check the item, widen the range, or review `--since` the snapshot of the approved content |
+| The close says `changed since the review` | A fix, a held nit, /qa or a trunk merge moved covered content after the last review | Review that change within the remaining allowance — `--since` the last PRE_TREE for your own edits; after a trunk merge, a full review from the new merge base (`--base "$(git merge-base HEAD origin/main)" --head HEAD`), which spends a round, because a `--since` diff would carry every merged commit — or restore the reviewed bytes |

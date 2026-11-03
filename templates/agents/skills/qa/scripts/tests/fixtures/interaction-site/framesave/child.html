@@ -1,0 +1,1 @@
+<!doctype html><html><body><p>Frame</p><script>addEventListener("pagehide",()=>{navigator.sendBeacon("/api/frame-save-unload","x");fetch("/api/frame-save-unload",{method:"POST",keepalive:true,body:"x"})})</script></body></html>

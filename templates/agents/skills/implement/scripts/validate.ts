@@ -11,23 +11,29 @@
 //
 // Usage:
 //   validate.ts --phase checks --scope <arg>
-//   validate.ts --phase review --base <sha> --head <sha> [--since <tree>] --scope <arg>
+//   validate.ts --phase review --base <sha> --head <sha> [--since <tree>] --scope <arg> [--report <path>]
 //   validate.ts --phase qa-list [--base <sha>]
-//   validate.ts --phase qa-revalidate --since <tree> --scope <arg>
+//   validate.ts --phase qa-revalidate --since <tree> [--report <path>]
 //   validate.ts --require-qa --targets-file <path> --tree <sha>
-//   validate.ts --fallback-review <findings-file>
+//   validate.ts --phase report --base <sha> --report <path>
+//   validate.ts --fallback-review <reply-file> [--repo <dir>]
 //
 // Flags:
-//   --phase <name>       checks | review | qa-list | qa-revalidate
+//   --phase <name>       checks | review | qa-list | qa-revalidate | report
 //   --scope <arg>        passed through to resolve-scope.ts (blank = staged)
 //   --base / --head      the full review's range (phase review, round 1).
 //                        --base is ALSO read by qa-list, so a UI change that is
-//                        already committed still enumerates.
+//                        already committed still enumerates, and by report, as
+//                        the point the changed test files are counted from.
 //   --since <tree>       a tree from `code-review.ts --snapshot`; scopes the
 //                        review to what changed since it (phase review rounds
 //                        2+, and every qa-revalidate)
 //   --targets-file PATH  the QA_TARGETS list (one absolute path per line)
 //   --tree <sha>         the tree every target's QA marker must be keyed on
+//   --report <path>      the spec's report.md, whose `test-failure-observed:`
+//                        line phase report reads; for review and
+//                        qa-revalidate, the report whose review-coverage block
+//                        the review receipt binds (audit-dedupe.ts)
 //   --repo <dir>         the worktree (default: CLAUDE_PROJECT_DIR, then git)
 //
 // Output (stdout): TAP-ish layer lines from the layer scripts, then the two
@@ -40,9 +46,11 @@
 // `--phase review` / `qa-revalidate` additionally print `NEED_FALLBACK_REVIEW=1`
 // when no independent reviewer answered (code-review.ts exit 3), and exit 3:
 // the review is PENDING, not passed. Run the implement-audit-reviewer agent in a
-// fresh context on the same diff, save its triage lines to a file, and hand it
-// to `--fallback-review <file>` — that call is the phase's pass (exit 0) or its
-// findings (exit 1), recorded as `claude-fallback (fresh context, NOT
+// fresh context on the same diff (handing it the `ITEMS_FILE=` the note names,
+// when there is one), save its reply to a file, and hand it to
+// `--fallback-review <file>` — that call records the reply against the review
+// receipt (audit-dedupe.ts finish --fallback) and is the phase's pass (exit 0)
+// or its findings (exit 1), recorded as `claude-fallback (fresh context, NOT
 // independent)`: weaker than an independent review, never reported as one.
 //
 // `--phase qa-list` additionally prints one `QA_TARGETS=<abs path>` line per web
@@ -53,11 +61,24 @@
 // Exit:
 //   0  the phase passed
 //   1  a layer failed, the reviewer left [must-fix]/[should-fix] open, the
-//      reviewer chain failed, or --require-qa found a target with no marker for
-//      the given tree
-//   2  caller error
+//      reviewer chain failed, --require-qa found a target with no marker for
+//      the given tree, or phase report found a changed test file and no red
+//      excerpt in the report
+//   2  caller error (including range or original-author provenance)
 //   3  the review is pending: no independent reviewer answered — run the
 //      fallback reviewer, then --fallback-review <file>
+//   4  review phase converged; distinct from a fresh clean review
+//
+// ONE REVIEW PATH. Review and qa-revalidate call
+// the same runReview below: reuse a review receipt that still covers this
+// content (no vendor call), else record the attempt incomplete, run the
+// reviewer — falling back to the one final pass at the ceiling — and record
+// what it returned against the content captured before dispatch. They differ
+// only in their order (review runs the deterministic checks first; QA re-runs
+// layers 1+2 over what /qa moved first), the bucket they spend (build or qa),
+// and the range they hand the reviewer. Approval is the receipt's, read from
+// the parsed result, never the reviewer's exit 0 alone.
+//   5  review phase exhausted its final pass; NEED_FIX=1, approval blocked
 //
 // WHAT THIS SCRIPT DOES NOT DO. It never calls /qa, never calls impeccable, and
 // never looks at a screenshot. Impeccable stays inside /qa on `@latest` against
@@ -89,19 +110,30 @@
 //   - reviewer NO_FINDINGS:        NEED_FIX=0, exit 0
 //   - reviewer [nit] only:         NEED_FIX=0 — a nit is not a change request
 //   - reviewer [must-fix]:         NEED_FIX=1, exit 1
-//   - reviewer exit 4 (converged): NEED_FIX=0, exit 0, with a note
-//   - reviewer exit 5 (ceiling):   the one `--final` review runs instead;
-//                                  a second exit 5 is NEED_FIX=0, exit 0, with a note
-//   - reviewer exit 1/3/124:       exit 1 — the audit did not happen
+//   - reviewer exit 4 (converged): NEED_FIX=0, exit 4, with a note
+//   - reviewer exit 5 (ceiling):   the one `--final` review runs instead, in
+//                                  qa-revalidate too, on its own counter;
+//                                  a second exit 5 is NEED_FIX=1, exit 5
+//                                  (in qa-revalidate, exit 1: the edits went unreviewed)
+//   - reviewer exit 3 (no independent vendor): NEED_FALLBACK_REVIEW=1, exit 3 —
+//                                  pending until --fallback-review records one
+//   - reviewer exit 1/124:         exit 1 — the audit did not happen
 //   - tree unchanged over review:  NEED_E2E=0
 //   - tree changed over review:    layers 1+2 re-run, NEED_E2E=1
 //   - 0 QA targets:                `QA_TARGETS=`, --require-qa is a no-op
 //   - target with no marker:       --require-qa exit 1
 //   - target with a STALE marker:  --require-qa exit 1 (the tree moved)
+//   - report, no test file changed: PASS whatever the line holds
+//   - report, a test changed, the line missing, empty, `none…` or the
+//     template's `{…}` placeholder: one FAIL line per test file, exit 1
+//   - report, an untracked new test: counted, like a committed one
+//   - report, a deleted test:       not counted — nothing is left to see fail
+//   - report, git cannot list what changed: exit 1, never a pass over nothing
 
 import { type SpawnSyncReturns, spawnSync } from "node:child_process";
-import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { exit, runToExit } from "../../../packages/cli-exit/cli-exit.ts";
 
@@ -167,15 +199,20 @@ async function main(): Promise<void> {
   let SINCE = "";
   let TARGETS_FILE = "";
   let TREE = "";
+  let REPORT = "";
   let REQUIRE_QA = false;
   let FALLBACK_FILE = "";
   let REPO_DIR = process.env.CLAUDE_PROJECT_DIR ?? "";
 
   const argv = process.argv.slice(2);
-  // A flag that takes a value and has none ended the bash original silently
-  // with status 1 (`shift 2` failing under `set -e`); kept.
+  // A flag that takes a value and has none is a caller error like any other.
+  // It ended the bash original silently with status 1 (`shift 2` failing under
+  // `set -e`), which read as a refusal with no reason given.
   const value = (): string => {
-    if (argv.length < 2) exit(1);
+    if (argv.length < 2) {
+      err(`validate: ${argv[0]} needs a value`);
+      exit(2);
+    }
     const v = argv[1] ?? "";
     argv.splice(0, 2);
     return v;
@@ -204,6 +241,9 @@ async function main(): Promise<void> {
       case "--tree":
         TREE = value();
         break;
+      case "--report":
+        REPORT = value();
+        break;
       case "--repo":
         REPO_DIR = value();
         break;
@@ -212,19 +252,19 @@ async function main(): Promise<void> {
         argv.shift();
         break;
       case "--fallback-review":
-        FALLBACK_FILE = argv[1] ?? "";
+        FALLBACK_FILE = value();
         if (FALLBACK_FILE === "") {
-          err("validate: --fallback-review needs a findings file");
+          err("validate: --fallback-review needs the fallback reviewer's reply file");
           exit(2);
         }
-        argv.splice(0, 2);
         break;
       case "-h":
       case "--help": {
-        // The header comment above, lines 2-40, is the help text.
-        const lines = readFileSync(fileURLToPath(import.meta.url), "utf8")
-          .split("\n")
-          .slice(1, 40);
+        // The header comment above, from line 2 through its Exit block, is the
+        // help text. Found by the paragraph that follows the block rather than
+        // by a line number, which went stale the first time the Usage grew.
+        const all = readFileSync(fileURLToPath(import.meta.url), "utf8").split("\n");
+        const lines = all.slice(1, all.findIndex((l) => l.startsWith("// WHAT THIS SCRIPT DOES NOT DO")) - 1);
         process.stderr.write(`${lines.join("\n")}\n`);
         exit(0);
         break;
@@ -271,13 +311,12 @@ async function main(): Promise<void> {
     process.env.VALIDATE_AUTOMATED_CHECKS || `${SKILLS_DIR}/implement-audit/scripts/run-automated-checks.ts`;
   const QA_TARGETS_TS = process.env.VALIDATE_QA_TARGETS || `${SKILLS_DIR}/qa/scripts/qa-targets.ts`;
   const MARK_QA_DONE = process.env.VALIDATE_MARK_QA_DONE || `${SKILLS_DIR}/qa/scripts/mark-qa-done.ts`;
+  const AUDIT = process.env.VALIDATE_AUDIT_DEDUPE || `${SKILLS_DIR}/implement-audit/scripts/audit-dedupe.ts`;
 
   let NEED_FIX = 0;
   let NEED_E2E = 0;
   // Set when no independent reviewer answered: the phase ends in exit 3, pending.
   let PENDING_FALLBACK = false;
-  const FALLBACK_CMD =
-    "node --experimental-strip-types .agents/skills/implement/scripts/validate.ts --fallback-review <file>";
 
   // Both fields, every time, on every exit path. A caller that branches on
   // NEED_FIX must never have to distinguish "0" from "the script died before
@@ -300,30 +339,44 @@ async function main(): Promise<void> {
   // moved the tree. `/qa`'s fixes and a fix round's edits are routinely unstaged or
   // untracked, and a blank `--scope` resolves to the STAGED set — so the re-run
   // reported PASS over files it had never opened.
-  const filesSince = (tree: string): string => {
-    const lines: string[] = [];
+  //
+  // Both reads take -z and split on NUL: without it git C-quotes `café.ts` as
+  // `"caf\303\251.ts"` and a newline in a name splits it in two, and layer 1 then
+  // lints paths that do not exist. A git that fails is null, never an empty list
+  // — when neither exit status was read, a failed listing ran the layers over
+  // nothing and they reported PASS.
+  const filesSince = (tree: string): string[] | null => {
+    const paths: string[] = [];
     for (const args of [
-      ["-C", REPO_DIR, "diff", "--name-only", tree],
-      ["-C", REPO_DIR, "ls-files", "--others", "--exclude-standard"],
+      ["-C", REPO_DIR, "diff", "-z", "--name-only", tree],
+      ["-C", REPO_DIR, "ls-files", "-z", "--others", "--exclude-standard"],
     ]) {
       const r = spawnSync("git", args, {
         encoding: "utf8",
-        stdio: ["ignore", "pipe", "ignore"],
+        stdio: ["ignore", "pipe", "pipe"],
         maxBuffer: 256 * 1024 * 1024,
       });
-      lines.push(...(r.stdout ?? "").split("\n"));
+      if (r.error || r.status !== 0) {
+        err(
+          `validate: git ${args.slice(2).join(" ")} failed (${r.error?.message ?? `exit ${r.status ?? r.signal}`}) — refusing to validate a partial list of what moved.`,
+        );
+        if (r.stderr) err(`  ${r.stderr.replace(/\n+$/, "")}`);
+        return null;
+      }
+      paths.push(...r.stdout.split("\0"));
     }
-    const kept = lines.filter((l) => !/^[ \t\n\v\f\r]*$/.test(l));
+    const kept = paths.filter((p) => p !== "");
     // `sort -u` under LC_ALL=C: byte order, duplicates dropped.
-    const sorted = [...new Set(kept)].sort((a, b) => Buffer.compare(Buffer.from(a), Buffer.from(b)));
-    return sorted.join("\n");
+    return [...new Set(kept)].sort((a, b) => Buffer.compare(Buffer.from(a), Buffer.from(b)));
   };
 
   // Layers 1 and 2, in that order, with layer 1 gating layer 2 — type errors mask
   // runtime errors, so a failing typecheck makes a test result meaningless.
   //
   // `files`, when given, is an explicit file list; otherwise the scope is resolved.
-  const runLayers12 = (files?: string): boolean => {
+  // null is a list that could not be read (filesSince said why): the layers fail.
+  const runLayers12 = (files?: string[] | null): boolean => {
+    if (files === null) return false;
     let list = files;
     if (list === undefined) {
       // A scope that does not resolve is NOT an empty scope. In the bash original
@@ -331,21 +384,23 @@ async function main(): Promise<void> {
       // errexit for the whole body — so a failing resolve-scope left `files` empty
       // and the layers cheerfully reported PASS over nothing, for a scope naming an
       // app that does not exist. The status is checked explicitly.
-      const r = runTs(`${SCRIPT_DIR}/resolve-scope.ts`, ["--scope", SCOPE], { env: withRepo(), capture: true });
+      const r = runTs(`${SCRIPT_DIR}/resolve-scope.ts`, ["-z", "--scope", SCOPE], { env: withRepo(), capture: true });
       if (statusOf(r) !== 0) {
         err(`validate: the scope '${SCOPE}' did not resolve — refusing to validate an empty file list.`);
         err("  An unresolvable scope is a caller error, not a clean run over zero files.");
         return false;
       }
-      list = chomp(r.stdout);
+      list = r.stdout.split("\0").filter((p) => p !== "");
     }
-    // `<<<"$files"`: the list, plus the newline a here-string adds.
-    const l1 = runTs(`${SCRIPT_DIR}/layer-1.ts`, [], { env: withRepo(), input: `${list}\n` });
+    // NUL-terminated records, which both layers split on: a newline-joined list
+    // broke a path holding a newline back into two.
+    const input = list.map((p) => `${p}\0`).join("");
+    const l1 = runTs(`${SCRIPT_DIR}/layer-1.ts`, [], { env: withRepo(), input });
     if (statusOf(l1) !== 0) {
       err("validate: layer 1 failed — stopping. Nothing downstream runs on a tree that does not type-check.");
       return false;
     }
-    const l2 = runTs(`${SCRIPT_DIR}/layer-2.ts`, [], { env: withRepo(), input: `${list}\n` });
+    const l2 = runTs(`${SCRIPT_DIR}/layer-2.ts`, [], { env: withRepo(), input });
     return statusOf(l2) === 0;
   };
 
@@ -361,13 +416,99 @@ async function main(): Promise<void> {
     return chomp(r.stdout);
   };
 
+  // The one review path. `tree` is the snapshot taken before dispatch; the
+  // receipt binds the result to the content as it was then. Returns the
+  // reviewer's exit (2 for a caller error in the receipt's inputs, 1 when the
+  // attempt could not be recorded) and its stdout. NEED_FIX for an unapproved
+  // receipt is the caller's, which knows whether findings explain it.
+  type Reviewed = { rc: number; out: string; approved: boolean | null; items: string };
+  const runReview = (bucket: "build" | "qa", tree: string): Reviewed => {
+    const mode = SINCE !== "" ? "since" : "range";
+    let itemsFile = "";
+    const keep = isFile(AUDIT);
+    if (!keep) err(`validate: WARN no receipt keeper at ${AUDIT} — this review cannot be reused or satisfy a close`);
+    else {
+      const args = ["begin", "--repo", REPO_DIR, "--tree", tree, "--mode", mode, "--bucket", bucket];
+      if (BASE !== "") args.push("--base", BASE);
+      if (SINCE === "" && HEAD_REF !== "") args.push("--head", HEAD_REF);
+      if (bucket === "build") args.push("--scope", SCOPE);
+      if (SINCE !== "") args.push("--since", SINCE);
+      if (REPORT !== "") args.push("--report", REPORT);
+      const b = runTs(AUDIT, args, { env: withRepo(), capture: true });
+      const said = b.stdout ?? "";
+      if (statusOf(b) === 2) return { rc: 2, out: "", approved: false, items: "" };
+      if (statusOf(b) !== 0) {
+        err("validate: the review could not be bound to its content (above) — no review call was made.");
+        return { rc: 1, out: "", approved: false, items: "" };
+      }
+      if (said.includes("RECEIPT=reuse")) {
+        for (const l of said.split("\n")) if (l.startsWith("NOTE:")) out(l);
+        return { rc: 0, out: "", approved: true, items: "" };
+      }
+      itemsFile = said.match(/^ITEMS_FILE=(.*)$/m)?.[1] ?? "";
+    }
+    const dir = mkdtempSync(join(tmpdir(), "validate-review-"));
+    const resultFile = join(dir, "result.json");
+    try {
+      const env: NodeJS.ProcessEnv = { ...process.env, CODEX_REVIEW_REPO: REPO_DIR, CODE_REVIEW_BUCKET: bucket };
+      if (keep) {
+        env.CODE_REVIEW_RESULT_FILE = resultFile;
+        if (itemsFile !== "") env.CODE_REVIEW_COVERAGE_FILE = itemsFile;
+      }
+      const call = (extra: string[]) =>
+        runTs(REVIEW, SINCE !== "" ? ["--since", SINCE, ...extra] : [BASE, HEAD_REF], { env, capture: true });
+      let review = call([]);
+      let rc = statusOf(review);
+      // At the ceiling, the fixes made since the last round still get their one
+      // review: `--final`, once per loop and bucket. Its findings count
+      // like a round's; a second ceiling — the final pass already spent — stands.
+      if (rc === 5 && SINCE !== "") {
+        const fin = call(["--final"]);
+        if (statusOf(fin) !== 5) {
+          out(
+            bucket === "qa"
+              ? "NOTE: the post-QA round ceiling was reached — this is the final review of /qa's newest edits"
+              : "NOTE: the round-4 ceiling was reached — this is the final review of the fixes since the last round",
+          );
+          review = fin;
+          rc = statusOf(fin);
+        }
+      }
+      let approved: boolean | null = null;
+      if (keep) {
+        const fargs = ["finish", "--repo", REPO_DIR, "--rc", String(rc)];
+        if (rc === 0 && isFile(resultFile)) fargs.push("--result", resultFile);
+        const f = runTs(AUDIT, fargs, { env: withRepo(), capture: true });
+        approved = /^APPROVED=1$/m.test(f.stdout ?? "");
+        if (statusOf(f) !== 0) {
+          err("validate: the review's outcome could not be recorded — it cannot count.");
+          if (rc === 0) rc = 1;
+        } else if (rc === 0 || rc === 4) out(`RECEIPT: ${approved ? "approved" : "not approved (reasons above)"}`);
+      }
+      return { rc, out: review.stdout ?? "", approved, items: itemsFile };
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  };
+
+  // The note a pending review prints: who reviews, over what, and the one call
+  // that records it. `items` is the receipt's coverage items file, when there is one.
+  const pendingNote = (what: string, items: string): string =>
+    `NOTE: no independent reviewer — the review of ${what} is PENDING. Run the implement-audit-reviewer agent in a fresh context on it${
+      items !== "" ? `, with the coverage items in ${items} (it ends its reply with the BEGIN_REVIEW_V1 frame)` : ""
+    }, save its reply to a file, then: node --experimental-strip-types .agents/skills/implement/scripts/validate.ts --fallback-review <file> --repo ${REPO_DIR}. Record: implement-audit: round-<N>; claude-fallback (fresh context, NOT independent); …`;
+
   // ── --fallback-review ─────────────────────────────────────────────────
   //
-  // The way out of a pending review (exit 3). The fallback reviewer's triage lines
-  // are read exactly as code-review.ts's are: a [must-fix] or [should-fix] is a
-  // fix owed (exit 1), a [nit] is held, and none — with the NO_FINDINGS sentinel
-  // or only nits — is a pass (exit 0). A file with neither is exit 1. It is a pass
-  // of a WEAKER review, and the line it prints says so, because the report and the
+  // The way out of a pending review (exit 3). The fallback reviewer's reply is
+  // recorded against the review receipt the pending attempt opened
+  // (audit-dedupe.ts finish --fallback), which reads it the way code-review.ts
+  // reads a vendor's — the BEGIN_REVIEW_V1 frame when there is one, else triage
+  // lines or the reviewer's own verdict format — and refuses an attempt the chain
+  // did not leave pending. A [must-fix] or [should-fix] (fix-now, deferred-batch)
+  // is a fix owed (exit 1), a [nit] is held, and a receipt that does not approve
+  // — an unchecked coverage item, say — is a change request too. It is a pass of
+  // a WEAKER review, and the line it prints says so, because the report and the
   // journal carry it and nothing may read it as an independent one.
   if (FALLBACK_FILE !== "") {
     if (!isFile(FALLBACK_FILE)) {
@@ -375,21 +516,26 @@ async function main(): Promise<void> {
       exit(2);
     }
     const text = readFileSync(FALLBACK_FILE, "utf8");
-    // A review says something: at least one finding, or a clean-review line —
-    // the same rule code-review.ts holds a vendor to. An empty file or loose
-    // prose is a review that did not happen. Two spellings are read: triage lines
-    // with NO_FINDINGS, and the fallback reviewer's own format
-    // (.agents/agents/implement-audit-reviewer.md: `verdict: **fix-now**`, …, and
-    // its "Zero findings." line), so its output can be saved as it is.
-    const anyLine =
-      /^(\[(must-fix|should-fix|nit)\] |NO_FINDINGS[^\S\n]*$|Zero findings\.)|verdict: \*\*(fix-now|deferred-batch-[0-9]+|speculative|out-of-scope)\*\*/m;
-    if (!anyLine.test(text)) {
-      err(`validate: ${FALLBACK_FILE} holds no finding line and no NO_FINDINGS — the fallback review did NOT happen.`);
+    if (!isFile(AUDIT)) {
+      err(`validate: no receipt keeper at ${AUDIT} — the fallback review cannot be recorded or satisfy a close.`);
+      NEED_FIX = 1;
       emitFields();
       exit(1);
     }
-    process.stdout.write(text);
-    if (/^\[(must-fix|should-fix)\]|verdict: \*\*(fix-now|deferred-batch-[0-9]+)\*\*/m.test(text)) NEED_FIX = 1;
+    const f = runTs(AUDIT, ["finish", "--repo", REPO_DIR, "--fallback", FALLBACK_FILE], {
+      env: withRepo(),
+      capture: true,
+    });
+    const approved = /^APPROVED=1$/m.test(f.stdout ?? "");
+    if (statusOf(f) !== 0) {
+      err("validate: the fallback review was NOT recorded (above) — it cannot count.");
+      NEED_FIX = 1;
+      emitFields();
+      exit(statusOf(f) === 2 ? 2 : 1);
+    }
+    process.stdout.write(text.endsWith("\n") || text === "" ? text : `${text}\n`);
+    if (/^\[(must-fix|should-fix)\]|verdict: \*\*(fix-now|deferred-batch-[0-9]+)\*\*/m.test(text) || !approved) NEED_FIX = 1;
+    out(`RECEIPT: ${approved ? "approved" : "not approved (reasons above)"}`);
     out("NOTE: recorded as claude-fallback (fresh context, NOT independent)");
     emitFields();
     exit(NEED_FIX === 0 ? 0 : 1);
@@ -471,13 +617,14 @@ async function main(): Promise<void> {
     case "review":
     case "qa-list":
     case "qa-revalidate":
+    case "report":
       break;
     case "":
-      err("validate: --phase is required (checks | review | qa-list | qa-revalidate)");
+      err(`validate: --phase is required (${PHASES})`);
       exit(2);
       break;
     default:
-      err(`validate: unknown phase: ${PHASE}`);
+      err(`validate: unknown phase: ${PHASE} (${PHASES})`);
       exit(2);
   }
 
@@ -535,32 +682,13 @@ async function main(): Promise<void> {
       err(`validate: WARN no automated checks at ${AUTOMATED_CHECKS}`);
     }
 
-    let review: SpawnSyncReturns<string>;
-    const reviewEnv = { ...process.env, CODEX_REVIEW_REPO: REPO_DIR };
-    if (SINCE !== "") {
-      review = runTs(REVIEW, ["--since", SINCE], { env: reviewEnv, capture: true });
-    } else {
-      if (BASE === "" || HEAD_REF === "") {
-        err("validate: --phase review needs --base and --head (round 1) or --since <tree> (rounds 2+)");
-        exit(2);
-      }
-      review = runTs(REVIEW, [BASE, HEAD_REF], { env: reviewEnv, capture: true });
+    if (SINCE === "" && (BASE === "" || HEAD_REF === "")) {
+      err("validate: --phase review needs --base and --head (round 1) or --since <tree> (rounds 2+)");
+      exit(2);
     }
-    let reviewRc = statusOf(review);
-    let reviewOut = review.stdout ?? "";
-
-    // At the ceiling, the fixes made since the last round still get their one
-    // review: `--final`, once per loop. Its findings count like a
-    // round's; a second ceiling — the final pass already spent — is the note.
-    if (reviewRc === 5 && SINCE !== "") {
-      const finalReview = runTs(REVIEW, ["--since", SINCE, "--final"], { env: reviewEnv, capture: true });
-      const finalRc = statusOf(finalReview);
-      if (finalRc !== 5) {
-        out("NOTE: the round-4 ceiling was reached — this is the final review of the fixes since the last round");
-        reviewRc = finalRc;
-        reviewOut = finalReview.stdout ?? "";
-      }
-    }
+    const reviewed = runReview("build", PRE);
+    const reviewRc = reviewed.rc;
+    const reviewOut = reviewed.out;
 
     switch (reviewRc) {
       case 0:
@@ -571,18 +699,17 @@ async function main(): Promise<void> {
       case 3:
         // No independent reviewer answered. A completed-but-weaker path, not a
         // failure: the agent runs the fresh-context fallback reviewer and records
-        // it as NOT independent.
-        out(
-          `NOTE: no independent reviewer — the review is PENDING. Run the implement-audit-reviewer agent in a fresh context on the same diff, save its triage lines, then: ${FALLBACK_CMD}. Record: implement-audit: round-<N>; claude-fallback (fresh context, NOT independent); …`,
-        );
+        // it as NOT independent, against the same receipt.
+        out(pendingNote("this diff", reviewed.items));
         out("NEED_FALLBACK_REVIEW=1");
         PENDING_FALLBACK = true;
         break;
       case 5:
         out("NOTE: the fix loop hit the round-4 ceiling and its final review already ran — report what is still open");
+        NEED_FIX = 1;
         break;
       case 2:
-        err("validate: the reviewer was called wrong (exit 2). Fix the range and re-run.");
+        err("validate: reviewer input error (exit 2). Correct the range or original-author provenance named above.");
         exit(2);
         break;
       default:
@@ -602,6 +729,10 @@ async function main(): Promise<void> {
       // loop finds the next one forever.
       if (/^\[(must-fix|should-fix)\]/m.test(reviewOut)) NEED_FIX = 1;
     }
+    // A review that completed but did not approve — an unchecked declared item,
+    // a reviewed range missing a changed path, or blockers a converged round
+    // left standing — is a change request, never a pass.
+    if ((reviewRc === 0 || reviewRc === 4) && reviewed.approved === false) NEED_FIX = 1;
 
     const POST = snapshot();
     out(`POST_TREE=${POST}`);
@@ -623,8 +754,7 @@ async function main(): Promise<void> {
     }
 
     emitFields();
-    if (NEED_FIX !== 0) exit(1);
-    exit(PENDING_FALLBACK ? 3 : 0);
+    exit(reviewRc === 5 ? 5 : NEED_FIX !== 0 ? 1 : PENDING_FALLBACK ? 3 : reviewRc === 4 ? 4 : 0);
   }
 
   // ── --phase qa-list ───────────────────────────────────────────────────
@@ -668,10 +798,10 @@ async function main(): Promise<void> {
   // ── --phase qa-revalidate ─────────────────────────────────────────────
   //
   // /qa fixes things. Impeccable findings get fixed, visual findings get fixed,
-  // and those edits are code nobody has reviewed. Re-reviewing them goes through
-  // code-review.ts --since directly rather than through a second /implement-audit
-  // dispatch, because audit-dedupe would no-op that dispatch and re-emit the
-  // stored trailer — a clean-looking audit over unreviewed bytes.
+  // and those edits are code nobody has reviewed. They go through the same
+  // runReview path as a fix round, on the qa bucket: the receipt is reused when
+  // /qa moved only records, and anything else /qa changed is reviewed before
+  // the receipt can approve the content again.
   if (PHASE === "qa-revalidate") {
     if (SINCE === "") {
       err("validate: --phase qa-revalidate needs --since <tree>");
@@ -699,22 +829,25 @@ async function main(): Promise<void> {
       exit(1);
     }
 
-    // ITS OWN ROUND BUDGET. The round counter is keyed on the session, and the
-    // implementation fix loop that ran before this may have spent all four rounds
-    // — at which point the post-QA review would return exit 5 without ever
-    // calling a vendor, and /qa's own source edits would ship unreviewed behind a
-    // "ceiling reached" note. This is a DIFFERENT loop reviewing DIFFERENT code,
-    // so it gets a different counter, which is the same reasoning code-review.ts
-    // uses when a full two-arg review resets the count.
-    const review = runTs(REVIEW, ["--since", SINCE], {
-      env: {
-        ...process.env,
-        CODEX_REVIEW_REPO: REPO_DIR,
-        CODE_REVIEW_ROUND_STATE_DIR: `${process.env.CODE_REVIEW_ROUND_STATE_DIR || "/tmp/code-review-rounds"}-qa`,
-      },
-      capture: true,
-    });
-    const reviewRc = statusOf(review);
+    // ITS OWN ROUND BUDGET: the qa bucket. The implementation fix loop that
+    // ran before this may have spent all four build rounds — at which point the
+    // post-QA review would return exit 5 without ever calling a vendor, and
+    // /qa's own source edits would ship unreviewed behind a "ceiling reached"
+    // note. /qa can take several fix passes, each its own qa-revalidate, and
+    // they can spend the qa bucket's four rounds too; the newest edits then
+    // still get the one final review, as the implementation loop's do — never a
+    // halt over code one more call would have reviewed (a fifth /qa pass was
+    // refused that way). Edits to records alone reuse the receipt and spend nothing.
+    if (POST === "") {
+      err("validate: could not snapshot the working tree; /qa's edits cannot be bound to a review.");
+      NEED_FIX = 1;
+      emitFields();
+      exit(1);
+    }
+    const reviewed = runReview("qa", POST);
+    const review = { stdout: reviewed.out };
+    const reviewRc = reviewed.rc;
+    if ((reviewRc === 0 || reviewRc === 4) && reviewed.approved === false) NEED_FIX = 1;
     switch (reviewRc) {
       case 0: {
         const reviewOut = review.stdout ?? "";
@@ -726,17 +859,14 @@ async function main(): Promise<void> {
         out("NOTE: nothing to re-review after /qa");
         break;
       case 3:
-        out(
-          `NOTE: no independent reviewer — the review of /qa's edits is PENDING. Run the implement-audit-reviewer agent on them in a fresh context, save its triage lines, then: ${FALLBACK_CMD}. Record it as claude-fallback (fresh context, NOT independent)`,
-        );
+        out(pendingNote("/qa's edits", reviewed.items));
         out("NEED_FALLBACK_REVIEW=1");
         PENDING_FALLBACK = true;
         break;
       case 5:
-        // With a dedicated counter this cannot fire on the first qa-revalidate,
-        // and if it somehow does it means the post-QA review did NOT happen. That
-        // is not a note to carry to the close; it is the same unreviewed-code
-        // failure exit 1 and 124 are.
+        // The final review already spent: /qa's newest edits were NOT reviewed.
+        // That is not a note to carry to the close; it is the same
+        // unreviewed-code failure exit 1 and 124 are.
         err("validate: the post-QA review hit the round ceiling — /qa's edits are unreviewed.");
         NEED_FIX = 1;
         break;
@@ -746,9 +876,100 @@ async function main(): Promise<void> {
     }
 
     emitFields();
-    if (NEED_FIX !== 0) exit(1);
-    exit(PENDING_FALLBACK ? 3 : 0);
+    exit(NEED_FIX !== 0 ? 1 : PENDING_FALLBACK ? 3 : 0);
   }
+
+  // ── --phase report ────────────────────────────────────────────────────
+  //
+  // A test never seen failing is not evidence: it may assert against a field the
+  // code never reads, and pass forever. /implement
+  // asks for the red run's excerpt on the report's `test-failure-observed:` line,
+  // and until this phase nothing read it, so `none` over a new test closed
+  // cleanly. Run after Phase 5 fills the report in; Phase 6 will not auto-close
+  // until it exits 0. It trusts what the line says — a made-up excerpt passes.
+  if (PHASE === "report") {
+    if (BASE === "") {
+      err("validate: --phase report needs --base <sha>");
+      exit(2);
+    }
+    if (REPORT === "") {
+      err("validate: --phase report needs --report <path to report.md>");
+      exit(2);
+    }
+    if (!isFile(REPORT)) {
+      err(`validate: --report is not a file: ${REPORT}`);
+      exit(2);
+    }
+    const changed = filesSince(BASE);
+    if (changed === null) {
+      NEED_FIX = 1;
+      emitFields();
+      exit(1);
+    }
+    const tests = changed.filter((p) => isTestPath(p) && isFile(`${REPO_DIR}/${p}`));
+    const line = redFirstLine(readFileSync(REPORT, "utf8"));
+    if (tests.length > 0 && line !== "present") {
+      for (const t of tests) out(`FAIL: red-first ${t}`);
+      err("");
+      err(
+        `validate: ${tests.length} test file(s) changed since ${BASE.slice(0, 12)}, and the report's ${LINE_STATE[line]}.`,
+      );
+      err("A test nobody saw fail proves nothing. Break the code or the fixture on purpose,");
+      err("run the test, check the failure names the thing the test claims, restore it,");
+      err("and put that failure's excerpt on the line. A test or fixture changed without");
+      err("changing what any test expects is written `not-applicable — <why>`.");
+      NEED_FIX = 1;
+      emitFields();
+      exit(1);
+    }
+    out(
+      tests.length === 0
+        ? `PASS: red-first (no test file changed since ${BASE.slice(0, 12)})`
+        : `PASS: red-first (${tests.length} test file(s); excerpt present)`,
+    );
+    emitFields();
+    exit(0);
+  }
+}
+
+const PHASES = "checks | review | qa-list | qa-revalidate | report";
+
+// What counts as a test file for --phase report. Wider than the workbench's own
+// `*.test.ts`, because /implement builds product rows too (`--repo`), and the
+// products name tests `.test.tsx`, `.spec.js` and `__tests__/…`. A file under
+// `tests/` counts whatever its name, since a fixture there changes what a test
+// asserts. The extension list keeps out data records named like `x.test.json`.
+function isTestPath(path: string): boolean {
+  const parts = path.split("/");
+  const name = parts.pop() ?? "";
+  return (
+    /\.(test|spec)\.(ts|tsx|mts|cts|js|jsx|mjs|cjs|sh)$/.test(name) ||
+    parts.some((d) => d === "tests" || d === "__tests__")
+  );
+}
+
+type LineState = "absent" | "empty" | "none" | "placeholder" | "present";
+const LINE_STATE: Record<Exclude<LineState, "present">, string> = {
+  absent: "has no `test-failure-observed:` line",
+  empty: "`test-failure-observed:` line is empty",
+  none: '`test-failure-observed:` line reads "none"',
+  placeholder: "`test-failure-observed:` line is still the template's placeholder",
+};
+
+// The report's first `test-failure-observed:` line, key bold, backticked or bare.
+// `none` is the template's answer for a run that changed no test, and the
+// unfilled `{…}` is the template itself; neither is an excerpt.
+function redFirstLine(report: string): LineState {
+  const m = report.match(/^[ \t]*(?:[-*][ \t]+)?(?:\*\*|`)?test-failure-observed:(?:\*\*|`)?(.*)$/m);
+  if (!m) return "absent";
+  const value = (m[1] ?? "")
+    .trim()
+    .replace(/^`+|`+$/g, "")
+    .trim();
+  if (value === "") return "empty";
+  if (/^none\b/i.test(value)) return "none";
+  if (/^\{.*\}$/.test(value)) return "placeholder";
+  return "present";
 }
 
 if (process.argv[1] && realpathSync(resolve(process.argv[1])) === realpathSync(fileURLToPath(import.meta.url))) {

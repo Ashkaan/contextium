@@ -2,7 +2,7 @@
 name: qa
 description: See the real running product of any app in your workbench, find its design problems, fix them, and explain what changed. Use after a UI change, before/after committing, when asked to QA, screenshot, fix, or visually verify a web app, or to confirm a portal renders correctly at desktop/tablet/phone. CLI/library targets capture stdout instead of screenshots.
 metadata:
-  peers: ".agents/skills/qa/scripts/detect-app.ts .agents/skills/qa/scripts/discover-routes.ts .agents/skills/qa/scripts/serve.ts .agents/skills/qa/scripts/screenshot.ts .agents/skills/qa/scripts/sight-check.ts .agents/skills/qa/scripts/sight-stamp.ts .agents/skills/qa/scripts/sight-validate.ts .agents/skills/qa/scripts/a11y.ts .agents/skills/qa/scripts/gen-design-md.ts .agents/skills/qa/scripts/design-authority.ts .agents/skills/qa/scripts/design-frontmatter.ts .agents/skills/qa/scripts/element-scan.ts .agents/skills/qa/scripts/interaction-check.ts .agents/skills/qa/scripts/interaction-check.browser.ts .agents/skills/qa/scripts/system-drift.ts .agents/skills/qa/scripts/impeccable-detect.ts .agents/skills/qa/scripts/lib.ts .agents/skills/qa/scripts/ensure-playwright.ts .agents/skills/qa/scripts/mark-qa-done.ts .agents/skills/qa/scripts/qa-targets.ts .agents/skills/qa/scripts/import-map.ts .agents/skills/qa/references/review-rubric.md .agents/skills/review/policy-review.ts"
+  peers: ".agents/skills/qa/scripts/detect-app.ts .agents/skills/qa/scripts/discover-routes.ts .agents/skills/qa/scripts/serve.ts .agents/skills/qa/scripts/static-serve.ts .agents/skills/qa/scripts/screenshot.ts .agents/skills/qa/scripts/sight-check.ts .agents/skills/qa/scripts/sight-stamp.ts .agents/skills/qa/scripts/sight-validate.ts .agents/skills/qa/scripts/a11y.ts .agents/skills/qa/scripts/gen-design-md.ts .agents/skills/qa/scripts/design-authority.ts .agents/skills/qa/scripts/design-frontmatter.ts .agents/skills/qa/scripts/element-scan.ts .agents/skills/qa/scripts/interaction-check.ts .agents/skills/qa/scripts/interaction-check.browser.ts .agents/skills/qa/scripts/system-drift.ts .agents/skills/qa/scripts/impeccable-detect.ts .agents/skills/qa/scripts/lib.ts .agents/skills/qa/scripts/ensure-playwright.ts .agents/skills/qa/scripts/mark-qa-done.ts .agents/skills/qa/scripts/qa-targets.ts .agents/skills/qa/scripts/import-map.ts .agents/skills/qa/references/server-lifecycle.md .agents/skills/qa/references/review-rubric.md .agents/skills/review/policy-review.ts .agents/skills/close/references/auto-close-gate.md"
 ---
 
 # /qa — see the real running product
@@ -15,9 +15,10 @@ metadata:
 - **A design authority that contains no design is a P1, not a pass.** `/qa` delegates the entire look question to the app's own `DESIGN.md` — correct — but a delegated file can hold no design. `gen-design-md.ts` writes a token inventory on a repo's first run, the `design-system-*` checks run against it, and the result is clean forever; that is how a portal passes `/qa` while its owner finds it plainly bad. `design-authority.ts` (step-2.5) now raises the missing system as the run's first finding, and `system-drift.ts` (step-2.6b) counts how far the source has drifted from whatever the app DID declare. Neither adds a design opinion to this skill: the rubric still prescribes no type ramp, palette or spacing scale.
 - **Evidence, not assertion.** The deliverable is the manifest (page x viewport -> path, bytes, http-status) + the fresh-context findings, NOT "looks good." Give the agent a runnable check, and show the evidence.
 - **The builder does not grade itself.** `step-4-fresh-review` dispatches a fresh-context subagent (in Claude Code, the `Task` tool; elsewhere, the harness's subagent or a new session) that Reads the PNGs and checks geometry — never inline-QA in this orchestrator. Hot-context self-review produces motivated reasoning.
-- **Zero-config — no `.qa.json`.** Routes come from whichever file-based routing dirs the repo actually has — `src/pages/`, `pages/`, `app/`, `src/app/` (`discover-routes.ts`); the live URL from `--live-url`, or the Cloudflare Pages registry when wrangler's credentials are set. `DESIGN.md` is the only per-repo file the QA process involves, and `/qa` commits it itself (step-2.5-design-md).
+- **Zero-config — no `.qa.json`.** Routes come from whichever file-based routing dirs the repo actually has — `src/pages/`, `pages/`, `app/`, `src/app/` (`discover-routes.ts`); the live URL from `--live-url`, or the Cloudflare Pages registry when wrangler's credentials are set. `DESIGN.md` is the only per-repo file the QA process involves, and its edits land through the normal producer close.
 - **Never guess a serve command.** Node-server / CLI / render targets REQUIRE a `qa:*` script in the repo's own `package.json` (`qa:serve` / `qa:cmd` / `qa:render`). Only Astro / Vite / static get a convention default.
 - **Own your processes.** Teardown signals only the process group `serve.ts` started + removes only the worktree it created. Never global-`pkill workerd`/`wrangler` — that kills other repos' servers on the same machine. Ownership is proved at STARTUP too: the health check refuses a listener that is not in the process group this run spawned (unless no listener pid can be read at all and the port was verified free the instant before spawning — a pid that resolves to another group is refused even then, because another session can take the port in that gap). Answering on a port is not evidence of owning it — a stale server from another repo answers 200 all day.
+- **Use the server runner for the whole lifecycle**, including old-build comparisons: `up`, `status`, `restart`, and `down --clean`. Read [server-lifecycle.md](references/server-lifecycle.md) when a run needs anything beyond initial startup. Do not add shell `kill`, `kill -0`, port-to-PID pipelines, ad hoc HTTP servers, or shell deletion of captures. Those wrappers were the main source of QA approval cards even in Full access. Keep loops and result aggregation inside TypeScript checks; invoke them with literal arguments.
 - **CLI/Node Playwright only** — `npx playwright` or an inline Node script importing the `playwright` package. No Playwright MCP server; the Node API is what `screenshot.ts` is built on.
 
 ## When to use vs. the neighbors
@@ -30,19 +31,22 @@ metadata:
 
 ## step-0-resolve-target
 
+In T3 Code, reuse the audit-owner thread id supplied by `/implement`. For standalone QA, use this executing thread’s own id from its T3 context; the capabilities tool returns its caller under `parentThreadId`. Do not substitute the lineage parent from a thread record. Fill that literal value in snapshot/interaction commands; a fresh child does not inherit local shell variables. Outside T3 Code the id is optional.
+
 Args: `target` (an app directory — a repo, or an app folder inside one; default = the repo of cwd). `page ...` = routes (default = auto-discovered from `src/pages/` by `discover-routes.ts`). Flags: `--before` (default) | `--after` | `--live [--live-url <url>]`, `--keep`, `--a11y`, `--viewports W,W,W`.
 
-```bash
-TARGET="${1:-$(git rev-parse --show-toplevel)}"   # resolve to an absolute directory
-RUN_ID="$(date +%Y%m%d-%H%M%S)-$$"
-LIVE_URL=""   # the --live-url <url> arg, when given; every `serve.ts up` below passes it on
-```
+Resolve the target to an absolute path and read its nearest AGENTS.md before working there. Before detection, generation or serving, run `bash .agents/skills/close/scripts/write-root.sh <resolved repo path>` and set TARGET to the returned owned-worktree path. Every later command, source edit and re-check uses that TARGET, including DESIGN.md generation and `--before` serving. This binding applies to `--live` too: only its URL is production; local design checks and any later fixes still use the owned tree. Choose a unique run ID. In the
+examples below, names such as `$TARGET`, `$QA_URL` and `$QA_RUNFILE` are
+placeholders: substitute the literal values returned by the scripts. Read their
+output as data; do not `eval` it, `source` a runfile, or combine checks and
+cleanup into one shell command. `$S` stands for `.agents/skills/qa/scripts`,
+and `$LIVE_URL_ARG` for the literal `--live-url <url>` when the user passed one
+(omit it otherwise), so every `serve.ts up` keeps the URL the user named.
 
 ## step-1-detect-and-discover
 
 ```bash
-S=.agents/skills/qa/scripts
-TYPE="$(node --experimental-strip-types "$S/detect-app.ts" "$TARGET" | sed -n 's/^TYPE=//p')"   # exit 3 -> halt, print signals
+node --experimental-strip-types "$S/detect-app.ts" "$TARGET"   # read TYPE= from its output; exit 3 -> halt, print signals
 ```
 
 An undetectable type stops here. Surface the exact message; do NOT invent a command. `/qa` is zero-config — there is no `.qa.json`; the non-convention types declare themselves with a `qa:*` script in their own `package.json`.
@@ -53,23 +57,28 @@ An undetectable type stops here. Surface the exact message; do NOT invent a comm
 - `astro-cf` on a CF-Access-gated portal → see **§ Cloudflare portal recipe** before choosing `--before` vs `--live`.
 - everything else → `step-2-serve`.
 
+For `cli` and `render`, first create the managed evidence directory without a
+server:
+
+```bash
+node --experimental-strip-types "$S/serve.ts" up --repo "$TARGET" --mode capture --run-id "$RUN_ID"
+```
+
+Read `QA_RUNFILE` and `QA_CAPTURE_DIR` from its output. Both branches use these
+fields for their output and the same final teardown as served targets.
+
 **Routes are discovered, not tracked — and by `serve.ts`, against the SERVED source.** For a served type, `serve.ts` (step-2) walks every file-based routing dir (`src/pages/`, `pages/`, `app/`, `src/app/`) of the exact revision it serves (the HEAD worktree for `--after`, the working tree for `--before`/`--live`) and emits `QA_PAGES`. Discovering there — not here against the possibly-dirty working tree — is what keeps `--after` honest: an uncommitted added/removed page can't produce a 404 or a missed shot for the committed revision the label claims. `QA_PAGES` empty (source has no static routes) with NO explicit `page` arg → HALT and ask which route(s) to shoot; never fabricate `/` (no guessing). An explicit `page ...` arg always overrides (scoped run). Next repos ride the same walk: under App Router the DIRECTORY holding a `page.*` file is the route, `(group)` segments are organisational and never appear in the URL, `@slot` parallel routes are not standalone URLs, and `[param]` routes are skipped rather than shot as a literal bracket path.
 
 ## step-2-serve
 
 ```bash
-eval "$(node --experimental-strip-types "$S/serve.ts" up --repo "$TARGET" --mode "$MODE" --run-id "$RUN_ID" ${LIVE_URL:+--live-url "$LIVE_URL"} | grep '^QA_')"
-# MODE = before|after|live. Captures QA_URL, QA_PORT, QA_LABEL, QA_RUNFILE,
-# QA_PID, and QA_PAGES (routes discovered from the served source).
-
-# Resolve the page set: explicit `page` args win; else the discovered QA_PAGES.
-PAGES="${PAGES:-$QA_PAGES}"
-if [ -z "${PAGES// /}" ]; then
-  echo "qa: no static routes in the served source and no explicit page arg — HALT." >&2
-  echo "    Pass the route(s) to shoot, e.g. /qa $TARGET / /about --$MODE" >&2
-  # stop here; do NOT screenshot a fabricated '/'
-fi
+node --experimental-strip-types "$S/serve.ts" up --repo "$TARGET" --mode "$MODE" --run-id "$RUN_ID" $LIVE_URL_ARG
 ```
+
+Read `QA_URL`, `QA_LABEL`, `QA_RUNFILE`, `QA_CAPTURE_DIR` and `QA_PAGES` from the output. Explicit
+page arguments win; otherwise use `QA_PAGES`. An empty page list without
+explicit routes halts here, as step 1 requires. Keep the runfile path for every
+subsequent status, restart and teardown command.
 
 `--before` serves the working tree; `--after` builds a clean `git worktree` of HEAD so uncommitted edits don't leak into the shot, linking in the nearest `node_modules` at or above the checkout (below `$HOME`), since a worktree under `/tmp` has none; `--live` hits the deployed URL and skips the build.
 
@@ -113,29 +122,25 @@ that lists tokens under a "## Colors" heading and calls it a system.
 
 On exit 3 the run's **first finding is P1**: *this app has no design system; the
 design-system checks are running against an auto-extracted token list and cannot
-fail.* A human DELETING the key is the act of claiming the file is now a real
-design. A file generated before the marker existed is backfilled with
+fail.* Do not clear the marker until an actual design contract replaces the token
+inventory; deleting the key alone does not establish a design. A file generated
+before the marker existed is backfilled with
 `gen-design-md.ts --mark-existing <repo>`, which only touches files matching the
 generator's own output shape and leaves a hand-written one alone.
 
-**Then commit it — `/qa` made the file, `/qa` lands it.** A generated file left untracked leaves the target repo dirty and the next agent guessing whose it is, and whether committing it is even in scope. It is: this is `/qa`'s own artifact, so it gets its own commit, that file only.
-
-```bash
-if [ -n "$(git -C "$TARGET" status --porcelain -- DESIGN.md)" ]; then
-  git -C "$TARGET" add DESIGN.md
-  git -C "$TARGET" commit -q -m "add DESIGN.md design-token allowlist generated by the QA harness" -- DESIGN.md
-fi
-```
-
-The `-- DESIGN.md` pathspec is what keeps the commit to one file when the working tree has other edits in flight (it usually does — `/qa` runs mid-change). Commit only, do NOT push: these repos deploy on push, and a doc file must not trigger a site deploy; it rides the next real push.
+Leave the generated design file in this thread’s target worktree for the normal producer close. Do not create a separate QA commit or push a partial UI change. Follow the auto-close gate’s Caller ownership for a nested run.
 
 ## step-2.6-impeccable
 
 Run impeccable against the **rendered page**, where its coverage is real. Measured: identical markup yields 12 findings as a live page vs ~4 as source files, and the styling idiom barely moves the source number (Tailwind 4, styled-components 3, inline `style={{}}` 2). So point it at `QA_URL`, not `src/`.
 
 ```bash
-node --experimental-strip-types "$S/impeccable-detect.ts" "$TARGET" "$QA_URL" ${QA_AUTH_JWT_FILE:+--auth-jwt-file "$QA_AUTH_JWT_FILE"}
+node --experimental-strip-types "$S/impeccable-detect.ts" "$TARGET" "$QA_URL" $JWT_AUTH
 ```
+
+`$JWT_AUTH` is a placeholder for the literal flags `--auth-jwt-file
+<QA_AUTH_JWT_FILE>` when the runner emitted a local sign-in file; otherwise
+omit it. Do not construct it with a shell array or conditional expansion.
 
 The script always exits 0 — a detector CRASH must never fail a QA run. That is not permission to SKIP this step: surviving a blown-up detector and omitting the step are different things, and there is no path on which step 2.6 does not run. `/implement`'s gate takes the same line — a crash is survivable, an omission is not.
 
@@ -154,9 +159,7 @@ Read the output with two known false positives in mind:
 | Limit | Handling |
 |---|---|
 | Gradient backgrounds report as `#ffffff on #ffffff`, 1.0:1 | False positive. The engine can't resolve a gradient behind text and defaults to white — white on a dark gradient reports this way and is fine. Discount unless the PNG confirms it. |
-| `overused-font` / `single-font` fire on the app's chosen face | Opinion, not defect, when the face is declared in the target repo's own `DESIGN.md` (the theme's canonical surface). Report as taste input; the design system wins. |
-
-The prose checks (`marketing-buzzword`, `em-dash-overuse`, `aphoristic-cadence`) scan *rendered pages* — copy as the visitor reads it.
+| `overused-font` / `single-font` fire on the app's chosen face | Opinion, not defect. Check the target’s DESIGN.md. A deliberate font choice is taste input; the app’s own design system decides. |
 
 ## step-2.6b-system-drift
 
@@ -165,8 +168,12 @@ SOURCE against the scales the app declared for itself — the half nobody was
 measuring.
 
 ```bash
-node --experimental-strip-types "$S/system-drift.ts" "${QA_SRC:-$TARGET}"
+node --experimental-strip-types "$S/system-drift.ts" "$SERVED_SOURCE"
 ```
+
+`$SERVED_SOURCE` means the current run's `QA_SRC` when emitted, otherwise
+`$TARGET`, already bound to this thread's owned tree. Substitute that literal
+path, never the target path from before step0.
 
 **Against the source `serve.ts` BUILT**, not the working tree. `serve.ts` emits
 `QA_SRC`, the app directory it served (for `--after`, the same app inside its
@@ -189,9 +196,8 @@ a fact about the source rather than an opinion about design:
 **One finding per distinct off-scale VALUE**, carrying its occurrence count and
 up to five `file:line` examples — not one finding per occurrence, because 467
 findings is a dump rather than a review. A value used ten or more times is P2
-(systemic drift); under ten is P3 (a one-off). A native platform widget is P1
-regardless of count: the user is looking at an unstyled OS control, and no
-design system survives that. **No measure emits P0** — a scanner cannot know
+(systemic drift); under ten is P3 (a one-off). A native platform widget is a claim to adjudicate
+against the app’s own design and actual usability, not an automatic defect. **No measure emits P0** — a scanner cannot know
 what blocks a task. The fourth measure is deliberately NOT "how many distinct
 recipes exist": the system itself permits several variants and three sizes, so a
 raw count would invent a threshold. It reports recipes it cannot map to a
@@ -213,38 +219,60 @@ scan can see, even when every finding is correct.
 
 Impeccable pinpoints each finding by rule + file + line. Fix them right there — no subagent, no hunting. Several are near-mechanical: swap a dated easing curve, bump sub-floor text to the size floor, drop a gradient-fill on text, remove a one-side accent border. Skip the two false positives above.
 
-**Rebuild before re-checking.** The app was already built and served in step 2, so source edits made here are NOT live on a static serve (`wrangler pages dev dist`, `astro build` + serve) — only a raw HMR dev server would hot-reload them. So after applying fixes, tear the old server down FIRST (else the next `up` health-checks the still-running stale process and the runfile PID gets clobbered), re-serve to rebuild, then re-run `impeccable detect` against the fresh URL:
+**Recheck the edited working tree.** For an ordinary `--mode before` preview
+without `--dist`, restart its recorded run to rebuild the edits:
 
 ```bash
-node --experimental-strip-types "$S/serve.ts" down --runfile "$QA_RUNFILE"    # kill the pre-fix server before re-serving
-eval "$(node --experimental-strip-types "$S/serve.ts" up --repo "$TARGET" --mode "$MODE" --run-id "$RUN_ID" ${LIVE_URL:+--live-url "$LIVE_URL"} | grep '^QA_')"
-node --experimental-strip-types "$S/impeccable-detect.ts" "$TARGET" "$QA_URL" ${QA_AUTH_JWT_FILE:+--auth-jwt-file "$QA_AUTH_JWT_FILE"}
-node --experimental-strip-types "$S/system-drift.ts" "${QA_SRC:-$TARGET}"
+node --experimental-strip-types "$S/serve.ts" restart --runfile "$QA_RUNFILE"
+```
+
+For `--after`, `--live` or `--dist`, restart would repeat unchanged HEAD,
+production or prebuilt bytes. Keep that baseline's runfile and evidence, and
+start a separate candidate from the working tree containing the edits (the
+original target, not a baseline or HEAD worktree named by `QA_SRC`):
+
+```bash
+node --experimental-strip-types "$S/serve.ts" up --repo "$TARGET" --mode before --run-id <unique-candidate-id>
+```
+
+Read the candidate's output fields and use its URL, runfile and capture
+directory for every subsequent check. Reset `$SERVED_SOURCE` to this candidate's
+`QA_SRC`, or `$TARGET` if absent; do not reuse a baseline HEAD tree. Also replace `$RUN_ID` with the candidate
+ID passed above before taking screenshots, so they cannot overwrite baseline
+evidence. Retain both runfiles for final teardown.
+After the working-tree candidate passes, a production fix still requires the
+normal push/deploy verification; a local pass is not proof of a live fix.
+Then recheck the fresh candidate:
+
+```bash
+node --experimental-strip-types "$S/impeccable-detect.ts" "$TARGET" "$QA_URL" $JWT_AUTH
+node --experimental-strip-types "$S/system-drift.ts" "$SERVED_SOURCE"
 ```
 
 **All deterministic fixing happens here, before any AI looks, and the step-3 screenshots are taken from this rebuilt server** — never the pre-fix build. The fresh-eyes review is expensive and should spend its tokens only on judgment a rule can't make, not on tells impeccable already located and you already fixed.
 
 ## step-3-screenshot
 
+Use the collision-safe `QA_SLUG` returned by the server runner so captures and
+teardown refer to the same directory. `$AUTH` below stands for the applicable
+literal flags, not a shell array: `--auth-jwt-file <QA_AUTH_JWT_FILE>` for local
+sign-in, or `--auth-op-item <QA_AUTH_OP_ITEM> --auth-id-field <QA_AUTH_ID_FIELD>
+--auth-secret-field <QA_AUTH_SECRET_FIELD>` on live sites, adding
+`--auth-act-as <QA_AUTH_ACT_AS>` when emitted. Omit missing flags. These are
+credential references and file paths; the scripts resolve the secrets.
+
 ```bash
-# $QA_SLUG came from serve.ts up — the collision-safe slug (basename-cksum) that
-# screenshot.ts + teardown must BOTH use, so a plain basename never mismatches
-# serve.ts's own shots dir.
-# On --live with QA_ACCESS_OP_ITEM set, serve.ts emits that op-item (QA_AUTH_*),
-# so screenshot.ts resolves + sends CF-Access headers — 200 on a gated site,
-# harmless extra headers on an ungated one. On an app whose wrangler config
-# sets PROBE_ACTS_AS it also emits QA_AUTH_ACT_AS: the token alone is a machine
-# there, and the act-as header is what makes it the person the app names.
-# On --before/--after of such an app it emits QA_AUTH_JWT_FILE instead: the
-# token serve.ts signed for that person, sent as Cloudflare Access would send it.
-AUTH=(); [ -n "${QA_AUTH_OP_ITEM:-}" ] && AUTH=(--auth-op-item "$QA_AUTH_OP_ITEM" --auth-id-field "$QA_AUTH_ID_FIELD" --auth-secret-field "$QA_AUTH_SECRET_FIELD")
-[ -n "${QA_AUTH_ACT_AS:-}" ] && AUTH+=(--auth-act-as "$QA_AUTH_ACT_AS")
-[ -n "${QA_AUTH_JWT_FILE:-}" ] && AUTH+=(--auth-jwt-file "$QA_AUTH_JWT_FILE")
 node --experimental-strip-types "$S/screenshot.ts" --url "$QA_URL" --repo-slug "$QA_SLUG" --run-id "$RUN_ID" \
-  --pages "$PAGES" --viewports "${VIEWPORTS:-1440,820,390}" --app "$TARGET" ${AUTH[@]+"${AUTH[@]}"}
+  --pages "$PAGES" --viewports "$VIEWPORTS" --app "$TARGET" $AUTH
 ```
 
-Prints the manifest table (route · width · path · bytes · http-status). Label the block with `QA_LABEL` (`working tree` / `HEAD worktree` / `live URL <url>`) so the user knows which revision they're seeing.
+Use the requested viewport widths for `$VIEWPORTS`, or `1440,820,390` when no
+widths were requested. Substitute the literal comma-separated list.
+Read the manifest's output directory as `$CAPTURE_DIR` for stamping and review.
+For the initial pass it is `QA_CAPTURE_DIR`; a replacement pass has its own
+nested directory, as step 4.5 describes.
+
+Before each shot the page is scroll-walked, its late-loading images are switched to load at once, and the shot waits up to 10 s for every image to load and decode; an image still missing then is named on stderr (`still loading`), because it will show as an empty box. Without that wait, a home page's lazy-loaded photos were shot as white boxes. Prints the manifest table (route · width · path · bytes · http-status). A page taller than 3,000px comes back as `-part1`, `-part2`, … shots, top to bottom, because the reviewer's image reader shrinks a picture to about 2,000px on its long side: a 20,000px page reached it at a tenth of its size, text and sight code unreadable. The reviewer reads the parts as one page; a run of more than about 20 shots goes to several fresh reviewers, each given a share, and their replies are joined into one file for `sight-check.ts verify`. Label the block with `QA_LABEL` (`working tree` / `HEAD worktree` / `live URL <url>`) so the user knows which revision they're seeing.
 
 Every run also writes `motion/` — see `step-3.6-motion`. The stills are the
 settled end state; they are not evidence about motion and never were.
@@ -287,8 +315,8 @@ To check the accessibility axis deliberately, re-run the capture with
 Still animating under that flag is a P1 accessibility failure.
 
 ```bash
-node --experimental-strip-types "$S/screenshot.ts" --url "$QA_URL" --repo-slug "$QA_SLUG" --run-id "$RUN_ID-rm" \
-  --pages "$PAGES" --viewports 1440 --reduced-motion --app "$TARGET" ${AUTH[@]+"${AUTH[@]}"}
+env QA_SHOTS_ROOT="$QA_CAPTURE_DIR/reduced-motion" node --experimental-strip-types "$S/screenshot.ts" --url "$QA_URL" --repo-slug "$QA_SLUG" --run-id "$RUN_ID" \
+  --pages "$PAGES" --viewports 1440 --reduced-motion --app "$TARGET" $AUTH
 ```
 
 ## step-3.7-interaction
@@ -296,10 +324,13 @@ node --experimental-strip-types "$S/screenshot.ts" --url "$QA_URL" --repo-slug "
 Screenshots show the settled page. This step uses it, on `--before` and
 `--after` (never `--live`: that is production, and a finding there cannot be
 fixed in this run). Each page is loaded once with its data held, then every
-visible button is pressed on a fresh load with everything that could write held.
+visible button is pressed on a fresh load with everything that could write held,
+and the page is loaded once more at a real phone height to ask whether every
+item on it can be reached.
 
 ```bash
-node --experimental-strip-types "$S/interaction-check.ts" --url "$QA_URL" --pages "$PAGES" --repo "$TARGET" ${AUTH[@]+"${AUTH[@]}"}
+CODE_REVIEW_LOOP_ID="<audit-owner thread id>" \
+node --experimental-strip-types "$S/interaction-check.ts" --url "$QA_URL" --pages "$PAGES" --repo "$TARGET" $AUTH
 ```
 
 Each `INTERACTION <route> <kind> <detail>` line is a **P1 finding**, fixed in
@@ -314,7 +345,26 @@ step-4.5 like any other:
   still on the way, the main region showed no text, image or progress
   indicator, or a large iframe had not loaded with nothing around it.
 - `unpressed` — a button no click could reach (an overlay over it, say).
+- `cut-off` — at 390×844, a box that clips its content (`overflow: hidden` or
+  `clip`) holds items no scroll a visitor can make brings into view: each item
+  is scrolled into view by the page and every box that scrolls, and is still
+  off screen or outside its box. The line names the box and how many items it
+  shows and hides. Fix it in the page: lift the cap so the page scrolls, or let
+  the box scroll. It exists because a list capped to a fixed height can hide half
+  its rows on a phone for months while `/qa`'s phone screenshots, 1600 px
+  tall, hold every row inside the cap. While a modal dialog is open, only
+  its own boxes are scanned: the page behind it is hidden and scroll-locked by
+  design, as the covered check already reads it.
+- `covered` — at 390 px with a touch pointer, a tap on a visible control's
+  centre or corners landed on another control instead: the neighbour's hit
+  area, grown to 44px for a touchscreen, lies over it. Stacked text links do
+  this when their lines sit closer than their grown areas (a list of stacked
+  titles then opens the neighbouring item). Nothing is pressed for it.
 - `unloadable` — the route did not load; the run exits 1.
+
+`--checks cut-off` runs that check alone: nothing is pressed and no stamp is
+written, so it may point at a deployed site. That is how a live page is checked
+for it, and how a fix for one is confirmed after its deploy.
 
 **Held means never sent**: every non-GET request, every fetch/XHR, every
 WebSocket and every service worker. A plain HTML form's POST, which the browser
@@ -338,10 +388,16 @@ A control whose correct response is off screen (a copy-to-clipboard button) can
 carry `data-qa-feedback="<reason>"`; it is skipped and listed as `SKIPPED` with
 the reason, which the reviewer accepts or rejects. It is never the way out of a
 real `no-feedback`. The option a set already has selected — `aria-selected`,
-`aria-pressed` or `aria-current` on it — is listed the same way ("already the
-selected option"): pressing it again correctly changes nothing, and the aria
-state is what says so to a screen reader too. A toggle that styles its selected
-option without that state is the page's defect, fixed in the page.
+`aria-pressed` or `aria-current` on it, or `aria-checked` on a radio — is listed
+the same way ("already the selected option"): pressing it again correctly
+changes nothing, and the aria state is what says so to a screen reader too. A
+toggle that styles its selected option without that state is the page's defect,
+fixed in the page. A button behind an open modal dialog — inside an
+`aria-hidden="true"` subtree while an `aria-modal` dialog shows — or inside an
+`inert` one is listed too ("hidden from every visitor"): no one can reach it by
+design. `aria-hidden` with no modal open exempts nothing, since it hides a
+button from a screen reader and not from a mouse, and an overlay without that
+marking is still an `unpressed` finding.
 
 Each load is settled before anything is counted or pressed: past network quiet,
 until the buttons and the text stop changing for 1.2 s (capped at 8 s). A client
@@ -363,10 +419,12 @@ so `mark-qa-done.ts --tree` refuses, and the report says the check was skipped.
 Only with `--a11y`:
 
 ```bash
-node --experimental-strip-types "$S/a11y.ts" --url "$QA_URL" --pages "$PAGES" --viewports "${VIEWPORTS:-1440}" ${AUTH[@]+"${AUTH[@]}"}
+node --experimental-strip-types "$S/a11y.ts" --url "$QA_URL" --pages "$PAGES" --viewports "$A11Y_VIEWPORTS" $AUTH
 ```
 
-Per-page axe violation counts. Advisory (~57% WCAG coverage) — report it, never block on it.
+`$A11Y_VIEWPORTS` means the requested widths, or `1440` when none were requested.
+
+Read the per-page axe findings and fix confirmed, ready issues. An automated scan is not proof of full accessibility; name what it did not examine.
 
 ## step-4-stamp-sight
 
@@ -375,7 +433,7 @@ Per-page axe violation counts. Advisory (~57% WCAG coverage) — report it, neve
 So the brief is not the gate. Burn a random code into the pixels of every shot and make the reviewer hand it back:
 
 ```bash
-eval "$(node --experimental-strip-types "$S/sight-check.ts" stamp --dir "/tmp/qa-shots/$QA_SLUG/$RUN_ID")"
+node --experimental-strip-types "$S/sight-check.ts" stamp --dir "$CAPTURE_DIR"
 # -> QA_SIGHT_CODES=<path>  QA_SIGHT_COUNT=<n>
 ```
 
@@ -387,10 +445,10 @@ Both halves run outside the model (Node, and a headless browser when there is no
 
 ## step-4-fresh-review
 
-Dispatch a fresh-context subagent. Its brief MUST demand geometry and measured numbers, not presence. Paste [references/review-rubric.md](references/review-rubric.md) into the brief verbatim — a reviewer catches only what it has thresholds for, and "looks fine" is the failure mode the rubric exists to prevent.
+Dispatch a fresh-context reviewer (in T3 Code, its `delegate_task`; in Claude Code, the `Task` tool; elsewhere, the harness's subagent or a new session). Its brief MUST demand geometry and measured numbers, not presence. Paste [references/review-rubric.md](references/review-rubric.md) into the brief verbatim — a reviewer catches only what it has thresholds for, and "looks fine" is the failure mode the rubric exists to prevent.
 
 ```
-You are a visual-QA reviewer. Read each PNG under <run-dir> with the Read tool.
+You are a visual-QA reviewer. Open each PNG under <run-dir> with your harness’s image-viewing tool.
 
 SIGHT CODE — do this first, per shot. Each PNG carries a dark strip along its
 bottom edge reading "QA SIGHT CODE  XXXXXX". Transcribe that 6-character code
@@ -440,7 +498,10 @@ Exit 0 prints `SIGHTED — n/n codes transcribed`. Exit 6 means the codes did no
 
 **When it fails, route around it — the fallback is the review chain on another vendor, not a retry.** `adversarial-review` puts the review on a different vendor from the author — the independence the review gate wants anyway. The brief names the PNG paths the reviewer must open. Two settings make the chain able to look, and both are load-bearing: `POLICY_CHAIN_GROK_TOOLS=read_file` lets Grok open the PNGs (its default path reads no local files and answers "cannot see", exit 0), and `POLICY_CHAIN_VALIDATOR` runs `sight-validate.ts` on every vendor's answer before the chain accepts it, so a vendor that did not see is passed over for the next one instead of ending the walk.
 
+The chain also needs the UI's authors, as every adversarial review does (the review skill's § Original authors): `POLICY_CHAIN_AUTHOR_VENDORS` names every provider that wrote the pages or their fixes, and in T3 Code `POLICY_CHAIN_AUTHOR_THREAD_ID` names the original writing thread. In T3 Code put the following command in the reviewer child’s task, not the parent’s shell.
+
 ```bash
+POLICY_CHAIN_AUTHOR_THREAD_ID="<writing thread id>" POLICY_CHAIN_AUTHOR_VENDORS="<all writer providers>" \
 POLICY_CHAIN_GROK_TOOLS=read_file POLICY_CHAIN_VALIDATOR="$S/sight-validate.ts" QA_SIGHT_CODES="$QA_SIGHT_CODES" \
 node --experimental-strip-types .agents/skills/review/policy-review.ts adversarial-review \
   "/tmp/qa-shots/$QA_SLUG/$RUN_ID/manifest.json" /tmp/qa-brief-$RUN_ID.txt \
@@ -450,42 +511,66 @@ node --experimental-strip-types "$S/sight-check.ts" verify --codes "$QA_SIGHT_CO
 
 The brief file carries the same text as the subagent brief above — rubric, sight-code instruction, design intent, and the absolute path of every PNG to open — and still never the codes. Max **8 images per call**; a bigger run is batched, and each batch is checked against a codes file holding only its own shots' rows (`grep` them out of `$QA_SIGHT_CODES`, and pass that file as `QA_SIGHT_CODES` to both commands). A vendor that cannot open an image cannot return the codes, so the same gate refuses its answer: when no reviewer in the chain can see, the chain exits non-zero with an empty reply, the review HALTS, and the report says the visual review did not happen.
 
-Apply taste to the findings (the subagent verifies structure, not whether a fix would look ridiculous). P2/P3 are reported, not blocking.
+Adjudicate every finding against the app’s actual design intent. Fix each confirmed, ready finding in this session, including P2/P3. Reject a false positive or unsupported taste suggestion with its reason; severity alone is not a deferral.
 
 **A clean run is a floor, not a verdict.** A generic font at a flat type scale passes every numeric threshold in the rubric. Say what the rubric could not check (focus order, screen-reader output, perceived performance) rather than letting a green report imply it was covered. Motion is no longer on that list — it is captured and graded (step-3.6); if you find yourself writing "motion cannot be checked from a still", the motion evidence went unread.
 
 ## step-4.5-fix-reverify
 
-Act on every P0 and P1 from step-4 and every `INTERACTION` line from step-3.7. Then re-serve, **re-run `interaction-check.ts` until it exits 0**, and re-shoot the affected pages, **re-run `step-4-stamp-sight` on the new shots**, and dispatch a **fresh** visual-QA subagent — not the one that reviewed the first pass (same-subagent-as-built is not acceptable) — to confirm the fixes landed and introduced no regression. Re-stamping is not optional: fresh PNGs carry no codes, and reusing the first pass's codes would let a reviewer pass this round by quoting what it read last round. Its reply goes through `sight-check.ts verify` on exactly the same terms, with the same halt and the same review-chain fallback. Skip this step entirely if step-4 returned zero P0/P1 and step-3.7 exited 0.
+Fix every confirmed, ready finding from step 4 and every INTERACTION failure from step 3.7.
+For a render-only target, rerun step 5b and review its new PNGs; it has no
+server, browser interaction check or screenshot command. For served targets,
+follow step 2.7's mode-aware rebuild/candidate sequence, then **re-run
+`interaction-check.ts` until it exits 0**. For replacement screenshots,
+keep the server's run ID and use `env QA_SHOTS_ROOT=<QA_CAPTURE_DIR>/passes/<unique-pass>`
+before the screenshot command. This preserves earlier evidence inside the same
+owned run directory. Read the new capture directory from the manifest and use
+it for stamping and review; do not stamp or review the old directory.
+**Re-run `step-4-stamp-sight` on the new shots**, then dispatch a **fresh**
+visual-QA subagent — not the one that reviewed the first pass — to confirm the
+fixes and check for regressions. Re-stamping is not optional: fresh PNGs carry
+no codes, and reusing the first pass's codes would let a reviewer pass this
+round by quoting what it read last round. Its reply passes `sight-check.ts
+verify` against the new codes, with the same halt and the same review-chain
+fallback. Skip this step only when no accepted finding remains and interaction
+checks pass.
 
 ## step-4.7-explain
 
-State plainly what was fixed, both the impeccable pass and the visual pass, in plain words: what was wrong, what changed — words that survive deleting every file path. This is what the user reads. No mechanism trail unless asked.
+Say what was wrong and what changed in plain words — words that survive deleting every file path. Cover both the deterministic and visual fixes; keep implementation detail for what helps explain the result. This is what the user reads.
 
 Example: "Two things: the hero headline used a dated bounce animation, now a clean ease-out. A card on the pricing page overlapped its footer by ~12px at phone width; the card now clears it. Nothing else surfaced."
 
 ## step-5-cli
 
-For `cli`/library targets — the repo declares its command as a `qa:cmd` script in `package.json`. Preserve the command's exit status through the `tee` pipe (`PIPESTATUS[0]`) — the exit code IS half the evidence, and a failing CLI must not read as a clean capture:
+For `cli`/library targets, the repo declares its command as a `qa:cmd` script
+in `package.json`. Run this as its own tool call so its exit status is the
+command's status, with stdout captured directly:
 
 ```bash
-(cd "$TARGET" && npm run --silent qa:cmd) | tee "/tmp/qa-shots/<slug>/$RUN_ID/cli-stdout.txt"
-cli_rc=${PIPESTATUS[0]}   # NOT $? — that is tee's status, always 0
-echo "qa: cli exit=$cli_rc"
+npm --prefix "$TARGET" run --silent qa:cmd > "$QA_CAPTURE_DIR/cli-stdout.txt"
 ```
 
-No screenshot, no visual review. The captured stdout + `cli_rc` IS the evidence — report a non-zero `cli_rc` as a failed run. Say "no UI surface — captured command output instead."
+Read the captured file in a separate tool call. No screenshot or visual
+review applies. The captured stdout and the original execution result are
+the evidence; report any nonzero exit status as a failed run. Do not combine
+the execution with a later read or cleanup that could replace its status.
+Say "no UI surface — captured command output instead."
 
 ## step-5b-render
 
 For `render` targets — anything with a visual output that isn't a served web page (TRMNL Liquid, HTML-to-image). The repo declares its `qa:render` script in `package.json`; it produces the PNG(s) itself, reading `$QA_OUT`:
 
 ```bash
-export QA_OUT="/tmp/qa-shots/<slug>/$RUN_ID"; mkdir -p "$QA_OUT"
+export QA_OUT="$QA_CAPTURE_DIR"
 (cd "$TARGET" && npm run --silent qa:render)
 ```
 
-The PNG(s) under `$QA_OUT` ARE the screenshots — no serve, no `screenshot.ts`. Then continue to `step-4-fresh-review` over them exactly as for a served page. This is how `/qa` guarantees it can always render the thing it's working on: if a target can't be served, it declares how to render itself.
+The PNG(s) under `$QA_OUT` ARE the screenshots — no serve, no `screenshot.ts`.
+Use that directory as `$CAPTURE_DIR`, continue through `step-4-stamp-sight`,
+then `step-4-fresh-review`, including every render fix iteration. This is how
+`/qa` guarantees it can always render the thing it's working on: if a target
+can't be served, it declares how to render itself.
 
 ## Cloudflare portal recipe
 
@@ -504,35 +589,48 @@ Never conclude a portal fix is "unverifiable locally" — that conflates *your t
 ## step-6-teardown
 
 ```bash
-node --experimental-strip-types "$S/serve.ts" down --runfile "$QA_RUNFILE"   # unless --keep
-[ -z "${KEEP:-}" ] && rm -rf "/tmp/qa-shots/$QA_SLUG/$RUN_ID"   # $QA_SLUG (from serve.ts) matches the real shots dir; nobody reviews the shots after the run
+node --experimental-strip-types "$S/serve.ts" down --runfile "$QA_RUNFILE" --clean
 ```
 
-The screenshots exist only to be reviewed during the run (steps 4-4.5); once the review is done they're deleted. `--keep` leaves both the server AND the shots up, and prints `QA_URL`, the shots dir, and the teardown one-liner: `node --experimental-strip-types .agents/skills/qa/scripts/serve.ts down --runfile <QA_RUNFILE>`. The step-4.7 plain-English summary is the result the user sees, not the PNGs.
+Run teardown only after the review. `--clean` stops the recorded server and
+removes that run's captures, logs and runfile. With `--keep`, skip teardown and
+give the URL, captures directory and literal `down --runfile <path> --clean`
+command. Replacement and reduced-motion captures live beneath `QA_CAPTURE_DIR`
+as described in steps 3.6 and 4.5, so the same cleanup removes them too. Do not
+clear images with shell `rm`. A restart preserves captures for their review.
+If the fix loop kept a separate baseline, run its recorded teardown command as
+well after the comparison review; do not lose its runfile when switching to the
+candidate's output fields. The step-4.7 plain-English summary is the result the
+user sees, not the PNGs.
 
-After the review completes and fix-now findings are handled, clear the autonomous gate for this change-set:
+After the review completes and fix-now findings are handled, write the marker:
 
 ```bash
-node --experimental-strip-types .agents/skills/qa/scripts/mark-qa-done.ts "$TARGET"
+# Standalone run: no gate reads this form; it records the run only.
+node --experimental-strip-types "$S/mark-qa-done.ts" "$TARGET"
 
 # Under /implement phase-4.8, pass the tree the gate will check against — the
 # snapshot taken AFTER this /qa finished, so the marker names the bytes that ship:
 node --experimental-strip-types .agents/skills/qa/scripts/mark-qa-done.ts --tree "$POST_QA" "$TARGET"
 ```
 
-With `--tree` it writes `/tmp/qa-done/<slug>-<tree-sha>`, which is what `validate.ts --require-qa` reads. Both forms also write the legacy `/tmp/qa-done/<repo>-<change-hash>` key, which nothing reads any more. The next paragraph is why the gate needed a second key rather than a reuse of that one.
+With `--tree` it writes `/tmp/qa-done/<slug>-<tree-sha>`, which is what `validate.ts --require-qa` reads. The change-set key both forms also write is legacy and unread. The tree key exists because a tree SHA names the bytes QA looked at, survives the commit, and moves when a later `/qa` edits source, so an earlier target's marker stops matching and that target runs again.
 
 **Write the marker only here, and only after the review passed.** `mark-qa-done.ts --tree` itself refuses a served app whose interaction check has not passed on that exact tree. It is the single piece of evidence `/implement` accepts that a UI was actually looked at. A marker touched early — or by hand to get past a gate — is the gate lying, and the next thing that happens is a UI shipping on a green run that nobody saw.
 
-**What the legacy key does NOT durably clear.** It is `git status --porcelain | cksum` — a digest of the repo's UNCOMMITTED change-set (`qaChangeHash` in `scripts/lib.ts`). Run after the work is committed, the digest is of empty input: the marker is keyed `-4294967295`, which is exactly `printf '' | cksum`. Such a marker can never match a future dirty state, so it proves nothing about the tree that shipped.
+## Standalone finish
 
-That measurement is exactly why the `/implement` gate could not reuse this key and got a second one. A tree SHA names the bytes QA looked at, survives the commit, and — the part the gate needs — MOVES when a later `/qa` edits source, so an earlier target's marker stops matching and that target runs again. `--require-qa` asks "has this exact tree been seen, target by target?" — a question the change-set key could never answer.
+Follow .agents/skills/close/references/auto-close-gate.md § Caller ownership before any
+close: a nested QA returns its evidence and markers to the producer that called
+it. Only a standalone run proceeds to that gate after confirmed findings are
+resolved and verified. Show requested visuals through the harness's rendering tools (in T3 Code, `html_render`) before
+capture cleanup; do not leave the user only paths to deleted files.
 
 ## Examples
 
 ### Example 1 — before-commit QA of a portal's projects page
 
-`/qa apps/web/portal /projects --before`. step-0 resolves the portal's directory, run-id stamped. step-1 detects `astro-cf` (no config read); the explicit `/projects` arg overrides route discovery. step-2 builds the working tree and serves on :8813 (its D1 databases get their migrations, not production's rows, so pages render empty states in `--before`; use `--live` or a direct data read for data). step-3 shoots projects at 1440/820/390 -> manifest printed. step-4 dispatches the fresh-context reviewer. step-6 tears down the owned server.
+`/qa apps/web/portal /projects --before`. step-0 resolves the portal's directory, then sets TARGET to this thread’s returned worktree; run-id stamped. step-1 detects `astro-cf` (no config read); the explicit `/projects` arg overrides route discovery. step-2 builds the working tree and serves on :8813 (its D1 databases get their migrations, not production's rows, so pages render empty states in `--before`; use `--live` or a direct data read for data). step-3 shoots projects at 1440/820/390 -> manifest printed. step-4 dispatches the fresh-context reviewer. step-6 tears down the owned server.
 
 ### Example 2 — after-commit, multi-page, keep server up
 
@@ -551,7 +649,7 @@ That measurement is exactly why the `/implement` gate could not reuse this key a
 | `build failed` | the repo's `npm run build` is red | fix the build in the target repo first |
 | `server never came up` | slow boot / crash | check the printed `server.log` tail. A busy default port is no longer a cause — with no `--port`, `serve.ts` scans upward from 8813 for a free one |
 | `the listener is NOT this run's process group` | a server from another repo or session already holds the port and answers 200 | stop that process or pass `--port <free-port>`. `/qa` refuses it deliberately: accepting it means an entire review pass grades a different application |
-| `qa: BLANK CAPTURES` (exit 8) | the shot is (near-)uniform — almost always sections that fade in on scroll, since a `fullPage` shot does not scroll | the capture now scroll-walks the page and forces `[data-animate]`/`[data-aos]`/`.reveal`/`.fade-in`/`.animate-on-scroll` visible before shooting; if a site hides content under some OTHER selector, add it to that rule in `scripts/screenshot.ts`. A genuinely near-empty page (bare 404, one-line confirmation) is the false positive — re-run with `QA_INK_FLOOR=0`. Never review a shot the gate rejected: a reviewer handed a white image critiques the whitespace and returns confident findings about nothing. |
+| `qa: BLANK CAPTURES` (exit 8) | the shot is (near-)uniform — almost always sections that fade in on scroll, since a `fullPage` shot does not scroll | the capture now scroll-walks the page and forces `[data-animate]`/`[data-aos]`/`[data-reveal]`/`.reveal`/`.fade-in`/`.animate-on-scroll` visible before shooting; if a site hides content under some OTHER selector, add it to that rule in `scripts/screenshot.ts`. A genuinely near-empty page (bare 404, one-line confirmation) is the false positive — re-run with `QA_INK_FLOOR=0`. Never review a shot the gate rejected: a reviewer handed a white image critiques the whitespace and returns confident findings about nothing. |
 | blank screenshots that survive the gate | SPA needs a wait/selector | the Node capture uses `networkidle`; add a mask or raise the timeout |
 | `qa: IDENTICAL SHOTS` (exit 6) | every route rendered the same image — auth wall, dead client routing, or a catch-all | `curl -sI <url>/<route> \| head -3` to see the redirect. On `--live`, attach an Access service token (§ Cloudflare portal recipe) — otherwise `--before` bypasses the gate. Never review the shots as-is. |
 | `qa: UNSUCCESSFUL RESPONSES` (exit 9) | a route answered 4xx/5xx or not at all — a gated app's machine 403 carries a full page of ink, so the blank and identical-shot gates cannot see it | a 403 on a gated app: pass `--auth-act-as` (the "service tokens cannot access this page" row below); anything else: fix the route. Never review the shots |
@@ -559,7 +657,7 @@ That measurement is exactly why the `/implement` gate could not reuse this key a
 | `qa: skipped — Playwright unavailable (<reason>)` (exit 7) | no Playwright could be found or installed — offline, no npm, or `QA_NO_INSTALL=1` | report the skip, never a pass. Fix the reason (network, npm) and re-run; `node --experimental-strip-types .agents/skills/qa/scripts/ensure-playwright.ts` installs it on its own |
 | `impeccable: detector unavailable — …` | impeccable is missing and could not be installed, or it crashed | report it as not checked; `npm install -g impeccable@latest` by hand, then re-run step-2.6 |
 | `--live` refused | no `--live-url`, no CF Pages project matched the repo name, and no Workers custom domain serves the Worker its wrangler config names (or no Cloudflare credentials) | pass `--live-url <url>`, or use `--before` to build + serve the working tree (the URL is never inferred) |
-| a gated app's page shows "service tokens cannot access this page" (or an API says a person is required) | the token reached the app as a MACHINE: no `X-Portal-Act-As` was sent | the target's wrangler config has no `PROBE_ACTS_AS`, or the run bypassed `serve.ts --live`. Pass `--auth-act-as <the email PROBE_ACTS_AS names>` to `screenshot.ts` / `interaction-check.ts`; a sign-in is never the fix |
+| a gated app's page shows "service tokens cannot access this page" (or an API says a person is required) | the token reached the app as a MACHINE: no `X-Portal-Act-As` was sent, or the token sent is not the one the app pairs with `PROBE_ACTS_AS` | the target's wrangler config has no `PROBE_ACTS_AS`, or the run bypassed `serve.ts --live`. Pass `--auth-act-as <the email PROBE_ACTS_AS names>` to `screenshot.ts` / `interaction-check.ts`; a sign-in is never the fix |
 | auth-gated `--live` shows a login redirect | no Access service token was sent, or the Access app has no Service Auth policy for it | § Cloudflare portal recipe. If you need the DATA not the pixels, read the store directly instead. |
 | `wrangler pages dev` won't boot (workerd error) | sandbox can't start the Workers runtime | serve.ts auto-falls-back to `astro dev` (label says "no CF bindings"); verify data with a direct read, not the fallback server |
 | `render` command wrote no PNGs | the `qa:render` script didn't write to `$QA_OUT` | it MUST write its PNG(s) to `$QA_OUT` (exported by step-5b); fix the script's output path |

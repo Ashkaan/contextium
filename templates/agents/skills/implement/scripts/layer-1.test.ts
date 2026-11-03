@@ -48,7 +48,8 @@ function run(stdin: string, opts: { repo?: string; cwd?: string }): { rc: number
   if (opts.repo) env.CLAUDE_PROJECT_DIR = opts.repo;
   const r = spawnSync(process.execPath, ["--experimental-strip-types", SCRIPT], {
     encoding: "utf8",
-    input: stdin === "" ? "" : `${stdin}\n`,
+    // NUL-terminated records, as validate.ts writes them (a path may hold a newline).
+    input: stdin === "" ? "" : stdin.split("\n").map((f) => `${f}\0`).join(""),
     cwd: opts.cwd,
     env,
     timeout: 120000,
@@ -158,7 +159,7 @@ test("case5c no-make-declared-target-fails-not-skips", () => {
   const empty = mktemp();
   const r = spawnSync(process.execPath, ["--experimental-strip-types", SCRIPT], {
     encoding: "utf8",
-    input: "tools/gen/main.go\n",
+    input: "tools/gen/main.go\0",
     env: { ...process.env, CLAUDE_PROJECT_DIR: repo, PATH: empty },
     timeout: 120000,
   });
@@ -265,4 +266,23 @@ test("case9 code-outside-every-package-warns", { skip: noNpm }, () => {
     r.out.includes("WARN: layer-1 lint (1 files in no package) — not linted or typechecked: scripts/tool.sh"),
     r.all,
   );
+});
+
+// ── Case 10: a path holding a newline is one record ──
+// The list arrives NUL-terminated; split on newlines, `nl<LF>here.ts` became
+// two paths, `apps/a/nl` and `here.ts`, and the second read as code in no
+// package.
+test("case10 newline-named-file-is-one-path", { skip: noNpm }, () => {
+  const repo = makeRepo();
+  pkg(repo, "apps/a", "true", "true");
+  const r = spawnSync(process.execPath, ["--experimental-strip-types", SCRIPT], {
+    encoding: "utf8",
+    input: "apps/a/nl\nhere.ts\0",
+    env: { ...process.env, CLAUDE_PROJECT_DIR: repo },
+    timeout: 120000,
+  });
+  const all = `${r.stdout}${r.stderr}`;
+  assert.equal(r.status, 0, all);
+  assert.ok(r.stdout.includes("PASS: layer-1 lint (apps/a)"), all);
+  assert.equal(r.stdout.includes("in no package"), false, `the name was split: ${all}`);
 });

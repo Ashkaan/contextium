@@ -68,14 +68,29 @@ class Page {
   url() { return this.current; }
   // getAnimations / rewind pass no argument; inkFraction passes the base64 image.
   async evaluate(fn, arg) {
-    if (arg !== undefined) return Number(process.env.FAKE_INK ?? "0.3");
+    // The reveal pass's image wait passes its timeout and answers how many images are still loading;
+    // the selectors it forces visible are logged, read out of the function's own text.
+    if (String(fn).includes('"lazy"')) {
+      log(\`reveal \${(String(fn).match(/"(\\[data-animate\\][^"]*)"/) || [])[1] || ""}\`);
+      return Number(process.env.FAKE_PENDING ?? "0");
+    }
+    if (arg !== undefined) {
+      // FAKE_INK_MATCH: a shot whose bytes hold this text has ink 0.3; the rest FAKE_INK.
+      const match = process.env.FAKE_INK_MATCH;
+      if (match && Buffer.from(String(arg), "base64").toString().includes(match)) return 0.3;
+      return Number(process.env.FAKE_INK ?? "0.3");
+    }
+    if (String(fn).includes("documentElement.scrollHeight")) return Number(process.env.FAKE_HEIGHT ?? "1600");
     return [];
   }
   async screenshot(opts) {
     mkdirSync(dirname(opts.path), { recursive: true });
-    const body = process.env.FAKE_SAME ? "same-bytes" : \`shot \${this.route} \${opts.path}\`;
+    // FAKE_SAME_EXCEPT: every shot is the same bytes except those whose path holds this text.
+    const except = process.env.FAKE_SAME_EXCEPT;
+    const same = process.env.FAKE_SAME || (except && !opts.path.includes(except));
+    const body = same ? "same-bytes" : \`shot \${this.route} \${opts.path}\`;
     writeFileSync(opts.path, body);
-    log(\`shot \${opts.path} fullPage=\${!!opts.fullPage} animations=\${opts.animations} masks=\${(opts.mask || []).join(",")}\`);
+    log(\`shot \${opts.path} fullPage=\${!!opts.fullPage} animations=\${opts.animations} masks=\${(opts.mask || []).join(",")}\${opts.clip ? " clip=" + JSON.stringify(opts.clip) : ""}\`);
   }
   async waitForTimeout() {}
   locator(sel) { return sel; }
@@ -86,7 +101,7 @@ class Ctx {
   async close() {}
 }
 exports.chromium = {
-  async launch() { log("launch"); return { async newContext(o) { return new Ctx(o); }, async close() { log("close"); } }; },
+  async launch(o) { log("launch " + JSON.stringify((o && o.args) || [])); return { async newContext(o) { return new Ctx(o); }, async close() { log("close"); } }; },
 };
 `,
 );
@@ -234,10 +249,30 @@ test("manifest row: route · width · status · sha · ink · bytes · origin", 
 test("stdout table row for /about @390", () =>
   assert.match(happy.out, new RegExp(`/about.*390.*${join(OUT, "about-390.png").replace(/[.]/g, "\\.")}.*200`)));
 test("route joined onto base", () => assert.match(log(), /^goto http:\/\/localhost:8813\/about$/m));
-test("context: width, scale 1, motion NOT reduced", () =>
+test("context: width, scale 1, motion NOT reduced, touch only at the phone width", () => {
   assert.ok(
-    log().includes('"viewport":{"width":390,"height":1600},"deviceScaleFactor":1,"reducedMotion":"no-preference"'),
-  ));
+    log().includes(
+      '"viewport":{"width":390,"height":1600},"hasTouch":true,"deviceScaleFactor":1,"reducedMotion":"no-preference"',
+    ),
+    log(),
+  );
+  assert.ok(log().includes('"viewport":{"width":1440,"height":1600},"hasTouch":false,"deviceScaleFactor":1'), log());
+});
+test("one mouse browser and one touchscreen browser, each closed", () => {
+  const launches = log()
+    .split("\n")
+    .filter((l) => l.startsWith("launch "));
+  assert.deepEqual(launches.sort(), [
+    'launch ["--blink-settings=primaryPointerType=2,availablePointerTypes=2,primaryHoverType=1,availableHoverTypes=1"]',
+    "launch []",
+  ]);
+  assert.equal(
+    log()
+      .split("\n")
+      .filter((l) => l === "close").length,
+    2,
+  );
+});
 test("settled still: fullPage, animations disabled, masks applied", () =>
   assert.ok(log().includes(`shot ${OUT}/index-1440.png fullPage=true animations=disabled masks=.clock,.ad`), log()));
 test("motion: manifest + 4-frame burst per route × width", () => {
@@ -252,6 +287,12 @@ test("motion summary line", () =>
     happy.out,
   ));
 test("no auth → no headers", () => assert.equal(log().includes("extraHTTPHeaders"), false));
+test("reveal pass forces [data-reveal] visible, as a common scroll-reveal library uses", () => {
+  const line = log()
+    .split("\n")
+    .find((l) => l.startsWith("reveal "));
+  assert.ok(line?.split(" ")[1]?.split(",").includes("[data-reveal]"), line ?? log());
+});
 
 // --no-motion, --reduced-motion, default pages + viewports
 test("--no-motion → no motion dir", () => {
@@ -266,6 +307,62 @@ test("defaults: / at 1440,820,390", () => {
   assert.equal(m[0]?.route, "/");
 });
 test("--reduced-motion → reduce", () => assert.ok(log().includes('"reducedMotion":"reduce"')));
+
+// ── a page taller than a reviewer can read at once is shot in parts ──
+// The reviewer's image reader shrinks a picture to about 2,000px on its long
+// side, so a 20,775px phone page reached it at a tenth of its size, its text
+// and its sight code unreadable (six of
+// fifteen codes lost). Before that the cap was ImageMagick's 32,000px
+// policy, which a 3,000px part is far under. Each part keeps its own row.
+test("a 7,000px page is three clipped parts, each with its own row", () => {
+  reset();
+  const r = run([...BASE, "--pages", "/long", "--viewports", "390", "--no-motion"], { FAKE_HEIGHT: "7000" });
+  assert.equal(r.rc, 0, r.out);
+  const rows = manifest().filter((m) => m.route === "/long");
+  assert.deepEqual(
+    rows.map((m) => (m as Row & { path: string }).path.split("/").at(-1)),
+    ["long-390-part1.png", "long-390-part2.png", "long-390-part3.png"],
+  );
+  assert.ok(log().includes('clip={"x":0,"y":0,"width":390,"height":3000}'), log());
+  assert.ok(log().includes('clip={"x":0,"y":6000,"width":390,"height":1000}'), log());
+});
+test("a page under the cap is one shot with no clip", () => {
+  reset();
+  const r = run([...BASE, "--pages", "/short", "--viewports", "390", "--no-motion"], { FAKE_HEIGHT: "3000" });
+  assert.equal(r.rc, 0, r.out);
+  assert.equal(manifest().length, 1);
+  assert.equal(log().includes("clip="), false);
+});
+
+// ── a page in parts is judged whole by the blank and identical-shot gates ──
+// One 3,000px part of a real page can be plain background, and two pages of a
+// site can share a footer part byte for byte; neither is a blank or a wall.
+test("two routes sharing every part but one are not identical shots", () => {
+  reset();
+  const r = run([...BASE, "--pages", "/ /about", "--viewports", "390", "--no-motion"], {
+    FAKE_HEIGHT: "7000",
+    FAKE_SAME_EXCEPT: "-part1",
+  });
+  assert.equal(r.rc, 0, r.out);
+});
+test("a page with ink in one part of three is not blank", () => {
+  reset();
+  const r = run([...BASE, "--pages", "/long", "--viewports", "390", "--no-motion"], {
+    FAKE_HEIGHT: "7000",
+    FAKE_INK: "0",
+    FAKE_INK_MATCH: "-part1",
+  });
+  assert.equal(r.rc, 0, r.out);
+});
+test("a page blank in every part is one blank capture", () => {
+  reset();
+  const r = run([...BASE, "--pages", "/long", "--viewports", "390", "--no-motion"], {
+    FAKE_HEIGHT: "7000",
+    FAKE_INK: "0",
+  });
+  assert.equal(r.rc, 8, r.out);
+  assert.equal(r.out.split("\n").filter((l) => l.includes("non-background")).length, 1, r.out);
+});
 
 // ── gate: identical shots across routes → 6 ──
 test("identical shots → 6", () => {
@@ -303,6 +400,14 @@ test("403 → 9 with the act-as hint; /404 answering 404 is allowed", () => {
   assert.equal(r.out.includes("/404 @1440"), false);
   assert.ok(r.out.includes("--auth-act-as"));
 });
+test("an image still loading after the wait is named on stderr, and the run still exits 0", () => {
+  reset();
+  const r = run([...BASE, "--pages", "/", "--viewports", "1440", "--no-motion"], { FAKE_PENDING: "2" });
+  assert.equal(r.rc, 0, r.out);
+  assert.ok(r.out.includes("screenshot: / @1440 — 2 image(s) still loading after 10000ms"), r.out);
+  const quiet = run([...BASE, "--pages", "/", "--viewports", "1440", "--no-motion"]);
+  assert.equal(quiet.out.includes("still loading"), false, quiet.out);
+});
 test("navigation error → status -1 → 9", () => {
   const r = run([...BASE, "--pages", "/", "--viewports", "1440", "--no-motion"], { FAKE_THROW: "/" });
   assert.equal(r.rc, 9);
@@ -338,7 +443,7 @@ test("auth run → 0", () => {
       "--auth-op-item",
       "item1",
       "--auth-act-as",
-      "a@b.co",
+      "probe@example.com",
     ],
     { STUB_OP: "ok" },
   );
@@ -347,13 +452,13 @@ test("auth run → 0", () => {
 test("CF-Access pair + act-as as extraHTTPHeaders", () =>
   assert.ok(
     log().includes(
-      '"extraHTTPHeaders":{"CF-Access-Client-Id":"ID-1","CF-Access-Client-Secret":"SECRET-1","X-Portal-Act-As":"a@b.co"}',
+      '"extraHTTPHeaders":{"CF-Access-Client-Id":"ID-1","CF-Access-Client-Secret":"SECRET-1","X-Portal-Act-As":"probe@example.com"}',
     ),
     log(),
   ));
 test("act-as without a token is not sent", () => {
   reset();
-  run([...BASE, "--pages", "/", "--viewports", "1440", "--no-motion", "--auth-act-as", "a@b.co"]);
+  run([...BASE, "--pages", "/", "--viewports", "1440", "--no-motion", "--auth-act-as", "probe@example.com"]);
   assert.equal(log().includes("X-Portal-Act-As"), false);
 });
 

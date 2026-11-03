@@ -1,0 +1,14 @@
+<!doctype html><html><body><h1>Dev reload</h1>
+<button id="b">Save</button>
+<script>
+// Next's dev client starts the page only once its hot-reload socket is real;
+// this page wires its button the same way. A real socket has binaryType, the
+// check's held one does not. The app's own socket must stay held.
+const next = new WebSocket('ws://' + location.host + '/_next/hmr?id=1');
+const vite = new WebSocket('ws://' + location.host + '/?token=t', 'vite-hmr');
+const app = new WebSocket('ws://' + location.host + '/ws-app');
+if ('binaryType' in next && 'binaryType' in vite && !('binaryType' in app)) {
+  document.getElementById('b').onclick = function () { this.textContent = 'Saving…'; };
+}
+</script>
+</body></html>

@@ -293,6 +293,9 @@ find_project_dir() {
 #   bare x              → the row detect-stage.ts names in `next-row:` when the
 #                         stage is ready-to-implement; any other stage refuses.
 # Then the row's spec folder must carry no open NEEDS CLARIFICATION marker.
+# A row another open T3 thread is building (close/scripts/rows-taken.ts) is
+# refused in both forms: by name here, and through detect-stage.ts, which skips
+# it, for the bare slug.
 # A project with no ROADMAP.md refuses: its loose specs and README shard table
 # are a retired layout, and nothing reads them. A
 # slug that names no project (a `session-<key>` worktree) has no row to resolve.
@@ -351,6 +354,17 @@ resolve_roadmap_row() {
       complete) err "BLOCKED: $rid's spec is already reported complete — /close marks the row done"; exit 1 ;;
       *) err "BLOCKED: $rid's Sub-spec '$rsub' is not on disk — run /project $original_slug"; exit 1 ;;
     esac
+    # Nor is it a way past another open T3 thread building the row
+    # (two threads building one row learn it only when their landings conflict).
+    # rows-taken.ts never fails routing; awk reads to the end, as above.
+    local holders htitle hwt
+    holders="$(node --experimental-strip-types "$CLOSE_SCRIPTS/rows-taken.ts" "$proj" | awk -F'\t' -v w="$rid" '$1==w')" || true
+    if [[ -n "$holders" ]]; then
+      while IFS=$'\t' read -r _ htitle _ hwt; do
+        err "BLOCKED: $rid is being built in thread \"$htitle\" ($hwt) — settle that thread if it is finished"
+      done <<<"$holders"
+      exit 1
+    fi
   else
     local stage_out stage next_row
     stage_out="$(node --experimental-strip-types "$SELF_DIR/../../project/scripts/detect-stage.ts" "$proj" 2>/dev/null || true)"
@@ -358,6 +372,8 @@ resolve_roadmap_row() {
     next_row="$(sed -n 's/^next-row: \{0,1\}//p' <<<"$stage_out")"
     if [[ "$stage" != "ready-to-implement" ]]; then
       err "BLOCKED: $original_slug is at stage '${stage:-unknown}', not ready-to-implement — run /project $original_slug${next_row:+ (row $next_row)}"
+      # Rows other open threads are building, each with its holder.
+      sed -n 's/^taken: /  taken: /p' <<<"$stage_out" >&2
       # When the row was sent to planning by its open markers, say which.
       sub="$(printf '%s\n' "$rows" | awk -F'\t' -v w="$next_row" '$1==w && !f {print $4; f=1}')"
       if [[ "$sub" == specs/* ]]; then

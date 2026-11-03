@@ -22,12 +22,11 @@
 // occurrence — 467 findings is a dump, not a review.
 //
 // SEVERITY, and the reasoning:
-//   P1  a native platform widget. The user sees an unstyled OS control; no
-//       design system survives that, so it blocks regardless of count.
+//   P1  no design authority, or a generated stub.
 //   P2  an off-scale value used 10 or more times. That is systemic drift.
 //   P3  under 10. A one-off.
-//   claim  a class recipe that maps to no declared variant. Reported for the
-//       reviewer to adjudicate, never counted as a defect.
+//   claim  an unmapped class recipe or native widget. The reviewer checks the
+//       app's design intent; a platform control is not inherently a defect.
 //   No measure emits P0. A scanner cannot know what blocks a task.
 //
 // Usage: system-drift.ts <repo-path>
@@ -293,10 +292,29 @@ async function main(): Promise<void> {
       for (const tok of raw.match(PALETTE) ?? []) pairs.push([tok, `${rel(file)}:${line}`]);
     }
     const LITERAL = /#[0-9a-fA-F]{3,8}\b|rgba?\([^)]*\)|hsla?\([^)]*\)/g;
+    // A `#` number in prose is not a colour: "Reference No #246802" on a page
+    // would otherwise be reported as an off-palette colour.
+    // A hex straight after a word is prose, unless that word is one CSS writes
+    // before a colour — a length (`1px`, `0`) or a border/shadow keyword.
+    // Inside a CSS declaration (`border: solid thin #abc`) a hex is always a
+    // colour, whatever word precedes it.
+    const CSS_BEFORE_COLOUR =
+      /^(?:-?[\d.]+(?:px|em|rem|%|pt|pc|cm|mm|in|vh|vw|ch|ex)?|solid|dashed|dotted|double|groove|ridge|inset|outset|thin|medium|thick)$/i;
+    // Only a property that takes a colour counts: "reference: No #246802" is prose.
+    const IN_DECLARATION =
+      /(?:^|[\s{;"'`(,])(?:color|background(?:-color)?|border(?:-[a-z]+)*|outline(?:-color)?|box-shadow|text-shadow|fill|stroke|caret-color|accent-color|text-decoration(?:-color)?|column-rule(?:-color)?|backgroundColor|borderColor|boxShadow|textShadow|outlineColor|caretColor|accentColor|border[A-Z][A-Za-z]*)\s*:\s*[^:;{}"'`<>]*$/;
+    const inProse = (rawLine: string, at: number): boolean => {
+      const before = rawLine.slice(0, at);
+      const word = /([A-Za-z0-9.%-]+)\s+$/.exec(before);
+      if (word === null || CSS_BEFORE_COLOUR.test(word[1] ?? "")) return false;
+      return !IN_DECLARATION.test(before);
+    };
     for (const [file, line, raw] of codeLines()) {
       // Spaces are dropped before the compare, so `rgb(0, 0, 0)` and
       // `rgb(0,0,0)` are one colour.
-      const toks = (raw.match(LITERAL) ?? []).flatMap((m) => m.replaceAll(" ", "").split(/\s+/).filter(Boolean));
+      const toks = [...raw.matchAll(LITERAL)]
+        .filter((m) => !(m[0].startsWith("#") && inProse(raw, m.index)))
+        .flatMap((m) => m[0].replaceAll(" ", "").split(/\s+/).filter(Boolean));
       for (const tok of toks) {
         if (tok.includes("var(--")) continue;
         if (normColors.includes(`|${tok.toLowerCase()}|`)) continue;
@@ -361,8 +379,8 @@ async function main(): Promise<void> {
   }
 
   // ── Measure 5 — native platform widgets (always armed) ────────────────────
-  // The one measure that needs no declaration: whatever the design says, an OS
-  // picker is not it.
+  // Inventory for adjudication against the app's design, not a global ban on
+  // OS pickers. Source alone does not establish a visible or functional defect.
   // Three spellings of one attribute — `type="date"`, `type='date'` and JSX's
   // `type={"date"}`. A regex that knows only the first reports a different answer
   // for markup that renders identically.
@@ -402,10 +420,10 @@ async function main(): Promise<void> {
   }
   for (const [value, evidence] of [...group(native)].sort(([a], [b]) => byteCompare(a, b))) {
     report(
-      "P1",
+      "claim",
       "native-widget",
       value,
-      "renders the operating system's own control, which no design system can style",
+      "uses a platform control — check the app's design and actual usability before treating it as a defect",
       evidence,
     );
   }

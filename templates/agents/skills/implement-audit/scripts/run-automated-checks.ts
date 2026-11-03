@@ -206,13 +206,16 @@ async function main(): Promise<void> {
   // code-review.ts` builds its diff the same way, for the same reason.
   // Each read checked: a failed git that listed nothing would have made every
   // check below report PASS over an empty change.
+  // NUL-separated (`-z`): without it git C-quotes a name holding a non-ASCII
+  // character, a tab or a newline ("caf\303\251.md"), `isFile` rejects the quoted
+  // string, and that file skipped every check below while they reported PASS.
   let listing = "";
   let untrackedListing = "";
   for (const args of [
-    ["diff", "--name-only", SESSION_BASE, "HEAD"],
-    ["diff", "--name-only", "--cached"],
-    ["diff", "--name-only"],
-    ["ls-files", "--others", "--exclude-standard"],
+    ["diff", "-z", "--name-only", SESSION_BASE, "HEAD"],
+    ["diff", "-z", "--name-only", "--cached"],
+    ["diff", "-z", "--name-only"],
+    ["ls-files", "-z", "--others", "--exclude-standard"],
   ]) {
     const g = spawnSync("git", args, {
       encoding: "utf8",
@@ -226,8 +229,8 @@ async function main(): Promise<void> {
     listing += g.stdout ?? "";
     if (args[0] === "ls-files") untrackedListing = g.stdout ?? "";
   }
-  const changed_files = [...new Set(listing.split("\n").filter((l) => l !== ""))].sort();
-  const untracked = untrackedListing.split("\n").filter((u) => u !== "" && isFile(u));
+  const changed_files = [...new Set(listing.split("\0").filter((l) => l !== ""))].sort();
+  const untracked = untrackedListing.split("\0").filter((u) => u !== "" && isFile(u));
 
   const code_files: string[] = [];
   const sh_files: string[] = [];
@@ -282,7 +285,8 @@ async function main(): Promise<void> {
     warn(`lint missing — no layer-1.ts at ${LAYER1}`);
   } else {
     const l = runMerged(process.execPath, ["--experimental-strip-types", LAYER1], {
-      input: `${code_files.join("\n")}\n`,
+      // NUL-terminated records, as layer-1.ts reads them.
+      input: code_files.map((f) => `${f}\0`).join(""),
       env: { CLAUDE_PROJECT_DIR: REPO_DIR },
     });
     if (l.ok) {

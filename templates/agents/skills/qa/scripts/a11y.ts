@@ -29,7 +29,16 @@ import { createRequire } from "node:module";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Page } from "playwright";
-import { qaAccessHeaders, qaEnvCfAccess, qaErr, qaReadJwtFile, qaResolveCfAccess, qaResolvePages } from "./lib.ts";
+import {
+  qaAccessHeaders,
+  qaBrowsers,
+  qaContextOptions,
+  qaEnvCfAccess,
+  qaErr,
+  qaReadJwtFile,
+  qaResolveCfAccess,
+  qaResolvePages,
+} from "./lib.ts";
 import { exit, runToExit } from "../../../packages/cli-exit/cli-exit.ts";
 import { gotoSurvivingNetworkChange } from "./nav.ts";
 
@@ -176,11 +185,12 @@ async function main(): Promise<void> {
   // unlinking it (see interaction-check.browser.ts).
   const browserTmp = mkdtempSync(join(tmpdir(), "a11y-browser-"));
   process.on("exit", () => rmSync(browserTmp, { recursive: true, force: true }));
-  const browser = await chromium.launch({ env: { ...process.env, TMPDIR: browserTmp } });
+  // Phone widths get a touchscreen browser of their own (QA_TOUCH_BROWSER_ARGS).
+  const browsers = qaBrowsers((args) => chromium.launch({ env: { ...process.env, TMPDIR: browserTmp }, args }));
   let graded = 0;
   for (const route of pages) {
     for (const width of widths) {
-      const ctx = await browser.newContext({ viewport: { width, height: 1600 }, extraHTTPHeaders });
+      const ctx = await (await browsers.forWidth(width)).newContext({ ...qaContextOptions(width), extraHTTPHeaders });
       const page = await ctx.newPage();
       const url = base.replace(/\/$/, "") + (route.startsWith("/") ? route : `/${route}`);
       try {
@@ -202,7 +212,7 @@ async function main(): Promise<void> {
       await ctx.close();
     }
   }
-  await browser.close();
+  await browsers.close();
   // Advisory about violations, never about coverage: a run that graded nothing
   // measured nothing, and must not read as a clean one.
   if (graded === 0) {

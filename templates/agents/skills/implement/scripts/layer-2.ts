@@ -1,17 +1,20 @@
 #!/usr/bin/env -S node --experimental-strip-types
 // layer-2.ts — Layer 2 of /implement Phase 4 (unit + integration tests).
 //
-// Reads newline-separated file list from stdin. Groups the files by PACKAGE —
+// Reads a NUL-separated file list from stdin. Groups the files by PACKAGE —
 // the nearest folder above each one holding a package.json or a Makefile — and
 // runs each package's tests, by convention, with no settings file:
 //   the `test` npm script, else the `make test` target, else `node --test` over
 //   the package's `*.test.{ts,js,mjs,cjs}` files where they sit.
 // A file under `integrations/<name>/` or `packages/<name>/` with no package
-// above it runs that folder's test files in place the same way.
+// above it runs that folder's test files in place the same way, and so does a
+// project's own code (`projects/<domain>/<slug>/…`): any file there but
+// markdown selects it — code, and the fixtures a suite reads — while its
+// markdown records move nothing a test reads.
 //
 // The in-place branch closes a hole, not a nicety: a layer that prints
 // `WARN … skip` for a library with no test script reports PASS over test files
-// it never executed.
+// it never executed. A project's suites ran under no gate the same way.
 //
 // peers: layer-1.ts, layer-3.ts
 //
@@ -54,15 +57,18 @@ function gitToplevel(): string {
   return r.status === 0 ? r.stdout.replace(/\n+$/, "") : "";
 }
 
-/** Every non-empty line of stdin. */
-function stdinLines(): string[] {
+/**
+ * Every path on stdin: NUL-terminated records, as validate.ts writes them, so a
+ * path holding a newline is one record. No record is trimmed.
+ */
+function stdinPaths(): string[] {
   let text = "";
   try {
     text = readFileSync(0, "utf8");
   } catch {
     text = "";
   }
-  return text.split("\n").filter((l) => l !== "");
+  return text.split("\0").filter((p) => p !== "");
 }
 
 const TEST_FILE = /\.test\.(ts|js|mjs|cjs)$/;
@@ -112,7 +118,10 @@ function runMerged(cmd: string, args: string[], cwd: string): { ok: boolean; out
   const fd = openSync(file, "w");
   let ok = false;
   try {
-    const r = spawnSync(cmd, args, { cwd, stdio: ["ignore", fd, fd] });
+    // A `node --test` started under another one reports to it and exits 0
+    // whatever its tests did, so the parent's NODE_TEST_CONTEXT is not passed on.
+    const { NODE_TEST_CONTEXT: _, ...env } = process.env;
+    const r = spawnSync(cmd, args, { cwd, env, stdio: ["ignore", fd, fd] });
     ok = r.status === 0;
   } finally {
     closeSync(fd);
@@ -128,17 +137,21 @@ function headToStderr(buf: Buffer): void {
 }
 
 // The unit that owns a repo-relative path: its package, else its
-// integrations/<name> or packages/<name> folder, else "". Markdown and the
-// records folders own no tests.
+// integrations/<name> or packages/<name> folder, else its project
+// (projects/<domain>/<slug>), else "". Markdown, a file directly under a
+// project's domain folder, and the other records folders own no tests.
 function unitOf(file: string): string {
   if (file.endsWith(".md")) return "";
-  if (/^(journal|projects|knowledge|decisions)\//.test(file)) return "";
+  if (/^(journal|knowledge|decisions)\//.test(file)) return "";
+  const project = /^(projects\/[^/]+\/[^/]+)\/./.exec(file)?.[1];
+  if (file.startsWith("projects/") && project === undefined) return "";
   let d = posix.dirname(file);
   for (;;) {
     if (isFile(`${d}/package.json`) || isFile(`${d}/Makefile`)) return d;
-    if (d === "." || d === "/") break;
+    if (d === "." || d === "/" || d === project) break;
     d = posix.dirname(d);
   }
+  if (project !== undefined) return project;
   const m = /^((?:integrations|packages)\/[^/]+)\/./.exec(file);
   return m?.[1] ?? "";
 }
@@ -262,7 +275,7 @@ async function main(): Promise<void> {
   }
   process.chdir(REPO_DIR);
 
-  const files = stdinLines();
+  const files = stdinPaths();
   const units = [...new Set(files.map(unitOf).filter((u) => u !== ""))].sort();
   if (units.length === 0) {
     out("PASS: layer-2 (no tests in scope)");

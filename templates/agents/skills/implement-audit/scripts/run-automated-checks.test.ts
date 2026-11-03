@@ -252,6 +252,19 @@ test("case8 secrets-dirty-fails", () => {
   assert.equal(recorded(secrets, "args"), `--since\n${base}`, "scan not run --since the session base");
 });
 
+// ── Case 8b: a name git would C-quote reaches the checks as it is on disk ──
+// Without -z, git prints `"caf\303\251.ts"`; the quoted string is no file, so
+// that file skipped every check while they reported PASS.
+test("case8b c-quoted-name-reaches-the-checks", () => {
+  const { repo, fakebin } = fixture();
+  const base = head(repo);
+  writeFileSync(join(repo, "café.ts"), "export const x = 1;\n");
+  const r = runScript(repo, fakebin, ["--session-base", base]);
+  assert.equal(r.rc, 0, r.out);
+  assert.ok(r.out.includes("PASS: lint (1 files)"), r.out);
+  assert.equal(recorded(lintStub(repo), "stdin"), "café.ts\0", "lint was not handed the file as named");
+});
+
 // ── Case 9: --repo-dir not a git repo → fail loud ──
 test("case9 not-a-git-repo-fails", () => {
   const d = mktemp();
@@ -345,7 +358,7 @@ test("case15 lint-runs-over-the-change", () => {
   const r = runScript(repo, fakebin, ["--session-base", base]);
   assert.equal(r.rc, 0, `expected zero; got ${r.rc}: ${r.out}`);
   assert.ok(r.out.includes("PASS: lint (1 files)"), `lint should run over foo.ts only: ${r.out}`);
-  assert.equal(recorded(lintStub(repo), "stdin"), "foo.ts", "lint handed the wrong files");
+  assert.equal(recorded(lintStub(repo), "stdin"), "foo.ts\0", "lint handed the wrong files");
   assert.equal(recorded(lintStub(repo), "env"), repo, "lint ran against another repo");
 });
 
@@ -508,7 +521,7 @@ test("case20 failed-listing-is-an-error", () => {
   addChanges(repo, "ts");
   writeFileSync(
     join(fakebin, "git"),
-    `#!/usr/bin/env bash\ncase " $* " in *" ls-files --others "*) exit 128 ;; esac\nexec "${which("git")}" "$@"\n`,
+    `#!/usr/bin/env bash\ncase " $* " in *" ls-files -z --others "*) exit 128 ;; esac\nexec "${which("git")}" "$@"\n`,
   );
   chmodSync(join(fakebin, "git"), 0o755);
   const r = runScript(repo, fakebin, ["--session-base", base]);

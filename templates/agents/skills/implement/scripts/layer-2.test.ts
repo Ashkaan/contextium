@@ -38,16 +38,24 @@ function write(path: string, body: string): void {
   writeFileSync(path, body);
 }
 
-function run(stdin: string, opts: { repo?: string; cwd?: string }): { rc: number; out: string; all: string } {
+/**
+ * The subject run over `stdin`'s newline-separated paths, handed on as the
+ * NUL-terminated records validate.ts writes (a path may hold a newline).
+ */
+function run(
+  stdin: string,
+  opts: { repo?: string; cwd?: string; env?: NodeJS.ProcessEnv },
+): { rc: number; out: string; all: string } {
   const env: NodeJS.ProcessEnv = { ...process.env };
   delete env.CLAUDE_PROJECT_DIR;
   // This suite runs under `node --test`, which marks its children as test
   // subprocesses; the subject's own `node --test` must not inherit that.
   delete env.NODE_TEST_CONTEXT;
   if (opts.repo) env.CLAUDE_PROJECT_DIR = opts.repo;
+  Object.assign(env, opts.env ?? {});
   const r = spawnSync(process.execPath, ["--experimental-strip-types", SCRIPT], {
     encoding: "utf8",
-    input: stdin === "" ? "" : `${stdin}\n`,
+    input: stdin === "" ? "" : stdin.split("\n").map((f) => `${f}\0`).join(""),
     cwd: opts.cwd,
     env,
     timeout: 120000,
@@ -222,4 +230,44 @@ test("case11 build-output-and-nested-packages-are-not-searched", () => {
   const r = run("packages/lib/index.ts", { repo });
   assert.equal(r.rc, 0, `a build copy or a nested package's test was run: ${r.all}`);
   assert.ok(r.out.includes("PASS: layer-2 packages/lib (1 tests)"), r.all);
+});
+
+// ── Case 12: a project's own code runs the project's tests ──
+// A project's scripts ran under no gate: any file there but markdown selects
+// the project, its markdown records select nothing, and a suite started under
+// a parent `node --test` still reports its own failure.
+test("case12 project-code-runs-the-projects-tests", () => {
+  const repo = makeRepo();
+  const p = "projects/web/2026-01-01_demo";
+  write(join(repo, `${p}/scripts/x.ts`), "export const x = 1;\n");
+  write(join(repo, `${p}/scripts/x.test.ts`), BAD_TEST);
+  const red = run(`${p}/scripts/x.ts`, { repo });
+  assert.equal(red.rc, 1, `a red project suite must fail layer 2: ${red.all}`);
+  assert.ok(red.out.includes(`FAIL: layer-2 ${p}`), red.all);
+  const nested = run(`${p}/scripts/x.ts`, { repo, env: { NODE_TEST_CONTEXT: "child-v8" } });
+  assert.equal(nested.rc, 1, `a red suite stays red under a parent test run: ${nested.all}`);
+  write(join(repo, `${p}/scripts/x.test.ts`), OK_TEST);
+  const green = run(`${p}/scripts/x.ts`, { repo });
+  assert.equal(green.rc, 0, green.all);
+  assert.ok(green.out.includes(`PASS: layer-2 ${p} (1 tests)`), green.all);
+  const fixture = run(`${p}/specs/001-x/cases.json`, { repo });
+  assert.ok(fixture.out.includes(`PASS: layer-2 ${p} (1 tests)`), `a fixture a suite reads selects it: ${fixture.all}`);
+  const record = run(`${p}/README.md`, { repo });
+  assert.ok(record.out.includes("PASS: layer-2 (no tests in scope)"), `a record alone runs nothing: ${record.all}`);
+});
+
+// ── Case 13: a path holding a newline is one record ──
+test("case13 newline-named-file-is-one-path", () => {
+  const repo = makeRepo();
+  // Split on the newline, neither half names a folder under packages/, and
+  // the suite would read as "no tests in scope".
+  write(join(repo, "packages/n\nl/a.test.ts"), OK_TEST);
+  const r = spawnSync(process.execPath, ["--experimental-strip-types", SCRIPT], {
+    encoding: "utf8",
+    input: "packages/n\nl/a.test.ts\0",
+    env: { ...process.env, CLAUDE_PROJECT_DIR: repo, NODE_TEST_CONTEXT: "" },
+    timeout: 120000,
+  });
+  assert.equal(r.status, 0, `${r.stdout}${r.stderr}`);
+  assert.ok(r.stdout.includes("PASS: layer-2 packages/n\nl (1 tests)"), `${r.stdout}${r.stderr}`);
 });

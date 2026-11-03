@@ -14,6 +14,12 @@
 //                        [--auth-op-item <id> --auth-id-field F --auth-secret-field F]
 //                        [--auth-act-as <email>]   # X-Portal-Act-As, beside the token
 //                        [--auth-jwt-file <path>]  # local Access token (serve.ts QA_AUTH_JWT_FILE)
+//                        [--checks cut-off]        # that check alone: nothing pressed, no stamp
+//
+// --checks cut-off runs only the phone-size cut-off check: it loads each page
+// and presses nothing, so it may point at a deployed site, and it writes no
+// stamp, since it is not the whole step-3.7 check. Without it every check runs,
+// on this machine only.
 //
 // With --repo, a clean run (exit 0) writes the stamp mark-qa-done.ts --tree
 // refuses to mark a served app without: $QA_DONE_DIR/interaction-<slug>-<tree>,
@@ -23,7 +29,9 @@
 // and the check has to run again.
 // Output: `INTERACTION <route> <kind> <detail>` per finding, `SKIPPED …` per
 //         opt-out, and one `interaction: …` summary (see interaction-check.browser.ts).
-// Exit:   0 clean; 9 findings; 1 a route did not load; 2 usage; 7 Playwright
+// Exit:   0 clean; 9 findings; 1 a route did not load; 2 usage, a --checks
+//         other than cut-off, or (without --checks) a --url or --pages route
+//         whose host is not localhost / 127.0.0.1 / ::1; 7 Playwright
 //         unavailable — `qa: skipped — Playwright unavailable (<reason>)` on
 //         stderr, a skip and never a pass.
 
@@ -52,6 +60,7 @@ async function main(): Promise<void> {
   let AUTH_SECRET_FIELD = "client_secret";
   let AUTH_ACT_AS = "";
   let AUTH_JWT_FILE = "";
+  let CHECKS = "";
 
   const argv = process.argv.slice(2);
   for (let i = 0; i < argv.length; ) {
@@ -82,6 +91,13 @@ async function main(): Promise<void> {
       case "--auth-jwt-file":
         AUTH_JWT_FILE = val;
         break;
+      case "--checks":
+        if (val !== "cut-off") {
+          qaErr(`interaction-check: --checks ${val} is not a check — the one is cut-off`);
+          exit(2);
+        }
+        CHECKS = val;
+        break;
       default:
         qaErr(`interaction-check: unknown flag: ${flag}`);
         exit(2);
@@ -92,6 +108,31 @@ async function main(): Promise<void> {
   if (URL_ === "" || PAGES.replaceAll(" ", "") === "") {
     qaErr("usage: interaction-check.ts --url U --pages '/ /about'");
     exit(2);
+  }
+
+  // Buttons are pressed only on this machine: serve.ts --before/--after serves
+  // on localhost. A run pointed at production once rewrote a live record 18
+  // times, and nothing in /qa needs a deployed target here. Every
+  // page is checked as the browser module resolves it (`new URL(route, base)`),
+  // because an absolute route there replaces the base entirely. The guard is
+  // against presses, so --checks cut-off, which presses nothing and only loads
+  // pages as /qa --live screenshots do, may read a deployed site; the URL must
+  // still parse.
+  const LOOPBACK = ["localhost", "127.0.0.1", "[::1]", "::1"];
+  for (const target of [URL_, ...PAGES.split(/\s+/).filter(Boolean)]) {
+    let host: string;
+    try {
+      host = new URL(target, URL_).hostname;
+    } catch {
+      qaErr(`interaction-check: --url ${URL_} is not a URL`);
+      exit(2);
+    }
+    if (CHECKS === "" && !LOOPBACK.includes(host)) {
+      qaErr(
+        `interaction-check: ${host} is not this machine — press buttons only on serve.ts --before/--after, never on a deployed site`,
+      );
+      exit(2);
+    }
   }
 
   // With no item named, QA_CF_ACCESS_ID / QA_CF_ACCESS_SECRET are the pair.
@@ -119,14 +160,14 @@ async function main(): Promise<void> {
   // on its stdin, never its environment or argv (see interaction-check.browser.ts).
   const r = spawnSync(
     process.execPath,
-    ["--experimental-strip-types", join(SCRIPT_DIR, "interaction-check.browser.ts"), URL_, PAGES],
+    ["--experimental-strip-types", join(SCRIPT_DIR, "interaction-check.browser.ts"), URL_, PAGES, CHECKS || "all"],
     {
       stdio: ["pipe", "inherit", "inherit"],
       input: JSON.stringify({ access: ACCESS ?? null, actAs: AUTH_ACT_AS, jwt: JWT }),
     },
   );
   const rc = r.status ?? 1;
-  if (rc === 0 && REPO !== "") {
+  if (rc === 0 && REPO !== "" && CHECKS === "") {
     const snap = spawnSync(
       process.execPath,
       ["--experimental-strip-types", join(SCRIPT_DIR, "../../review/code-review.ts"), "--snapshot"],

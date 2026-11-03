@@ -95,7 +95,10 @@ function fallback(author: string, env: Record<string, string> = {}) {
   writeFileSync(HARNESS, `agent=${author}\n`);
   writeFileSync(CALLS, "");
   rmSync(`/tmp/qa-review-${RUN_ID}.txt`, { force: true });
-  const r = spawnSync("bash", ["-c", block], {
+  // The block's placeholders, filled the way the skill says: no writing thread
+  // outside T3, and the author as the writer vendor.
+  const filled = block.replace('"<writing thread id>"', '""').replace('"<all writer providers>"', author);
+  const r = spawnSync("bash", ["-c", filled], {
     cwd: ROOT,
     encoding: "utf8",
     env: {
@@ -104,6 +107,7 @@ function fallback(author: string, env: Record<string, string> = {}) {
       CODEX_BIN: join(BIN, "codex"),
       GROK_BIN: join(BIN, "grok"),
       CONTEXTIUM_HARNESS_FILE: HARNESS,
+      T3CODE_HOME: join(TMP, "no-t3"),
       S: ".agents/skills/qa/scripts",
       QA_SLUG: SLUG,
       RUN_ID,

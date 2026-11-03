@@ -1,5 +1,5 @@
 // serve.test.ts — pin serve.ts up/down offline on a `static` fixture with stub
-// `ss`, `curl` and `python3` on PATH: the runfile's contents and the server
+// `ss`, `curl` and `node` on PATH: the runfile's contents and the server
 // command that WOULD have run (argv + cwd recorded by the stub), the default
 // port and the hop off a busy one, --port, --mode after's detached worktree and
 // its removal on down, the cli/render refusal (2), an undetectable repo (3), a
@@ -85,14 +85,20 @@ esac
 `,
 );
 // curl: the health probe answers unless STUB_DOWN is set, and under STUB_SQUAT
-// only once the squatter is in place, so the ownership check always sees it
-stub("curl", '#!/bin/sh\n[ -z "${STUB_DOWN:-}" ] || exit 1\n[ -z "${STUB_SQUAT:-}" ] || [ -f "${STUB_SQUAT}" ]\n');
+// only once the squatter is in place, so the ownership check always sees it;
+// under STUB_NPX_FAIL only once a server has recorded itself, so the attempt
+// that died never reads as up
+stub(
+  "curl",
+  '#!/bin/sh\n[ -z "${STUB_DOWN:-}" ] || exit 1\n[ -z "${STUB_SQUAT:-}" ] || [ -f "${STUB_SQUAT}" ] || exit 1\n[ -z "${STUB_NPX_FAIL:-}" ] || [ -s "${STUB_SERVER_LOG}" ]\n',
+);
 // The stubs' long sleep carries this run's pid, so the kill check below finds
 // only this run's server — a bare `sleep 120` also matches every other suite's.
 const STUB_SLEEP = `120.${process.pid}`;
-// python3: the static server — record argv + cwd, then stay up (or die at once)
+// node: the static server — record argv + cwd, then stay up (or die at once).
+// The runner itself uses process.execPath, so only its server hits this stub.
 stub(
-  "python3",
+  "node",
   `#!/bin/sh
 printf '%s\\ncwd=%s\\n' "$*" "$PWD" > "$STUB_SERVER_LOG"
 [ -n "\${STUB_SQUAT:-}" ] && touch "\${STUB_SQUAT}"
@@ -114,10 +120,12 @@ echo "build: boom"; exit 1
 `,
 );
 // npx: the vite/wrangler server — record argv and the two variables a local
-// sign-in hands the Worker, then stay up
+// sign-in hands the Worker, then stay up; a command named by STUB_NPX_FAIL
+// ("wrangler") dies at once, as workerd does when it cannot boot
 stub(
   "npx",
   `#!/bin/sh
+[ -n "\${STUB_NPX_FAIL:-}" ] && [ "$1" = "\${STUB_NPX_FAIL}" ] && exit 1
 if [ "$1 $2 $3" = "wrangler d1 migrations" ]; then
   printf '%s cwd=%s\\n' "$*" "$PWD" >> "$STUB_D1_LOG"
   exit \${STUB_D1_RC:-0}
@@ -152,6 +160,22 @@ mkdirSync(NONE);
 const ASTRO = join(TMP, "astro");
 mkdirSync(ASTRO);
 writeFileSync(join(ASTRO, "package.json"), '{"dependencies":{"astro":"5"}}');
+// an astro site that builds, and an astro-cf one whose workerd will not boot
+const astroSite = (name: string, extra: Record<string, string>) => {
+  const dir = join(TMP, name);
+  mkdirSync(join(dir, "dist"), { recursive: true });
+  mkdirSync(join(dir, "src/pages"), { recursive: true });
+  writeFileSync(join(dir, "package.json"), '{"dependencies":{"astro":"7"}}');
+  writeFileSync(join(dir, ".build-ok"), "");
+  writeFileSync(join(dir, "dist/index.html"), "<h1>hi</h1>\n");
+  writeFileSync(join(dir, "src/pages/index.astro"), "");
+  for (const [file, body] of Object.entries(extra)) writeFileSync(join(dir, file), body);
+  return dir;
+};
+const ASTRO_OK = astroSite("astro-ok", {});
+const ASTRO_CF = astroSite("astro-cf", {
+  "wrangler.toml": 'name = "astro-cf"\n',
+});
 // a Vite Worker behind Cloudflare Access: no network
 const GATED = join(TMP, "gated");
 mkdirSync(GATED);
@@ -212,7 +236,7 @@ function run(args: string[], env: Record<string, string> = {}) {
   });
   return { rc: r.status, out: `${r.stdout}${r.stderr}`, stdout: r.stdout };
 }
-/** What `KEY` holds after bash evaluates `block` — the SKILL `eval`s serve.ts's stdout. */
+/** What `KEY` holds after bash evaluates `block` — serve.ts still shellQuotes every value for older readers that `eval` it. */
 const bashValue = (block: string, key: string): string =>
   spawnSync("bash", ["-c", `eval "$1" && printf '%s' "\${${key}-}"`, "x", block], { encoding: "utf8" }).stdout;
 /** A runfile value as bash reads it back. */
@@ -241,6 +265,8 @@ after(() => {
   for (const [root, prefix] of [
     ["/tmp/qa-shots", qaRepoSlug(SITE)],
     ["/tmp/qa-shots", qaRepoSlug(ASTRO)],
+    ["/tmp/qa-shots", qaRepoSlug(ASTRO_OK)],
+    ["/tmp/qa-shots", qaRepoSlug(ASTRO_CF)],
     ["/tmp/qa-shots", qaRepoSlug(GATED)],
     ["/tmp/qa-shots", qaRepoSlug(D1APP)],
     ["/tmp/qa-shots", qaRepoSlug(CLI)],
@@ -303,7 +329,8 @@ test("QA_PAGES from discover-routes, %q-quoted", () => {
   assert.equal(rf("QA_PAGES"), "/ /about ");
   assert.match(readFileSync(RUNFILE, "utf8"), /^QA_PAGES=\/\\ \/about\\ $/m);
 });
-test("server command: python3 -m http.server 8813", () => assert.equal(serverLine(1), "-m http.server 8813"));
+test("server command: the shared TypeScript static server", () =>
+  assert.equal(serverLine(1), `--experimental-strip-types ${join(dirname(SCRIPT), "static-serve.ts")} . 8813`));
 test("served from dist/", () => assert.equal(serverLine(2), `cwd=${SITE}/dist`));
 test("progress line names type and port", () => assert.ok(upOut.includes("starting static server on :8813"), upOut));
 test("QA_PID is the live server", () => {
@@ -339,11 +366,13 @@ test("--port 9123 used", () => {
   RUNFILE = runfileOf(r.out);
   assert.equal(r.rc, 0, r.out);
   assert.equal(rf("QA_PORT"), "9123");
-  assert.equal(serverLine(1), "-m http.server 9123");
+  assert.equal(serverLine(1), `--experimental-strip-types ${join(dirname(SCRIPT), "static-serve.ts")} . 9123`);
   down();
 });
 test("busy 8813/8814 → 8815", () => {
-  const r = run(["up", "--repo", SITE, "--mode", "before", "--run-id", "r3"], { STUB_BUSY: ":8813 :8814" });
+  const r = run(["up", "--repo", SITE, "--mode", "before", "--run-id", "r3"], {
+    STUB_BUSY: ":8813 :8814",
+  });
   RUNFILE = runfileOf(r.out);
   assert.equal(r.rc, 0, r.out);
   assert.equal(rf("QA_PORT"), "8815");
@@ -353,7 +382,10 @@ test("busy 8813/8814 → 8815", () => {
 
 // ── a server that never answers → 5 ──
 test("dead server → 5", () => {
-  const r = run(["up", "--repo", SITE, "--mode", "before", "--run-id", "r4"], { STUB_DOWN: "1", STUB_DIE: "1" });
+  const r = run(["up", "--repo", SITE, "--mode", "before", "--run-id", "r4"], {
+    STUB_DOWN: "1",
+    STUB_DIE: "1",
+  });
   assert.equal(r.rc, 5);
   assert.ok(r.out.includes("did not come up on :8813"), r.out);
   assert.ok(r.out.includes("server never came up"), r.out);
@@ -361,7 +393,9 @@ test("dead server → 5", () => {
 
 // ── a foreign listener answers the probe → refused, 5 ──
 test("foreign listener → refused, 5", () => {
-  const r = run(["up", "--repo", SITE, "--mode", "before", "--run-id", "r5"], { STUB_BUSY: "all" });
+  const r = run(["up", "--repo", SITE, "--mode", "before", "--run-id", "r5"], {
+    STUB_BUSY: "all",
+  });
   assert.equal(r.rc, 5);
   assert.ok(r.out.includes("no free port in 8813-8853"), r.out);
   assert.ok(r.out.includes("NOT this run's process group"), r.out);
@@ -372,7 +406,9 @@ test("foreign listener → refused, 5", () => {
 // the other app on the strength of "it was free at the start".
 test("a port taken between the free check and our bind → refused, 5", () => {
   const squat = join(TMP, "squat");
-  const r = run(["up", "--repo", SITE, "--mode", "before", "--run-id", "r5b"], { STUB_SQUAT: squat });
+  const r = run(["up", "--repo", SITE, "--mode", "before", "--run-id", "r5b"], {
+    STUB_SQUAT: squat,
+  });
   assert.equal(r.rc, 5, r.out);
   assert.ok(r.out.includes("NOT this run's process group"), r.out);
   assert.ok(!r.out.includes("accepted (port was free at start)"), r.out);
@@ -382,7 +418,7 @@ test("foreign attempt's server killed", () => {
   assert.equal(r.stdout, "", "stub server still running");
 });
 
-// ── every emitted value survives the SKILL's eval: a path with a space, `$`, `&`
+// ── every emitted value survives a shell eval: a path with a space, `$`, `&`
 // and parentheses comes back as itself. The app sits two levels below its git
 // root, as an app in a monorepo does. ──
 const ODD = join(TMP, "odd $HOME & (x)");
@@ -524,6 +560,12 @@ test("live: the named Access item in the runfile", () => {
   assert.equal(rf("QA_AUTH_ID_FIELD"), "client_id");
 });
 test("live starts no server", () => assert.equal(serverLog().includes("r7"), false));
+test("live: status reports no owned local process", () => {
+  const r = run(["status", "--runfile", RUNFILE]);
+  assert.equal(r.rc, 0, r.out);
+  assert.match(r.out, /QA_ALIVE=no/);
+  assert.match(r.out, /QA_STATUS=live/);
+});
 test("no PROBE_ACTS_AS → no act-as line", () => {
   assert.equal(readFileSync(RUNFILE, "utf8").includes("QA_AUTH_ACT_AS"), false);
   RUNFILE = "";
@@ -541,6 +583,58 @@ test("live: a URL with & and an item title with spaces come back through eval as
   assert.equal(bashValue(r.stdout, "QA_AUTH_OP_ITEM"), item);
   assert.equal(bashValue(r.stdout, "QA_AUTH_ID_FIELD"), "client id");
 });
+test("live: a uuid-named linked worktree uses its Git repo identity for Pages", () => {
+  const linked = join(TMP, "52768699-0000-4000-8000-000000000001");
+  git(SITE, "worktree", "add", "--detach", linked, "HEAD");
+  try {
+    for (const [origin, name] of [
+      ["", "site"],
+      ["git@github.com:example-user/actual-site.git", "actual-site"],
+      ["https://github.com/example-user/actual-site.git", "actual-site"],
+    ]) {
+      if (origin) git(SITE, "config", "remote.origin.url", origin);
+      writeFileSync(
+        qaCfAccountCache(ENV.QA_CF_PAGES_CACHE ?? "", "test-account"),
+        JSON.stringify({
+          success: true,
+          result: [
+            {
+              name: "deployed-site",
+              domains: ["www.example.com"],
+              source: { config: { repo_name: name } },
+            },
+          ],
+        }),
+      );
+      const r = run([
+        "up",
+        "--repo",
+        linked,
+        "--mode",
+        "live",
+        "--run-id",
+        `linked-${name}-${origin.startsWith("https")}`,
+      ]);
+      const file = runfileOf(r.out);
+      try {
+        assert.equal(r.rc, 0, r.out);
+        assert.equal(bashValue(readFileSync(file, "utf8"), "QA_URL"), "https://www.example.com");
+        assert.equal(bashValue(readFileSync(file, "utf8"), "QA_PID"), "");
+      } finally {
+        if (file) run(["down", "--runfile", file, "--clean"]);
+      }
+      if (origin) git(SITE, "config", "--unset", "remote.origin.url");
+    }
+    writeFileSync(qaCfAccountCache(ENV.QA_CF_PAGES_CACHE ?? "", "test-account"), JSON.stringify({ success: true, result: [] }));
+    const missing = run(["up", "--repo", linked, "--mode", "live", "--run-id", "linked-missing"]);
+    assert.equal(missing.rc, 6, missing.out);
+    assert.match(missing.out, /matched repo 'site'/);
+  } finally {
+    spawnSync("git", ["-C", SITE, "config", "--unset", "remote.origin.url"]);
+    git(SITE, "worktree", "remove", "--force", linked);
+  }
+});
+
 // the Workers registry, via the repo's wrangler.toml, with PROBE_ACTS_AS
 test("live: URL from the Workers registry via wrangler name", () => {
   writeFileSync(qaCfAccountCache(ENV.QA_CF_PAGES_CACHE ?? "", "test-account"), '{"success":true,"result":[]}');
@@ -561,6 +655,27 @@ test("live: no QA_ACCESS_OP_ITEM → no Access item", () => assert.equal(rf("QA_
 test("live: PROBE_ACTS_AS email, lower-cased", () => {
   assert.equal(rf("QA_AUTH_ACT_AS"), "probe@example.com");
   RUNFILE = "";
+});
+
+// ── astro in the foreground: Astro 7 backgrounds `preview` and `dev` when an
+//    agent runs them unless `--ignore-lock` is passed, and a backgrounded server
+//    is in no process group this run owns ──
+test("astro: preview runs with --ignore-lock", () => {
+  writeFileSync(SERVER_LOG, "");
+  const r = run(["up", "--repo", ASTRO_OK, "--mode", "before", "--run-id", "a1"]);
+  RUNFILE = runfileOf(r.out);
+  assert.equal(r.rc, 0, r.out);
+  assert.equal(serverLine(1), "astro preview --port 8813 --host --ignore-lock");
+  down();
+});
+test("astro-cf: the astro dev fallback runs with --ignore-lock", () => {
+  writeFileSync(SERVER_LOG, "");
+  const r = run(["up", "--repo", ASTRO_CF, "--mode", "before", "--run-id", "a2"], { STUB_NPX_FAIL: "wrangler" });
+  RUNFILE = runfileOf(r.out);
+  assert.equal(r.rc, 0, r.out);
+  assert.equal(serverLine(1), "astro dev --port 8813 --host --ignore-lock");
+  assert.match(rf("QA_LABEL"), /astro dev fallback/);
+  down();
 });
 
 // ── a gated Worker served locally: /qa stands in for Cloudflare Access ──
@@ -604,7 +719,10 @@ test("gated: the Worker is told where the key set is, and the key set verifies t
   }
   const jwt = readFileSync(rf("QA_AUTH_JWT_FILE"), "utf8");
   const [h, p, sig] = jwt.split(".");
-  const key = createPublicKey({ key: keys?.keys[0] as JsonWebKey, format: "jwk" });
+  const key = createPublicKey({
+    key: keys?.keys[0] as JsonWebKey,
+    format: "jwk",
+  });
   assert.equal(verify("sha256", Buffer.from(`${h}.${p}`), key, Buffer.from(sig ?? "", "base64url")), true);
   assert.equal(jwtPart(jwt, 0).kid, (keys?.keys[0] as { kid?: string }).kid);
 });

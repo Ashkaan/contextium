@@ -135,6 +135,25 @@ test("stamp appends below, width unchanged", { skip }, () =>
   ),
 );
 
+// A code cut off at the edge is unreadable, so the gate cannot pass: at a
+// 320px phone width the 30pt strip ran off both sides (three
+// 320 shots came back with the last character cut).
+test("the strip's text fits inside a 320px shot", { skip }, () => {
+  const narrow = join(TMP, "narrow");
+  mkdirSync(narrow);
+  execFileSync("magick", ["-size", "320x400", "xc:#ffffff", join(narrow, "page-320.png")]);
+  const r = run(["stamp", "--dir", narrow, "--codes", join(TMP, "narrow.tsv")]);
+  assert.equal(r.rc, 0, r.out);
+  // The ink inside the strip, as WxH+X+Y around the dark background.
+  const box = execFileSync(
+    "magick",
+    [join(narrow, "page-320.png"), "-crop", "320x56+0+400", "+repage", "-fuzz", "20%", "-format", "%@", "info:"],
+    { encoding: "utf8" },
+  );
+  const [, w, , x] = box.match(/^(\d+)x(\d+)\+(\d+)\+(\d+)$/)?.map(Number) ?? [];
+  assert.ok(x >= 4 && x + w <= 316, `text spans x=${x}..${x + w} of 320 (${box})`);
+});
+
 // ── THE property: the same well-formed blind answer is now rejected ──
 test("blind review rejected (6)", { skip }, () =>
   assert.equal(run(["verify", "--codes", CODES, "--response", BLIND]).rc, 6),
@@ -220,4 +239,31 @@ test("the default codes path is the run dir's cksum, outside the run dir", { ski
   const sum = execFileSync("sh", ["-c", 'printf %s "$1" | cksum | tr -d " \\n"', "sh", run2], { encoding: "utf8" });
   assert.equal(r.rc, 0, r.out);
   assert.equal(r.stdout.split("\n")[0], `QA_SIGHT_CODES=${cache}/${sum}.codes`);
+});
+
+// Everything stamp prints is safe to source, stderr included. A session once
+// ran `stamp > sight.env 2>&1` and then `source sight.env`; the
+// batching note read "21 shots > 8 — …", the shell took `> 8` as a redirect, and
+// an empty file named `8` landed in the worktree and was committed to main.
+test("stamp output merged with stderr and sourced writes no file", { skip }, () => {
+  const many = join(TMP, "many");
+  mkdirSync(many);
+  for (let i = 0; i < 9; i++) execFileSync("magick", ["-size", "200x100", "xc:#ffffff", join(many, `s${i}.png`)]);
+  const r = spawnSync(
+    process.execPath,
+    ["--experimental-strip-types", SC, "stamp", "--dir", many, "--codes", join(TMP, "many.tsv")],
+    {
+      encoding: "utf8",
+    },
+  );
+  assert.equal(r.status, 0, r.stderr);
+  const env = join(TMP, "many.env");
+  writeFileSync(env, r.stdout + r.stderr);
+  const cwd = mkdtempSync(join(TMP, "cwd-"));
+  const sourced = spawnSync("bash", ["-c", `source ${JSON.stringify(env)} 2>/dev/null; echo "$QA_SIGHT_COUNT"`], {
+    cwd,
+    encoding: "utf8",
+  });
+  assert.equal(sourced.stdout.trim(), "9");
+  assert.deepEqual(readdirSync(cwd), [], "sourcing the stamp output created a file");
 });

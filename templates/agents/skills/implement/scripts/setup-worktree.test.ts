@@ -30,6 +30,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { after, test } from "node:test";
 import { fileURLToPath } from "node:url";
 
@@ -73,6 +74,9 @@ for (const k of [
 ]) {
   delete BASE_ENV[k];
 }
+// No real T3 database: a row held by another open thread comes only from the
+// fixture database a case builds (heldElsewhere below).
+BASE_ENV.T3CODE_HOME = join(TMP, "no-t3");
 
 interface Run {
   rc: number;
@@ -671,14 +675,14 @@ test("a project with no ROADMAP.md is refused in both forms, nothing created", a
 //
 // setup-worktree.sh stays bash, but every helper it runs became a `.ts` file:
 // session-key, session-write-root (this skill), thread, roadmap, spec-state,
-// open-clarifications (close), detect-stage (project). A copy of the resolver is
-// planted in a tree holding ONLY those `.ts` files — no `.sh` of any of them —
-// plus harness.sh, the one bash file it sources. A resolver still reaching for a
-// `.sh` fails here, and a resolver that SOURCED a `.ts` would die on its first
-// line of TypeScript. The close and project helpers are stubs that log their
-// argv (they belong to other skills and are tested there); session-key,
-// session-write-root and harness.sh are the real files. No write-root.sh is
-// planted, so the resolver records nothing and only warns.
+// open-clarifications, rows-taken (close), detect-stage (project). A copy of the
+// resolver is planted in a tree holding ONLY those `.ts` files — no `.sh` of
+// any of them — plus harness.sh, the one bash file it sources. A resolver still
+// reaching for a `.sh` fails here, and a resolver that SOURCED a `.ts` would
+// die on its first line of TypeScript. The close and project helpers are stubs
+// that log their argv (they belong to other skills and are tested there);
+// session-key, session-write-root and harness.sh are the real files. No
+// write-root.sh is planted, so the resolver records nothing and only warns.
 
 const STUB = (name: string, body: string): string => `import { appendFileSync } from "node:fs";
 const args: string[] = process.argv.slice(2);
@@ -708,6 +712,7 @@ function plantTree(): { script: string; log: string } {
     STUB("spec-state.ts", 'process.stdout.write("specs/001-a\\tnone\\tno report\\n");'),
   );
   writeFileSync(join(close, "open-clarifications.ts"), STUB("open-clarifications.ts", ""));
+  writeFileSync(join(close, "rows-taken.ts"), STUB("rows-taken.ts", ""));
   writeFileSync(
     join(project, "detect-stage.ts"),
     STUB(
@@ -737,7 +742,7 @@ test("the session key comes from session-key.ts, run by node", () => {
   );
 });
 
-test("the records root comes from session-write-root.ts, and a named row runs roadmap/spec-state/open-clarifications .ts", () => {
+test("the records root comes from session-write-root.ts, and a named row runs roadmap/spec-state/open-clarifications/rows-taken .ts", () => {
   const { script, log } = plantTree();
   const repo = makeRepo();
   const lib = makeRecords();
@@ -759,6 +764,7 @@ test("the records root comes from session-write-root.ts, and a named row runs ro
     calls.includes(`open-clarifications.ts ${rmxDir(lib)}/specs/001-a\n`),
     `open-clarifications.ts never ran: [${calls}]`,
   );
+  assert.ok(calls.includes(`rows-taken.ts ${rmxDir(lib)}\n`), `rows-taken.ts never ran: [${calls}]`);
   assert.ok(
     calls.includes(`roadmap.ts ${rmxDir(lib)} --set R1 in-progress\n`),
     `the row was never flipped through roadmap.ts: [${calls}]`,
@@ -801,6 +807,7 @@ test("the resolver sources only harness.sh, and names no retired .sh helper", ()
     "roadmap",
     "spec-state",
     "open-clarifications",
+    "rows-taken",
     "detect-stage",
   ]) {
     const code = text
@@ -810,4 +817,71 @@ test("the resolver sources only harness.sh, and names no retired .sh helper", ()
     assert.equal(code.includes(`${stem}.sh`), false, `setup-worktree.sh still runs ${stem}.sh`);
   }
   assert.ok(statSync(REAL_SCRIPT).mode & 0o100, "setup-worktree.sh is not executable");
+});
+
+// ── A row another open T3 thread is building ─────────────────────────────────
+// A fixture T3 home whose one open thread has its own worktree of the records
+// fixture with R1 in-progress — what /implement leaves in a thread building R1.
+// The worktree is a real linked worktree whose origin/main holds no project, so
+// rows-taken.ts reads its R1 mark as the thread's own, not inherited.
+function heldElsewhere(lib: string): { home: string; other: string } {
+  const base = mktemp();
+  git(base, "init", "--quiet");
+  git(base, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "--allow-empty", "--quiet", "-m", "init");
+  git(base, "update-ref", "refs/remotes/origin/main", "HEAD");
+  const other = join(mktemp(), "wt");
+  git(base, "worktree", "add", "--quiet", "-b", "held", other);
+  cpSync(join(lib, "projects"), join(other, "projects"), { recursive: true });
+  const road = join(rmxDir(other), "ROADMAP.md");
+  writeFileSync(road, readFileSync(road, "utf8").replace("| R1 | a | — | planned |", "| R1 | a | — | in-progress |"));
+  const home = mktemp();
+  mkdirSync(join(home, "userdata"));
+  const db = new DatabaseSync(join(home, "userdata/statev2.sqlite"));
+  db.exec(
+    "create table orchestration_v2_projection_threads (thread_id TEXT, title TEXT, created_at TEXT, deleted_at TEXT, payload_json TEXT);",
+  );
+  db.prepare("insert into orchestration_v2_projection_threads values ('t-other', 'Building R1', '1', null, ?)").run(
+    JSON.stringify({ archivedAt: null, settledAt: null, worktreePath: other, lineage: '{"parentThreadId":null}' }),
+  );
+  db.close();
+  return { home, other };
+}
+
+test("roadmap --shard naming a row another open thread is building refuses, nothing created", () => {
+  const repo = makeRepo();
+  const lib = makeRecords();
+  const { home, other } = heldElsewhere(lib);
+  const r = runSetup(["--slug", "rmx", "--shard", "r1"], {
+    CONTEXT_WRITE_ROOT: lib,
+    CLAUDE_PROJECT_DIR: repo,
+    CLAUDE_SESSION_ID: "abc",
+    T3CODE_HOME: home,
+  });
+  assert.equal(r.rc, 1, `rc ${r.rc}; out: ${r.all}`);
+  assert.ok(
+    r.err.includes(
+      `BLOCKED: R1 is being built in thread "Building R1" (${other}) — settle that thread if it is finished`,
+    ),
+    `err: ${r.err}`,
+  );
+  assert.equal(leftBehind(repo), false, "a worktree or branch was left behind");
+  assert.equal(rmStatus(lib, "R1"), "planned", "R1 flipped");
+});
+
+test("roadmap bare slug with its only ready row held refuses at stage taken and names the holder", () => {
+  const repo = makeRepo();
+  const lib = makeRecords();
+  const road = join(rmxDir(lib), "ROADMAP.md");
+  writeFileSync(road, readFileSync(road, "utf8").replace("| R2 | b | — | planned |", "| R2 | b | — | done |"));
+  const { home, other } = heldElsewhere(lib);
+  const r = runSetup(["rmx"], {
+    CONTEXT_WRITE_ROOT: lib,
+    CLAUDE_PROJECT_DIR: repo,
+    CLAUDE_SESSION_ID: "abc",
+    T3CODE_HOME: home,
+  });
+  assert.equal(r.rc, 1, `rc ${r.rc}; out: ${r.all}`);
+  assert.ok(r.err.includes("stage 'taken'"), `err: ${r.err}`);
+  assert.ok(r.err.includes(`taken: R1 by "Building R1" (${other})`), `holder not named: ${r.err}`);
+  assert.equal(leftBehind(repo), false, "a worktree or branch was left behind");
 });

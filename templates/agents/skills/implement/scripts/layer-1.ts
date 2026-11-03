@@ -1,7 +1,7 @@
 #!/usr/bin/env -S node --experimental-strip-types
 // layer-1.ts — Layer 1 of /implement Phase 4 (syntactic: lint, then typecheck).
 //
-// Reads newline-separated file list from stdin (output of resolve-scope.ts).
+// Reads a NUL-separated file list from stdin (resolve-scope.ts -z, via validate.ts).
 // Groups the files by PACKAGE — the nearest folder above each one that holds a
 // package.json or a Makefile — and runs, by convention, with no settings file:
 //   lint       the package's `lint` npm script, else its `make lint` target
@@ -61,15 +61,18 @@ function gitToplevel(): string {
   return r.status === 0 ? r.stdout.replace(/\n+$/, "") : "";
 }
 
-/** Every non-empty line of stdin. */
-function stdinLines(): string[] {
+/**
+ * Every path on stdin: NUL-terminated records, as validate.ts writes them, so a
+ * path holding a newline is one record. No record is trimmed.
+ */
+function stdinPaths(): string[] {
   let text = "";
   try {
     text = readFileSync(0, "utf8");
   } catch {
     text = "";
   }
-  return text.split("\n").filter((l) => l !== "");
+  return text.split("\0").filter((p) => p !== "");
 }
 
 /**
@@ -277,7 +280,7 @@ async function main(): Promise<void> {
   }
   process.chdir(REPO_DIR);
 
-  const files = stdinLines();
+  const files = stdinPaths();
   if (files.length === 0) {
     out("PASS: layer-1 (0 files)");
     exit(0);

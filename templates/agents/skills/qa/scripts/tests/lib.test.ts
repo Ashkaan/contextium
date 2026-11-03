@@ -24,7 +24,9 @@ import {
   cksum,
   qaAccessHeaders,
   qaAccessIssuer,
+  qaBrowsers,
   qaCfAccountCache,
+  qaContextOptions,
   qaD1Migrations,
   qaEnvCfAccess,
   qaIsGoodRegistry,
@@ -34,7 +36,50 @@ import {
   qaResolvePages,
   qaSlugRoute,
   qaWranglerVar,
+  QA_TOUCH_BROWSER_ARGS,
+  QA_TOUCH_MAX_WIDTH,
 } from "../lib.ts";
+
+// ── qaContextOptions / qaBrowsers: the phone width is a touchscreen ──
+test("context: touch at the phone threshold and below, a mouse above it", () => {
+  assert.equal(QA_TOUCH_MAX_WIDTH, 480);
+  assert.deepEqual(qaContextOptions(390), { viewport: { width: 390, height: 1600 }, hasTouch: true });
+  assert.equal(qaContextOptions(480).hasTouch, true);
+  assert.equal(qaContextOptions(481).hasTouch, false);
+  assert.equal(qaContextOptions(1440).hasTouch, false);
+});
+test("browsers: one per pointer, launched once each, with the touch args only for the phone", async () => {
+  const launched: string[][] = [];
+  const closed: string[] = [];
+  const pool = qaBrowsers(async (args) => {
+    launched.push(args);
+    const name = args.length ? "touch" : "mouse";
+    return { name, close: async () => void closed.push(name) };
+  });
+  assert.equal((await pool.forWidth(390)).name, "touch");
+  assert.equal((await pool.forWidth(480)).name, "touch");
+  assert.equal((await pool.forWidth(481)).name, "mouse");
+  assert.equal((await pool.forWidth(1440)).name, "mouse");
+  assert.deepEqual(launched, [QA_TOUCH_BROWSER_ARGS, []]);
+  await pool.close();
+  assert.deepEqual(closed.sort(), ["mouse", "touch"]);
+});
+test("browsers: none launched, none closed", async () => {
+  let n = 0;
+  const pool = qaBrowsers(async () => {
+    n++;
+    return { close: async () => {} };
+  });
+  await pool.close();
+  assert.equal(n, 0);
+});
+test("browsers: a launch that fails rejects forWidth and close", async () => {
+  const pool = qaBrowsers(async () => {
+    throw new Error("no chromium");
+  });
+  await assert.rejects(pool.forWidth(390), /no chromium/);
+  await assert.rejects(pool.close(), /no chromium/);
+});
 
 // ── qaSlugRoute ──
 test("slug root", () => assert.equal(qaSlugRoute("/"), "index"));
@@ -73,11 +118,18 @@ for (const d of [
   "repo/apps/site",
   "repo/node_modules/playwright-core",
   "repo/node_modules/playwright",
+  "deck/.git",
+  "deck/node_modules/playwright-core",
+  "deck/node_modules/playwright-chromium",
 ]) {
   mkdirSync(join(TMPL, d), { recursive: true });
 }
 writeFileSync(
   join(TMPL, "repo/node_modules/playwright-core/browsers.json"),
+  '{"browsers":[{"name":"chromium","revision":"9999"}]}\n',
+);
+writeFileSync(
+  join(TMPL, "deck/node_modules/playwright-core/browsers.json"),
   '{"browsers":[{"name":"chromium","revision":"9999"}]}\n',
 );
 writeFileSync(join(TMPL, "browsers/chromium-9999/INSTALLATION_COMPLETE"), "");
@@ -111,6 +163,12 @@ process.stdout.write(qaPlaywrightNodeModules(${JSON.stringify(app ?? "")}) ?? ""
 test("an app's own (hoisted) Playwright is found", () =>
   assert.equal(pwLookup(join(TMPL, "repo/apps/site")), join(TMPL, "repo/node_modules")));
 test("without the app, it is not looked at", () => assert.equal(pwLookup(), ""));
+// Every caller loads `playwright`; a repo holding only `playwright-chromium`
+// (its core and browser, no `playwright`) is not a candidate (a deck repo
+// with only playwright-chromium was picked, and screenshot.ts died on
+// require("playwright")).
+test("an app with playwright-core but no playwright package is not picked", () =>
+  assert.equal(pwLookup(join(TMPL, "deck")), ""));
 
 // ── no copy on the machine → ensure-playwright.ts ──
 // A fake module whose "browser" exists, in the first-use cache and in an app
@@ -287,13 +345,13 @@ test("the local token verifies against its own key set and carries Access's clai
 });
 test("headers: the token alone, the pair alone, and nothing", () => {
   assert.deepEqual(qaAccessHeaders(undefined, "", "J"), { "Cf-Access-Jwt-Assertion": "J" });
-  assert.deepEqual(qaAccessHeaders(undefined, "p@x.com", "J"), { "Cf-Access-Jwt-Assertion": "J" });
-  assert.deepEqual(qaAccessHeaders({ id: "i", secret: "s" }, "p@x.com"), {
+  assert.deepEqual(qaAccessHeaders(undefined, "probe@example.com", "J"), { "Cf-Access-Jwt-Assertion": "J" });
+  assert.deepEqual(qaAccessHeaders({ id: "i", secret: "s" }, "probe@example.com"), {
     "CF-Access-Client-Id": "i",
     "CF-Access-Client-Secret": "s",
-    "X-Portal-Act-As": "p@x.com",
+    "X-Portal-Act-As": "probe@example.com",
   });
-  assert.equal(qaAccessHeaders(undefined, "p@x.com"), undefined);
+  assert.equal(qaAccessHeaders(undefined, "probe@example.com"), undefined);
 });
 test("the token file: none named, named and read, named but missing or empty", () => {
   const f = join(LOCAL, "t.jwt");
@@ -382,3 +440,4 @@ test("a registry answer must have the shape its endpoint returns", () => {
   assert.equal(qaIsGoodRegistry({ success: true, result: [{ name: "a" }] }, named, "object"), false);
   assert.equal(qaIsGoodRegistry({ success: false, result: [] }, named), false);
 });
+

@@ -15,17 +15,19 @@
 //   .agents/skills/qa/scripts/tests/serve-guards.test.ts
 //
 // Usage:
-//   serve.ts up   --repo <dir> --mode before|after|live --run-id <id>
+//   serve.ts up   --repo <dir> --mode before|after|live|capture --run-id <id>
 //                 [--port N] [--health-path /] [--live-url <url>]
+//                 [--dist <prebuilt directory>]
 //
 // Port + listener ownership: with no --port, `up` scans UP from the default for
 // a port with no listener, and never calls the server up until it has proven the
 // listener belongs to the process group it spawned (or, when no listener pid can
 // be read, that the port was free immediately before spawning; a pid in another
 // group is refused either way). Answering on a port is not evidence of owning it.
-//   serve.ts down --runfile <path>
+//   serve.ts down --runfile <path> [--clean]
+//   serve.ts status|restart --runfile <path>
 //
-// `up` output (stdout, KEY=VALUE, every value shellQuote'd — the SKILL `eval`s it):
+// `up` output (stdout, KEY=VALUE, shellQuote'd for legacy readers; read as data):
 //   QA_URL=<base url>          QA_PORT=<port>        QA_LABEL=<evidence label>
 //   QA_RUNFILE=<runfile path>  QA_PID=<server pid or empty for --live>
 //   QA_SRC=<the app directory served: inside QA_WORKTREE for --after, else --repo;
@@ -37,13 +39,19 @@
 // Exit: 0 ok; 2 usage; 3 detect unknown; 4 build failed; 5 server never up;
 //       6 no derivable live URL; 8 local database setup (migrations, qa:seed)
 //       or local sign-in failed.
+// `status` exits 1 for a stopped local server; --dist is before-only and never
+// builds, seeds data or adds live bindings. --clean removes this run's captures.
 
 import { spawn, spawnSync } from "node:child_process";
+import { createHash, randomUUID } from "node:crypto";
 import {
   closeSync,
+  existsSync,
   mkdirSync,
   openSync,
+  readdirSync,
   readFileSync,
+  readlinkSync,
   realpathSync,
   rmSync,
   statSync,
@@ -51,8 +59,9 @@ import {
   writeFileSync,
 } from "node:fs";
 import { createServer } from "node:net";
-import { basename, dirname, join, resolve } from "node:path";
+import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
+import { exit, runToExit } from "../../../packages/cli-exit/cli-exit.ts";
 import {
   qaAccessIssuer,
   qaD1Migrations,
@@ -65,7 +74,6 @@ import {
   qaWranglerDeclaresMain,
   qaWranglerVar,
 } from "./lib.ts";
-import { exit, runToExit } from "../../../packages/cli-exit/cli-exit.ts";
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 
@@ -130,7 +138,15 @@ function shellQuote(s: string): string {
 /** Undo shellQuote: `''`, backslash escapes, and `$'…'` control-character runs, as bash reads them. */
 function shellUnquote(v: string): string {
   if (v === "''") return "";
-  const named: Record<string, string> = { a: "\x07", b: "\b", t: "\t", n: "\n", v: "\v", f: "\f", r: "\r" };
+  const named: Record<string, string> = {
+    a: "\x07",
+    b: "\b",
+    t: "\t",
+    n: "\n",
+    v: "\v",
+    f: "\f",
+    r: "\r",
+  };
   let out = "";
   for (let i = 0; i < v.length; i++) {
     const ch = v[i] ?? "";
@@ -230,7 +246,10 @@ const port = Number(process.argv[1]);
  * bind failure, or no address bound at all, is not free.
  */
 function bindFree(port: string | number): boolean {
-  const r = spawnSync(process.execPath, ["-e", BIND_PROBE, String(port)], { stdio: "ignore", timeout: 10_000 });
+  const r = spawnSync(process.execPath, ["-e", BIND_PROBE, String(port)], {
+    stdio: "ignore",
+    timeout: 10_000,
+  });
   return !r.error && r.status === 0;
 }
 
@@ -302,32 +321,216 @@ function signalGroup(pid: number, sig: NodeJS.Signals, fallback: boolean): void 
   }
 }
 
-// ── teardown (down) ──────────────────────────────────────────────────
-async function doDown(args: string[]): Promise<void> {
-  let runfile = "";
-  for (let i = 0; i < args.length; i += 2) {
-    if (args[i] === "--runfile") runfile = args[i + 1] ?? "";
+/** A runfile is read as data, never sourced by the shell. */
+function readRunfile(file: string): string {
+  try {
+    if (file !== "" && statSync(file).isFile()) return readFileSync(file, "utf8");
+  } catch {
+    // The caller gets one actionable usage error for missing or unreadable files.
+  }
+  qaErr(`serve: no runfile: ${file}`);
+  exit(2);
+}
+
+/** Reject pid 0/1, negatives and malformed records before probing or signaling. */
+function runfilePid(text: string): number | undefined {
+  const value = runfileValue(text, "QA_PID");
+  if (value === "") return undefined;
+  const pid = Number(value);
+  if (!/^\d+$/.test(value) || !Number.isSafeInteger(pid) || pid < 2) {
+    qaErr(`serve: invalid pid in runfile: ${value}`);
+    exit(2);
+  }
+  return pid;
+}
+
+/** Process liveness without asking the agent to run shell `kill -0`. */
+function processAlive(pid: number | undefined): boolean {
+  if (pid === undefined) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Where /proc exists (Linux) the identity and group checks read it; elsewhere (macOS) they ask ps. */
+const HAS_PROC = isDir("/proc/self");
+
+/** Stdout of ps, "" when it says nothing or fails. */
+function ps(args: string[]): string {
+  const r = spawnSync("ps", args, { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
+  return r.error || r.status !== 0 ? "" : (r.stdout ?? "");
+}
+
+/**
+ * Linux start ticks plus the boot ID distinguish a reused PID from our server.
+ * Without /proc, ps's start time plus the kernel's boot time do the same job.
+ */
+function processIdentity(pid: number): string {
+  if (!HAS_PROC) {
+    const stat = ps(["-o", "stat=", "-p", String(pid)]).trim();
+    const started = ps(["-o", "lstart=", "-p", String(pid)]).trim();
+    const boot = spawnSync("sysctl", ["-n", "kern.boottime"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
+    const bootTime = /sec = (\d+)/.exec(boot.stdout ?? "")?.[1] ?? "";
+    return stat !== "" && !stat.startsWith("Z") && started !== "" ? `${pid}:${bootTime}:${started}` : "";
+  }
+  try {
+    const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+    const fields = stat
+      .slice(stat.lastIndexOf(")") + 2)
+      .trim()
+      .split(/\s+/);
+    const boot = readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim();
+    return fields[0] !== "Z" && fields[19] ? `${pid}:${boot}:${fields[19]}` : "";
+  } catch {
+    return "";
+  }
+}
+
+/** Old records prove ownership through the group's exact recorded stdout log. */
+function recordOwnsProcess(text: string, pid: number): boolean {
+  const identity = runfileValue(text, "QA_PID_IDENTITY");
+  if (identity !== "") return processIdentity(pid) === identity;
+  const log = runfileValue(text, "QA_LOGFILE");
+  try {
+    return log !== "" && pgidOf(pid) === String(pid) && resolve(readlinkSync(`/proc/${pid}/fd/1`)) === resolve(log);
+  } catch {
+    return false;
+  }
+}
+
+/** Children retain the run's marker even when npm or its launcher has exited. */
+function ownedGroupAlive(text: string, pid: number): boolean {
+  if (recordOwnsProcess(text, pid)) return true;
+  const owner = runfileValue(text, "QA_SERVER_OWNER");
+  const log = runfileValue(text, "QA_LOGFILE");
+  if (!HAS_PROC) {
+    // BSD ps: -E appends each process's environment to its command, which is
+    // where the run's QA_SERVER_OWNER marker is read. With no marker recorded
+    // there is no evidence to read, so nothing is claimed as ours.
+    if (owner === "") return false;
+    for (const row of ps(["-A", "-o", "pid=,pgid=,stat="]).split("\n")) {
+      const [member = "", group = "", stat = ""] = row.trim().split(/\s+/);
+      if (group !== String(pid) || stat.startsWith("Z")) continue;
+      if (ps(["-E", "-ww", "-o", "command=", "-p", member]).includes(`QA_SERVER_OWNER=${owner}`)) return true;
+    }
+    return false;
+  }
+  for (const entry of readdirSync("/proc")) {
+    if (!/^\d+$/.test(entry)) continue;
+    try {
+      const stat = readFileSync(`/proc/${entry}/stat`, "utf8");
+      const fields = stat
+        .slice(stat.lastIndexOf(")") + 2)
+        .trim()
+        .split(/\s+/);
+      if (fields[0] === "Z" || fields[2] !== String(pid)) continue;
+      if (owner !== "") {
+        if (readFileSync(`/proc/${entry}/environ`, "utf8").split("\0").includes(`QA_SERVER_OWNER=${owner}`))
+          return true;
+      } else if (log !== "" && resolve(readlinkSync(`/proc/${entry}/fd/1`)) === resolve(log)) return true;
+    } catch {
+      // A process may exit between listing the group and reading its evidence.
+    }
+  }
+  return false;
+}
+
+/** Parse the shared lifecycle command's literal runfile path. */
+function lifecycleRunfile(args: string[], cleanAllowed = false): { file: string; clean: boolean } {
+  let file = "";
+  let clean = false;
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === "--runfile" && args[i + 1]) file = args[++i] ?? "";
+    else if (args[i] === "--clean" && cleanAllowed) clean = true;
     else {
-      qaErr(`serve down: unknown flag: ${args[i]}`);
+      qaErr(`serve: unknown or incomplete flag: ${args[i]}`);
       exit(2);
     }
   }
-  let text = "";
-  try {
-    if (runfile !== "" && statSync(runfile).isFile()) text = readFileSync(runfile, "utf8");
-    else throw new Error("no runfile");
-  } catch {
-    qaErr(`serve down: no runfile: ${runfile}`);
+  return { file, clean };
+}
+
+/** Return local process status; a live-site record owns no local process. */
+function doStatus(args: string[]): void {
+  const { file } = lifecycleRunfile(args);
+  const text = readRunfile(file);
+  const pid = runfilePid(text);
+  const capture = runfileValue(text, "QA_KIND") === "capture";
+  if (pid === undefined && runfileValue(text, "QA_URL") === "" && !capture) {
+    qaErr("serve status: invalid runfile, no URL or local server");
     exit(2);
   }
-  const pid = runfileValue(text, "QA_PID");
+  const present = processAlive(pid);
+  const alive = pid !== undefined && ownedGroupAlive(text, pid);
+  process.stdout.write(
+    `QA_ALIVE=${alive ? "yes" : "no"}\nQA_STATUS=${capture ? "capture" : pid === undefined ? "live" : alive ? "running" : present ? "unverified" : "stopped"}\n`,
+  );
+  if (pid !== undefined && !alive) exit(1);
+}
+
+/** Restart exactly the recorded invocation, preserving evidence for its reviewer. */
+async function doRestart(args: string[]): Promise<void> {
+  const { file } = lifecycleRunfile(args);
+  const text = readRunfile(file);
+  if (runfileValue(text, "QA_KIND") === "capture") {
+    qaErr("serve restart: capture-only runs have no server to restart");
+    exit(2);
+  }
+  let start: unknown;
+  try {
+    start = JSON.parse(runfileValue(text, "QA_START_ARGS"));
+  } catch {
+    start = undefined;
+  }
+  if (!Array.isArray(start) || start.length === 0 || !start.every((arg) => typeof arg === "string")) {
+    qaErr("serve restart: runfile has no valid start arguments; use up with the original target");
+    exit(2);
+  }
+  await doDown(["--runfile", file]);
+  await doUp(start);
+}
+
+// ── teardown (down) ──────────────────────────────────────────────────
+async function doDown(args: string[]): Promise<void> {
+  const { file: runfile, clean } = lifecycleRunfile(args, true);
+  const text = readRunfile(runfile);
+  const runDir = resolve(dirname(runfile));
+  let captureRoot = SHOTS_ROOT;
+  let captureDir = runDir;
+  if (clean) {
+    captureRoot = realpathSync(SHOTS_ROOT);
+    captureDir = realpathSync(runDir);
+  }
+  const parts = relative(captureRoot, captureDir).split(sep);
+  const recordedFile = runfileValue(text, "QA_RUNFILE");
+  if (
+    clean &&
+    (parts.length !== 2 ||
+      parts.some((part) => part === "" || part === "." || part === "..") ||
+      basename(runfile) !== "server.run" ||
+      (recordedFile !== "" && resolve(recordedFile) !== resolve(runfile)))
+  ) {
+    qaErr("serve down: --clean requires this run's server.run under the QA captures root");
+    exit(2);
+  }
+  const pid = runfilePid(text);
   const worktree = runfileValue(text, "QA_WORKTREE");
   const sourceRepo = runfileValue(text, "QA_SOURCE_REPO");
-  if (pid !== "") {
-    // Signal the whole process group (negative PID) we own — never a global pkill.
-    signalGroup(Number(pid), "SIGTERM", true);
-    await sleep(1000);
-    signalGroup(Number(pid), "SIGKILL", false);
+  if (pid !== undefined) {
+    const owned = ownedGroupAlive(text, pid);
+    if (!owned && processAlive(pid) && processIdentity(pid) !== "") {
+      qaErr("serve down: cannot prove process identity; refusing to signal this PID");
+      exit(2);
+    }
+    if (owned) {
+      // Signal only the verified group, including surviving server children.
+      signalGroup(pid, "SIGTERM", recordOwnsProcess(text, pid));
+      await sleep(1000);
+      if (ownedGroupAlive(text, pid)) signalGroup(pid, "SIGKILL", false);
+    }
   }
   if (worktree !== "" && isDir(worktree)) {
     const r = spawnSync("git", ["-C", sourceRepo || worktree, "worktree", "remove", "--force", worktree], {
@@ -335,14 +538,14 @@ async function doDown(args: string[]): Promise<void> {
     });
     if (r.error || r.status !== 0) rmSync(worktree, { recursive: true, force: true });
   }
+  if (clean) rmSync(runDir, { recursive: true, force: true });
   process.stdout.write(`qa: torn down (pid=${pid || "none"}, worktree=${worktree || "none"})\n`);
 }
 
 /**
  * Print `KEY=value` lines to stdout and write them to the runfile, as `tee` did.
- * Every value goes through shellQuote: the SKILL `eval`s this block, so a value
- * with a space, `&`, `$` or a quote in it must come back as itself, never as
- * shell syntax.
+ * Every value goes through shellQuote for compatibility with existing readers.
+ * The workflow reads the fields as data and does not evaluate shell syntax.
  */
 function emitRunfile(runfile: string, entries: [string, string | number][]): void {
   const text = entries.map(([k, v]) => `${k}=${shellQuote(String(v))}\n`).join("");
@@ -358,8 +561,13 @@ async function doUp(args: string[]): Promise<void> {
   let PORT = "";
   let HEALTH_PATH = "/";
   let LIVE_URL = process.env.QA_LIVE_URL ?? "";
+  let DIST = "";
   for (let i = 0; i < args.length; i += 2) {
     const v = args[i + 1] ?? "";
+    if (v === "" || v.startsWith("--")) {
+      qaErr(`serve up: missing value for ${args[i]}`);
+      exit(2);
+    }
     switch (args[i]) {
       case "--repo":
         REPO = v;
@@ -379,6 +587,9 @@ async function doUp(args: string[]): Promise<void> {
       case "--live-url":
         LIVE_URL = v;
         break;
+      case "--dist":
+        DIST = v;
+        break;
       default:
         qaErr(`serve up: unknown flag: ${args[i]}`);
         exit(2);
@@ -388,12 +599,24 @@ async function doUp(args: string[]): Promise<void> {
     qaErr("serve up: --repo must be a directory");
     exit(2);
   }
-  if (!["before", "after", "live"].includes(MODE)) {
-    qaErr("serve up: --mode must be before|after|live");
+  if (!["before", "after", "live", "capture"].includes(MODE)) {
+    qaErr("serve up: --mode must be before|after|live|capture");
     exit(2);
   }
   if (RUN_ID === "") {
     qaErr("serve up: --run-id required");
+    exit(2);
+  }
+  if (RUN_ID === "." || RUN_ID === ".." || RUN_ID.includes("/") || RUN_ID.includes("\\")) {
+    qaErr("serve up: --run-id must be one directory name");
+    exit(2);
+  }
+  if (DIST !== "" && (MODE !== "before" || !isDir(DIST))) {
+    qaErr("serve up: --dist must name a directory and requires --mode before");
+    exit(2);
+  }
+  if (PORT !== "" && (!/^\d+$/.test(PORT) || Number(PORT) < 1 || Number(PORT) > 65535)) {
+    qaErr("serve up: --port must be an integer from 1 to 65535");
     exit(2);
   }
   REPO = resolve(REPO);
@@ -402,6 +625,27 @@ async function doUp(args: string[]): Promise<void> {
   const runDir = `${SHOTS_ROOT}/${slug}/${RUN_ID}`;
   mkdirSync(runDir, { recursive: true });
   const RUNFILE = `${runDir}/server.run`;
+  if (existsSync(RUNFILE)) {
+    const previous = readRunfile(RUNFILE);
+    const previousPid = runfilePid(previous);
+    if (
+      runfileValue(previous, "QA_KIND") === "capture" ||
+      processAlive(previousPid) ||
+      (previousPid !== undefined && ownedGroupAlive(previous, previousPid))
+    ) {
+      qaErr("serve up: this run is already running; use restart --runfile with its recorded path");
+      exit(2);
+    }
+  }
+  if (MODE === "capture") {
+    emitRunfile(RUNFILE, [
+      ["QA_KIND", "capture"],
+      ["QA_RUNFILE", RUNFILE],
+      ["QA_CAPTURE_DIR", runDir],
+      ["QA_PID", ""],
+    ]);
+    return;
+  }
 
   // ── resolve the SERVED SOURCE up front ──────────────────────────────
   // For --after, create the clean HEAD worktree NOW, BEFORE detection + route
@@ -411,7 +655,7 @@ async function doUp(args: string[]): Promise<void> {
   // --before / --live detect + discover against the working tree.
   let src = REPO;
   let worktree = "";
-  let label = "working tree";
+  let label = DIST !== "" ? "prebuilt directory" : "working tree";
   if (MODE === "after") {
     mkdirSync(WORKTREE_ROOT, { recursive: true });
     worktree = `${WORKTREE_ROOT}/${slug}-${RUN_ID}`;
@@ -446,10 +690,13 @@ async function doUp(args: string[]): Promise<void> {
   }
 
   // Detect type + any qa:* escape-hatch command against the served source.
-  const detect = spawnSync(process.execPath, ["--experimental-strip-types", join(SCRIPT_DIR, "detect-app.ts"), src], {
-    encoding: "utf8",
-    stdio: ["ignore", "pipe", "inherit"],
-  });
+  const detect =
+    DIST !== ""
+      ? { stdout: "TYPE=static\n", status: 0, error: undefined }
+      : spawnSync(process.execPath, ["--experimental-strip-types", join(SCRIPT_DIR, "detect-app.ts"), src], {
+          encoding: "utf8",
+          stdio: ["ignore", "pipe", "inherit"],
+        });
   const det = (detect.stdout ?? "").replace(/\n+$/, "");
   if (detect.error || detect.status !== 0) {
     process.stderr.write(`${det}\n`);
@@ -457,7 +704,7 @@ async function doUp(args: string[]): Promise<void> {
     exit(3);
   }
   const field = (k: string) => new RegExp(`^${k}=(.*)$`, "m").exec(det)?.[1] ?? "";
-  const TYPE = field("TYPE");
+  const TYPE = DIST !== "" ? "static" : field("TYPE");
   const QA_SERVE = field("QA_SERVE");
   const SERVE_DIR = field("SERVE_DIR");
 
@@ -487,9 +734,20 @@ async function doUp(args: string[]): Promise<void> {
     // NOT inference from the directory name — the two differ in practice (a repo
     // named site-web deploying to example.com), which is exactly why a name
     // heuristic would be wrong and the API is not.
+    // A worktree's directory is often named after its branch or thread, not its
+    // repo. Git identity survives that rename: origin names the provider's repo;
+    // a local repo without origin falls back to its common checkout, never the
+    // worktree's directory name.
+    const origin = spawnSync("git", ["-C", REPO, "config", "--get", "remote.origin.url"], { encoding: "utf8" });
+    const originName =
+      origin.status === 0 ? /(?:^|[/:])([^/:]+?)(?:\.git)?\/?$/.exec(origin.stdout.trim())?.[1] : undefined;
+    const common = originName
+      ? undefined
+      : spawnSync("git", ["-C", REPO, "rev-parse", "--path-format=absolute", "--git-common-dir"], { encoding: "utf8" });
+    const repoName = originName ?? (common?.status === 0 ? basename(dirname(common.stdout.trim())) : "");
     let liveUrl = LIVE_URL;
     if (liveUrl === "") {
-      liveUrl = (await qaDeriveLiveUrlFromCf(basename(REPO))) ?? "";
+      liveUrl = repoName ? ((await qaDeriveLiveUrlFromCf(repoName)) ?? "") : "";
       // A Worker is not in the Pages registry; ask the Workers custom-domain
       // registry for the Worker the repo's wrangler config names.
       if (liveUrl === "") liveUrl = (await qaDeriveLiveUrlFromWorkers(REPO)) ?? "";
@@ -498,9 +756,10 @@ async function doUp(args: string[]): Promise<void> {
     if (liveUrl === "") {
       qaErr("serve up: --live needs a live URL — pass --live-url <url>, or set");
       qaErr("  CLOUDFLARE_API_TOKEN + CLOUDFLARE_ACCOUNT_ID for a Cloudflare lookup");
-      qaErr(`  (no Pages project matched repo '${basename(REPO)}', and no Workers`);
-      qaErr("  custom domain serves the Worker its wrangler config names). Or use");
-      qaErr("  --before to build and serve the working tree instead.");
+      qaErr(`  (no Pages project matched repo '${repoName || "unresolved Git identity"}', and no Workers`);
+      qaErr("  custom domain serves the Worker its wrangler config names). A local");
+      qaErr("  build does not verify the requested production site; --before serves");
+      qaErr("  the working tree when that is what you meant.");
       exit(6);
     }
     // A Cloudflare-Access-gated site needs a service token so a headless GET
@@ -525,6 +784,11 @@ async function doUp(args: string[]): Promise<void> {
       ["QA_RUNFILE", RUNFILE],
       ["QA_SLUG", slug],
       ["QA_PID", ""],
+      ["QA_CAPTURE_DIR", runDir],
+      [
+        "QA_START_ARGS",
+        JSON.stringify(["--repo", REPO, "--mode", MODE, "--run-id", RUN_ID, ...(LIVE_URL !== "" ? ["--live-url", LIVE_URL] : [])]),
+      ],
       ["QA_AUTH_OP_ITEM", probe.id],
       ["QA_AUTH_ID_FIELD", probe.fields.clientId],
       ["QA_AUTH_SECRET_FIELD", probe.fields.clientSecret],
@@ -595,7 +859,11 @@ async function doUp(args: string[]): Promise<void> {
       break;
     case "astro":
       buildCmd = "npm run build";
-      serveCmd = `npx astro preview --port ${port} --host`;
+      // --ignore-lock keeps it in the foreground: Astro 7 sends `preview` (and
+      // `dev`) to the background when it detects an agent running it, and a
+      // backgrounded server is in no process group this run owns. Astro 5 accepts
+      // the flag and ignores it (both checked).
+      serveCmd = `npx astro preview --port ${port} --host --ignore-lock`;
       break;
     case "vite":
       buildCmd = "npm run build";
@@ -606,8 +874,8 @@ async function doUp(args: string[]): Promise<void> {
       serveCmd = `npx next start --port ${port}`;
       break;
     case "static":
-      serveCmd = `python3 -m http.server ${port}`;
-      serveCwd = `${buildDir}/${SERVE_DIR || "dist"}`;
+      serveCmd = `node --experimental-strip-types ${shellQuote(join(SCRIPT_DIR, "static-serve.ts"))} . ${port}`;
+      serveCwd = DIST !== "" ? resolve(DIST) : `${buildDir}/${SERVE_DIR || "dist"}`;
       break;
     case "node-server":
       // The repo's qa:serve script binds $PORT; pass the port /qa health-polls.
@@ -625,7 +893,10 @@ async function doUp(args: string[]): Promise<void> {
     process.stderr.write(`qa: building (${TYPE})…\n`);
     const buildLog = `${runDir}/build.log`;
     const fd = openSync(buildLog, "w");
-    const b = spawnSync("bash", ["-c", buildCmd], { cwd: buildDir, stdio: ["ignore", fd, fd] });
+    const b = spawnSync("bash", ["-c", buildCmd], {
+      cwd: buildDir,
+      stdio: ["ignore", fd, fd],
+    });
     closeSync(fd);
     if (b.error || b.status !== 0) {
       qaErr(`qa: build failed — tail of ${buildLog}:`);
@@ -758,7 +1029,8 @@ async function doUp(args: string[]): Promise<void> {
   let up: "no" | "yes" | "foreign" = "no";
   let usedFallback = false;
   const serveCmds = [serveCmd];
-  if (TYPE === "astro-cf") serveCmds.push(`npx astro dev --port ${port} --host`);
+  // --ignore-lock: in the foreground, for the reason given at the astro case above.
+  if (TYPE === "astro-cf") serveCmds.push(`npx astro dev --port ${port} --host --ignore-lock`);
   if (TYPE === "next") {
     // `next start` needs a production build and refuses on `output: export`;
     // `next dev` serves source and always works. Same shape as the astro-cf
@@ -766,6 +1038,7 @@ async function doUp(args: string[]): Promise<void> {
     serveCmds.push(`npx next dev --port ${port}`);
   }
   let idx = 0;
+  const serverOwner = randomUUID();
   for (const attempt of serveCmds) {
     idx++;
     process.stderr.write(`qa: starting ${TYPE} server on :${port} (${attempt})…\n`);
@@ -779,6 +1052,7 @@ async function doUp(args: string[]): Promise<void> {
       {
         detached: true,
         stdio: ["ignore", logFd, logFd],
+        env: { ...process.env, QA_SERVER_OWNER: serverOwner },
       },
     );
     closeSync(logFd);
@@ -851,10 +1125,29 @@ async function doUp(args: string[]): Promise<void> {
     ["QA_RUNFILE", RUNFILE],
     ["QA_SLUG", slug],
     ["QA_PID", pid],
+    ["QA_PID_IDENTITY", processIdentity(pid)],
+    ["QA_SERVER_OWNER", serverOwner],
     ["QA_WORKTREE", worktree],
     ["QA_SRC", src],
     ["QA_SOURCE_REPO", REPO],
     ["QA_LOGFILE", logfile],
+    ["QA_CAPTURE_DIR", runDir],
+    [
+      "QA_START_ARGS",
+      JSON.stringify([
+        "--repo",
+        REPO,
+        "--mode",
+        MODE,
+        "--run-id",
+        RUN_ID,
+        "--port",
+        port,
+        "--health-path",
+        HEALTH_PATH,
+        ...(DIST !== "" ? ["--dist", resolve(DIST)] : []),
+      ]),
+    ],
     ...(jwtFile !== "" ? ([["QA_AUTH_JWT_FILE", jwtFile]] as [string, string][]) : []),
     ["QA_PAGES", pages],
   ]);
@@ -875,10 +1168,96 @@ function tail(file: string, n: number): string {
 
 async function main(): Promise<void> {
   const [sub = "", ...rest] = process.argv.slice(2);
+  const flags = new Set<string>();
+  for (const arg of rest) {
+    if (!arg.startsWith("--")) continue;
+    if (flags.has(arg)) {
+      qaErr(`serve: duplicate flag: ${arg}`);
+      exit(2);
+    }
+    flags.add(arg);
+  }
+  // flock owns a per-run lock until this invocation exits, including restart's
+  // entire down/up sequence. Kernel locks disappear even if the runner crashes.
+  // Where there is no flock (macOS), a mkdir lock below does the same.
+  let record = rest[rest.indexOf("--runfile") + 1] ?? "";
+  if (sub === "up") {
+    const repoAt = rest.indexOf("--repo");
+    const runAt = rest.indexOf("--run-id");
+    record =
+      repoAt >= 0 && runAt >= 0 && rest[repoAt + 1] && rest[runAt + 1]
+        ? join(SHOTS_ROOT, qaRepoSlug(resolve(rest[repoAt + 1] ?? "")), rest[runAt + 1] ?? "", "server.run")
+        : "";
+  } else if (!rest.includes("--runfile")) record = "";
+  if (record !== "" && ["up", "down", "status", "restart"].includes(sub)) {
+    const lockDir = join(SHOTS_ROOT, ".locks");
+    const lock = join(lockDir, createHash("sha256").update(resolve(record)).digest("hex"));
+    if (process.env.QA_LIFECYCLE_LOCK !== lock && !hasCmd("flock")) {
+      // No flock(1) (macOS): an atomic mkdir holds the lock, with this
+      // process's pid inside, so a lock a crashed run left behind is taken
+      // over rather than reported busy forever. This process keeps it until it
+      // exits, restart's whole down/up sequence included.
+      mkdirSync(lockDir, { recursive: true });
+      const held = `${lock}.d`;
+      const take = (): boolean => {
+        try {
+          mkdirSync(held);
+          writeFileSync(join(held, "pid"), String(process.pid));
+          return true;
+        } catch {
+          return false;
+        }
+      };
+      let taken = take();
+      if (!taken) {
+        let holder = Number.NaN;
+        let age = 0;
+        try {
+          age = Date.now() - statSync(held).mtimeMs;
+          holder = Number(readFileSync(join(held, "pid"), "utf8"));
+        } catch {
+          // a holder still writing its pid reads as no pid yet
+        }
+        const stale = Number.isSafeInteger(holder) ? holder < 2 || !processAlive(holder) : age > 10_000;
+        if (stale) {
+          rmSync(held, { recursive: true, force: true });
+          taken = take();
+        }
+      }
+      if (!taken) {
+        qaErr("serve: lifecycle is busy for this run; retry after the current command");
+        exit(2);
+      }
+      process.env.QA_LIFECYCLE_LOCK = lock;
+      process.on("exit", () => rmSync(held, { recursive: true, force: true }));
+    }
+    if (process.env.QA_LIFECYCLE_LOCK !== lock) {
+      mkdirSync(lockDir, { recursive: true });
+      const child = spawnSync(
+        "flock",
+        ["-n", "-E", "75", lock, process.execPath, "--experimental-strip-types", self, sub, ...rest],
+        {
+          stdio: "inherit",
+          env: { ...process.env, QA_LIFECYCLE_LOCK: lock },
+        },
+      );
+      if (child.status === 75) {
+        qaErr("serve: lifecycle is busy for this run; retry after the current command");
+        exit(2);
+      }
+      if (child.error) {
+        qaErr(`serve: could not lock lifecycle: ${child.error.message}`);
+        exit(2);
+      }
+      exit(child.status ?? 1);
+    }
+  }
   if (sub === "up") await doUp(rest);
   else if (sub === "down") await doDown(rest);
+  else if (sub === "status") doStatus(rest);
+  else if (sub === "restart") await doRestart(rest);
   else {
-    qaErr("usage: serve.ts up|down ...");
+    qaErr("usage: serve.ts up|down|status|restart ...");
     exit(2);
   }
 }

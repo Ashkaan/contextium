@@ -194,6 +194,25 @@ git(R1, "commit", "-qm", "init");
   test("a web worktree root is itself a target", () => assert.equal(r.out, RR));
 }
 
+// ── An app's own instruction docs render nothing ──────────────────────
+{
+  // AGENTS.md, CLAUDE.md, DESIGN.md and README.md beside an app's package.json
+  // are read by agents and people, never served as a page: a change to one alone
+  // puts no pixels in front of anyone (one change's new AGENTS.md and
+  // DESIGN.md sections once demanded four full /qa passes). A page that happens to be markdown, inside src/, still counts.
+  const RD = newRepo("docs");
+  makeAstro(RD);
+  for (const doc of ["AGENTS.md", "CLAUDE.md", "DESIGN.md", "README.md"]) put(join(RD, doc), "# doc\n");
+  put(join(RD, "src/pages/about.md"), "# About\n");
+  git(RD, "add", "-A");
+  git(RD, "commit", "-qm", "init");
+  const docs = run(["--repo", RD, "AGENTS.md", "CLAUDE.md", "DESIGN.md", "README.md"]);
+  test("root instruction docs alone exit 0", () => assert.equal(docs.rc, 0, docs.err));
+  test("root instruction docs alone are not a target", () => assert.equal(docs.out, ""));
+  const page = run(["--repo", RD, "README.md", "src/pages/about.md"]);
+  test("a markdown page under src/ is still a target", () => assert.equal(page.out, RD));
+}
+
 // ── 2 targets ─────────────────────────────────────────────────────────
 
 const R2 = newRepo("two");
@@ -322,6 +341,38 @@ test("with --base it is found", () =>
   test("an unresolvable --base is a HALT", () => assert.equal(r.rc, 2));
   test("and says why", () => assert.ok(r.err.includes("would silently read as 'no UI changed'"), r.err));
 }
+
+// ── A name git would C-quote still targets its app ────────────────────
+//
+// Without -z git prints `"apps/web/portal/src/caf\303\251.astro"`, quote and
+// all. The walk-up then starts from a directory called `"apps`, finds nothing,
+// and a UI change whose only file had an accent skipped /qa. Each git read is
+// covered: untracked, unstaged against HEAD, and committed against --base.
+
+const RQ = newRepo("quoted");
+makeAstro(join(RQ, "apps/web/portal"));
+put(join(RQ, "apps/web/portal/src/pages/café.astro"), "<h1>v1</h1>\n");
+git(RQ, "add", "apps");
+git(RQ, "commit", "-qm", "init");
+const RQ_BASE = git(RQ, "rev-parse", "HEAD");
+
+test("an untracked page with an accent targets its app", () => {
+  put(join(RQ, "apps/web/portal/src/pages/thé.astro"), "<h1>new</h1>\n");
+  const r = run(["--repo", RQ]);
+  rmSync(join(RQ, "apps/web/portal/src/pages/thé.astro"));
+  assert.equal(r.out, `${RQ}/apps/web/portal`, r.err);
+});
+test("an unstaged edit to a page with an accent targets its app", () => {
+  put(join(RQ, "apps/web/portal/src/pages/café.astro"), "<h1>v2</h1>\n");
+  const r = run(["--repo", RQ]);
+  git(RQ, "checkout", "-q", "--", "apps/web/portal/src/pages/café.astro");
+  assert.equal(r.out, `${RQ}/apps/web/portal`, r.err);
+});
+test("a committed edit to a page with an accent is found with --base", () => {
+  put(join(RQ, "apps/web/portal/src/pages/café.astro"), "<h1>v3</h1>\n");
+  git(RQ, "commit", "-qam", "edit café");
+  assert.equal(run(["--repo", RQ, "--base", RQ_BASE]).out, `${RQ}/apps/web/portal`);
+});
 
 // ── The fan-out is a WALK, not one hop ────────────────────────────────
 //

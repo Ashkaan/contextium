@@ -124,14 +124,17 @@ async function main(): Promise<void> {
   ROUTE AROUND IT — run the review through the review chain instead of a
   subagent whose image Read is dead. The brief names the PNG paths to open:
 
+    POLICY_CHAIN_AUTHOR_VENDORS=<all writer providers> \\
     POLICY_CHAIN_GROK_TOOLS=read_file \\
     POLICY_CHAIN_VALIDATOR=.agents/skills/qa/scripts/sight-validate.ts \\
     QA_SIGHT_CODES=<codes> \\
     node --experimental-strip-types .agents/skills/review/policy-review.ts adversarial-review \\
       <run-dir>/manifest.json <brief.txt>   > <response>.txt
 
-  read_file lets Grok open the PNGs; the validator passes over any vendor
-  whose answer lacks the codes. Then verify THAT response with this same gate. Max ${ROUTER_IMAGE_MAX} images per
+  The authors are every provider that wrote the pages or their fixes (in T3
+  Code also POLICY_CHAIN_AUTHOR_THREAD_ID, the writing thread). read_file lets
+  Grok open the PNGs; the validator passes over any vendor whose answer lacks
+  the codes. Then verify THAT response with this same gate. Max ${ROUTER_IMAGE_MAX} images per
   call — batch larger runs. The brief must still carry the rubric and the
   "transcribe the QA SIGHT CODE" instruction, and it must NEVER carry the codes.
 `);
@@ -231,7 +234,11 @@ async function main(): Promise<void> {
       const w = magick(["identify", "-format", "%w", png]);
       const h = magick(["identify", "-format", "%h", png]);
       // Appended BELOW the shot, so every y-coordinate in the page is unchanged
-      // and the reviewer's geometry stays valid.
+      // and the reviewer's geometry stays valid. The type shrinks with a narrow
+      // shot: the 21-character line is about 12.6 times its point size wide, so
+      // at 30pt it ran off both edges of a 320px phone shot and the code could
+      // not be read.
+      const pointsize = Math.min(30, Math.floor((Number(w) - 24) / 13));
       magick([
         png,
         "(",
@@ -241,7 +248,7 @@ async function main(): Promise<void> {
         "-fill",
         "#f5f5f5",
         "-pointsize",
-        "30",
+        String(pointsize),
         "-gravity",
         "center",
         "-annotate",
@@ -275,8 +282,12 @@ async function main(): Promise<void> {
 
     process.stdout.write(`QA_SIGHT_CODES=${codes}\n`);
     process.stdout.write(`QA_SIGHT_COUNT=${shots.length}\n`);
+    // A shell comment with no redirect in it: callers source this output, and
+    // one that merged stderr in turned "21 shots > 8" into a file named `8`.
     if (shots.length > ROUTER_IMAGE_MAX) {
-      err(`sight-check.ts: ${shots.length} shots > ${ROUTER_IMAGE_MAX} — the fallback reviewer needs batching.`);
+      err(
+        `# sight-check.ts: ${shots.length} shots, more than the fallback reviewer's ${ROUTER_IMAGE_MAX} per call — the fallback reviewer needs batching.`,
+      );
     }
   }
 

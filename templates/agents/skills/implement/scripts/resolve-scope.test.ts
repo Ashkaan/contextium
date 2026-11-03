@@ -391,3 +391,51 @@ test("case13b blank-scope-failed-git-diff-fails", () => {
   const r = spawn(["--scope", ""], { ...process.env, CLAUDE_PROJECT_DIR: repo, PATH: failingGitPath("diff") });
   assert.notEqual(r.rc, 0, `a failing git diff exited ${r.rc}: ${r.out}`);
 });
+
+// ── Case 14: a name git would C-quote is emitted as it is on disk ──
+//
+// Without -z git prints `"caf\303\251.ts"` for a staged café.ts, and the scope
+// then names a file that does not exist: layer 1 never lints the real one.
+test("case14 blank-scope-quoted-name-is-emitted-as-on-disk", () => {
+  const repo = makeRepo();
+  writeFileSync(join(repo, "café.ts"), "x\n");
+  execFileSync("git", ["-C", repo, "add", "café.ts"]);
+  const r = runScript(repo, "--scope", "");
+  assert.equal(r.rc, 0, `expected zero exit; got ${r.rc}: ${r.out}`);
+  assert.ok(/^café\.ts$/m.test(r.out), `missing café.ts: ${r.out}`);
+});
+
+// ── Case 14b: the projects/ branch reads a commit's files intact too ──
+test("case14b projects-scope-quoted-name-is-emitted-as-on-disk", () => {
+  const repo = makeRepo();
+  const git = (...a: string[]) => execFileSync("git", ["-C", repo, ...a], { encoding: "utf8" });
+  writeFileSync(join(repo, "apps/foo/café.ts"), "x\n");
+  writeFileSync(join(repo, "projects/p/2026-01-01_x/notes.md"), "e2\n");
+  git("add", "-A");
+  git("commit", "-q", "-m", "second");
+  const r = runScript(repo, "--scope", "projects/p");
+  assert.equal(r.rc, 0, `expected zero; got ${r.rc}: ${r.out}`);
+  assert.ok(/^apps\/foo\/café\.ts$/m.test(r.out), `missing apps/foo/café.ts: ${r.out}`);
+});
+
+// ── Case 14c: -z emits NUL-terminated records, so a tab or newline survives ──
+//
+// validate.ts hands this list to layer 1 and layer 2 on stdin; a newline-joined
+// list split `nl<LF>here.ts` into two paths, neither of which exists.
+test("case14c z-flag-emits-nul-records", () => {
+  const repo = makeRepo();
+  writeFileSync(join(repo, "tab\there.ts"), "x\n");
+  writeFileSync(join(repo, "nl\nhere.ts"), "x\n");
+  execFileSync("git", ["-C", repo, "add", "-A"]);
+  const r = spawnSync(process.execPath, ["--experimental-strip-types", SCRIPT, "-z", "--scope", ""], {
+    encoding: "utf8",
+    env: { ...process.env, CLAUDE_PROJECT_DIR: repo },
+    timeout: 60000,
+  });
+  assert.equal(r.status, 0, `expected zero; got ${r.status}: ${r.stderr}`);
+  assert.ok(r.stdout.endsWith("\0"), `expected NUL-terminated output: ${JSON.stringify(r.stdout)}`);
+  assert.deepEqual(
+    r.stdout.split("\0").filter((s) => s !== ""),
+    ["nl\nhere.ts", "tab\there.ts"],
+  );
+});

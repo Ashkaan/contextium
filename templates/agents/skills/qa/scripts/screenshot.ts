@@ -22,6 +22,8 @@
 // Output: PNGs + manifest.json under /tmp/qa-shots/<slug>/<run-id>/, and a
 //         manifest table on stdout (route · width · path · bytes · status).
 //         Plus motion/ — an animation manifest and a frame burst per route.
+//         A page taller than 3,000px is shot as <route>-<width>-part<n>.png,
+//         one manifest row each, so a reviewer can read it (PART_MAX).
 // Exit:   0 ok; 2 usage; 6 identical shots across routes; 7 Playwright
 //         unavailable (stderr carries `qa: skipped — Playwright unavailable
 //         (<reason>)` — a skip, never a pass), and separately an off-origin
@@ -53,6 +55,8 @@ import { dirname, join } from "node:path";
 import type { Browser } from "playwright";
 import {
   qaAccessHeaders,
+  qaBrowsers,
+  qaContextOptions,
   qaErr,
   qaReadJwtFile,
   qaPlaywrightNodeModules,
@@ -62,6 +66,15 @@ import {
 } from "./lib.ts";
 import { exit, runToExit } from "../../../packages/cli-exit/cli-exit.ts";
 import { gotoSurvivingNetworkChange } from "./nav.ts";
+
+/** Tallest single shot. The reviewer's image reader shrinks a picture to about
+ *  2,000px on its long side, so a taller shot reaches it too small to read its
+ *  text or its sight code. 3,000px reads
+ *  at about 1.5x; it is also far under ImageMagick's 32,000px policy cap, the
+ *  reason the split first existed. */
+const PART_MAX = 3_000;
+/** How long the shot waits for every image to load and decode (see REVEAL); QA_IMAGE_WAIT_MS overrides, for the test. */
+const IMAGE_WAIT_MS = Number(process.env.QA_IMAGE_WAIT_MS) || 10_000;
 
 async function main(): Promise<void> {
   const SHOTS_ROOT = process.env.QA_SHOTS_ROOT || "/tmp/qa-shots";
@@ -215,14 +228,18 @@ async function main(): Promise<void> {
   // unlinking it (see interaction-check.browser.ts).
   const browserTmp = mkdtempSync(join(tmpdir(), "screenshot-browser-"));
   process.on("exit", () => rmSync(browserTmp, { recursive: true, force: true }));
-  const browser: Browser = await chromium.launch({ env: { ...process.env, TMPDIR: browserTmp } });
+  // Phone widths get a touchscreen browser of their own (QA_TOUCH_BROWSER_ARGS).
+  const browsers = qaBrowsers(
+    (args): Promise<Browser> => chromium.launch({ env: { ...process.env, TMPDIR: browserTmp }, args }),
+  );
 
   // INK: the fraction of sampled pixels that are NOT the image's most common
   // colour. A page that captured as blank white scores ~0; a real page scores
   // well above the floor. Decoding happens in a throwaway blank context so a
   // site's own Content-Security-Policy cannot block the data URL.
   async function inkFraction(file: string): Promise<number | null> {
-    const ctx = await browser.newContext();
+    // Decoding needs no pointer: the mouse browser.
+    const ctx = await (await browsers.forWidth(Number.POSITIVE_INFINITY)).newContext();
     const p = await ctx.newPage();
     try {
       const b64 = readFileSync(file).toString("base64");
@@ -267,6 +284,8 @@ async function main(): Promise<void> {
     sha: string;
     ink: number | null;
     landedOrigin: string;
+    /** Page rows this shot covers: the whole page, or one part of it. */
+    rows: number;
   }
   interface Anim {
     name: string;
@@ -283,8 +302,8 @@ async function main(): Promise<void> {
   const motion: Motion[] = [];
   for (const route of pages) {
     for (const width of widths) {
-      const ctx = await browser.newContext({
-        viewport: { width, height: 1600 },
+      const ctx = await (await browsers.forWidth(width)).newContext({
+        ...qaContextOptions(width),
         deviceScaleFactor: 1,
         reducedMotion: REDUCED_MOTION === "reduce" ? "reduce" : "no-preference",
         extraHTTPHeaders,
@@ -384,54 +403,113 @@ async function main(): Promise<void> {
       // Two passes, because either alone leaves a gap: scrolling fires the
       // observers a well-behaved site listens to, and forcing the end state
       // covers the ones whose trigger never fires under an automated scroll.
+      //
+      // Then IMAGES. A `loading="lazy"` image past the browser's own look-ahead
+      // is fetched only when scrolled near, and the walk moves on in 60ms, so a
+      // shot taken after it caught the empty box: a home page's row of photos
+      // came out pure white in every shot while a live browser showed them
+      // (screenshot-lazy.test.ts). Every lazy image is
+      // switched to eager, which starts its fetch, and the shot waits for all
+      // of them to load and decode, up to IMAGE_WAIT_MS; one still missing then
+      // is named on stderr rather than shot silently as white.
+      let pendingImages = 0;
       try {
-        await page.evaluate(async () => {
+        pendingImages = await page.evaluate(async (waitMs: number) => {
+          const eager = () => {
+            for (const i of document.images) if (i.loading === "lazy") i.loading = "eager";
+          };
+          eager();
+          // "instant", because a site that sets `scroll-behavior: smooth` turns a
+          // plain scrollTo into an animation: the shot then caught its sticky
+          // header still on the way back up, drawn over the page title.
           const step = Math.max(200, Math.floor(window.innerHeight * 0.8));
           for (let y = 0; y < document.body.scrollHeight; y += step) {
-            window.scrollTo(0, y);
+            window.scrollTo({ top: y, behavior: "instant" });
             await new Promise((r) => setTimeout(r, 60));
           }
-          window.scrollTo(0, 0);
+          window.scrollTo({ top: 0, behavior: "instant" });
           const s = document.createElement("style");
           s.textContent =
-            "[data-animate],[data-aos],.reveal,.fade-in,.animate-on-scroll" +
+            "[data-animate],[data-aos],[data-reveal],.reveal,.fade-in,.animate-on-scroll" +
             "{opacity:1 !important;transform:none !important;visibility:visible !important}";
           document.head.appendChild(s);
           await new Promise((r) => setTimeout(r, 120));
-        });
+          // Read the list again: the scroll can insert images (an observer
+          // filling a slot), and those must be waited for too.
+          eager();
+          const imgs = [...document.images];
+          const settled = (i: HTMLImageElement) =>
+            i.complete
+              ? Promise.resolve()
+              : new Promise<void>((r) => {
+                  i.addEventListener("load", () => r(), { once: true });
+                  i.addEventListener("error", () => r(), { once: true });
+                });
+          await Promise.race([
+            Promise.all(imgs.map(settled)).then(() =>
+              Promise.all(imgs.filter((i) => i.naturalWidth > 0).map((i) => i.decode().catch(() => {}))),
+            ),
+            new Promise((r) => setTimeout(r, waitMs)),
+          ]);
+          return imgs.filter((i) => !i.complete).length;
+        }, IMAGE_WAIT_MS);
       } catch {
         // a page that refuses the reveal is shot as it stands
       }
+      if (pendingImages > 0) {
+        qaErr(
+          `screenshot: ${route} @${width} — ${pendingImages} image(s) still loading after ${IMAGE_WAIT_MS}ms; they may show empty`,
+        );
+      }
 
-      const file = `${outDir}/${slugRoute(route)}-${width}.png`;
-      await page.screenshot({
-        path: file,
-        fullPage: true,
-        animations: "disabled",
-        caret: "hide",
-        mask: masks.map((sel) => page.locator(sel)),
-      });
-      let bytes = 0;
+      // A page taller than PART_MAX is shot as clipped parts, top to bottom.
+      // A part the reviewer can read at about 1.5x (PART_MAX). The blank and
+      // identical-shot gates below judge a route's parts together, since one
+      // part of a real page can be plain background.
+      let height = 0;
       try {
-        bytes = statSync(file).size;
+        height = Number(await page.evaluate(() => document.documentElement.scrollHeight)) || 0;
       } catch {
-        // no file, no bytes
+        // an unmeasurable page is shot whole, as before
       }
-      const ink = await inkFraction(file);
-      // T5: hash the pixels, not just the size — identical shots across distinct
-      // routes mean an auth wall or dead client routing, and the manifest would
-      // otherwise report a clean 200 for every row.
-      let sha = "";
-      try {
-        sha = createHash("sha256").update(readFileSync(file)).digest("hex").slice(0, 16);
-      } catch {
-        // unhashable reads as no hash
+      const parts = height > PART_MAX ? Math.ceil(height / PART_MAX) : 1;
+      for (let part = 0; part < parts; part++) {
+        const file =
+          parts === 1
+            ? `${outDir}/${slugRoute(route)}-${width}.png`
+            : `${outDir}/${slugRoute(route)}-${width}-part${part + 1}.png`;
+        const top = part * PART_MAX;
+        await page.screenshot({
+          path: file,
+          fullPage: true,
+          animations: "disabled",
+          caret: "hide",
+          mask: masks.map((sel) => page.locator(sel)),
+          ...(parts === 1 ? {} : { clip: { x: 0, y: top, width, height: Math.min(PART_MAX, height - top) } }),
+        });
+        let bytes = 0;
+        try {
+          bytes = statSync(file).size;
+        } catch {
+          // no file, no bytes
+        }
+        const ink = await inkFraction(file);
+        // T5: hash the pixels, not just the size — identical shots across distinct
+        // routes mean an auth wall or dead client routing, and the manifest would
+        // otherwise report a clean 200 for every row.
+        let sha = "";
+        try {
+          sha = createHash("sha256").update(readFileSync(file)).digest("hex").slice(0, 16);
+        } catch {
+          // unhashable reads as no hash
+        }
+        const rows = parts === 1 ? height : Math.min(PART_MAX, height - top);
+        manifest.push({ route, width, path: file, bytes, status, sha, ink, landedOrigin, rows });
       }
-      manifest.push({ route, width, path: file, bytes, status, sha, ink, landedOrigin });
       await ctx.close();
     }
   }
-  await browser.close();
+  await browsers.close();
 
   const baseOrigin = (() => {
     try {
@@ -467,13 +545,16 @@ async function main(): Promise<void> {
   }
 
   // Collide-check per width: >1 distinct route sharing one image is not evidence.
+  // A route shot in parts is compared as the whole sequence of its parts.
   const collisions: { width: number; routes: string[] }[] = [];
   for (const width of widths) {
+    const seq = new Map<string, string[]>();
+    for (const m of manifest.filter((x) => x.width === width)) seq.set(m.route, [...(seq.get(m.route) ?? []), m.sha]);
     const byHash = new Map<string, string[]>();
-    for (const m of manifest.filter((x) => x.width === width && x.sha)) {
-      const list = byHash.get(m.sha) ?? [];
-      list.push(m.route);
-      byHash.set(m.sha, list);
+    for (const [route, shas] of seq) {
+      if (shas.some((h) => !h)) continue;
+      const key = shas.join("|");
+      byHash.set(key, [...(byHash.get(key) ?? []), route]);
     }
     for (const [, routes] of byHash) {
       if (routes.length > 1) collisions.push({ width, routes });
@@ -544,7 +625,21 @@ async function main(): Promise<void> {
   // and above blank. Erring low is the safe direction: a floor set too low misses
   // a marginal blank, where one set too high blocks a correct run.
   const INK_FLOOR = Number(process.env.QA_INK_FLOOR || "0.0002");
-  const blanks = manifest.filter((m): m is Shot & { ink: number } => typeof m.ink === "number" && m.ink < INK_FLOOR);
+  // A route shot in parts is blank only as a whole page: its parts' ink,
+  // weighted by the rows each covers. A part with unmeasured ink leaves the
+  // route unjudged here; it is reported as unmeasured below.
+  const byPage = new Map<string, Shot[]>();
+  for (const m of manifest) byPage.set(`${m.route} ${m.width}`, [...(byPage.get(`${m.route} ${m.width}`) ?? []), m]);
+  const blanks: { route: string; width: number; ink: number; path: string }[] = [];
+  for (const shots of byPage.values()) {
+    if (shots.some((m) => typeof m.ink !== "number")) continue;
+    const rows = shots.reduce((n, m) => n + m.rows, 0);
+    const ink =
+      rows > 0
+        ? shots.reduce((n, m) => n + (m.ink as number) * m.rows, 0) / rows
+        : shots.reduce((n, m) => n + (m.ink as number), 0) / shots.length;
+    if (ink < INK_FLOOR) blanks.push({ route: shots[0].route, width: shots[0].width, ink, path: shots[0].path });
+  }
   const unmeasured = manifest.filter((m) => m.ink === null);
   if (unmeasured.length > 0) {
     process.stderr.write(

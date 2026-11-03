@@ -200,7 +200,7 @@ for (const [name, body, line, reason] of REFUSALS) {
   });
 }
 
-// Finding 1 of the R45 review: the harnesses reach every skill script through a
+// Regression: invocation through a symlink: the harnesses reach every skill script through a
 // symlink (~/.agents/skills -> workbench/skills), and an entry guard comparing
 // the invoked path with the resolved module path skipped main() there, exiting
 // 0 having done nothing.

@@ -9,7 +9,7 @@
 //        .agents/skills/implement/scripts/layer-2.ts
 //
 // Usage:
-//   resolve-scope.ts --scope <arg>
+//   resolve-scope.ts [-z] --scope <arg>
 //
 // Flags:
 //   --scope <arg>   blank | apps/<app> | apps/<domain>/<app> | apps/<domain> |
@@ -18,9 +18,12 @@
 //
 //                   An apps/ scope must name a DIRECTORY and is never widened to
 //                   its parent — see the branch below for what that widening cost.
+//   -z              NUL-terminate each path instead of ending it with a newline,
+//                   as git -z does. validate.ts passes it, so a path holding a
+//                   newline reaches layer 1 and layer 2 as one record.
 //
 // Output:
-//   stdout: one repo-relative path per line (may be empty)
+//   stdout: one repo-relative path per line, or per NUL with -z (may be empty)
 //   stderr: scope-arg errors
 //
 // Exit:
@@ -59,8 +62,10 @@ function sorted(lines: string[], unique = false): string[] {
   return unique ? s.filter((l, i) => i === 0 || l !== s[i - 1]) : s;
 }
 
+let SEP = "\n";
+
 function emit(lines: string[]): void {
-  if (lines.length > 0) process.stdout.write(`${lines.join("\n")}\n`);
+  if (lines.length > 0) process.stdout.write(`${lines.join(SEP)}${SEP}`);
 }
 
 /** A read the resolution depends on failed: exit 2, never an empty list. */
@@ -103,10 +108,10 @@ function srcFiles(start: string): string[] {
 }
 
 /**
- * Lines of a git command's stdout. A git that fails, or whose output outgrows
- * the capture, exits 2 with git's own error — a failed read is not "no lines".
+ * A git command's stdout. A git that fails, or whose output outgrows the
+ * capture, exits 2 with git's own error — a failed read is not "no lines".
  */
-function gitLines(args: string[], cwd?: string): string[] {
+function gitOut(args: string[], cwd?: string): string {
   const r = spawnSync("git", args, {
     encoding: "utf8",
     cwd,
@@ -117,7 +122,25 @@ function gitLines(args: string[], cwd?: string): string[] {
   if (r.status !== 0 || typeof r.stdout !== "string") {
     readFailed(`git ${args.join(" ")} (exit ${r.status ?? r.signal})`, typeof r.stderr === "string" ? r.stderr : "");
   }
-  return r.stdout.split("\n").filter((l) => l !== "");
+  return r.stdout;
+}
+
+/** Lines of a git command's stdout — log subjects and SHAs, never paths. */
+function gitLines(args: string[]): string[] {
+  return gitOut(args)
+    .split("\n")
+    .filter((l) => l !== "");
+}
+
+/**
+ * Paths from a git listing run with -z: NUL-separated, so a name git would
+ * C-quote (`"caf\303\251.ts"`) or one holding a newline arrives as it is on disk.
+ * The caller passes -z itself, where check-scripts part (d) can see it.
+ */
+function gitPaths(args: string[]): string[] {
+  return gitOut(args)
+    .split("\0")
+    .filter((s) => s !== "");
 }
 
 async function main(): Promise<void> {
@@ -126,14 +149,17 @@ async function main(): Promise<void> {
   const argv = process.argv.slice(2);
   while (argv.length > 0) {
     const a = argv[0] ?? "";
-    if (a === "--scope") {
+    if (a === "-z") {
+      SEP = "\0";
+      argv.splice(0, 1);
+    } else if (a === "--scope") {
       SCOPE = argv[1] ?? "";
       argv.splice(0, 2);
     } else if (a === "-h" || a === "--help") {
-      // The header comment above, lines 2-30, is the help text.
+      // The header comment above, lines 2-33, is the help text.
       const lines = readFileSync(fileURLToPath(import.meta.url), "utf8")
         .split("\n")
-        .slice(1, 30);
+        .slice(1, 33);
       process.stderr.write(`${lines.join("\n")}\n`);
       exit(0);
     } else {
@@ -165,9 +191,9 @@ async function main(): Promise<void> {
 
   // ── Blank scope → staged files ───────────────────────────────────────
   if (SCOPE === "") {
-    // Through gitLines: spawnSync's default 1 MiB capture truncated a large
+    // Through gitPaths: spawnSync's default 1 MiB capture truncated a large
     // staged list to a prefix at exit 0, and a failing git read as "nothing staged".
-    emit(gitLines(["diff", "--cached", "--name-only"]));
+    emit(gitPaths(["diff", "-z", "--cached", "--name-only"]));
     exit(0);
   }
 
@@ -248,7 +274,7 @@ async function main(): Promise<void> {
     for (const subj of subjects) {
       const sha = gitLines(["log", "-n", "1", "--fixed-strings", `--grep=${subj}`, "--pretty=format:%H"])[0] ?? "";
       if (sha === "") continue;
-      for (const f of gitLines(["show", "--name-only", "--pretty=format:", sha])) {
+      for (const f of gitPaths(["show", "-z", "--name-only", "--pretty=format:", sha])) {
         // Every committed source file, not only *.ts — the same reason as
         // srcFiles; installed dependencies, git internals and docs stay out.
         if (!/(^|\/)(node_modules|\.git)\/|\.md$/.test(f)) code.push(f);

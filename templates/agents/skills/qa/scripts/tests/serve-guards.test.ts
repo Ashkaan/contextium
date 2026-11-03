@@ -118,12 +118,15 @@ test("QA_LIVE_URL + QA_ACCESS_OP_ITEM from the environment", () => {
 // Every `serve.ts up` the SKILL runs passes the step-0 --live-url on: a live run
 // the user pointed at a URL must not fall back to the registry (and its
 // credentials) on first serve or on the step-2.7 rebuild.
-test("SKILL.md: every serve.ts up forwards LIVE_URL", () => {
+// SKILL.md's commands are read as data: the live URL reaches serve.ts through the
+// $LIVE_URL_ARG placeholder, substituted here the way the skill tells the agent to.
+test("SKILL.md: every serve.ts up of the run's mode forwards the --live-url", () => {
   const skill = readFileSync(join(dirname(SCRIPT), "..", "SKILL.md"), "utf8");
-  const ups = skill.split("\n").filter((l) => l.includes('serve.ts" up '));
-  assert.ok(ups.length >= 2, `found ${ups.length} serve.ts up lines`);
+  const ups = skill.split("\n").filter((l) => l.includes('serve.ts" up ') && l.includes('--mode "$MODE"'));
+  assert.ok(ups.length >= 1, `found ${ups.length} serve.ts up lines`);
   for (const line of ups) {
-    const r = spawnSync("bash", ["-c", `${line}\nprintf '%s' "$QA_URL"`], {
+    assert.match(line, /\$LIVE_URL_ARG/, line);
+    const r = spawnSync("bash", ["-c", line.replace("$LIVE_URL_ARG", "--live-url https://example.net")], {
       encoding: "utf8",
       env: {
         ...hermeticEnv(),
@@ -135,10 +138,9 @@ test("SKILL.md: every serve.ts up forwards LIVE_URL", () => {
         TARGET: LIVE,
         MODE: "live",
         RUN_ID: "t7",
-        LIVE_URL: "https://example.net",
       },
     });
-    assert.equal(r.stdout, "https://example.net", `${line}\n${r.stderr}`);
+    assert.match(r.stdout, /^QA_URL=https:\/\/example\.net$/m, `${line}\n${r.stderr}`);
   }
 });
 
