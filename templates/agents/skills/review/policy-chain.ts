@@ -9,16 +9,15 @@
 // with nothing to fall back to. The three callers — code-review.ts,
 // policy-review.ts, spec-audit.ts — import it.
 //
-// THE AUTHOR LEAVES A REVIEW CHAIN. The installer records the model family that
-// writes the code as `agent=<name>` in `.agents/harness` (two levels above this
-// skill's folder). For every row read from `.chain` — the review rows — the slot
-// whose vendor is that family is skipped: a reviewer of the same model as the
-// author shares the blind spots that produced the mistake. antigravity is the
-// gemini family; cursor and copilot name no single family, so nothing is
-// skipped. A `.voices` row (a panel) keeps every seat. The claude slot is never
-// skipped: it is not a CLI call but "dispatch your own agent" (return 3), which
-// every caller already labels as reduced independence. No file, or no `agent=`
-// key: the row as written.
+// THE AUTHOR LEAVES THE ADVERSARIAL-REVIEW CHAIN. A reviewer of the same model
+// as the author shares the blind spots that produced the mistake, so for the
+// `adversarial-review` row the caller names every ORIGINAL author in
+// POLICY_CHAIN_AUTHOR_VENDORS and each slot whose vendor is one of them is
+// excluded. The executor running the review is not necessarily the author, so
+// nothing here guesses it: missing or unknown provenance is a caller error
+// (return 2) before any vendor call. In T3 Code the writing thread's recorded
+// providers must all be named too (POLICY_CHAIN_AUTHOR_THREAD_ID). A `.voices`
+// row (a panel) and the other rows keep every seat.
 //
 // Usage (import, then call):
 //   import { policyRunChain } from "./policy-chain.ts";
@@ -69,10 +68,16 @@
 //                                no model catalog here, so a `{v}` family cannot
 //                                resolve; an empty `tracks` runs the CLI's own
 //                                default model); a test seam
-//   CONTEXTIUM_HARNESS_FILE      the harness record read for `agent=` (default:
-//                                `.agents/harness`, two levels above this skill)
 //   POLICY_CHAIN_SLOT_TIMEOUT_S  per-slot wall clock (default 900)
 //   POLICY_CHAIN_VALIDATOR       optional shape test, as a command — see below
+//   POLICY_CHAIN_AUTHOR_VENDORS  required for adversarial-review: comma-separated
+//                                ORIGINAL artifact authors (claude, codex, grok,
+//                                gemini, human), verified by the caller from its
+//                                writing session or delegation trace. These
+//                                vendors are excluded from the policy chain.
+//                                The reviewer executor is not the author.
+//   POLICY_CHAIN_AUTHOR_THREAD_ID original T3 writing thread; recorded providers
+//                                must be included. Required when cwd is ambiguous.
 //
 // THE SHAPE TEST (opts.validator, or POLICY_CHAIN_VALIDATOR)
 //
@@ -158,6 +163,7 @@ import {
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { recordedReviewAuthors } from "../close/scripts/t3-db.ts";
 
 const POLICY_CHAIN_DEFAULT_SLOT_TIMEOUT_S = "900";
 
@@ -209,6 +215,41 @@ function grokSystemPrompt(): string {
 // `--tools ''` granted a file write and a shell command, 2/2. This path reads
 // nothing, so list_dir is the least-capable non-empty value, not a capability.
 const POLICY_CHAIN_GROK_PLAIN_TOOLS = "list_dir";
+
+/**
+ * One review answer line, with a triage marker or sentinel an agent CLI glued
+ * onto its own narration cut free. Grok does this on nearly every call
+ * ("Reading the engine paths...[must-fix] engine.ts:1: ..."), and a reader that
+ * anchors at the line start throws the finding away. Cuts at the LEFTMOST
+ * marker: narration holding an earlier "[" would stop a "strip the non-bracket
+ * prefix" short, and when two findings share a line the first marker owns the
+ * text that follows it. Markers win over the sentinel, so a finding that merely
+ * mentions it is not read as a clean pass, and the sentinel itself is salvaged
+ * only from the end of a line, glued after punctuation. `sentinel` null: the round has no
+ * clean-pass shape. Shared by code-review.ts and spec-audit.ts, so the shape
+ * gate, the count and stdout of both read the same line.
+ */
+export function salvageTriageLine(
+  line: string,
+  markers: readonly string[],
+  sentinel: string | null,
+): { line: string; salvaged: "marker" | "sentinel" | null } {
+  if (markers.some((m) => line.startsWith(m)) || line === sentinel) return { line, salvaged: null };
+  let at = -1;
+  for (const m of markers) {
+    const i = line.indexOf(m);
+    if (i >= 0 && (at < 0 || i < at)) at = i;
+  }
+  if (at >= 0) return { line: line.slice(at), salvaged: "marker" };
+  // The sentinel is salvaged only when glued to the END of narration after a
+  // punctuation mark ("Done reading.NO_FINDINGS"). A sentence that merely names
+  // it ("cannot return NO_FINDINGS") is not a verdict, and reading it as one
+  // turned a failed audit into a clean pass.
+  if (sentinel !== null && line.endsWith(sentinel) && /[^\sA-Za-z0-9_]$/.test(line.slice(0, -sentinel.length))) {
+    return { line: sentinel, salvaged: "sentinel" };
+  }
+  return { line, salvaged: null };
+}
 
 /** What a shape test reports: its exit status, and the stderr that is quoted as the reason. */
 export interface ValidatorResult {
@@ -288,29 +329,6 @@ export function policyChainPolicyPath(_sink: Partial<ChainSink> = {}): string | 
   const explicit = process.env.POLICY_JSON ?? "";
   if (explicit !== "") return explicit;
   return join(HERE, "policy.json");
-}
-
-// The vendor that wrote the code, from `agent=` in the harness record, or ""
-// (see the header: THE AUTHOR LEAVES A REVIEW CHAIN).
-export function policyChainAuthor(): string {
-  const file = process.env.CONTEXTIUM_HARNESS_FILE || join(HERE, "..", "..", "harness");
-  let text: string;
-  try {
-    text = readFileSync(file, "utf8");
-  } catch {
-    return "";
-  }
-  let agent = "";
-  for (const line of text.split("\n")) {
-    const m = /^\s*agent\s*=\s*(.*)$/.exec(line);
-    if (m) {
-      agent = (m[1] ?? "").replace(/["' \r]/g, "");
-      break;
-    }
-  }
-  if (agent === "claude" || agent === "codex" || agent === "gemini" || agent === "grok") return agent;
-  if (agent === "antigravity") return "gemini";
-  return "";
 }
 
 // The exact model a slot's `tracks` names. There is no model catalog here, so
@@ -647,7 +665,7 @@ interface Slot {
 function readSlots(
   policy: string,
   taskKind: string,
-): { slots: Slot[]; known: string; isReview?: boolean; fallback?: string } {
+): { slots: Slot[]; known: string; fallback?: string } {
   let doc: unknown;
   try {
     doc = JSON.parse(readFileSync(policy, "utf8"));
@@ -674,11 +692,24 @@ function readSlots(
       tracks: tr === undefined || tr === null || tr === false ? "" : jqField(tr),
     });
   }
-  // A review row is one read from `.chain`; a panel (`.voices`) keeps every
-  // seat when the author is left out.
-  const isReview = r.chain !== undefined && r.chain !== null && r.chain !== false;
   const fallback = typeof r.fallback === "string" ? r.fallback : "";
-  return { slots, known, isReview, fallback };
+  return { slots, known, fallback };
+}
+
+/** Shared preflight: code-review checks this before spending its round budget. */
+export function reviewAuthorVendors(): { authors: string[] } | { error: string } {
+  const authors = (process.env.POLICY_CHAIN_AUTHOR_VENDORS ?? "").split(",").map((author) => author.trim());
+  if (authors.some((author) => !["claude", "codex", "grok", "gemini", "human"].includes(author))) {
+    return {
+      error:
+        "POLICY_CHAIN_AUTHOR_VENDORS must name original artifact authors (claude,codex,grok,gemini,human); refusing without original-author provenance",
+    };
+  }
+  const recorded = recordedReviewAuthors(process.env.POLICY_CHAIN_AUTHOR_THREAD_ID || undefined);
+  if ("error" in recorded) return { error: `original-author provenance: ${recorded.error}` };
+  const omitted = recorded.vendors.filter((vendor) => !authors.includes(vendor));
+  if (omitted.length) return { error: `declared authors omit recorded writing providers: ${omitted.join(",")}` };
+  return { authors };
 }
 
 function walk(
@@ -733,19 +764,41 @@ function walk(
   // The policy is the SSOT for which vendor does which work-type. An unknown
   // task-kind is an error, never a silent default — same contract as the router,
   // where an unknown TaskKind is a compile error.
-  const { slots, known, isReview, fallback } = readSlots(policy, taskKind);
-  if (slots.length === 0) {
+  const row = readSlots(policy, taskKind);
+  const fallback = row.fallback ?? "";
+  if (row.slots.length === 0) {
     e(`no policy row for task-kind '${taskKind}'`);
-    e(`known rows: ${known}`);
+    e(`known rows: ${row.known}`);
     return 2;
+  }
+
+  let slots = row.slots;
+  if (taskKind === "adversarial-review") {
+    const provenance = reviewAuthorVendors();
+    if ("error" in provenance) {
+      e(provenance.error);
+      return 2;
+    }
+    const authors = provenance.authors;
+    slots = slots.filter((slot) => {
+      if (!authors.includes(slot.vendor)) return true;
+      e(`excluded ${slot.vendor}/${slot.model}: artifact author`);
+      return false;
+    });
+    if (slots.length === 0) {
+      e("no eligible reviewer remains after excluding artifact authors");
+      // Contextium: the row's fresh-context fallback, as for a chain whose
+      // vendors are all unavailable (below).
+      if (fallback === "fresh-context") {
+        e(`no independent vendor for '${taskKind}' — fall back to a fresh-context review, NOT independent (the row's fallback)`);
+        return 3;
+      }
+      return 1;
+    }
   }
 
   const secs = process.env.POLICY_CHAIN_SLOT_TIMEOUT_S || POLICY_CHAIN_DEFAULT_SLOT_TIMEOUT_S;
   const out = `${tmp}/slot.out`;
-
-  // The author's vendor, for a review row (`.chain`); a panel (`.voices`) keeps
-  // every seat.
-  const author = isReview ? policyChainAuthor() : "";
 
   // The whole chain is read up front rather than streamed. The walk has to know
   // whether a NEXT slot exists before it names a failure: promising "trying next
@@ -754,12 +807,6 @@ function walk(
     const { vendor, model, tracks } = slots[i] as Slot;
     if (vendor === "") continue;
     const next = i + 1 < slots.length ? " — trying next slot" : "";
-
-    if (author !== "" && vendor === author && vendor !== "claude") {
-      e(`${vendor} left out of '${taskKind}': it wrote the code (.agents/harness agent=)${next}`);
-      lastWasTimeout = false;
-      continue;
-    }
 
     if (vendor === "claude") {
       // The Claude slot is the agent layer's job, not this script's — an agent

@@ -7,9 +7,9 @@ there is no register step.
 Governing shape: `AGENTS.md § Skill shape`; the skill-vs-agent
 tiebreaker is session history (skill) versus fresh context (agent).
 
-## Step 1 — resolve shape (ask the user: a numbered list, recommendation first; in Claude Code, `AskUserQuestion`)
+## Step 1 — resolve shape
 
-Decide the two structure-determining questions before scaffolding:
+Resolve the structure and determinism inventory before scaffolding, using the parent skill's question boundary:
 
 | Question | Why it matters |
 |---|---|
@@ -29,7 +29,7 @@ Writes `.agents/skills/<name>/SKILL.md` with `{{name}}` substituted. Refuses if 
 
 Before filling prose, act on the determinism inventory from Step 1. This is the step whose omission made past skills non-deterministic — do NOT skip it.
 
-- For EACH step the inventory marked DATA, write `.agents/skills/<name>/scripts/<step>.ts` (TypeScript: bash only where the rule in `AGENTS.md` § Stack keeps it) with a one-line contract comment, and a paired `<step>.test.ts` that runs it as a program, with the 0/1/empty/max/error boundary rows. Mirror `.agents/skills/author/scripts/scaffold.ts` for shape.
+- For EACH step the inventory marked DATA, write `.agents/skills/<name>/scripts/<step>.ts` (TypeScript: bash only where `AGENTS.md` § Standards → Scripts are TypeScript keeps it) with a one-line contract comment, and a paired `<step>.test.ts` that runs it as a program, with the 0/1/empty/max/error boundary rows. Mirror `.agents/skills/author/scripts/scaffold.ts` for shape.
 - The SKILL.md body step then INVOKES the script (`node --experimental-strip-types .agents/skills/<name>/scripts/<step>.ts ...`) — it MUST NOT re-describe the deterministic logic in prose. The script is the SSOT.
 - Add each script to `metadata.peers`.
 - Only steps that survive the data-vs-judgment test as genuine JUDGMENT stay as prose body sections. If the inventory found zero deterministic steps, say so explicitly — a single-body judgment-only skill is legitimate, but "I didn't look" is not.
@@ -44,7 +44,10 @@ Fill every `TODO` in the scaffold — this is the only AI-judgment step:
 - Whether only the user may fire the skill: `disable-model-invocation: true` plus `agents/openai.yaml`, in the shape `AGENTS.md § Skill shape` gives — the activation-fields step in SKILL.md is the SSOT for when.
 - `allowed-tools:` (one space-separated string) when the skill's own commands would otherwise prompt every run; remove the field otherwise.
 - `metadata:` → `peers:` lists, as one space-separated string, the co-located files the skill loads (references, scripts, dispatched agents/skills).
-- **Low-context determinism — inline data, not fetch-instructions.** When the skill needs live repo state, prefer dynamic context injection (`` !`command` `` inline, or a `` ```! `` block) so the command's OUTPUT lands in the skill body, instead of writing prose telling Claude to "run X to get context." Actual data beats an instruction to go get it — lower latency, deterministic, and it keeps the judgment step about the data, not about fetching it. This is the SKILL.md analogue of Step 2.5's script extraction.
+- **Live data uses the program from Step 2.5.** Invoke it in the shared skill body
+  and base the judgment on its output. Do not substitute a harness-specific
+  inline-execution syntax for that invocation without proving it runs on every
+  harness that reads the shared skill.
 - The body has no length limit; the standard is deterministic where possible (scripts in `scripts/`), concise and effective. Detail that loads only on demand goes in `references/<topic>.md`, one level deep from SKILL.md.
 
 ## Step 4 — verify

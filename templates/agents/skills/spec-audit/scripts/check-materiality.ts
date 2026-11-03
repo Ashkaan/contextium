@@ -209,9 +209,9 @@ async function main(): Promise<void> {
   /** true when git-ref has <path>, false when it does not; a git error stops. */
   const atRef = (path: string): boolean => {
     if (UNBORN) return false;
-    const r = git(["ls-tree", "--name-only", GIT_REF, "--", path]);
+    const r = git(["ls-tree", "-z", "--name-only", GIT_REF, "--", path]);
     if (r.status !== 0) gitReadFailed("ls-tree", r.status);
-    return chomp(r.stdout) !== "";
+    return r.stdout !== "";
   };
   /** The version git-ref has; a failure stops. */
   const showAtRef = (path: string): string => {
@@ -219,10 +219,11 @@ async function main(): Promise<void> {
     if (r.status !== 0) gitReadFailed("show", r.status);
     return r.stdout;
   };
-  const lsTreeR = (path: string): string => {
-    const r = git(["ls-tree", "-r", "--name-only", GIT_REF, "--", path]);
+  // NUL-separated, so a name git would C-quote is the path on disk.
+  const lsTreeR = (path: string): string[] => {
+    const r = git(["ls-tree", "-z", "-r", "--name-only", GIT_REF, "--", path]);
     if (r.status !== 0) gitReadFailed("ls-tree", r.status);
-    return chomp(r.stdout);
+    return r.stdout.split("\0").filter((p) => p !== "");
   };
   const diff = (path: string, u0: boolean): string => {
     const r = git(u0 ? ["diff", "-U0", GIT_REF, "--", path] : ["diff", GIT_REF, "--", path]);
@@ -241,10 +242,10 @@ async function main(): Promise<void> {
   if (isDir(SPEC_PATH)) {
     const FOLDER = trimSlash(SPEC_PATH);
     // Anything git-ref lacks — a new folder, or a new file in an old one.
-    const TREE_FILES = UNBORN ? "" : lsTreeR(FOLDER);
-    const lf = git(["ls-files", "--others", "--exclude-standard", "--", FOLDER]);
+    const TREE_FILES = UNBORN ? [] : lsTreeR(FOLDER);
+    const lf = git(["ls-files", "-z", "--others", "--exclude-standard", "--", FOLDER]);
     if (lf.status !== 0) gitReadFailed("ls-files", lf.status);
-    if (TREE_FILES === "" || chomp(lf.stdout) !== "") say("material:new-file");
+    if (TREE_FILES.length === 0 || lf.stdout !== "") say("material:new-file");
     let names: string[];
     try {
       names = readdirSync(FOLDER)
@@ -259,8 +260,8 @@ async function main(): Promise<void> {
     }
     // A file git-ref has and the folder no longer does — deleting spec.md must
     // not read as no change.
-    for (const f of TREE_FILES.split("\n")) {
-      if (f !== "" && !existsSync(f)) say("material:file-removed");
+    for (const f of TREE_FILES) {
+      if (!existsSync(f)) say("material:file-removed");
     }
     const MATERIAL_SPEC =
       /^(Clarifications|User Scenarios & Testing|User Story|Edge Cases|Requirements|Functional Requirements|Key Entities|Success Criteria|Measurable Outcomes|Acceptance)/;

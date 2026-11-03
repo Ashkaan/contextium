@@ -72,7 +72,17 @@ chmodSync(`${TMP}/resolve-model.sh`, 0o755);
 function run(args: string[], env: Record<string, string> = {}): { rc: number | null; all: string } {
   const r = spawnSync(process.execPath, ["--experimental-strip-types", SCRIPT, ...args], {
     encoding: "utf8",
-    env: { ...process.env, POLICY_JSON: POLICY, POLICY_CHAIN_RESOLVER: `${TMP}/resolve-model.sh`, ...env },
+    env: {
+      ...process.env,
+      HOME: TMP,
+      T3CODE_HOME: TMP,
+      WORKBENCH_THREAD_ID: "",
+      POLICY_CHAIN_AUTHOR_THREAD_ID: "",
+      POLICY_CHAIN_AUTHOR_VENDORS: "claude",
+      POLICY_JSON: POLICY,
+      POLICY_CHAIN_RESOLVER: `${TMP}/resolve-model.sh`,
+      ...env,
+    },
     timeout: 60_000,
   });
   return { rc: r.status, all: `${r.stdout}${r.stderr}` };
@@ -80,6 +90,26 @@ function run(args: string[], env: Record<string, string> = {}): { rc: number | n
 function check(name: string, expected: number, actual: number | null): void {
   assert.equal(actual, expected, `${name} — expected rc=${expected}, got rc=${actual}`);
 }
+
+test("executable artifact audit excludes Codex authors and refuses missing provenance", () => {
+  const vendor = join(TMP, "author-vendor");
+  writeFileSync(vendor, "#!/bin/sh\ncat >/dev/null\necho NO_FINDINGS\n");
+  chmodSync(vendor, 0o755);
+  const r = run(["adversarial-review", ARTIFACT, BRIEF], {
+    POLICY_CHAIN_AUTHOR_VENDORS: "codex",
+    CODEX_BIN: vendor,
+    GROK_BIN: vendor,
+  });
+  assert.equal(r.rc, 0, r.all);
+  assert.match(r.all, /answered: grok\//);
+  const missing = run(["adversarial-review", ARTIFACT, BRIEF], {
+    POLICY_CHAIN_AUTHOR_VENDORS: "",
+    CODEX_BIN: vendor,
+    GROK_BIN: vendor,
+  });
+  assert.equal(missing.rc, 2, missing.all);
+  assert.doesNotMatch(missing.all, /answered:/);
+});
 
 test("argument validation", () => {
   check("no args rejected", 2, run([]).rc);

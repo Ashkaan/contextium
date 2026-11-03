@@ -14,6 +14,7 @@ import {
   constants,
   copyFileSync,
   cpSync,
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -50,6 +51,37 @@ function resolveValidator(): string {
   return isExecutable(venv) ? venv : "builtin";
 }
 const SKILLS_REF_BIN = resolveValidator();
+
+// The Bash parser verify.ts reads hook exits through: the first of
+// AUTHOR_BASH_PARSER_ROOT, this repo's node_modules, npm's global root and
+// Node's own global node_modules that holds web-tree-sitter and
+// tree-sitter-bash's grammar — the order verify.ts itself looks in.
+function findParserRoot(): string {
+  const top = spawnSync("git", ["-C", dirname(fileURLToPath(import.meta.url)), "rev-parse", "--show-toplevel"], {
+    encoding: "utf8",
+  });
+  const npmRoot = spawnSync("npm", ["root", "-g"], { encoding: "utf8" });
+  const cands = [
+    process.env.AUTHOR_BASH_PARSER_ROOT ?? "",
+    top.status === 0 ? join(top.stdout.trim(), "node_modules") : "",
+    npmRoot.status === 0 ? npmRoot.stdout.trim() : "",
+    join(dirname(process.execPath), "..", "lib", "node_modules"),
+  ];
+  for (const c of cands) {
+    if (c !== "" && existsSync(join(c, "web-tree-sitter")) && existsSync(join(c, "tree-sitter-bash/tree-sitter-bash.wasm")))
+      return c;
+  }
+  return "";
+}
+const PARSER_ROOT = findParserRoot();
+
+test("a node_modules holding the Bash parser is found", () => {
+  assert.notEqual(
+    PARSER_ROOT,
+    "",
+    "no node_modules with web-tree-sitter and tree-sitter-bash — npm i -g web-tree-sitter tree-sitter-bash, or set AUTHOR_BASH_PARSER_ROOT to one",
+  );
+});
 const TMP = mkdtempSync(join(tmpdir(), "author-verify-test-"));
 const HOME = join(TMP, "home");
 mkdirSync(join(HOME, ".local/share"), { recursive: true });
@@ -60,8 +92,9 @@ const SCAFFOLD = join(SCRIPT_DIR, "scaffold.ts");
 // A scaffolded skill lands under `<workbench>/.agents/skills/`. Skill cases run
 // against a throwaway SKILLS_ROOT — without it they would scaffold into the
 // live tree.
-const SKILLS_ROOT = join(TMP, "skills");
-mkdirSync(SKILLS_ROOT);
+// Under .agents/, as an install lays it out, so metadata.peers resolve from TMP.
+const SKILLS_ROOT = join(TMP, ".agents", "skills");
+mkdirSync(SKILLS_ROOT, { recursive: true });
 // REPO_ROOT is a THROWAWAY workbench, not a live checkout: the hook/agent
 // cases write into it.
 const REPO_ROOT = join(TMP, "repo");
@@ -79,6 +112,7 @@ const ENV: NodeJS.ProcessEnv = {
   HOME,
   SKILLS_ROOT,
   CONTEXT_WRITE_ROOT: REPO_ROOT,
+  AUTHOR_BASH_PARSER_ROOT: PARSER_ROOT,
 };
 
 interface Run {
@@ -317,6 +351,21 @@ test("desc-cap 1025-fails 1024-ok", () => {
 test("first-person rejected", () => {
   const p = writeSkill("zz-verify-fp", "I scaffold artifacts when you ask me to.", 5);
   assert.ok(verifyOut("skill", p).includes("first-person"), "first-person: first-person description should fail");
+  const quoted = writeSkill(
+    "zz-verify-fp-quoted",
+    'Finds restaurants when the user says "where should we eat" or "surprise me".',
+    5,
+  );
+  assert.equal(verifyRc("skill", quoted), 0, "quoted user triggers are not first-person self-description");
+  for (const description of [
+    "Finds restaurants when the user says 'where should we eat'.",
+    "Finds restaurants when the user says ‘where should we eat’.",
+  ]) {
+    const path = writeSkill("zz-verify-fp-single-quoted", description, 5);
+    assert.equal(verifyRc("skill", path), 0, `single-quoted trigger: ${description}`);
+  }
+  const apostrophes = writeSkill("zz-verify-fp-apostrophes", "Tracks the user's tasks; I update the client's list.", 5);
+  assert.match(verifyOut("skill", apostrophes), /first-person/, "possessive apostrophes must not hide first-person prose");
 });
 
 // P2/P4: an agent description longer than one sentence → FAIL; a one-sentence
@@ -368,7 +417,9 @@ test("retired skill keys refused via check-skills.ts; agent unknown keys flagged
     `unknown-keys: \`steps:\` should fail through check-skills.ts: ${out}`,
   );
 
-  writeSkillFm("allowed-tools: Bash Read", "metadata:", '  peers: "scripts/x.sh"');
+  mkdirSync(join(dir, "scripts"), { recursive: true });
+  writeFileSync(join(dir, "scripts/x.ts"), "export {};\n");
+  writeSkillFm("allowed-tools: Bash Read", "metadata:", `  peers: ".agents/skills/${name}/scripts/x.ts"`);
   out = verifyOut("skill", join(dir, "SKILL.md"));
   assert.equal(/Unexpected fields|FAIL/.test(out), false, `unknown-keys: the spec's fields must pass: ${out}`);
 
@@ -448,6 +499,37 @@ test("hook exit1-via-fn caught", () => {
   assert.ok(verifyOut("hook", p).includes("NON-blocking"), "hook-indirect: exit 1 inside a fn should be flagged");
 });
 
+test("hook exit checks separate diagnostic branches from live refusals and quoted data", () => {
+  const p = join(REPO_ROOT, ".agents/hooks/zz-verify-diagnostics.sh");
+  const diagnostic =
+    'if [[ "${1:-}" == "--self-test" ]]; then\n  if [[ "${2:-}" == fail ]]; then exit 1; fi\n  exit 0\nfi\n';
+  writeFileSync(p, `#!/usr/bin/env bash\nset -euo pipefail\n${diagnostic}printf '%s' 'exit 1'\nexit 2\n`);
+  let r = verify("hook", p);
+  assert.equal(r.rc, 0, `diagnostic exit1 and quoted data are not live refusals: ${r.out}`);
+  for (const source of [
+    `${diagnostic}block() { exit 1; }\nblock\n`,
+    `${diagnostic}FOO=bar exit 1\n`,
+    `${diagnostic}command exit 1\n`,
+    `${diagnostic}builtin exit 1\n`,
+    diagnostic.replace("  exit 0\nfi\n", "  exit 0\nelse\n  exit 1\nfi\n"),
+    diagnostic.replace("  exit 0\nfi\n", '  exit 0\nelif [[ "${2:-}" == live ]]; then\n  exit 1\nfi\n'),
+    diagnostic.replace('"--self-test"', '"--other"'),
+  ]) {
+    writeFileSync(p, `#!/usr/bin/env bash\nset -euo pipefail\n${source}`);
+    r = verify("hook", p);
+    assert.notEqual(r.rc, 0, "live or unrecognized-mode exit1 must still fail");
+    assert.match(r.out, /NON-blocking/);
+  }
+  writeFileSync(p, `#!/usr/bin/env bash\nset -euo pipefail\n${diagnostic}exit 2\n`);
+  r = node(VERIFY, ["hook", p], { env: { ...ENV, AUTHOR_BASH_PARSER_ROOT: join(TMP, "missing-parser") } });
+  assert.notEqual(r.rc, 0, "missing syntax parser cannot silently clear an exit1");
+  assert.match(r.out, /cannot inspect Bash exit paths/);
+  writeFileSync(p, '#!/usr/bin/env bash\nset -euo pipefail\nif [[ "${1:-}" == "--self-test" ]]; then\nexit 1\n');
+  r = verify("hook", p);
+  assert.notEqual(r.rc, 0, "invalid Bash cannot be cleared as diagnostic-only");
+  assert.match(r.out, /cannot inspect Bash exit paths/);
+});
+
 // Finding 4: a block-style `tools:` list is non-empty (no false positive).
 test("block-style tools accepted", () => {
   const p = join(REPO_ROOT, ".agents/agents/zz-verify-tblock.md");
@@ -468,6 +550,12 @@ test("ref https-ok local-flagged", () => {
   writeFileSync(join(dir, "references/ok.md"), "See [docs](https://code.claude.com/docs/en/skills.md).\n");
   let out = verifyOut("skill", join(dir, "SKILL.md"));
   assert.equal(out.includes("another local .md"), false, "ref-url: https .md URL should NOT be flagged");
+  writeFileSync(
+    join(dir, "references/ok.md"),
+    "```markdown\n[example](example.md)\n```\n\n~~~~markdown\n[another example](another.md)\n~~~\n[still inside the longer fence](inside.md)\n~~~~\n",
+  );
+  out = verifyOut("skill", join(dir, "SKILL.md"));
+  assert.equal(out.includes("another local .md"), false, "ref-example: fenced examples are not reference dependencies");
   writeFileSync(join(dir, "references/bad.md"), "See [sibling](other.md).\n");
   out = verifyOut("skill", join(dir, "SKILL.md"));
   assert.ok(out.includes("another local .md"), "ref-local: local .md link should be flagged");

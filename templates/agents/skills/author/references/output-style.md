@@ -39,7 +39,7 @@ is not evidence. Halt if there is none.
 
 ## Step 2 — resolve-shape
 
-Ask the user (a numbered list, recommendation first; in Claude Code, `AskUserQuestion`) for the two decisions the docs make load-bearing:
+Resolve these from the intended sessions and required reach. Ask only if the intended experience is unclear, using the parent skill's question boundary:
 
 - **`keep-coding-instructions`** — true when the style changes HOW Claude
   communicates while still doing engineering work; false only when the sessions
@@ -67,7 +67,7 @@ Fill the body. Two shape constraints, both from what a system prompt is:
   is subordinate to that one, and a reader who stops after the first paragraph
   should already behave mostly right.
 
-Keep project facts OUT — those go to AGENTS.md. A style that names a repo path
+Keep project facts OUT — those go to the project record. A style that names a repo path
 or a vendor is usually a rule wearing the wrong hat.
 
 ## Step 4.5 — design-review

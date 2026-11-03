@@ -6,7 +6,7 @@ then fills it. Agents are auto-discovered by file presence — no register step.
 **This document is the single source of truth for the agent frontmatter + body
 contract.** Nothing else defines agent shape; this doc owns it. `templates/agent.template.md` instantiates the field
 list below and `verify.ts`'s agent branch checks it — both derive from here. The
-three existing agents (`research-agent.md`, `implement-audit-reviewer.md`,
+three existing agents (`ai-layer-reviewer.md`, `implement-audit-reviewer.md`,
 `spirit-check.md`) are the EXAMPLES that informed this contract, not a parallel
 authority; `verify.ts` does not read them at runtime.
 
@@ -33,9 +33,9 @@ The body is the agent's system prompt. It MUST contain:
 - An **Output Contract** — the exact structured shape the caller consumes (a fenced markdown block). Adversarial agents additionally emit triaged findings (`fix-now | deferred-batch-N | speculative | out-of-scope`) + a structured YAML section.
 - A **When to Refuse** clause — malformed brief, unbounded scope, or a tool-invocation-not-investigation request.
 
-## Step 1 — resolve shape (ask the user: a numbered list, recommendation first; in Claude Code, `AskUserQuestion`)
+## Step 1 — resolve shape
 
-Confirm this is actually an agent, not a skill. Place in an AGENT only if the work benefits from FRESH context (adversarial review, cold-reader analysis, isolated investigation, parallel offload to protect the main context window). If it needs session history (orchestration, user-facing slash command, commit/push) it is a SKILL — use `/author skill`. Agents are NOT slash-invocable; a verb-form name (`run-x`, `fix-y`) is the usual tell that a skill was meant — `scaffold.ts` prints a reminder on verb-form names.
+Determine whether this is an agent or a skill from its context needs. Place in an AGENT only if the work benefits from FRESH context (adversarial review, cold-reader analysis, isolated investigation, parallel offload to protect the main context window). If it needs session history (orchestration, user-facing slash command, commit/push) it is a SKILL — use `/author skill`. Agents are NOT slash-invocable; a verb-form name (`run-x`, `fix-y`) is the usual tell that a skill was meant — `scaffold.ts` prints a reminder on verb-form names.
 
 ## Step 2 — scaffold
 

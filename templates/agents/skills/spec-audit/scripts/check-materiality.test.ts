@@ -214,6 +214,21 @@ test("spec-kit folder", () => {
   reset();
 });
 
+// A name git would C-quote. Without -z, `ls-tree -r --name-only` prints
+// `"specs/003-c/caf\303\251.md"`, a path not on disk, so an unchanged folder read
+// as `material:file-removed`.
+test("a spec folder holding quoted names, unchanged, is no change", () => {
+  w("specs/003-c/spec.md", "# spec\n");
+  w("specs/003-c/café.md", "# notes\n");
+  w("specs/003-c/tab\there.md", "# more\n");
+  git("add", "specs/003-c");
+  git("commit", "-qm", "quoted names");
+  assert.equal(run("specs/003-c"), "non-material:no-change", "an unchanged folder with quoted names");
+  rmSync(join(tmp, "specs/003-c/café.md"));
+  assert.equal(run("specs/003-c"), "material:file-removed", "deleting the quoted file is still seen");
+  git("checkout", "-q", "--", "specs");
+});
+
 // The legacy file path is untouched
 test("legacy single-file SPECs", () => {
   w("legacy.spec.md", "# x\n");

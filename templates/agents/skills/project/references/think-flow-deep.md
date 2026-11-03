@@ -56,6 +56,8 @@ Every think flow produces a SPEC — one `specs/NNN-name/` folder per roadmap ro
 
 The failure: the user invokes /project in a fresh tab, the generator runs, and the agent moves straight to asking "which one to start?" without pasting the captured stdout — the user cannot see what to pick. "Ran the generator" is not the deliverable; the user reading the index in the reply IS.
 
-## Long-session fresh-tab handoff
+The failure recurs, so prose alone has not held it. No hook checks the outgoing reply for the generator's rows, so the Critical bullet's self-check is the only guard.
 
-The failure: the same session holds the plan + the investment in prior choices, then defends them mid-stream when /implement runs in-context, and hours of drift go by before anyone notices. The fresh-context boundary between think (`/project`) and do (`/implement`) is the methodological fix. Nothing enforces it mechanically — no hook refuses an in-context `/implement` — so the boundary is guidance in this skill and in `/implement`, and it holds by judgment.
+## Separate implementation session
+
+The failure: the same session holds the plan + the investment in prior choices, then defends them mid-stream when /implement runs in-context, and hours of drift go by before anyone notices. A separate implementation session preserves the boundary between think (`/project`) and do (`/implement`). Nothing enforces it mechanically — no hook refuses an in-context `/implement` — so the boundary rests on `/project` never building: a planning close prints each ready row's `/implement <slug> <row>` command, and the user runs it in a fresh session.

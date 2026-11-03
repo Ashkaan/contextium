@@ -18,6 +18,7 @@
 //   node .agents/generators/project-index.generate.ts --out FILE # index to a file
 //   node .agents/generators/project-index.generate.ts --compact  # slim view to stdout
 //   ... --compact --projects-dir DIR                                            # the same, from another projects/ tree
+//   ... --json [--projects-dir DIR]                                             # Active, Blocked and Monitoring rows as JSON, in index order
 
 import { readdirSync, readFileSync, realpathSync, writeFileSync } from "fs";
 import { dirname, join } from "path";
@@ -591,24 +592,42 @@ function main(): void {
   }
   const { projects, discoveryDrops, dropped } = discoverProjects(projectsDir);
 
-  // --compact: slim stdout view for the /project skill, read from --projects-dir
-  // when render-index.ts passes one (origin/main plus the thread's own edits).
-  // A drop is named on the view's first line and fails the run.
-  if (argv.includes("--compact")) {
-    // A project can also be read and still not render: buildIndexData rejects a
-    // row that fails the index's schema (an empty next:, say). That is a drop
-    // too, named on the same line, or the project vanishes from /project while
-    // the run reports success. Rows are matched by linkPath, one per folder:
-    // two projects may share a name.
+  // A project can also be read and still not render: buildIndexData rejects a
+  // row that fails the index's schema (an empty next:, say). That is a drop
+  // too, named on the same line, or the project vanishes from /project while
+  // the run reports success. Rows are matched by linkPath, one per folder:
+  // two projects may share a name.
+  const viewOf = (): { data: ProjectsIndexData; dropLine: string | null } => {
     const data = buildIndexData(projects, discoveryDrops);
     const shown = new Set([...data.active, ...data.blocked, ...data.monitor].map((r) => r.linkPath));
     const rejected = projects
       .filter((p) => (ACTIVE_STATUSES as readonly string[]).includes(p.status) && !shown.has(p.linkPath))
       .map((p) => `${p.linkPath}: its row does not render (check next:, description and priority)`);
-    const dropLine = compactDropLine(discoveryDrops + rejected.length, [...dropped, ...rejected]);
+    return { data, dropLine: compactDropLine(discoveryDrops + rejected.length, [...dropped, ...rejected]) };
+  };
+
+  // --compact: slim stdout view for the /project skill, read from --projects-dir
+  // when render-index.ts passes one (origin/main plus the thread's own edits).
+  // A drop is named on the view's first line and fails the run.
+  if (argv.includes("--compact")) {
+    const { data, dropLine } = viewOf();
     if (dropLine) process.stdout.write(`${dropLine}\n\n`);
     process.stdout.write(buildCompact(data));
     if (dropLine) process.exitCode = 1;
+    return;
+  }
+
+  // --json: the same rows the compact view shows, in the same order, for a
+  // caller that acts on them (`/project triage` reads Blocked and Monitoring). A drop fails the run with its line on stderr and nothing on
+  // stdout: a caller ranking projects must not rank an incomplete list.
+  if (argv.includes("--json")) {
+    const { data, dropLine } = viewOf();
+    if (dropLine) {
+      console.error(dropLine.replace(/\*\*/g, ""));
+      process.exitCode = 1;
+      return;
+    }
+    process.stdout.write(`${JSON.stringify({ active: data.active, blocked: data.blocked, monitor: data.monitor })}\n`);
     return;
   }
 

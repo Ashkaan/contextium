@@ -31,6 +31,7 @@
 //
 // Usage:
 //   .agents/skills/project/scripts/render-index.ts
+//   .agents/skills/project/scripts/render-index.ts --json   # the same rows as JSON, in the same order, nothing else
 //
 // Exit code: 0 unless the index generator itself fails (then its status).
 //
@@ -108,13 +109,15 @@ function freshView(repo: string): string | null {
   }
   // This worktree's own edits: every README that differs from where it left
   // main (committed, staged or not), and every one it added and never staged.
-  const changed = git(repo, ["diff", "--name-only", "--no-renames", base.stdout.trim(), "--", README_GLOB]);
-  const added = git(repo, ["ls-files", "--others", "--exclude-standard", "--", README_GLOB]);
+  // NUL-separated (-z): without it git C-quotes a folder named with an accent, the
+  // quoted path is never on disk, and main's copy wins over the thread's edit.
+  const changed = git(repo, ["diff", "-z", "--name-only", "--no-renames", base.stdout.trim(), "--", README_GLOB]);
+  const added = git(repo, ["ls-files", "-z", "--others", "--exclude-standard", "--", README_GLOB]);
   if (changed.status !== 0 || added.status !== 0) {
     rmSync(view, { recursive: true, force: true });
     die("render-index: could not list this worktree's own project edits");
   }
-  for (const rel of `${changed.stdout}\n${added.stdout}`.split("\n").filter(Boolean)) {
+  for (const rel of `${changed.stdout}${added.stdout}`.split("\0").filter((s) => s !== "")) {
     const dest = join(view, rel);
     if (existsSync(join(repo, rel))) {
       mkdirSync(dirname(dest), { recursive: true });
@@ -163,6 +166,20 @@ async function main(): Promise<void> {
   const VIEW = freshView(CODE_REPO);
   if (VIEW !== null) process.on("exit", () => rmSync(VIEW, { recursive: true, force: true }));
   const ROOT = VIEW ?? CODE_REPO;
+
+  // --json: the generator's rows from the same fresh view, for a caller that
+  // ranks projects. No lapsed block and no prompt; a failed or
+  // partial read passes the generator's stderr and exit status through and
+  // prints nothing, so no caller ranks an incomplete list.
+  if (process.argv.includes("--json")) {
+    const json = spawnSync(
+      process.execPath,
+      ["--experimental-strip-types", GENERATOR, "--json", "--projects-dir", join(ROOT, "projects")],
+      { encoding: "utf8", stdio: ["inherit", "pipe", "inherit"], maxBuffer: 256 * 1024 * 1024 },
+    );
+    if (json.status === 0) process.stdout.write(json.stdout ?? "");
+    exit(json.status ?? 1);
+  }
 
   // A non-zero exit still carries a view worth showing: the generator names the
   // projects it could not read on its first line and renders the rest. Print that

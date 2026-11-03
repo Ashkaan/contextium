@@ -4,6 +4,45 @@ A newer version of the template will ship better skills, refined standards, new 
 Pulling those in should never put your own work at risk. The installer is built around exactly that
 split: it refreshes the methodology layer and leaves your data alone.
 
+## Upgrading to v9.2.0: choose how much guidance AGENTS.md carries
+
+Re-run the installer. Without `--rules`, your `AGENTS.md` keeps the guidance it already carried; one
+thing outside it may need a step: a deploy poller of your own (below).
+
+- **A rule level.** The installer asks how much of Contextium's guidance `AGENTS.md` carries:
+  `minimal` (only what the installed skills, checks and guards rely on), `recommended` (plus the
+  general engineering standards; the default for a new workbench) or `full` (plus working
+  preferences for replies and a Stack section). `--rules <level>` answers without the question. It
+  prints what the level holds, what it leaves out and the text of yours that stays before writing,
+  and a re-run keeps the level. On this upgrade, unchanged v8/v9 working preferences become the full
+  level's preferences block; edited ones stay yours, as written. `docs/architecture.md` § How much
+  guidance: the rule level has the details.
+- **The close waits for GitHub's checks on every push.** `/close` reads the checks GitHub runs on
+  each push it makes, through the `gh` CLI, and fails when one fails; without `gh` it lands and says
+  no push checks were read. `.agents/deployable-prefixes.json` and `.agents/deploy/await-deploy-run.sh`
+  are no longer read: make your deploy a GitHub workflow, and the close waits on it.
+- **Live checks.** A spec's `tasks.md` can declare checks only the deployed thing can answer (a
+  `live-checks` block naming `workbench` or `repo:<owner>/<name>`); the close holds until each one
+  has run against what is on the remote's trunk.
+- **The planning close prints the next step.** `/project` and `/spec` never build. Their close prints
+  `/implement <slug> <row>` for each row ready to build, in its own block; run each in a fresh
+  session. Under T3 Code, `/implement` refuses a row another open thread is already building.
+- **Reviews remember what they checked.** A review leaves a receipt naming the content it covered;
+  the close and a later audit reuse it only while that content is unchanged, and review only what
+  moved. A review leaves out every model that wrote the work, which the calling skill names. With no
+  other model installed, the fresh-context fallback is recorded as not independent, as before.
+- **`/project triage`** lists what is blocked, monitored or waiting on you, and `unblock` returns a
+  `blocked: until` row to `planned`; nothing reopens one on its own.
+- **`/qa`** checks for cut-off, covered and modal-trapped controls, captures touch-sized and
+  lazy-loaded pages, serves a static build without Python, and keeps one server per run alive
+  across restarts.
+- **Checks.** `check-scripts.ts` refuses a git file listing without `-z`; `check-skills.ts` refuses
+  a `metadata.peers` path that does not exist and a step that runs a skill only you may start. The
+  host guard refuses a kill by port (`fuser -k`, `lsof … | xargs kill`): stop a server by its process
+  group instead.
+- **What you need.** `gh`, signed in, for the push checks above; `npm i -g typescript@5
+  web-tree-sitter tree-sitter-bash` for `/author`'s bash-hook check and the reviewer's caller map.
+
 ## Upgrading to v9.1.0: the guard on macOS, and one project layout
 
 Re-run the installer. One thing in your data may need a step: a project with no `ROADMAP.md`.
@@ -200,6 +239,10 @@ v8's `AGENTS.md` has two kinds of section. Your preferences and your Stack secti
 rest — what lives where, records, skills, skill shape and the Standards — sit between
 `<!-- contextium:<name> -->` and `<!-- /contextium -->`, and a re-run replaces those blocks and nothing
 else.
+
+From v9.2.0 the blocks also carry a rule level — how much guidance `AGENTS.md` holds, chosen with
+`--rules minimal|recommended|full`. An upgrade without `--rules` keeps the guidance your file
+already carried; `docs/architecture.md` § How much guidance: the rule level has the details.
 
 On the upgrade itself the installer looks at the `.agents/AGENTS.md` you have:
 

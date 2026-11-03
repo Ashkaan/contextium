@@ -6,6 +6,14 @@ client. This dir starts empty. Docs-only starters for common services live in th
 repo, under `templates/integrations/`, not in your workbench; to pull one in, re-run `install.sh`
 from that repo with `--integrations "<name>"` (or pick it from the list when it asks).
 
+Each integration is a folder here whose `README.md` opens with the manifest below; its
+front matter names the product, how it is reached and what it is used for. This file keeps
+no copied list of them. To list the integrations present in this checkout:
+
+```bash
+rg --files integrations -g README.md --max-depth 2
+```
+
 See `docs/architecture.md` for the apps-vs-integrations boundary.
 
 ## Manifest

@@ -285,8 +285,8 @@ test("(f) onepassword_item", async (t) => {
     t,
     "violation",
     "onepassword_item carries a 1Password title",
-    makeReadme("titlecred", fm(`${CK}.demo`, "DataForSEO API - Shared"), "client.ts"),
-    "(f) `onepassword_item: DataForSEO API - Shared` — must be",
+    makeReadme("titlecred", fm(`${CK}.demo`, "Example Service - Example Consumer"), "client.ts"),
+    "(f) `onepassword_item: Example Service - Example Consumer` — must be",
   );
 });
 

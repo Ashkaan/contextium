@@ -26,7 +26,8 @@ const VALIDATOR = process.env.VALIDATOR || "builtin";
 const TMP = mkdtempSync(join(tmpdir(), "check-skills-test-"));
 after(() => rmSync(TMP, { recursive: true, force: true }));
 
-let ROOT = join(TMP, "skills");
+// Under .agents/, as an install lays it out: metadata.peers resolve from TMP.
+let ROOT = join(TMP, ".agents", "skills");
 mkdirSync(ROOT, { recursive: true });
 
 /** make_skill <name> <frontmatter-body> [body-text] — writes $ROOT/<name>/SKILL.md */
@@ -245,8 +246,28 @@ test("frontmatter never closed", () => {
 
 // 4. metadata.peers as a string is fine.
 test("metadata.peers string", () => {
-  makeSkill("alpha", `${MINIMAL}\nmetadata:\n  peers: "a/b.sh c/d.md"`);
+  mkdirSync(join(TMP, "a"), { recursive: true });
+  mkdirSync(join(TMP, "c"), { recursive: true });
+  writeFileSync(join(TMP, "a/b.ts"), "export {};\n");
+  writeFileSync(join(TMP, "c/d.md"), "Peer record.\n");
+  makeSkill("alpha", `${MINIMAL}\nmetadata:\n  peers: "a/b.ts c/d.md c"`);
   expect("ok", "OK — 1 skill(s) checked", "alpha");
+});
+
+test("metadata.peers must resolve from the repo root, not the skill folder", () => {
+  mkdirSync(join(ROOT, "alpha/scripts"), { recursive: true });
+  writeFileSync(join(ROOT, "alpha/scripts/local.ts"), "export {};\n");
+  makeSkill("alpha", `${MINIMAL}\nmetadata:\n  peers: "scripts/local.ts"`);
+  expect("violation", "metadata.peers path does not exist from the repo root: scripts/local.ts", "alpha");
+  makeSkill("alpha", `${MINIMAL}\nmetadata:\n  peers: ".agents/skills/alpha/scripts/local.ts"`);
+  expect("ok", "OK — 1 skill(s) checked", "alpha");
+});
+
+test("metadata.peers refuses missing, absolute and escaping paths", () => {
+  for (const peer of ["retired/missing.ts", join(TMP, "a/b.ts"), "../outside.ts"]) {
+    makeSkill("alpha", `${MINIMAL}\nmetadata:\n  peers: "${peer}"`);
+    expect("violation", "metadata.peers path", "alpha");
+  }
 });
 // The published validator reads strictyaml, which rejects flow syntax
 // outright — so an inline `{…}` map is a validator violation before the local
@@ -417,6 +438,36 @@ test("agents/ holding another file", () => {
   writeFileSync(join(ROOT, "hidden/agents/claude.yaml"), "x: 1\n");
   expect("violation", "hidden/SKILL.md: agents/claude.yaml", "hidden");
 });
+// 11d. A step that tells the model to run a hidden skill (a table row that
+//      sends the model to `/hidden <slug> followup` is refused by the harness,
+//      and the step stalls). Flagged from both ends: on the caller, and on
+//      the hidden skill when another skill's step calls it.
+function makeCaller(line: string): void {
+  rmSync(join(ROOT, "caller"), { recursive: true, force: true });
+  makeSkill("caller", "name: caller\ndescription: Calls another skill from one of its steps.", `# caller\n\n${line}`);
+}
+test("a step invoking a hidden skill is refused on the caller", () => {
+  makeHidden(HIDDEN, OPENAI_YAML);
+  makeCaller("| row | Final notice → `/hidden <slug> followup`. |");
+  expect(
+    "violation",
+    "caller/SKILL.md: line 7 tells the model to run /hidden, which carries disable-model-invocation",
+    "caller",
+  );
+});
+test("a step invoking a hidden skill is refused on the hidden skill", () => {
+  makeHidden(HIDDEN, OPENAI_YAML);
+  makeCaller("Invoke `/hidden <name>`. It owns the card.");
+  expect("violation", "hidden/SKILL.md: caller/SKILL.md line 7 tells the model to run /hidden", "hidden");
+});
+test("naming a hidden skill without invoking it passes", () => {
+  makeHidden(HIDDEN, OPENAI_YAML);
+  makeCaller(
+    "Classify the way `/hidden` does; the user runs `/hidden` when ready.\n\n> Next: run **`/hidden 2026-10`**.",
+  );
+  expect("ok", "OK — 2 skill(s) checked", "caller", "hidden");
+  rmSync(join(ROOT, "caller"), { recursive: true, force: true });
+});
 test("the key does not shield another retired key from the validator", () => {
   makeHidden(`${HIDDEN}\nwhen_to_use: always`, OPENAI_YAML);
   const { out, rc } = runCheck(["hidden"]);
@@ -549,3 +600,4 @@ test("scan modes, in a git repo", async (t) => {
     expect("caller-error", "", "--since", "no-such-ref");
   });
 });
+

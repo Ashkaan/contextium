@@ -73,6 +73,14 @@ chmodSync(`${tmp}/reviewer.sh`, 0o755);
 
 const ENV: NodeJS.ProcessEnv = {
   ...process.env,
+  // The scripted Git fixture has no live T3 author or review owner.
+  HOME: `${tmp}/home`,
+  T3CODE_HOME: `${tmp}/no-t3`,
+  WORKBENCH_THREAD_ID: "",
+  CODE_REVIEW_LOOP_ID: `caller-contract-eval-test-${process.pid}`,
+  POLICY_CHAIN_AUTHOR_THREAD_ID: "",
+  // Simulated author; both vendor stubs below remain eligible and independent.
+  POLICY_CHAIN_AUTHOR_VENDORS: "claude",
   PATH: `${tmp}/bin:${process.env.PATH ?? ""}`,
   POLICY_JSON: `${tmp}/policy.json`,
   POLICY_CHAIN_RESOLVER: `${tmp}/resolve-model.sh`,
@@ -115,7 +123,7 @@ const grepOut = (needle: string): string =>
     .join("\n");
 
 function t(label: string, expected: string | number | null, actual: string | number | null): void {
-  assert.equal(actual, expected, `${label}\n  expected: [${expected}]\n  actual  : [${actual}]`);
+  assert.equal(actual, expected, `${label}\n  expected: [${expected}]\n  actual  : [${actual}]\n${clip("stderr", stderr)}`);
 }
 
 test("1. --pack-only: the deterministic half, no reviewer reached", () => {

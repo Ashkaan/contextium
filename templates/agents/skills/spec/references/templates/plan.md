@@ -22,6 +22,10 @@
 
 [Simplest shape that could work]
 
+Fill upstream technical and tree examples under root AGENTS.md's What lives
+where (and its Stack section, where the workbench keeps one). They are placeholders, not permission to introduce another
+runtime, data store or parallel application layout.
+
 <!-- /contextium -->
 ## Technical Context
 
@@ -71,7 +75,7 @@
 
 | What | Where it canonically lives | Candidate transports | Chosen + why |
 |---|---|---|---|
-| [input] | [URL / repo path / table / host] | [API / file / SSH / bundled] | [chosen] — [why the others don't fit] |
+| [input] | [URL / repo path / database / host] | [available authoritative transports] | [chosen] — [why the others don't fit] |
 
 <!-- /contextium -->
 ## Constitution Check

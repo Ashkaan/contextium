@@ -16,7 +16,8 @@
 //   (b) `skills-ref validate` passes — the six allowed keys, name = folder,
 //       description length, and so on; its lines are relayed verbatim. Without
 //       the validator, builtinValidate checks the same list
-//   (c) `metadata`, when present, holds only `peers`, a non-empty string
+//   (c) `metadata`, when present, holds only `peers`, a non-empty string of
+//       existing repo-relative paths (files or directories)
 //   (d) a `state/` folder holds `_doc.md`, and SKILL.md never names a
 //       `state/` path — state is what a skill has learned, never loaded at
 //       activation (AGENTS.md § Skill shape)
@@ -26,6 +27,10 @@
 //       The key is the one the validator does not know, so (b) validates a
 //       copy of SKILL.md without that one line; every other key still meets
 //       the validator.
+//   (f) no step in a SKILL.md tells the model to run a hidden skill — an
+//       arrow or Invoke / Run / Fire right before its backticked `/name` —
+//       checked on the caller and on the hidden skill, because the harness
+//       refuses that call: the step stalls where it should have run.
 //
 // WHAT IT SCANS. With no arguments: every top-level folder with ANY path
 // changed beneath it in this worktree, staged or not, plus untracked — a new
@@ -85,7 +90,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { basename, dirname, join } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { exit, runToExit } from "../packages/cli-exit/cli-exit.ts";
 import { yamlScalar } from "./yaml-scalar.ts";
@@ -566,7 +571,7 @@ function violation(name: string, what: string): void {
   violations += 1;
 }
 
-function checkSkill(dir: string, validatorBin: string, home: string): void {
+function checkSkill(dir: string, validatorBin: string, home: string, peerRoot: string): void {
   const name = basename(dir);
 
   // (a)
@@ -638,6 +643,26 @@ function checkSkill(dir: string, validatorBin: string, home: string): void {
             violation(name, `metadata.peers must be a string (space-separated paths), got ${f.type}`);
           } else if (f.value.replace(/\s/g, "") === "") {
             violation(name, "metadata.peers must be a non-empty string — name the peers or drop the key");
+          } else {
+            for (const peer of f.value.trim().split(/\s+/)) {
+              const abs = resolve(peerRoot, peer);
+              const rel = relative(peerRoot, abs);
+              if (isAbsolute(peer) || rel === ".." || rel.startsWith("../")) {
+                violation(name, `metadata.peers path must stay relative to the repo root: ${peer}`);
+                continue;
+              }
+              try {
+                statSync(abs);
+              } catch (error) {
+                const code = (error as NodeJS.ErrnoException).code;
+                violation(
+                  name,
+                  code === "ENOENT" || code === "ENOTDIR"
+                    ? `metadata.peers path does not exist from the repo root: ${peer}`
+                    : `metadata.peers path cannot be read: ${peer} (${code})`,
+                );
+              }
+            }
           }
         } else {
           violation(
@@ -670,6 +695,30 @@ function checkSkill(dir: string, validatorBin: string, home: string): void {
     for (const f of readdirSync(agentsDir).sort()) {
       if (f !== "openai.yaml")
         violation(name, `agents/${f} is not a file a skill carries — agents/ holds only openai.yaml`);
+    }
+  }
+
+  // (f) no step tells the model to run a hidden skill — the harness refuses the
+  //     call. Checked from both ends, so hiding a skill that another skill's
+  //     step runs fails too.
+  const root = dirname(dir);
+  for (const other of readdirSync(root).sort()) {
+    if (other === name || !isFile(join(root, other, "SKILL.md"))) continue;
+    if (isHidden(join(root, other))) {
+      for (const n of stepsInvoking(join(dir, "SKILL.md"), other)) {
+        violation(
+          name,
+          `line ${n} tells the model to run /${other}, which carries disable-model-invocation — unhide ${other} or hand the step to the user`,
+        );
+      }
+    }
+    if (hideValue === "true") {
+      for (const n of stepsInvoking(join(root, other, "SKILL.md"), name)) {
+        violation(
+          name,
+          `${other}/SKILL.md line ${n} tells the model to run /${name}, which carries disable-model-invocation — unhide it or hand that step to the user`,
+        );
+      }
     }
   }
 
@@ -711,6 +760,34 @@ function checkSkill(dir: string, validatorBin: string, home: string): void {
       violation(name, `line ${i + 1} links ${tok} — state is never loaded at activation, so SKILL.md must not name it`);
     }
   });
+}
+
+/** The root a skill's metadata.peers paths are written from: the workbench that
+ *  holds `.agents/skills/`, or the skills folder's parent when it is not under
+ *  `.agents/`. */
+function peerRootOf(skillsRoot: string): string {
+  const parent = dirname(realpathSync(skillsRoot));
+  return basename(parent) === ".agents" ? dirname(parent) : parent;
+}
+
+function isHidden(dir: string): boolean {
+  const fm = frontmatter(join(dir, "SKILL.md"));
+  return (fm ?? "").split("\n").some((l) => (HIDE_KEY.exec(l)?.[1] ?? "").trim() === "true");
+}
+
+// (f) A step runs a skill when an arrow or the verb Invoke / Run / Fire comes
+// right before its backticked `/name` (or Codex `$name`). Mentions ("the way
+// `/qa` does", "the user runs `/debate`") and a `>` quote of words shown
+// to the user are not steps.
+function stepsInvoking(skillMd: string, target: string): number[] {
+  const re = new RegExp(`(?:→|\\b[Ii]nvoke|\\b[Rr]un|\\b[Ff]ire)\\s+\\**\`[/$]${escapeRe(target)}(?=[\\s\`])`);
+  const hits: number[] = [];
+  readFileSync(skillMd, "utf8")
+    .split("\n")
+    .forEach((text, i) => {
+      if (!text.trimStart().startsWith(">") && re.test(text)) hits.push(i + 1);
+    });
+  return hits;
 }
 
 function escapeRe(s: string): string {
@@ -844,7 +921,7 @@ async function main(): Promise<void> {
       violations += 1;
       continue;
     }
-    checkSkill(t, validatorBin, home);
+    checkSkill(t, validatorBin, home, peerRootOf(skillsRoot));
   }
 
   if (violations > 0) {

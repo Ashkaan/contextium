@@ -1,6 +1,6 @@
 ---
 name: spec-audit
-description: Adversarial pre-review of any freshly-written or materially-rewritten SPEC or spec folder, running reviewer consensus (correctness) plus the spirit-check agent (fidelity to the user's verbatim ask — spec.md's Input and Clarifications, or a single-file SPEC's § 0 / § 0a — and to the behavior contract) in one pass and returning a converged SPEC plus a one-line `spec-audit:` record written into the spec's plan.md. Invoked by /spec immediately after it writes the SPEC (UNCONDITIONAL), by /implement when revising a SPEC mid-flight, or by any caller that writes a SPEC, IMMEDIATELY after the SPEC is written and BEFORE presenting to the user for sign-off. Covers project spec folders (projects/{domain}/{date}_{slug}/specs/NNN-name/), app SPECs (apps/{name}/SPEC.md), and feature SPECs (apps/{name}/specs/YYYY-MM-DD_{feature}.md).
+description: Adversarial pre-review of any freshly-written or materially-rewritten SPEC or spec folder, running reviewer consensus (correctness) plus the spirit-check agent (fidelity to the user's verbatim ask — spec.md's Input and Clarifications, or a single-file SPEC's § 0 / § 0a — and to the behavior contract) in one pass and returning a converged SPEC plus a one-line `spec-audit:` record written into the spec's plan.md. Invoked by /spec immediately after it writes the SPEC (UNCONDITIONAL), by /implement when revising a SPEC mid-flight, or by any caller that writes a SPEC, IMMEDIATELY after the SPEC is written and BEFORE it is committed (there is no sign-off halt). Covers project spec folders (projects/{domain}/{date}_{slug}/specs/NNN-name/), app SPECs (apps/{name}/SPEC.md), and feature SPECs (apps/{name}/specs/YYYY-MM-DD_{feature}.md).
 allowed-tools: "Bash(.agents/skills/spec-audit/scripts/*:*) Bash(.agents/skills/review/spec-audit.ts:*) Bash(.agents/skills/review/policy-review.ts:*) Bash(node --experimental-strip-types .agents/skills/spec-audit/scripts/*:*) Bash(node --experimental-strip-types .agents/skills/review/spec-audit.ts:*) Bash(node --experimental-strip-types .agents/skills/review/policy-review.ts:*) Read Edit Task"
 metadata:
   peers: ".agents/agents/spirit-check.md .agents/skills/review/spec-audit.ts .agents/skills/review/policy-review.ts .agents/skills/spec-audit/scripts/write-audit-line.ts .agents/skills/spec/references/templates/plan.md"
@@ -8,7 +8,7 @@ metadata:
 
 # /spec-audit — adversarial SPEC pre-review
 
-Run reviewer consensus (correctness) + spirit-check (fidelity to user's ask) on a freshly-written or materially-rewritten SPEC, BEFORE presenting it to the user for sign-off.
+Run reviewer consensus (correctness) + spirit-check (fidelity to user's ask) on a freshly-written or materially-rewritten SPEC, BEFORE it is committed. There is no sign-off halt (`.agents/skills/spec/SKILL.md` § Critical); the user reads it on main.
 
 Invoked by `/spec` immediately after it writes the SPEC (UNCONDITIONAL — every SPEC goes through this review), by `/implement` when revising a SPEC mid-flight, or by any subagent that writes a SPEC. The verdict is a record, not a gate: the single consolidated `spec-audit:` line is written into the spec's `plan.md` Constitution Check by `scripts/write-audit-line.ts`, and the close's journal entry quotes it.
 
@@ -16,15 +16,15 @@ Invoked by `/spec` immediately after it writes the SPEC (UNCONDITIONAL — every
 
 ## Critical
 
-- **No silent revision.** Whatever the user signs off on at step 6 MUST be byte-identical to what gets committed. Zero edits between user sign-off and `git commit`.
-- **`defer` is forbidden** as an annotation on reviewer findings. If you want to defer a finding, ask the user instead (a numbered list, recommendation first; in Claude Code, `AskUserQuestion`).
+- **No silent revision.** What step 6 presents MUST be byte-identical to what gets committed. Zero edits between step 6 and `git commit`.
+- **`defer` is forbidden** as an annotation on reviewer findings. If you want to defer a finding, ask the user instead, as a numbered list in the reply, recommendation first.
 - **Materiality is a script result, not a judgment.** Run `scripts/check-materiality.ts` to decide; don't infer from prose.
 
 ## Steps
 
 ### `step-1-materiality-gate`
 
-Run [`node --experimental-strip-types .agents/skills/spec-audit/scripts/check-materiality.ts [spec-folder | spec-path]`](scripts/check-materiality.ts). Output is one line: `material:[reason]` or `non-material:[reason]`.
+Run `node --experimental-strip-types .agents/skills/spec-audit/scripts/check-materiality.ts [spec-folder | spec-path]` ([source](scripts/check-materiality.ts)). Output is one line: `material:[reason]` or `non-material:[reason]`.
 
 - `non-material:*` → skip the protocol; record `spec-audit: skipped — non-material ([reason])` from `format-trailer.ts skipped-non-material [reason]` through `write-audit-line.ts`, exactly as step-6 writes its verdict — into the spec's `plan.md` `- spec-audit:` line. Over the placeholder or an earlier skip the skip line replaces it; over a real verdict the script keeps that verdict and its reviewer and appends `; re-check <date> non-material`, so the line stays the current record and never erases who reviewed the spec. For a single-file SPEC with no plan.md, print it with the summary so the close's journal entry carries it — then exit.
 - `material:*` → proceed to `step-2-skip-clause`.
@@ -63,11 +63,24 @@ slot) → dispatch the `spirit-check` subagent in a FRESH context with the SPEC
 path instead, and say it answered as a fresh-context fallback, NOT independent.
 
 DRIFT findings get surfaced to the user with the converged SPEC at
-`step-6-present-converged`.
+`step-6-present-converged` — except one that disputes a reading the user already
+ruled on in `## Clarifications` (their quoted words): record the reviewer's
+reading in that row's Rejected column and do not surface it, unless it carries
+a fact they did not have. Asking again what the user already answered costs
+their trust and settles nothing.
 
 ### `step-4-review-round-1`
 
-Run `node --experimental-strip-types .agents/skills/review/spec-audit.ts [spec-path] [brief]` synchronously. Read findings.
+Supply verified original authors after reading `.agents/skills/review/SKILL.md` § Where things are found (including T3 execution lineage) before adversarial review. Preserve that input in round 2 and any child brief; include providers that write revisions. Do not infer authorship from the review executor. Missing provenance is a caller error, not permission to assume Claude.
+
+Run the review — in T3 Code, in a fresh delegated child — with the original writer inputs in the literal command:
+
+```bash
+POLICY_CHAIN_AUTHOR_THREAD_ID="<writing thread id>" POLICY_CHAIN_AUTHOR_VENDORS="<all writer providers>" \
+node --experimental-strip-types .agents/skills/review/spec-audit.ts <spec-path> <brief>
+```
+
+Outside T3, `POLICY_CHAIN_AUTHOR_THREAD_ID` may be left empty. Read its findings. Keep the same original-writer prefix on round 2.
 
 Exit 3 means no independent reviewer answered. It is not a failed audit (Contextium): run the same attack with a fresh-context agent of your own, work its findings the same way, and record the reviewer as `claude-fallback` — `format-trailer.ts` then writes `claude-fallback (fresh context, NOT independent)` into the line, so it is never read as independent. Exit 1 or 124 is a failed audit: report it, write no passing line.
 
@@ -81,10 +94,10 @@ Only fires if any findings were pushed back in `step-4-review-round-1`. Write pu
 
 `spec-audit.ts` exiting 3 here is the same condition as in round 1 — no independent reviewer answered — and on a machine with one CLI it always will. It is not a failed round, and its empty output is not a verdict: dispatch a fresh-context agent of your own (never the context that wrote the pushbacks) with the SPEC path, the round-1 findings and the pushback file, and ask for exactly the round-2 shape — one `[concede] <id>` or `[disagree] <id> <one-sentence rationale>` line per pushback, the ID copied from the line it answers. Pipe ITS output to `parse-review-output.ts` as below, and record the round's reviewer as `claude-fallback`. Exit 1 or 124 is a failed round: report it, write no passing line.
 
-Pipe the reviewer's output to [`node --experimental-strip-types .agents/skills/spec-audit/scripts/parse-review-output.ts`](scripts/parse-review-output.ts)` --expected <the pushed-back IDs, comma-separated>` (e.g. `--expected F2,F4`). Read the `verdict:` line:
+Pipe the reviewer's output to `node --experimental-strip-types .agents/skills/spec-audit/scripts/parse-review-output.ts --expected <the pushed-back IDs, comma-separated>` (e.g. `--expected F2,F4`; [source](scripts/parse-review-output.ts)). Read the `verdict:` line:
 - `consensus` → every pushback conceded; proceed to `step-6-present-converged`.
 - `incomplete` (exit 3) → a pushback got no verdict, two, or the reviewer named an ID you did not send (the `missing:` / `duplicate:` / `unexpected:` lines say which). NOT consensus: re-run round 2 with the pushback file unchanged; if it comes back incomplete again, treat the unadjudicated IDs as `[disagree]` and escalate them.
-- `escalate` → ask the user (a numbered list, recommendation first; in Claude Code, `AskUserQuestion`) about each `[disagree]` item with options `accept the reviewer's finding | accept the agent's pushback | revise to address both`. User adjudicates per item.
+- `escalate` → settle each `[disagree]` item yourself first. Re-read the rule, file or fact each side cites; correct whichever side misread it; and where both concerns are real, revise the spec to address both. A technical choice (a library, a file location, a schema, a transport) is yours: decide it and name the rule applied in the pushback file's line. Only what the user alone can answer reaches them — their preferences, money, an account in their name, an outbound message, infrastructure they have not allowed (root `AGENTS.md` § Standards, No deferral) — because a reviewer dispute about a library or a documentation location is a technical call, not a question for the user. Ask those, and only those, as a numbered list in the reply, recommendation first, each with options `accept the reviewer's finding | accept the author's pushback | revise to address both`. Count every item you settled as accepted or conceded, not escalated, in the `format-trailer.ts` arguments.
 
 ### `step-6-present-converged`
 
@@ -100,12 +113,12 @@ It replaces the whole `- spec-audit: [...]` list item the plan template holds wi
 
 THEN emit to the user:
 - The converged SPEC (revised in place, plan.md's audit line included)
-- DRIFT findings from `step-3-spirit-check` (if spirit-check returned DRIFT)
+- DRIFT findings from `step-3-spirit-check` (if spirit-check returned DRIFT), minus those step-3 recorded as Rejected because the user already ruled on the reading
 - One-line summary: `reviewer consensus: N findings, M accepted, K pushbacks accepted by the reviewer, L escalated. Spirit-check: MATCH | DRIFT | AMBIGUOUS.`
 
 ### `step-7-no-silent-revision`
 
-What the user signs off on at `step-6-present-converged` MUST be byte-identical to what gets committed. No edits between user sign-off and commit.
+What `step-6-present-converged` presents MUST be byte-identical to what gets committed. No edits between the presentation and the commit.
 
 ## Scripts
 
@@ -137,7 +150,7 @@ Actions:
 6. Round 2 with the 1 pushback (`F3: …`) → the reviewer returns `[concede] F3`.
 7. `parse-review-output.ts --expected F3` → `verdict: consensus`.
 8. Emit converged SPEC + summary. `format-trailer.ts round-2 codex 0 0 MATCH` → `spec-audit: codex round-2 (0 accepted by codex, 0 escalated); spirit MATCH; user-ask-verbatim in spec.md Input`. Had the chain fallen through, the first argument — and therefore the trailer — would say `grok`.
-9. User signs off on the folder as presented, plan.md's line included; the close's journal entry quotes it.
+9. The folder is committed as presented, plan.md's line included; the close's journal entry quotes it.
 
 ### Example 2: typo fix in SPEC
 
@@ -170,14 +183,8 @@ Actions:
 |---|---|---|
 | `check-materiality.ts` returns `non-material` when you expected `material` | Trigger list doesn't cover this change shape | Check the script's heuristics in `scripts/check-materiality.ts`; add a new trigger pattern if the change shape recurs |
 | The reviewer script exits 3 | No vendor other than the author answered — every CLI in the row is down, missing, or not signed in | Expected on a machine with only one model: run that round — the audit in round 1, the pushback verdicts in round 2 — in a fresh context and record it as `claude-fallback`. To get an independent review instead, run each CLI the policy row names by hand to see which fails, fix or install one, and retry |
-| spirit-check agent not loaded ("agent type not found") | `.agents/agents/spirit-check.md` missing or session doesn't know about it | Confirm file exists; spirit-check is single-purpose subagent — falls back to general-purpose with agent body inlined per `.agents/skills/implement-audit/SKILL.md` pattern |
-| `parse-review-output.ts` returns `verdict: consensus` despite obvious disagreements | The reviewer's output did not use line-anchored `[concede]`/`[disagree]` prefixes | The reviewer's output format may have shifted; check `.agents/skills/review/spec-audit.ts` output contract; update parser if format shifted |
+| spirit-check agent not loaded ("agent type not found") | `.agents/agents/spirit-check.md` missing, or the harness does not load that agent type | Confirm the file exists; then dispatch a general-purpose subagent (in T3 Code, a delegated child) with that file's body as its brief, and say so in the step-6 summary |
+| `parse-review-output.ts` returns `verdict: consensus` despite obvious disagreements | The reviewer's output did not use line-anchored `[concede]`/`[disagree]` prefixes | Check `.agents/skills/review/spec-audit.ts`'s output contract; if the format shifted, update the parser and its test |
 | `format-trailer.ts` error "invalid non-material reason" | Reason string not in canonical 6-value list | Use one of: typo / formatting / link / wording-polish / section-reorder / clarification |
 | plan.md still holds the `- spec-audit: [...]` placeholder, or reads `spec-audit: spec-audit: …` | step-6 printed the line but did not write it, or it was hand-edited | Re-run `write-audit-line.ts <spec-folder> "<format-trailer.ts output>"` — don't hand-edit the line |
 | `write-audit-line.ts` exits 1 | plan.md lost its `- spec-audit:` item | Restore the item from the plan template, then re-run |
-
-## History
-
-- The reviewer-consensus protocol and the spirit-check are one skill, so a spec gets one review pass rather than two gates that can drift apart.
-- The spirit-check exists because a spec can be internally excellent and still solve the wrong problem — a service built where the user asked for a function.
-- The three separate trailers (reviewer, spirit-check, verbatim ask) became one `spec-audit:` line, and the line is a record in plan.md, never a gate on a commit.

@@ -3,8 +3,9 @@
 //
 // Pins the two-line `mode:` / `payload:` output for every mode: blank, the
 // three verbs (create / complete / update), the two existing-slug heuristics
-// (kebab slug, <domain>/<slug>) and the freeform-to-create default. The script
-// is run as a subprocess, never imported.
+// (kebab slug, <domain>/<slug>), the triage kinds, the planning and hands-on
+// lanes, and the freeform-to-create default. The script is run as a subprocess,
+// never imported.
 
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
@@ -48,6 +49,22 @@ t("update verb", "mode: update|payload: sync-engine|", ["update sync-engine"]);
 t("a verb alone is not a verb", "mode: create|payload: complete|", ["complete"]);
 t("uppercase slug is not a slug", "mode: create|payload: Checkout-Flow|", ["Checkout-Flow"]);
 t("a slash with spaces is create", "mode: create|payload: fix a/b split|", ["fix a/b split"]);
+
+// Triage kinds, and "open …", which Contextium does not ship as a mode.
+t("open active is create (no open-active mode ships)", "mode: create|payload: open active|", ["open active"]);
+t("triage blocked", "mode: triage|payload: blocked|", ["triage blocked"]);
+t("triage monitored", "mode: triage|payload: monitored|", ["triage monitored"]);
+t("triage mine", "mode: triage|payload: mine|", ["triage mine"]);
+t("triage of an unknown kind is create", "mode: create|payload: triage stale|", ["triage stale"]);
+t("triage alone is create", "mode: create|payload: triage|", ["triage"]);
+
+// Lanes: <slug> plan | hands-on prints a third line.
+t("slug plan is the planning lane", "mode: existing-slug|payload: checkout-flow|lane: plan|", ["checkout-flow plan"]);
+t("slug hands-on is the hands-on lane", "mode: existing-slug|payload: checkout-flow|lane: hands-on|", ["checkout-flow hands-on"]);
+t("domain/slug takes a lane too", "mode: existing-slug|payload: web/checkout|lane: plan|", ["web/checkout plan"]);
+t("a hyphenless word before a lane is create", "mode: create|payload: checkout plan|", ["checkout plan"]);
+t("an unknown lane word is create", "mode: create|payload: checkout-flow build|", ["checkout-flow build"]);
+t("a lane word and more is create", "mode: create|payload: checkout-flow plan now|", ["checkout-flow plan now"]);
 
 test("stderr is empty", () => {
   assert.equal(run(["x"]).err, "");

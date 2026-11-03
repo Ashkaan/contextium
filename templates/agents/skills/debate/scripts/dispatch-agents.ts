@@ -17,10 +17,12 @@
 // could argue stays a .gap. `--no-stand-in` turns this off for a caller that
 // needs each voice's own answer or nothing.
 //
-// FOLDERS. The prompts dir is the caller's and is left in place: a caller may
-// still need it after this returns. The output dir is handed to the caller on
-// stdout, and its last reader removes it (parse-agent-output.ts in /debate,
-// parallel-research.ts for /explain).
+// FOLDERS. Every debate seat starts in an empty folder the script makes and
+// removes, so it reads no repo's rules; a --research seat starts in the
+// caller's folder, because reading that repo is its job. The prompts dir is the
+// caller's and is left in place: a caller may still need it after this returns.
+// The output dir is handed to the caller on stdout, and its last reader removes
+// it (parse-agent-output.ts in /debate, parallel-research.ts for /explain).
 //
 // peers: build-agent-prompts.ts, parse-agent-output.ts, .agents/skills/debate/SKILL.md
 //
@@ -224,6 +226,22 @@ async function main(): Promise<void> {
   const voiceLabel = (i: number): string =>
     MODEL[i] !== "" ? `${VENDOR[i]} ${MODEL[i]}` : `${VENDOR[i]} (default model)`;
 
+  // Every debate seat starts in this empty folder, so it argues from the brief
+  // alone. Started in the caller's folder — the repo — Claude Code and Codex
+  // load its AGENTS.md first, and a seat in a debate about the repo's own rules
+  // cites the repo's files back instead of arguing. A --research seat keeps the
+  // caller's folder: it is asked to read that repo. Made before the output dir
+  // so a failure here is told apart from that one, and removed on every exit
+  // this process sees; nothing is ever written into it (Codex is read-only,
+  // Grok's one tool is list_dir, Claude's seat answers in text).
+  let SEAT_DIR: string;
+  try {
+    SEAT_DIR = mkdtempSync(join(tmpdir(), "debate-seat-"));
+  } catch (e) {
+    die(`cannot make the empty seat folder under ${tmpdir()}: ${e instanceof Error ? e.message : String(e)}`, 1);
+  }
+  process.on("exit", () => rmSync(SEAT_DIR, { recursive: true, force: true }));
+
   const OUTPUT_DIR = mkdtempSync(join(tmpdir(), "debate-outputs-"));
 
   const seatRole = (i: number): string => basename(promptFiles[i] ?? "", ".prompt");
@@ -266,7 +284,18 @@ async function main(): Promise<void> {
     // flag is added only when the table names a model.
     switch (cli) {
       case "claude":
-        return ["-p", ...(model === "" ? [] : ["--model", model]), "--output-format", "text", promptBody];
+        // No home hooks, skills, plugins or MCP servers, and no transcript: the
+        // seat answers the brief, not the user's own Claude Code setup.
+        return [
+          "-p",
+          ...(model === "" ? [] : ["--model", model]),
+          "--output-format",
+          "text",
+          "--safe-mode",
+          "--strict-mcp-config",
+          "--no-session-persistence",
+          promptBody,
+        ];
       case "codex":
         // --full-auto was REMOVED from `codex exec` (rejected outright by
         // v0.147.0 — every codex agent died at exit 2 with "unexpected
@@ -274,10 +303,13 @@ async function main(): Promise<void> {
         // read-only is also the right capability: it withholds writes rather
         // than asking the model not to. --skip-git-repo-check because the CLI
         // otherwise refuses outside a repo, and --color never keeps ANSI escapes
-        // out of what parse-agent-output.ts has to strip.
+        // out of what parse-agent-output.ts has to strip. skills.include_instructions
+        // off keeps the home skills out of the seat.
         return [
           "exec",
           ...(model === "" ? [] : ["-m", model]),
+          "-c",
+          "skills.include_instructions=false",
           "--sandbox=read-only",
           "--skip-git-repo-check",
           "--color",
@@ -398,7 +430,11 @@ async function main(): Promise<void> {
       };
       // The CLI leads its own process group, so TERM and KILL reach whatever it
       // started too, not only the CLI itself.
-      const child = spawn(cli, args, { stdio: ["ignore", outFd, errFd], detached: true });
+      const child = spawn(cli, args, {
+        cwd: research ? process.cwd() : SEAT_DIR,
+        stdio: ["ignore", outFd, errFd],
+        detached: true,
+      });
       const signalGroup = (sig: NodeJS.Signals): void => {
         if (child.pid === undefined) return;
         try {

@@ -17,9 +17,21 @@ next: DERIVED from ROADMAP.md, never hand-written — the first ready row's ID a
 
   - Status vocabulary: spec-kit's `planned · in-progress · done`, plus three of
     ours: `blocked: <what>`, `absorbed by <ID>` and `closed: <why>`.
+  - A wait with an end date, `blocked: until <YYYY-MM-DD> <why>`, is a
+    `blocked:` row like any other wait (rule 2 below), and it stays one after
+    that date: nothing rewrites it on its own. `/project triage blocked` lists
+    it as a date passed, and answering `unblock` there (or `roadmap.ts <folder>
+    --set <ID> planned`, then `--sync-next`) makes the row ready and the
+    project `active` again. A `blocked: <YYYY-MM-DD>` row with no `until` is a
+    watch instead.
   - Open: any row that is not `done`, `absorbed by …` or `closed: …`.
-  - Depends on: `—` (none) or IDs separated by commas, whitespace trimmed. A
-    dependency is satisfied when its row is not open.
+  - Depends on: `—` (none) or IDs separated by commas, whitespace trimmed. An
+    entry may name another project's row as `<slug> <ID>` (`billing-migration
+    R38`), or `<domain>/<slug> <ID>` when two domains share the slug; it is
+    read from that project's ROADMAP.md under the same `projects/` folder. A
+    dependency is satisfied when its row is not open. An entry that names no
+    row (an unknown project or ID, an ambiguous slug, a table that does not
+    read) is never satisfied and never a wait.
   - Ready: a row whose Status is `planned` or `in-progress` and whose every
     dependency is satisfied. `blocked: …` rows and rows not open are never
     ready.
@@ -34,8 +46,15 @@ next: DERIVED from ROADMAP.md, never hand-written — the first ready row's ID a
   - status, the first that applies:
     1. a row is ready → `active`;
     2. an open row is `blocked:` on something that does not start with a
-       YYYY-MM-DD date (a person, a vendor, a decision) → `blocked`, with
-       `blocked-on: "<ID>: <what>"` for the first such row;
+       YYYY-MM-DD date (a person, a vendor, a decision), or is `planned` or
+       `in-progress` with every dependency resolved and at least one of them
+       another project's open row → `blocked`, with
+       `blocked-on: "<ID>: <what>"` (`"<ID>: waits on <slug> <ID>"` for the
+       second kind) for the wait that ends first — the earliest
+       `blocked: until` date — else the first such row in table order. When
+       that row is finished, the landing that finishes it re-derives every
+       project waiting on it, so the waiting one reads `active` with nobody
+       touching it;
     3. open rows are `blocked:` on dates → `monitor`, with
        `monitoring-until: "<date> — <ID>: <Sub-feature>"` for the earliest;
     4. no row is open (no rows at all included) → `completed`.
@@ -43,7 +62,8 @@ next: DERIVED from ROADMAP.md, never hand-written — the first ready row's ID a
     dependency cycle) cannot be derived; the sync refuses and names them.
   - So a project is never complete while a row is open, and changing its state
     means changing a row: close a row that will not be done, add a
-    `blocked: <date>` row to watch something, move that date to extend it.
+    `blocked: <date>` row to watch something, move that date to extend it,
+    or set a row `blocked: until <date>` to set it aside until then.
 -->
 
 ## Goal

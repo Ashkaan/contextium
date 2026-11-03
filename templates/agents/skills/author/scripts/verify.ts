@@ -20,7 +20,9 @@
 //   hook  → a bash hook (`.sh`): shellcheck + `set -euo pipefail`
 //           a TypeScript hook (`.ts`): parses as TypeScript + never calls
 //           `process.exit`
-//         + top-level (PreToolUse) hooks MUST NOT exit 1 (use exit 2 to block) [P1]
+//         + top-level (PreToolUse) hooks MUST NOT exit 1 (use exit 2 to block) [P1],
+//           read through review's Bash parser (web-tree-sitter +
+//           tree-sitter-bash); a hook it cannot parse, or no parser, fails
 //         + non-blocking WARN when no harness hook manifest names a top-level
 //           hook                                     [determinism / visibility]
 //         (a check under .agents/checks/ gets no wiring claim: what fires a
@@ -209,8 +211,12 @@ const isTopHookPath = (p: string): boolean => p.includes(".agents/hooks/") || p.
 // markers are case-insensitive (probe finding 2 — `my`/`we`/`our`/`me` slipped
 // the old `\bI\b`-only check).
 function descriptionIsFirstPerson(d: string): boolean {
-  if (/\bI\b/.test(d)) return true;
-  return /\b(my|me|we|our|us|i'm|i'll|i've)\b/i.test(d);
+  // Quoted user triggers ("where should we eat", "surprise me") describe
+  // activation, not the skill speaking in first person. YAML's outer quotes
+  // have already been removed by frontmatterValue.
+  const prose = d.replace(/"[^"\n]*"|“[^”\n]*”|(?<![\p{L}\p{N}])'[^'\n]*'(?![\p{L}\p{N}])|‘[^’\n]*’/gu, "");
+  if (/\bI\b/.test(prose)) return true;
+  return /\b(my|me|we|our|us|i'm|i'll|i've)\b/i.test(prose);
 }
 
 // Count sentences in a description. A terminator only counts when a space or the
@@ -302,7 +308,22 @@ function verifySkill(path: string): void {
       // also allowed: it is the breadcrumb home, not a further hop outward,
       // and flagging it would fail correctly-shaped reference docs for
       // carrying the one link this rule most wants them to have.
-      const links = readFileSync(ref, "utf8").match(/\]\([^)]+\.md\)/g) ?? [];
+      // Example links inside Markdown fences are data, not instructions to
+      // load another reference. Respect the opening character and length so
+      // a shorter or different fence inside an example cannot end it early.
+      const prose: string[] = [];
+      let fence: string | null = null;
+      for (const line of readFileSync(ref, "utf8").split(/\r?\n/)) {
+        const marker = /^\s*(`{3,}|~{3,})(.*)$/.exec(line);
+        if (fence) {
+          if (marker && marker[1][0] === fence[0] && marker[1].length >= fence.length && marker[2].trim() === "")
+            fence = null;
+          continue;
+        }
+        if (marker) fence = marker[1];
+        else prose.push(line);
+      }
+      const links = prose.join("\n").match(/\]\([^)]+\.md\)/g) ?? [];
       const local = links.filter((l) => !/\]\(https?:\/\//.test(l)).filter((l) => !/\]\((\.\.\/)?SKILL\.md\)/.test(l));
       if (local.length > 0) {
         flag(`reference doc links to another local .md — keep references one level deep from SKILL.md [P4]: ${ref}`);
@@ -314,8 +335,75 @@ function verifySkill(path: string): void {
   process.stdout.write(`PASS — skill (${basename(dirname(path))})\n`);
 }
 
-/** The bash hook's gates, as they always were. */
-function verifyBashHook(path: string, source: string): void {
+interface BashSyntaxNode {
+  type: string;
+  text: string;
+  hasError: boolean;
+  namedChildren: BashSyntaxNode[];
+  childForFieldName(name: string): BashSyntaxNode | null;
+}
+
+/** Where review's Bash parser may be installed, in the order
+ *  .agents/skills/review/blast-radius-symbols.ts looks: the workbench's own
+ *  node_modules, npm's global root, then Node's own global node_modules.
+ *  AUTHOR_BASH_PARSER_ROOT, when set, is the only root (isolated tests). */
+function bashParserRoot(repoRoot: string): string {
+  const override = process.env.AUTHOR_BASH_PARSER_ROOT;
+  const roots = [join(repoRoot, "node_modules")];
+  const npm = spawnSync("npm", ["root", "-g"], { encoding: "utf8" });
+  if (npm.status === 0 && npm.stdout.trim() !== "") roots.push(npm.stdout.trim());
+  roots.push(join(dirname(dirname(process.execPath)), "lib", "node_modules"));
+  const candidates = override !== undefined ? [override] : roots;
+  const found = candidates.find(
+    (r) => existsSync(join(r, "web-tree-sitter")) && existsSync(join(r, "tree-sitter-bash/tree-sitter-bash.wasm")),
+  );
+  if (found === undefined) {
+    throw new Error(
+      `web-tree-sitter and tree-sitter-bash not found under ${candidates.join(", ")} — install them: npm i -g web-tree-sitter tree-sitter-bash`,
+    );
+  }
+  return found;
+}
+
+/** Inspect commands, not diagnostic-only code or strings that mention exit. */
+async function bashRefusalExitsOne(source: string, repoRoot: string): Promise<boolean> {
+  const root = bashParserRoot(repoRoot);
+  // Reuse the syntax parser review uses; never execute the hook.
+  const { Parser, Language } = nodeModule.createRequire(join(root, "author-resolver.cjs"))("web-tree-sitter") as {
+    Parser: {
+      new (): { setLanguage(language: unknown): void; parse(text: string): { rootNode: BashSyntaxNode } | null };
+      init(): Promise<void>;
+    };
+    Language: { load(path: string): Promise<unknown> };
+  };
+  await Parser.init();
+  const parser = new Parser();
+  parser.setLanguage(await Language.load(join(root, "tree-sitter-bash/tree-sitter-bash.wasm")));
+  const tree = parser.parse(source);
+  if (!tree || tree.rootNode.hasError) throw new Error("Bash syntax tree unavailable or invalid");
+  const visit = (node: BashSyntaxNode): boolean => {
+    if (node.type === "command") {
+      const children = node.namedChildren;
+      const nameIndex = children.findIndex((child) => child.type === "command_name");
+      const name = children[nameIndex];
+      const words = children.slice(nameIndex + 1).map((child) => child.text);
+      if (name?.text === "exit" && words[0] === "1") return true;
+      if (["command", "builtin"].includes(name?.text ?? "") && words[0] === "exit" && words[1] === "1") return true;
+    }
+    if (
+      node.type === "if_statement" &&
+      /^\[\[\s*"\$\{1:-\}"\s*==\s*"--self-test"\s*\]\]$/.test(node.childForFieldName("condition")?.text ?? "")
+    ) {
+      // Only the then-arm is diagnostic-only. An else/elif remains live.
+      return node.namedChildren.filter((child) => /^(else|elif)_clause$/.test(child.type)).some(visit);
+    }
+    return node.namedChildren.some(visit);
+  };
+  return visit(tree.rootNode);
+}
+
+/** Bash syntax/safe mode, plus live refusal exits and wiring. */
+async function verifyBashHook(path: string, source: string, repoRoot: string): Promise<void> {
   if (spawnSync("sh", ["-c", "command -v shellcheck"], { stdio: "ignore" }).status !== 0) {
     err("shellcheck not installed — cannot verify hook");
     exit(1);
@@ -337,11 +425,14 @@ function verifyBashHook(path: string, source: string): void {
   // PostToolUse hook — exit 1 is NON-blocking there, so a blocker that
   // uses it silently fails to block. Must exit 2 to block (Anthropic) [P1].
   if (!isCheckPath(path) && isTopHookPath(path)) {
-    const exit1 = /(^|[;{(&|\s])exit\s+1(\s|[;)&|]|$)/;
-    if (source.split("\n").some((l) => exit1.test(l.replace(/#.*/, "")))) {
-      flag(
-        `top-level hook uses \`exit 1\` (NON-blocking) — a PreToolUse blocker must \`exit 2\`; checks belong in .agents/checks/ [P1]: ${path}`,
-      );
+    try {
+      if (await bashRefusalExitsOne(source, repoRoot)) {
+        flag(
+          `top-level hook uses \`exit 1\` (NON-blocking) — a PreToolUse blocker must \`exit 2\`; checks belong in .agents/checks/ [P1]: ${path}`,
+        );
+      }
+    } catch (error) {
+      flag(`cannot inspect Bash exit paths using the review parser: ${String(error)}; see .agents/skills/review/SKILL.md`);
     }
   }
 }
@@ -422,10 +513,10 @@ function verifyTsHook(path: string, source: string): void {
   }
 }
 
-function verifyHook(path: string, repoRoot: string): void {
+async function verifyHook(path: string, repoRoot: string): Promise<void> {
   const source = readFileSync(path, "utf8");
   if (path.endsWith(".ts")) verifyTsHook(path, source);
-  else verifyBashHook(path, source);
+  else await verifyBashHook(path, source, repoRoot);
   if (fail !== 0) exit(1);
   const base = basename(path);
   // Non-blocking wiring check for a TOP-LEVEL hook only: it fires from nothing
@@ -633,7 +724,7 @@ async function main(): Promise<void> {
   }
 
   if (type === "skill") verifySkill(path);
-  else if (type === "hook") verifyHook(path, repoRoot);
+  else if (type === "hook") await verifyHook(path, repoRoot);
   else if (type === "agent") verifyAgent(path);
   else verifyOutputStyle(path);
 }

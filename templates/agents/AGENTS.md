@@ -6,25 +6,50 @@ directly, so there is one copy and nothing to keep in sync. Read it first each s
 
 The sections between `<!-- contextium:… -->` and `<!-- /contextium -->` belong to Contextium and are
 replaced whenever you re-run its installer. Everything outside them is yours and is never touched:
-edit the preferences, fill in the stack, add your own sections and standards.
+add your own sections, preferences and standards there.
 
+<!-- contextium:core -->
+## Working agreement
+
+Contextium rule level: {{RULES}}. {{RULES_SUMMARY}} Re-run the installer with
+`--rules minimal|recommended|full` to change it; a re-run without it keeps this level.
+
+- {{AUTONOMY}}
+<!-- /contextium -->
+<!-- rules:full -->
+
+<!-- contextium:preferences -->
 ## Working preferences
 
 - MUST respond concise, direct, practical; NEVER pad. Technical depth welcome.
+- Answer the question asked first: a yes/no question takes Yes or No as its first word, and bad
+  news (a no, a zero, a finding that changes cost or undoes finished work) leads the reply in its
+  own sentence, before any account of the work.
+- Full sentences with normal grammar, never note-form. Explain the way you would to a smart person
+  who has not seen the code: what the thing is for, what goes wrong with one concrete example, then
+  the fix in a sentence.
 - MUST name in plain English anything the reader has not seen this session (a project, a spec
-  number, a tool, an acronym) the first time it appears; when something is unclear the fix is plainer
-  words, NEVER more of them.
+  number, a tool, an acronym) the first time it appears; when something is unclear the fix is
+  plainer words, NEVER more of them.
 - MUST pick the shortest format that stays clear (prose, table, or list); NEVER add structure the
   answer does not need.
-- MUST push back with better approaches when warranted; NEVER agree by default.
+- Before a change to something the user relies on, or a step for their hands, open with what they
+  will notice and what stays the same, and say why each step is needed.
+- Ask as a short numbered list, recommendation first, each option labelled by the outcome the user
+  would see. Ask only what only the user can answer, as soon as it blocks progress, and batch
+  independent questions. Before asking, read what is already there: what the user typed earlier
+  in this session, then the repo.
+- MUST push back with better approaches when warranted; NEVER agree by default. Disagree in one
+  sentence, then give the better option.
 - MUST default to implementation over planning; NEVER expand a 30-minute task into a 3-hour plan.
-- {{AUTONOMY}}
-- MUST NOT declare a feature shipped while a known blocker remains.
+- Anything a client could receive is drafted for the user to send, never sent.
+<!-- /contextium -->
 
 ## Stack
 
 Document your runtime, orchestration, storage and credentials here. A fresh session reads this before
 it reads any code, so it is the cheapest place to prevent a wrong assumption.
+<!-- /rules -->
 
 <!-- contextium:layout -->
 ## What lives where
@@ -37,8 +62,9 @@ it reads any code, so it is the cheapest place to prevent a wrong assumption.
 | `.agents/checks/` | the checks `land.ts` runs before it commits: decision records, skills, integration manifests, script tests and languages, standards citations, secrets |
 | `.agents/hooks/` | the pre-tool guards: no host change without asking, no write into the shared checkout |
 | `.agents/generators/` | the index generators for `apps/`, `integrations/`, `projects/` |
+| `.agents/packages/` | small modules the scripts above share |
 | `.agents/output-styles/` | Claude Code output styles `/author` writes, reached through `~/.claude/output-styles` |
-| `.agents/harness` | `harness=` the tool you drive the workbench with (it decides where session worktrees go), `agent=` the model family that writes the code (the reviewer chain leaves it out), and `tools=` every tool the installer has wired here, which a re-run keeps wiring until `install.sh --drop-tool <name>` |
+| `.agents/harness` | `harness=` the tool you drive the workbench with (it decides where session worktrees go), `agent=` the model family that writes the code (a review leaves out every model that wrote the work), and `tools=` every tool the installer has wired here, which a re-run keeps wiring until `install.sh --drop-tool <name>` |
 | `.agents/hooks/claude-hooks.json` | the guards in the shape Claude Code, Codex and Grok Build read, with yours added by the installer |
 | `.agents/user-hooks.json` | your own hooks, on any event, in that same shape; the installer merges them in and never overwrites the file |
 | `.agents/gemini-settings.json` | Gemini CLI's settings: `AGENTS.md` as its context file, and the guards; there while `tools=` names Gemini CLI |
@@ -62,8 +88,8 @@ guards for Cursor or VS Code.
 
 `.agents/skills/review/policy.json` routes each kind of review — code, spec, the spirit check of a
 spec against your words, a debate or investigation panel — to the models that answer it, in order.
-A review leaves out the model named `agent=` in `.agents/harness`; with no other model installed it
-falls back to a fresh context on the authoring model and says so.
+A review leaves out the models that wrote the work; with no other model installed it falls back to
+a fresh context on the authoring model and says so.
 
 A project lives in `projects/<domain>/<YYYY-MM-DD>_<slug>/`: `README.md` (status frontmatter, Goal,
 Outcome — its `next:` derived from the roadmap, never typed), `ROADMAP.md` (the only list of what is
@@ -98,10 +124,11 @@ The skill folders live at `.agents/skills/` in this workbench; a session runs th
 worktree (`node --experimental-strip-types .agents/skills/<name>/scripts/...`). The harnesses read
 the landed checkout through home links — `~/.agents/skills` → `<workbench>/.agents/skills`, with
 `~/.claude/skills` and `~/.gemini/config/skills` linked to it, and `~/.claude/agents` →
-`<workbench>/.agents/agents` — which `.agents/checks/check-harness-config-links.ts` asserts. Three verbs, fresh context between
-thinking and doing:
+`<workbench>/.agents/agents` — which `.agents/checks/check-harness-config-links.ts` asserts. Three
+verbs, fresh context between thinking and doing:
 
-- `/project` → `/spec` — think. Writes a SPEC, audits it, closes itself.
+- `/project` → `/spec` — think. Writes a SPEC, audits it, closes itself. Its close prints the
+  `/implement <slug> <row>` command for each row ready to build; run it in a fresh session.
 - `/implement` — do. Builds, runs `/implement-audit`, closes itself.
 - `/close` — verify, record, land every worktree this session owns. The producer verbs invoke it
   themselves; you do not type it to end one. Its last line is printed only by `land.ts`, after it has
@@ -121,15 +148,18 @@ points here rather than restating them (one fact, one file).
 `metadata`, `allowed-tools` — plus `disable-model-invocation: true` on a skill only the user types
 (below), and no other top-level key. The published validator, not this prose, is the list: a key it
 does not allow fails the check, whatever this section says; the check hands it the file without the
-`disable-model-invocation` line. `description` carries
-both what the skill does and when to use it, at most 1,024 characters; there is no separate trigger
-field. `allowed-tools` is one space-separated string. A YAML frontmatter uses block form only — the
-validator rejects flow syntax such as `[a, b]` and `{k: v}`.
+`disable-model-invocation` line. `description` carries both what the skill does and when to use it,
+at most 1,024 characters; there is no separate trigger field. `allowed-tools` is one space-separated
+string. A YAML frontmatter uses block form only — the validator rejects flow syntax such as `[a, b]`
+and `{k: v}`.
 
 **`metadata.peers`** is the one custom key: a space-separated string of the paths the skill loads or
 dispatches (its references, scripts, the skills and agents it calls), each relative to the workbench
-root (`.agents/skills/<skill>/…`, `apps/…`, `knowledge/…`). No other `metadata` key is allowed, and
-an empty string is a violation — name the peers or drop the key.
+root (`.agents/skills/<skill>/…`, `apps/…`, `knowledge/…`). It is the peer declaration
+`find-peers.ts` reads at review time. No other `metadata` key is allowed, and an empty string is a
+violation — name the peers or drop the key. The check refuses missing paths, absolute paths and
+paths escaping the workbench; a path that works only relative to the skill folder is not a peer
+declaration.
 
 **A skill only the user types carries `disable-model-invocation: true` and `agents/openai.yaml`;
 every other skill carries neither.** The user can still invoke every skill by name, and the model
@@ -139,11 +169,12 @@ also stops the user typing the name, so the switch lives in the skill folder. Th
 hides the skill from the model on Claude Code, Antigravity and Grok; Codex ignores it and reads
 `agents/openai.yaml`, which reads exactly `policy:` / `  allow_implicit_invocation: false` and nothing
 else. On all four the typed name (`/name`, Codex `$name`) still runs it. The key is `true` or absent,
-the two come together, `agents/` holds only that file, and the check refuses anything else. Every
-other skill is listed for the model to fire: on Claude Code by name only, `skillOverrides`
-`"name-only"` in `~/.claude/settings.json`; Codex, Antigravity and Grok have no setting that lists a
-skill without its description. `when_to_use`, `argument-hint`, `steps`, `enforces`, `handoffs_to` and
-`handoffs_from` are not skill fields, and the check refuses them.
+the two come together, `agents/` holds only that file, and the check refuses anything else. A skill
+another skill runs as a step is not one only the user types, and the check refuses a step that calls
+a hidden skill. Every other skill is listed for the model to fire: on Claude Code by name only,
+`skillOverrides` `"name-only"` in `~/.claude/settings.json`; Codex, Antigravity and Grok have no
+setting that lists a skill without its description. `when_to_use`, `argument-hint`, `steps`,
+`enforces`, `handoffs_to` and `handoffs_from` are not skill fields, and the check refuses them.
 
 **`assets/` is what a skill ships with; `state/` is what it has learned.** Data a skill accumulates
 across sessions — a learned map, a track record — lives in `<skill>/state/`, written in the session's
@@ -158,9 +189,9 @@ level deep from `SKILL.md`.
 
 **The check.** `node --experimental-strip-types .agents/checks/check-skills.ts --all` holds every
 folder to the above; `land.ts` runs it with `--since` over the skill folders the session's worktree
-changed before each commit, and `/author`'s verify step runs it on the skill it scaffolded. It uses the published validator
-(`skills-ref`) when that is installed and a built-in reading of the same rules, in the validator's
-wording, when it is not.
+changed before each commit, and `/author`'s verify step runs it on the skill it scaffolded. It uses
+the published validator (`skills-ref`) when that is installed and a built-in reading of the same
+rules, in the validator's wording, when it is not.
 <!-- /contextium -->
 
 <!-- contextium:standards -->
@@ -180,27 +211,49 @@ whole.
   come back negative. A README, a function's name, a summary, an earlier write-up and a tool result
   are all claims, not readings. For a causal claim, name the competing explanation and the reading
   that rules it out.
+<!-- rules:recommended -->
+  Every outside fact a reply depends on — a code section, a price, a product, a spec — is looked up
+  first-hand with the tool's own web search and fetch, and in an analysis over a list every row
+  gets its own lookup before its verdict. A plan reaches the user with no open question research
+  could answer. Say "I don't know" only for what every source left unsettled, and name what was
+  searched and what alone would settle it.
+<!-- /rules -->
 - **A class fix is atomic.** When the flaw is a shared pattern, sweep for every instance and fix them
   all in the same session. Sweep the mechanism, not the file, and account for every match the sweep
   reports. Deferring a peer to a later phase, a project's future-work section, or an exemption list
   is not allowed; only the user can authorize one, and only for the specific peer in front of them.
-- **No deferral.** Everything surfaced is either done now or explicitly blocked on something only the
-  user can clear — money, an outbound message, host infrastructure, a vendor. "Follow-up", "next
-  step", "out of scope", "too complex" and "want me to also…?" are not blockers. **Neither is a
-  question.** Once the work is named and authorized, do it and report — "want me to…?", "shall I…?"
-  and "X, or keep going?" are deferral in the interrogative, and the turn they cost rarely changes
-  the answer.
+- **No deferral.** Everything surfaced is either done now or blocked on something only the user can
+  clear — money, an outbound message, host infrastructure they have not allowed, a sign-in or MFA
+  prompt — named in the reply. Fix reversible, contained problems without asking; ask once, before
+  the work starts, whether infrastructure may change, then finish all of it. "Follow-up", "next
+  step", "out of scope" and "too complex" are not blockers, and neither is a question that only asks
+  leave to go on ("want me to…?").
+<!-- rules:recommended -->
+  Before saying you can't reach a service, file or piece of data, look for the way in — its README,
+  its credential, the tools you have — and say "I can't" only after all three come up empty, naming
+  what you tried. Make technical calls (models, vendors, hosts, frameworks) yourself, naming the
+  rule applied, and recommend what you would choose starting fresh rather than what already exists;
+  still account for the user's money, downtime and data, and get their approval before new
+  spending.
+<!-- /rules -->
 - **Fix the cause.** A change that stops the symptom while the thing that caused it stays live is not
   a fix, unless it is restoring service during a live failure or the cause is outside this repo — and
   then it must name the cause it does not address.
-- **Simplest mechanism that works.** Inline script before shared module before daemon. "Shared by
-  other automations" means a shared function, not a deployed service. Where every caller is your own
-  code, defense-in-depth is usually over-engineering.
+- **Simplest mechanism that works.** Do the smallest thing that answers what was asked. Inline script
+  before shared module before daemon; "shared by other automations" means a shared function, not a
+  deployed service. Where every caller is your own code, defense-in-depth is usually
+  over-engineering. Don't build enforcement for a failure that has not happened yet, and when a new
+  pattern needs guarding, extend the mechanism that already exists.
+<!-- rules:recommended -->
+- **Name the simpler option.** A proposal to build something new (a file, script, job, hook, check,
+  service or stored data) carries one line: `Simpler option checked: <option> — rejected because
+  <reason>.`
+<!-- /rules -->
 - **Recurring choices are made by rule.** A choice that recurs — where something runs, deploys or is
   placed — is decided by a written rule; a recommendation names the rule it applies, and a case no
   rule covers gets a rule first.
-- **Plan the four before building.** Downstream consumers, peer files doing the same thing, edge cases
-  at 0 / 1 / empty / max / error, and which docs drift.
+- **Plan the four before building.** Downstream consumers, peer files doing the same thing, edge
+  cases at 0 / 1 / empty / max / error, and which docs drift.
 - **Scripts are TypeScript.** A script under `.agents/` is TypeScript, and bash only when the harness
   fires it on every tool call (a hook command in a harness's hook config, such as
   `.agents/hooks/claude-hooks.json`) or when it makes the tree or the host the TypeScript would run
@@ -209,37 +262,37 @@ whole.
   it merely runs is not — and never JavaScript or Python. `.agents/checks/check-scripts.ts` derives
   that bash tier on every close and refuses every other `.sh`, `.js`, `.mjs`, `.cjs` and `.py` under
   `.agents/` in the worktree being landed. The language of your own apps is yours to choose.
-- **Tests and evals.** Every new function gets a test, error and boundary cases get tests, and a
-  failing test is observed red before it is made green — INCLUDING when the code was written first,
-  where the way to see red is to break the code or the fixture on purpose and check that the message
-  names the thing the test claims. A test that has never failed is not evidence: it may be asserting
-  against a field the code never reads, or against the arguments a function was called with rather
-  than what it produced. Any app that calls a model carries an eval suite and re-runs it when its
-  prompt moves. A script's test runs it as a program — `node x.ts`, or `bash x.sh` for the bash
-  **Scripts are TypeScript** keeps, never `source` or `import` — so the test survives the script
-  changing language, and `.agents/checks/check-scripts.ts` refuses a close that changes a script
-  under `.agents/` without a paired test.
+- **Tests and evals.** Every new function gets a test, error and boundary cases included, and each is
+  seen failing before it passes — when the code came first, by breaking the code or the fixture on
+  purpose and checking that the message names what the test claims. A script's test runs it as a
+  program, never by `source` or `import`, and `.agents/checks/check-scripts.ts` refuses a close that
+  changes a script under `.agents/` without a paired test. An app that calls a model carries an eval
+  suite and re-runs it when its prompt moves.
 - **One fact, one file.** A rule, a step definition, a wire format or a schema lives in exactly one
-  place and is referenced from everywhere else, never mirrored as prose.
-- **A decision that would be expensive to reverse gets a record** in the narrowest `decisions/`
-  folder containing everyone who could act contrary to it; the format and the placement rule are
-  `decisions/README.md`.
-- **Fix lint at the source.** Never add a file to an exclude list to silence it. Markdown is not code
-  and gets no auto-formatting.
+  place and is referenced from everywhere else, never mirrored as prose. A fact goes where its kind
+  lives: how to work in this file or a folder's `AGENTS.md`; a miss a script could catch in that
+  script, with a test; a step a skill should take in its `SKILL.md`; an integration's or app's quirk
+  in its README; a person or business fact in `knowledge/`; a project's state in its `ROADMAP.md`;
+  a day in `journal/<date>/`. A decision that would be expensive to reverse gets a record in the
+  narrowest `decisions/` folder containing everyone who could act contrary to it; the format and the
+  placement rule are `decisions/README.md`.
+- **Fix lint at the source.** Never add a file to an exclude list or a `.gitignore` to silence it: a
+  tool writes its build output, runtime state and `node_modules` outside the repo. Markdown is not
+  code and gets no auto-formatting.
 - **Prefer the API to SSH.** Research what a target exposes before choosing a transport and prefer
   HTTP/REST/S3 whenever one exists and it does not lengthen the path. SSH is for targets with no API
   or artifacts already on the runner. One carve-out: a repo path an automation WRITES must be read
   over SSH, because a read that 404s returns empty and an automation that reads-then-writes will
   commit that emptiness over real data.
+<!-- rules:recommended -->
 - **Deploy is part of implementing.** Where the workbench deploys, let the merge deploy, verify it
   landed, and say so with the evidence — never hand back a command to run.
-- **Anything a client could receive is drafted for the user to send, never sent.**
-- **Don't build enforcement for a failure that has not happened yet**, and when a new pattern needs
-  guarding, extend the mechanism that already exists.
 - **A ship-claim needs a tool-call trace from this session.** "Deployed", "landed", "pushed", "it
   works", "verified" — each is a claim about the world, and the evidence is a command run in this
   session with its output read, named where the claim is made. A script's own proof counts and is
   preferred: the close's last line exists because a sentence about `origin/<trunk>` is worth only as
   much as the check behind it. Memory of having done it does not count, and neither does having
   written the code that would do it.
+- MUST NOT declare a feature shipped while a known blocker remains.
+<!-- /rules -->
 <!-- /contextium -->

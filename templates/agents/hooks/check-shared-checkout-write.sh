@@ -61,7 +61,7 @@
 # it does not know, write-root.sh in a repo with no origin — must leave the
 # session able to write, not kill the hook mid-verdict with an exit the harness
 # reads as a refusal. Every fallible command below carries its own guard.
-set -uo pipefail
+set -uo pipefail # fail-open: decision hook with guarded probes; rationale above.
 
 HOOK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -119,18 +119,21 @@ add_target() {
   TARGETS="${TARGETS}${2:-}"$'\t'"${1}"$'\n'
 }
 
-# Does git say this path holds nothing it tracks? `ls-files -- <path>` lists
-# the tracked files at or under it, so an empty answer with exit 0 means
-# untracked, ignored, or absent — all three leave nothing behind when deleted.
-# Any git failure, and a root that is not a repository, answer "no" so the old
-# refusal stands.
+# Does git say this path holds nothing it tracks? `ls-files --error-unmatch`
+# exits 0 when a tracked file is at or under the path and 1 when none is —
+# untracked, ignored, or absent, all three leaving nothing behind when deleted.
+# The answer is the exit status, not a listing: a listing read through `$(…)`
+# comes back C-quoted for a name like `café`, and bash cannot hold the NUL
+# that `-z` would end it with. Any other status (a git failure), and a root
+# that is not a repository, answer "no" so the old refusal stands.
 untracked_only() {    # <root> <target>  →  0 yes · 1 no
-  local root="$1" target="$2" rel tracked
+  local root="$1" target="$2" rel rc
   [[ "${target}" != "${root}" ]] || return 1
   git -C "${root}" rev-parse --is-inside-work-tree >/dev/null 2>&1 || return 1
   rel="${target#"${root}"/}"
-  tracked="$(git -C "${root}" ls-files -- "${rel}" 2>/dev/null)" || return 1
-  [[ -z "${tracked}" ]]
+  git -C "${root}" ls-files --error-unmatch -- "${rel}" >/dev/null 2>&1
+  rc=$?
+  [[ "${rc}" -eq 1 ]]
 }
 
 # Which short flags of this verb SWALLOW the next token? Without this the

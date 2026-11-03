@@ -9,13 +9,20 @@
 //   existing-slug  → "<slug>" or "<domain>/<slug>" matching an existing project
 //   complete       → "complete <slug>" (status change only)
 //   update         → "update <slug>" (frontmatter edit only)
+//   triage         → "triage blocked|monitored|mine" (payload: the kind)
+//
+// A slug followed by a lane word — "<slug> plan" or "<slug> hands-on" — is
+// existing-slug with a third line, `lane: plan|hands-on`: the thread works
+// that lane only (the planning row, or the steps that need the user's hands),
+// so planning and hands-on work can each run in a session of its own.
 //
 // Usage:
 //   parse-arg-mode.ts "$ARGUMENTS"
 //
-// Output (two lines to stdout):
-//   mode: <blank|create|existing-slug|complete|update>
+// Output (two lines to stdout, three for a lane):
+//   mode: <blank|create|existing-slug|complete|update|triage>
 //   payload: <the remainder after the mode verb, or empty for blank>
+//   lane: <plan|hands-on>   (only after "<slug> <lane>")
 //
 // Exit code: 0 always.
 
@@ -46,15 +53,31 @@ function strip(input: string): string {
     .replace(/\n+$/, "");
 }
 
-function emit(mode: string, payload: string): void {
-  process.stdout.write(`mode: ${mode}\npayload:${payload === "" && mode === "blank" ? "" : ` ${payload}`}\n`);
+function emit(mode: string, payload: string, lane = ""): void {
+  process.stdout.write(`mode: ${mode}\npayload:${payload === "" ? "" : ` ${payload}`}\n`);
+  if (lane !== "") process.stdout.write(`lane: ${lane}\n`);
 }
+
+const SLUG = /^([a-z0-9]+(-[a-z0-9]+)+|[^\s/]+\/[^\s]+)$/;
+const LANES = ["plan", "hands-on"];
+const TRIAGE = ["blocked", "monitored", "mine"];
 
 async function main(): Promise<void> {
   const INPUT = strip(process.argv[2] ?? "");
 
   if (INPUT === "") {
     emit("blank", "");
+    return;
+  }
+
+  const triage = /^triage (\S+)$/.exec(INPUT);
+  if (triage && TRIAGE.includes(triage[1])) {
+    emit("triage", triage[1]);
+    return;
+  }
+  const lane = /^(\S+) (\S+)$/.exec(INPUT);
+  if (lane && SLUG.test(lane[1]) && LANES.includes(lane[2])) {
+    emit("existing-slug", lane[1], lane[2]);
     return;
   }
 

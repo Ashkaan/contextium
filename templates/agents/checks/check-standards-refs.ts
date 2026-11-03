@@ -89,7 +89,7 @@ function main(): void {
   // Both modes read the index (git grep searches tracked files; --cached reads
   // the staged copies). One git cannot read must fail the check, not look like a
   // repo with nothing in it.
-  const idx = git(["ls-files"], root);
+  const idx = git(["ls-files", "-z"], root);
   if (idx.rc !== 0) {
     err(`check-standards-refs: git cannot read the index: ${idx.err.trim()}`);
     exit(2);

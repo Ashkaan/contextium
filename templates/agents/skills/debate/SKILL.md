@@ -1,7 +1,7 @@
 ---
 name: debate
 description: Adversarial debate — three agents (Claude, Codex, Grok) argue a question from three positions, then the strongest conclusion is synthesized. Use when the user says "debate this", "I'm torn between X and Y", "red-team this plan", or "council on this".
-allowed-tools: Bash Read AskUserQuestion
+allowed-tools: Bash Read
 metadata:
   peers: ".agents/skills/implement-audit/SKILL.md .agents/skills/review/policy.json .agents/skills/debate/scripts/build-agent-prompts.ts .agents/skills/debate/scripts/dispatch-agents.ts .agents/skills/debate/scripts/parse-agent-output.ts"
 ---
@@ -9,7 +9,7 @@ metadata:
 # Debate — Multi-Agent Adversarial Reasoning
 
 Three agents argue one question from three positions; the synthesis weighs them.
-There are no options: always three seats, always the same three models, so
+There are no options: request three seats, always the same three models, so
 there is no choice to get wrong before the debate starts.
 
 | Seat | Model | Position |
@@ -21,14 +21,11 @@ there is no choice to get wrong before the debate starts.
 The models are the `panel` row of `.agents/skills/review/policy.json`; a voice
 whose `tracks` is empty runs its CLI's default model, and a non-empty `tracks`
 is passed to the CLI as the model. The positions are
-`scripts/build-agent-prompts.ts`. When a model fails — its CLI is not installed,
-it times out, it errors — another argues its seat too, so the debate keeps three
-positions: **Claude fails → Codex doubles; Grok fails → Claude doubles; Codex
-fails → Claude doubles** (and the remaining model when that one failed as well).
-`scripts/dispatch-agents.ts` owns that rule, so a machine with one model CLI
-still gets a three-position debate, argued by one model.
+`scripts/build-agent-prompts.ts`. Dispatch and unavailable-seat handling follow
+step 3's harness branch. In T3 an unavailable seat stays unargued and appears
+in Gaps; never fill it through the CLI dispatcher or another provider.
 
-**Step graph**: step-1-parse-input → step-2-build-prompts → step-3-dispatch-agents → step-4-synthesize → step-5-optional-round-2
+**Step graph**: step-1-parse-input → step-2-build-prompts → step-3-dispatch-agents → step-4-synthesize → step-4-5-hand-back-to-the-project → step-5-optional-round-2
 
 ## Critical
 
@@ -51,10 +48,16 @@ key facts. Structure:
 ```
 CONTEXT FOR DEBATE:
 - Decision: [one sentence framing the choice]
-- Constraints: [timeline, budget, dependencies, blockers]
-- Stakes: [what's at risk if the wrong choice is made]
-- Current leaning: [user's position, if any — agents should challenge this]
+- The user's own words: [what they said about it, quoted, not paraphrased]
+- Facts: [what was read or measured, each with where it came from]
+- Any answer is allowed, including change nothing or remove something.
 ```
+
+No constraints and no leaning: a constraints slot that prefers a shape
+("scripts with tests preferred") and a leaning slot that carries a position
+pull all three seats toward that answer, so they agree on more machinery where
+the same question put as the user's words, the facts and the line above can
+come back "add nothing".
 
 Save this block to a temp file and pass it as `--context-file` to the build
 script — every agent argues from the same facts. Keep under 200 words.
@@ -66,7 +69,7 @@ node --experimental-strip-types .agents/skills/debate/scripts/build-agent-prompt
   --question "$QUESTION" \
   --context-file "$CTX_FILE"   # optional
 # stdout: prompts_dir=/tmp/debate-prompts-XXXXXX
-rm -f "$CTX_FILE"   # its only reader has run
+ # Remove only the literal temporary path returned by the builder.
 ```
 
 The role instructions, steel-man line and output schema live in the script's
@@ -74,23 +77,40 @@ The role instructions, steel-man line and output schema live in the script's
 
 ## step-3-dispatch-agents
 
+In T3 Code, use its delegation tool for each seat. Give each child only its generated role prompt and context; request the named model and collect its answer and actual model identity. Do not run the CLI dispatcher in the parent. Follow T3’s capability and unavailable-provider rules; report any unavailable seat rather than silently changing providers. Use returned child answers directly in synthesis; the CLI parser below is unnecessary for structured T3 results. The stand-in algorithm below applies only where that fallback is authorized and available.
+
+Outside T3, the existing CLI dispatcher is the implementation:
+
+Only in this branch, a failed model's seat — its CLI is not installed, it
+times out, it errors — can be argued by its existing stand-in: **Claude fails →
+Codex doubles; Grok fails → Claude doubles; Codex fails → Claude doubles**, then
+the remaining model if that one also failed. `scripts/dispatch-agents.ts` owns
+this fallback, so a machine with one model CLI still gets a three-position
+debate, argued by one model. Identify the actual speaker and reduced
+independence in synthesis.
+
 ```bash
 node --experimental-strip-types .agents/skills/debate/scripts/dispatch-agents.ts \
   --prompts-dir "$PROMPTS_DIR"
 # stdout: output_dir=/tmp/debate-outputs-XXXXXX
 # stderr: one line per stand-in and per unargued seat
-rm -rf "$PROMPTS_DIR"   # nothing reads it again
+ # Remove only the literal prompts directory returned by the builder.
 ```
 
 Per seat the output dir holds `<role>.output` and `<role>.voice` (who argued
 it), or `<role>.gap` when nobody could. It exits non-zero only when no seat was
 argued. The default timeout is 600s for each seat; `--timeout-s` overrides it.
+Each seat starts in an empty folder, so it argues from the brief alone and reads
+no repo's rules; the Claude seat also loads no home skills, hooks or MCP
+servers, and the Codex seat no home skills.
 
 The prompts dir is removed here rather than by the dispatcher, because a
 caller of its own may still need the prompts dir after the dispatch returns. The output dir is removed by step-4's parse,
 its last reader, so it can be parsed only once.
 
 ## step-4-synthesize
+
+For CLI results only:
 
 ```bash
 node --experimental-strip-types .agents/skills/debate/scripts/parse-agent-output.ts \
@@ -101,7 +121,9 @@ node --experimental-strip-types .agents/skills/debate/scripts/parse-agent-output
 An answer that ignored the output schema arrives marked `(unstructured …)`
 rather than being dropped; read it like the others.
 
-Then produce a structured synthesis. Do NOT just summarize — add analytical value:
+Read each available seat's answer and the actual unavailable-seat result;
+preserve every missing seat in Gaps. Then produce a structured synthesis.
+Do NOT just summarize — add analytical value:
 
 ```markdown
 ## Debate: {QUESTION}
@@ -136,17 +158,38 @@ other side]
 argued their own seats.]
 ```
 
+## step-4-5-hand-back-to-the-project
+
+When the context scaffold drew on a project (`projects/<domain>/<slug>/`), the
+synthesis goes back into that project before the reply ends, or the project
+keeps telling the user the old answer: a debate that changes a project's
+recommendation and lives only in that day's journal leaves the project's
+`research.md` and ROADMAP on the old one, and the question gets asked again.
+
+Under the matching heading of the project's `research.md`
+(`.agents/skills/spec/references/templates/research.md` is the format), add one
+bullet:
+
+    - Debated <YYYY-MM-DD>, not accepted: <the If Forced to Pick line, one sentence>. Open: <each Key Tension the user still has to decide>.
+
+Leave the `Decision:` line as it is. A debate is three models' advice, and
+their agreement is not the user's approval: the Decision line and any ROADMAP
+row it drives change only when the user accepts, in the session where they say so. When the
+recommendation contradicts the current Decision line, say that in the reply in
+one sentence, naming the file. A debate with no project behind it skips this
+step.
+
 ## step-5-optional-round-2
 
 If the user says "another round" or "go deeper": write one rebuttal prompt per
 seat, named `pragmatist.prompt`, `skeptic.prompt` and `visionary.prompt` so each
 lands on the same seat, asking for `## Rebuttal` / `## Underweighted Argument` /
-`## Revised Position`. Save them to a fresh prompts dir, then:
+`## Revised Position`. Save them to a fresh prompts dir. In T3, delegate those prompts through the same seat/model path as round 1. Outside T3:
 
 ```bash
 node --experimental-strip-types .agents/skills/debate/scripts/dispatch-agents.ts \
   --prompts-dir "$ROUND2_PROMPTS_DIR"
-rm -rf "$ROUND2_PROMPTS_DIR"
+ # Remove only the literal returned temporary directory.
 node --experimental-strip-types .agents/skills/debate/scripts/parse-agent-output.ts \
   --output-dir "$ROUND2_OUTPUT_DIR" \
   --round 2
@@ -172,4 +215,4 @@ User: `/debate red-team this plan: ship a repo-write service as an HTTP daemon w
 | A seat ends as `.gap` | Its model failed and so did every eligible stand-in | Name it under Gaps; dispatch's stderr line for the seat carries both reasons. |
 | Codex output has header/footer noise leaking into synthesis input | `parse-agent-output.ts` is supposed to strip it — fixtures cover the known patterns | If a new Codex log shape leaks through, add a fixture under `scripts/fixtures/` and extend the `FOOTER` pattern in `answer-block.ts` (the one reading both the parser and the dispatcher use). |
 | A round re-runs the same arguments | The loop should have ended on the work | Stop and synthesize. Do not fire a question; the count was never the signal. |
-| No seat argued → `dispatch-agents.ts` exits non-zero | Network outage, all three CLIs degraded, or invalid prompts | Halt the skill after `rm -rf "$OUTPUT_DIR"` (step-4 never runs to remove it). Surface the failure to the user; do NOT emit a synthesis with zero inputs. |
+| No seat argued → `dispatch-agents.ts` exits non-zero | Network outage, all three CLIs degraded, or invalid prompts | Halt and clean the literal returned output directory (step-4 never runs to remove it). Surface the failure to the user; do NOT emit a synthesis with zero inputs. |

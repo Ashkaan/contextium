@@ -356,12 +356,14 @@ describe("a delete that removes only untracked content", () => {
     }
     writeFileSync(join(RECORDS, "journal/2026-09-18/0000-x.md"), "tracked\n");
     writeFileSync(join(RECORDS, "gen/keep.md"), "tracked\n");
+    writeFileSync(join(RECORDS, "gen/café.md"), "tracked\n");
     writeFileSync(join(RECORDS, ".gitignore"), "*.log\n");
     git("add", "-A");
     git("commit", "-q", "-m", "fixture");
     writeFileSync(join(RECORDS, "synced/bucket-1/docx/SKILL.md"), "copied\n");
     writeFileSync(join(RECORDS, "stray.txt"), "stray\n");
     writeFileSync(join(RECORDS, "gen/out.log"), "noise\n");
+    writeFileSync(join(RECORDS, "gen/naïve.md"), "stray\n");
   });
 
   bashAllows("rm of an untracked directory", `rm -rf ${RECORDS}/synced`);
@@ -370,6 +372,9 @@ describe("a delete that removes only untracked content", () => {
   bashAllows("rm of a path that does not exist", `rm -f ${RECORDS}/nothing-here`);
   bashRefuses("rm of a tracked file", `rm ${RECORDS}/journal/2026-09-18/0000-x.md`);
   bashRefuses("rm of a directory holding tracked content", `rm -rf ${RECORDS}/gen`);
+  // git C-quotes this name in a listing; the answer is git's exit status, so it still reads as tracked.
+  bashRefuses("rm of a tracked file whose name git quotes", `rm ${RECORDS}/gen/café.md`);
+  bashAllows("rm of an untracked file whose name git quotes", `rm ${RECORDS}/gen/naïve.md`);
   bashRefuses("rm of the checkout itself", `rm -rf ${RECORDS}`);
   bashRefuses("rm mixing tracked and untracked", `rm ${RECORDS}/stray.txt ${RECORDS}/gen/keep.md`);
   // Only rm gets the carve-out: creating an untracked file is exactly the failure.

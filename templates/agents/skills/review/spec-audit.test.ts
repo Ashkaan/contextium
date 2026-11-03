@@ -26,6 +26,11 @@ function audit(target: string): number | null {
     encoding: "utf8",
     env: {
       ...process.env,
+      HOME: tmp,
+      T3CODE_HOME: tmp,
+      WORKBENCH_THREAD_ID: "",
+      POLICY_CHAIN_AUTHOR_THREAD_ID: "",
+      POLICY_CHAIN_AUTHOR_VENDORS: "claude",
       CODEX_BIN: `${tmp}/vendor`,
       GROK_BIN: `${tmp}/vendor`,
       POLICY_CHAIN_RESOLVER: `${tmp}/resolver`,
@@ -34,6 +39,45 @@ function audit(target: string): number | null {
   }).status;
 }
 const prompt = (): string => readFileSync(`${tmp}/prompt.txt`, "utf8");
+
+test("executable SPEC audit excludes Codex authors and refuses missing provenance", () => {
+  const file = join(tmp, "author-spec.md");
+  writeFileSync(file, "SPEC with an original Codex author\n");
+  const policy = join(tmp, "author-policy.json");
+  writeFileSync(
+    policy,
+    JSON.stringify({
+      rows: {
+        "adversarial-review": {
+          chain: [
+            { vendor: "codex", model: "codex", tracks: "gpt-{v}-sol" },
+            { vendor: "grok", model: "grok", tracks: "grok-{v}" },
+          ],
+        },
+      },
+    }),
+  );
+  for (const authors of ["codex", ""]) {
+    const r = spawnSync(process.execPath, ["--experimental-strip-types", SUT, file, "brief"], {
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        HOME: tmp,
+        T3CODE_HOME: tmp,
+        POLICY_CHAIN_AUTHOR_THREAD_ID: "",
+        WORKBENCH_THREAD_ID: "",
+        POLICY_CHAIN_AUTHOR_VENDORS: authors,
+        POLICY_JSON: policy,
+        CODEX_BIN: `${tmp}/vendor`,
+        GROK_BIN: `${tmp}/vendor`,
+        POLICY_CHAIN_RESOLVER: `${tmp}/resolver`,
+      },
+    });
+    assert.equal(r.status, authors ? 0 : 2, r.stderr);
+    if (authors) assert.match(r.stderr, /answered: grok\//);
+    else assert.doesNotMatch(r.stderr, /answered:/);
+  }
+});
 // `grep -E <re> prompt.txt`, joined as `$(...)` would read it.
 const grepLines = (re: RegExp): string =>
   prompt()
@@ -106,6 +150,24 @@ test("a single file still works, with no headers", () => {
   );
 });
 
+// The reviewer is held to AGENTS.md § Standards, which names no validation
+// library. A prompt that demanded one library at every boundary held a spec
+// for a dependency-free service to that rule through two rounds, although the
+// owner had chosen hand-written checks.
+test("the standards the reviewer is held to name no library AGENTS.md does not", () => {
+  const d = `${tmp}/specs/003-c`;
+  mkdirSync(d, { recursive: true });
+  writeFileSync(`${d}/spec.md`, "SPEC BODY\n");
+  writeFileSync(`${d}/plan.md`, "PLAN BODY\n");
+  t("the folder audits cleanly", 0, audit(d));
+  t("the prompt does not demand Zod", "", grepLines(/zod/i));
+  t(
+    "the prompt still holds the reviewer to AGENTS.md's Standards",
+    "true",
+    String(prompt().includes("AGENTS.md at the repo root")),
+  );
+});
+
 // /spec-audit runs this program by path, without `node` (.agents/skills/spec-audit/SKILL.md
 // step 4), so it must stay executable and its shebang must run it.
 test("invoked directly by path, as the skill runs it, the program runs", () => {
@@ -130,6 +192,11 @@ test("a CRLF NO_FINDINGS is one answer to every gate: a clean audit", () => {
     encoding: "utf8",
     env: {
       ...process.env,
+      HOME: tmp,
+      T3CODE_HOME: tmp,
+      WORKBENCH_THREAD_ID: "",
+      POLICY_CHAIN_AUTHOR_THREAD_ID: "",
+      POLICY_CHAIN_AUTHOR_VENDORS: "claude",
       CODEX_BIN: `${tmp}/crlf-vendor`,
       GROK_BIN: `${tmp}/crlf-vendor`,
       POLICY_CHAIN_RESOLVER: `${tmp}/resolver`,
@@ -160,6 +227,11 @@ test("contracts are listed in byte order, with no external sorter to fail", () =
     encoding: "utf8",
     env: {
       ...process.env,
+      HOME: tmp,
+      T3CODE_HOME: tmp,
+      WORKBENCH_THREAD_ID: "",
+      POLICY_CHAIN_AUTHOR_THREAD_ID: "",
+      POLICY_CHAIN_AUTHOR_VENDORS: "claude",
       PATH: `${stubs}:${process.env.PATH ?? ""}`,
       LC_ALL: "en_US.UTF-8",
       CODEX_BIN: `${tmp}/vendor`,
@@ -176,6 +248,86 @@ test("contracts are listed in byte order, with no external sorter to fail", () =
   );
 });
 
+// A vendor that glues its first finding onto a narration line. When specification
+// reviews did this, the anchored count saw only the later findings, exited 0,
+// and the first finding went to stderr as a "dropped non-triage line". One
+// normalized reading now drives the shape gate, the count and stdout.
+function scripted(
+  name: string,
+  body: string,
+  pushback = "",
+): { status: number | null; stdout: string; stderr: string } {
+  const d = `${tmp}/${name}`;
+  mkdirSync(d, { recursive: true });
+  writeFileSync(`${d}/spec.md`, "SPEC BODY\n");
+  writeFileSync(`${d}/plan.md`, "PLAN BODY\n");
+  writeFileSync(`${tmp}/${name}-vendor`, `#!/usr/bin/env bash\ncat >/dev/null\nprintf '%s' '${body}'\n`);
+  chmodSync(`${tmp}/${name}-vendor`, 0o755);
+  const args = ["--experimental-strip-types", SUT, d, "brief"];
+  if (pushback !== "") {
+    writeFileSync(`${d}/pushback.md`, pushback);
+    args.push(`${d}/pushback.md`);
+  }
+  const r = spawnSync(process.execPath, args, {
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      HOME: tmp,
+      T3CODE_HOME: tmp,
+      WORKBENCH_THREAD_ID: "",
+      POLICY_CHAIN_AUTHOR_THREAD_ID: "",
+      POLICY_CHAIN_AUTHOR_VENDORS: "claude",
+      CODEX_BIN: `${tmp}/${name}-vendor`,
+      GROK_BIN: `${tmp}/${name}-vendor`,
+      POLICY_CHAIN_RESOLVER: `${tmp}/resolver`,
+    },
+    timeout: 60_000,
+  });
+  return { status: r.status, stdout: r.stdout, stderr: r.stderr };
+}
+
+test("a prefixed lone finding is salvaged, counted and emitted", () => {
+  const r = scripted("prefix-one", "Reading the spec now.[must-fix] spec.md: first — fix — failure\n");
+  t(`exit (stderr: ${r.stderr})`, 0, r.status);
+  assert.equal(r.stdout, "[must-fix] spec.md: first — fix — failure\n");
+  assert.match(r.stderr, /complete — 1 finding\(s\)/);
+});
+
+test("a prefixed first finding beside anchored ones is not dropped", () => {
+  const r = scripted(
+    "prefix-mixed",
+    "Checking plan [step 2] next.[should-fix] plan.md: first — fix — f\r\n[must-fix] spec.md: second — fix — f\r\n[nit] tasks.md: third\r\n",
+  );
+  t(`exit (stderr: ${r.stderr})`, 0, r.status);
+  assert.equal(
+    r.stdout,
+    "[should-fix] plan.md: first — fix — f\n[must-fix] spec.md: second — fix — f\n[nit] tasks.md: third\n",
+  );
+  assert.match(r.stderr, /complete — 3 finding\(s\)/);
+  assert.doesNotMatch(r.stderr, /dropped non-triage line/);
+});
+
+test("a sentence that merely mentions the sentinel is not a clean audit", () => {
+  const r = scripted("prose-sentinel", "I could not complete the audit and cannot return NO_FINDINGS\n");
+  t(`exit (stderr: ${r.stderr})`, 1, r.status);
+  assert.doesNotMatch(r.stderr, /audited clean/);
+});
+
+test("a prefixed clean sentinel audits clean", () => {
+  const r = scripted("prefix-clean", "Done reading.NO_FINDINGS\n");
+  t(`exit (stderr: ${r.stderr})`, 0, r.status);
+  assert.equal(r.stdout, "");
+  assert.match(r.stderr, /audited clean \(NO_FINDINGS\)/);
+});
+
+test("a prefixed round-two verdict is salvaged; a prefixed sentinel still fails round two", () => {
+  const ok = scripted("prefix-r2", "Weighing F1.[concede] F1\n", "F1: pushback text\n");
+  t(`round two verdict (stderr: ${ok.stderr})`, 0, ok.status);
+  assert.equal(ok.stdout, "[concede] F1\n");
+  const bad = scripted("prefix-r2-sentinel", "Weighing F1.NO_FINDINGS\n", "F1: pushback text\n");
+  t(`round two sentinel (stderr: ${bad.stderr})`, 1, bad.status);
+});
+
 // Contextium: with no reviewer vendor installed, the shipped row falls back —
 // exit 3, naming the fresh-context review and the NOT-independent line.
 test("no vendor installed: the shipped row falls back to a fresh-context audit", () => {
@@ -185,7 +337,17 @@ test("no vendor installed: the shipped row falls back to a fresh-context audit",
   writeFileSync(`${d}/plan.md`, "P\n");
   const r = spawnSync(process.execPath, ["--experimental-strip-types", SUT, d, "brief"], {
     encoding: "utf8",
-    env: { ...process.env, CODEX_BIN: `${tmp}/none`, GROK_BIN: `${tmp}/none`, POLICY_JSON: "" },
+    env: {
+      ...process.env,
+      HOME: tmp,
+      T3CODE_HOME: `${tmp}/no-t3`,
+      WORKBENCH_THREAD_ID: "",
+      POLICY_CHAIN_AUTHOR_THREAD_ID: "",
+      POLICY_CHAIN_AUTHOR_VENDORS: "claude",
+      CODEX_BIN: `${tmp}/none`,
+      GROK_BIN: `${tmp}/none`,
+      POLICY_JSON: "",
+    },
     timeout: 60_000,
   });
   t("no vendor installed: exit 3", 3, r.status);

@@ -26,6 +26,7 @@ import {
   mkdtempSync,
   readdirSync,
   readFileSync,
+  realpathSync,
   rmSync,
   statSync,
   symlinkSync,
@@ -188,6 +189,8 @@ interface RunOpts {
   // DEBATE_MS_PER_S, the ceiling's clock seam; omitted → real seconds.
   msPerS?: string;
   cwd?: string;
+  // TMPDIR, where the script makes its seat folder and output dir; omitted → the host's.
+  tmpDir?: string;
 }
 
 interface Run {
@@ -209,6 +212,7 @@ function runScript(stubs: string, args: string[], o: RunOpts = {}): Run {
       DEBATE_RESOLVER: o.resolver ?? RESOLVER_STUB,
       DEBATE_POLICY_JSON: o.policy ?? SHARED_POLICY,
       ...(o.msPerS !== undefined ? { DEBATE_MS_PER_S: o.msPerS } : {}),
+      ...(o.tmpDir !== undefined ? { TMPDIR: o.tmpDir } : {}),
     },
   });
   const dir = /^output_dir=(.+)$/m.exec(r.stdout)?.[1] ?? "";
@@ -735,4 +739,93 @@ test("case19: --research gives the grok seat read and search tools, still under 
   assert.equal(after1(argv, "--tools"), "read_file,list_dir,grep", `a research seat lacks read tools: ${flat}`);
   assert.ok(!argv.includes("--disable-web-search"), `a research seat cannot search the web: ${flat}`);
   assert.ok(argv.includes("bypassPermissions"), `a research seat lost its permission mode: ${flat}`);
+});
+
+// ── Cases 21-25: every debate seat starts in an empty folder ──
+// A seat argues from the brief alone. Started in the caller's folder — the repo
+// — Claude Code and Codex load its AGENTS.md before answering, and a seat in a
+// debate about the repo's own rules cites the repo's files back. So each seat
+// starts in an empty folder the script makes and removes; Claude is told to
+// load no home skills, hooks or MCP servers, and Codex no home skills. A
+// --research seat (Contextium) is the exception: it is asked to read the repo.
+const REPO = join(HERE, "../../..");
+
+/** Stubs that answer with the folder they were started in, whether it held anything, and their argv. */
+function cwdStubs(code = 0, sleepS = 0): { stubs: string; seen: string } {
+  const stubs = makeTightPath();
+  const seen = scratch();
+  for (const v of ["claude", "codex", "grok"]) {
+    writeExe(
+      join(stubs, v),
+      `#!/usr/bin/env bash\nsleep ${sleepS}\nprintf '%s\\n' "$PWD" > '${seen}/${v}.cwd'\nls -A > '${seen}/${v}.ls'\nprintf '%s\\n' "$@" > '${seen}/${v}.argv'\necho "${v} says hi"\nexit ${code}\n`,
+    );
+  }
+  return { stubs, seen };
+}
+
+function seatDirsLeft(tmp: string): string[] {
+  return readdirSync(tmp).filter((f) => f.startsWith("debate-seat-"));
+}
+
+test("case21: run from the repo, every seat starts in an empty folder under TMPDIR, not the repo", () => {
+  const { stubs, seen } = cwdStubs();
+  const tmp = scratch();
+  const r = runScript(stubs, ["--prompts-dir", makePromptsDir(3), "--timeout-s", "5"], { cwd: REPO, tmpDir: tmp });
+  assert.equal(r.code, 0, r.out);
+  for (const v of ["claude", "codex", "grok"]) {
+    const cwd = readFileSync(join(seen, `${v}.cwd`), "utf8").trim();
+    assert.ok(cwd.startsWith(join(tmp, "debate-seat-")), `${v} started in ${cwd}, not an empty seat folder`);
+    assert.equal(readFileSync(join(seen, `${v}.ls`), "utf8"), "", `${v}'s folder was not empty`);
+  }
+});
+
+test("case22: the seat folder is gone after a normal run, an all-fail run and a timed-out seat", () => {
+  for (const [label, code, sleepS, timeout] of [
+    ["normal", 0, 0, "5"],
+    ["all-fail", 1, 0, "5"],
+    ["timeout", 0, 5, "1"],
+  ] as const) {
+    const { stubs } = cwdStubs(code, sleepS);
+    const tmp = scratch();
+    runScript(stubs, ["--prompts-dir", makePromptsDir(3), "--timeout-s", timeout], { cwd: REPO, tmpDir: tmp });
+    assert.deepEqual(seatDirsLeft(tmp), [], `${label}: a seat folder was left behind`);
+  }
+});
+
+test("case23: a seat folder that cannot be made stops the run before any seat, naming it", () => {
+  const { stubs, seen } = cwdStubs();
+  const r = runScript(stubs, ["--prompts-dir", makePromptsDir(3), "--timeout-s", "5"], {
+    cwd: REPO,
+    tmpDir: join(scratch(), "missing"),
+  });
+  assert.notEqual(r.code, 0, r.out);
+  assert.match(r.out, /seat folder/, `the refusal does not name the seat folder: ${r.out}`);
+  assert.deepEqual(readdirSync(seen), [], "a seat ran anyway");
+});
+
+test("case24: claude loads no home skills, hooks or MCP servers, and codex no home skills", () => {
+  const { stubs, seen } = cwdStubs();
+  const r = runScript(stubs, ["--prompts-dir", makePromptsDir(3), "--timeout-s", "5"], { tmpDir: scratch() });
+  assert.equal(r.code, 0, r.out);
+  const claude = lines(join(seen, "claude.argv"));
+  for (const flag of ["--safe-mode", "--strict-mcp-config", "--no-session-persistence"]) {
+    assert.ok(claude.includes(flag), `claude argv lacks ${flag}: ${claude.join(" ")}`);
+  }
+  const codex = lines(join(seen, "codex.argv"));
+  assert.equal(after1(codex, "-c"), "skills.include_instructions=false", `codex argv: ${codex.join(" ")}`);
+});
+
+test("case25: a --research seat starts in the caller's folder, which it is asked to read", () => {
+  const { stubs, seen } = cwdStubs();
+  const tmp = scratch();
+  const r = runScript(stubs, ["--prompts-dir", makePromptsDir(3), "--timeout-s", "5", "--research"], {
+    cwd: REPO,
+    tmpDir: tmp,
+  });
+  assert.equal(r.code, 0, r.out);
+  for (const v of ["claude", "codex", "grok"]) {
+    const cwd = readFileSync(join(seen, `${v}.cwd`), "utf8").trim();
+    assert.equal(realpathSync(cwd), realpathSync(REPO), `${v} started in ${cwd}, not the caller's folder`);
+  }
+  assert.deepEqual(seatDirsLeft(tmp), [], "the unused seat folder was left behind");
 });

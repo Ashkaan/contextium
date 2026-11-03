@@ -442,7 +442,7 @@ test(
     r.gone("no rules folder", ".agents/rules");
     for (const f of ["GEMINI.md", ".gemini", ".codex", ".cursor", ".github"]) r.gone("no generated copy for another tool", f);
     r.is("AGENTS.md is the link", readlink(join(T, "AGENTS.md")), ".agents/AGENTS.md");
-    r.is("five Contextium blocks", countLines(join(T, ".agents/AGENTS.md"), /^<!-- contextium:[a-z-]* -->$/), "5");
+    r.is("six Contextium blocks at the default level", countLines(join(T, ".agents/AGENTS.md"), /^<!-- contextium:[a-z-]* -->$/), "6");
     r.check(
       fileHasLine(join(T, ".gitignore"), ".claude/worktrees/") && fileHasLine(join(T, ".gitignore"), ".gemini/worktrees/"),
       ".gitignore keeps both worktree roots out",
@@ -933,7 +933,7 @@ test(
   rows((r) => {
     writeFileSync(CURL_LOG, "");
     scratch();
-    install([T], { input: "8\ny\nPat Doe\n2\n\nn\n", env: { CONTEXTIUM_PROMPT_STDIN: "1" } });
+    install([T], { input: "8\ny\nPat Doe\n2\n\n\n\nn\n", env: { CONTEXTIUM_PROMPT_STDIN: "1" } });
     r.hasOut("the harness is the first question", "Which tool will you drive this repo with?");
     r.is("the eighth tool is Grok Build", field(join(T, ".agents/harness"), "harness"), "grok");
     r.is("a yes to the offer installs it", cat(CURL_LOG), "https://x.ai/cli/install.sh");
@@ -943,7 +943,7 @@ test(
 
     stubClaude("2.1.283");
     scratch();
-    install([T], { input: "1\n1 2\nn\nPat\n1\n\nn\n", env: { CONTEXTIUM_PROMPT_STDIN: "1" } });
+    install([T], { input: "1\n1 2\nn\nPat\n1\n\n\n\nn\n", env: { CONTEXTIUM_PROMPT_STDIN: "1" } });
     r.hasOut("T3 Code asks which agent it runs", "Which agent will T3 Code run?");
     r.is("the first agent picked writes the code", cat(join(T, ".agents/harness")), "harness=t3\nagent=claude\ntools=t3 claude codex");
     r.is("Claude Code among them is wired", readlink(join(HOME, ".claude/skills")), join(HOME, ".agents/skills"));
@@ -954,7 +954,7 @@ test(
   "an origin: asked for on a terminal, a gh repo offered",
   rows((r) => {
     // --no-integrations means no integrations question.
-    const asked = ["--harness", "claude", "--name", "Pat", "--autonomy", "ask", "--no-integrations"];
+    const asked = ["--harness", "claude", "--name", "Pat", "--autonomy", "ask", "--rules", "recommended", "--no-integrations"];
     scratch();
     install([T, ...asked], { input: "git@example.com:pat/wb.git\n", env: { CONTEXTIUM_PROMPT_STDIN: "1" } });
     r.lacksOut("--no-integrations asks no integrations question", "Which integration starters");
@@ -1000,7 +1000,8 @@ test(
 test(
   "the AGENTS.md blocks: replaced, the rest kept",
   rows((r) => {
-    fresh("--harness", "codex", "--name", "Pat Doe");
+    // full writes the Stack section the row adds a line under.
+    fresh("--harness", "codex", "--name", "Pat Doe", "--rules", "full");
     const A = join(T, ".agents/AGENTS.md");
     const block = (name: string): string =>
       run(BASH, ["-c", `awk '/^<!-- contextium:${name} -->$/,/^<!-- \\/contextium -->$/' "$0"`, A]).stdout;
@@ -1024,7 +1025,7 @@ awk '/^<!-- contextium:records -->$/ { skip = 1 } !skip { print } /^<!-- \\/cont
 
     appendFileSync(A, "\n<!-- contextium:loop -->\nnever closed\n");
     copyFileSync(A, join(TMP, "before"));
-    rerun();
+    r.is("an unclosed block stops the run", String(rerun()), "1");
     r.check(same(A, join(TMP, "before")), "an unclosed block leaves the file untouched");
     r.hasOut("…and says why", "is never closed");
 
@@ -1218,6 +1219,7 @@ test(
     r.is("the skills now reach Claude Code through the home link", readlink(join(HOME, ".claude/skills")), join(HOME, ".agents/skills"));
     r.check(fileHas(join(T, ".agents/AGENTS.md"), "working agreement for Pat Doe's workbench"), "an unchanged v7 AGENTS.md is replaced, keeping its name");
     r.gone("…with nothing to back up", ".agents/AGENTS.md.bak");
+    r.is("…and keeps all it carried: the full rules", levelOf(join(T, ".agents/AGENTS.md")), "full");
     r.gone("a test v7 installed beside the generators is removed", ".agents/generators/generators.test.ts");
 
     v7target();
@@ -1229,7 +1231,7 @@ test(
     writeFileSync(join(T, ".githooks/checks/check-ours.sh"), "echo ours\n");
     rerun("--harness", "claude");
     r.check(
-      fileHasLine(join(T, ".agents/AGENTS.md"), "Postgres.") && countLines(join(T, ".agents/AGENTS.md"), /^<!-- contextium:[a-z-]* -->$/) === "5",
+      fileHasLine(join(T, ".agents/AGENTS.md"), "Postgres.") && countLines(join(T, ".agents/AGENTS.md"), /^<!-- contextium:[a-z-]* -->$/) === "6",
       "an edited v7 AGENTS.md keeps its text and gains the blocks",
     );
     r.there("…with the original kept", ".agents/AGENTS.md.bak");
@@ -1299,5 +1301,238 @@ test(
     } finally {
       spawnSync("git", ["-C", HERE, "worktree", "remove", "--force", src]);
     }
+  }),
+);
+
+// ── how much guidance AGENTS.md carries: --rules ─────────────────────────
+
+const AGENTS = (): string => join(T, ".agents/AGENTS.md");
+/** The rule level the core block records, or "" when it records none. */
+const levelOf = (p: string): string =>
+  lines(p)
+    .map((l) => /^Contextium rule level: ([a-z]+)\./.exec(l)?.[1])
+    .filter(Boolean)
+    .join(",");
+const bytes = (p: string): number => (existsSync(p) ? Buffer.byteLength(readFileSync(p, "utf8"), "utf8") : 0);
+/** A block of a file, markers included. */
+const blockOf = (p: string, name: string): string =>
+  run(BASH, ["-c", `awk '/^<!-- contextium:${name} -->$/,/^<!-- \\/contextium -->$/' "$0"`, p]).stdout;
+// The check reads tracked files, so the install is staged first; a run that
+// read no citation at all proves nothing and fails too.
+const standardsCheck = (): { status: number; text: string } => {
+  git("-C", T, "add", "-A");
+  const c = run(process.execPath, ["--experimental-strip-types", "--no-warnings", ".agents/checks/check-standards-refs.ts"], { cwd: T });
+  const read = /OK — [1-9][0-9]* citation/.test(c.stdout);
+  return { status: read ? c.status : 1, text: tail(`${c.stdout}\n${c.stderr}`, 3) };
+};
+const AUTO_LINE = "- Act and report on routine work; only stop to ask when genuinely stuck.";
+const ASK_LINE = "- Ask before host or infrastructure changes; diagnose and propose freely, but get a yes before mutating shared infra.";
+
+test(
+  "--rules: what each level writes",
+  rows((r) => {
+    const size: Record<string, number> = {};
+    for (const level of ["minimal", "recommended", "full"]) {
+      fresh("--harness", "codex", "--autonomy", "autonomous", "--rules", level);
+      const A = AGENTS();
+      size[level] = bytes(A);
+      r.is(`${level}: the core block records the level`, levelOf(A), level);
+      r.check(fileHasLine(A, AUTO_LINE), `${level}: the autonomy answer is in every level`);
+      r.check(blockOf(A, "core").includes(AUTO_LINE), `${level}: …inside the core block`);
+      r.check(!fileHas(A, "<!-- rules:") && !fileHas(A, "<!-- /rules -->"), `${level}: no authoring marker is rendered`);
+      r.check(!fileHas(A, "{{"), `${level}: no placeholder is left`);
+      r.check(fileHas(A, "**Read before asserting.**") && fileHas(A, "**Scripts are TypeScript.**"), `${level}: the required standards are there`);
+      r.hasOut(`${level}: the decision is printed`, `AGENTS.md rules: ${level}`);
+      const check = standardsCheck();
+      r.check(check.status === 0, `${level}: every standard a shipped file cites is in AGENTS.md: ${check.text}`);
+    }
+    r.check(size.minimal < size.recommended && size.recommended < size.full, `each level adds text: ${JSON.stringify(size)}`);
+
+    fresh("--harness", "codex", "--rules", "minimal");
+    r.check(!fileHas(AGENTS(), "**Name the simpler option.**"), "minimal leaves out a recommended standard");
+    r.check(!fileHas(AGENTS(), "Every outside fact a reply depends on"), "…and a recommended clause of a required one");
+    r.check(!fileHas(AGENTS(), "## Working preferences") && !fileHas(AGENTS(), "## Stack"), "…and the full-level sections");
+
+    fresh("--harness", "codex");
+    r.is("no --rules on a fresh install is recommended", levelOf(AGENTS()), "recommended");
+    r.hasOut("…and says so", "AGENTS.md rules: recommended");
+    r.check(fileHas(AGENTS(), "**Name the simpler option.**") && fileHas(AGENTS(), "Every outside fact a reply depends on"), "recommended carries the recommended text");
+    r.check(!fileHas(AGENTS(), "## Working preferences"), "…and not the working preferences");
+    r.check(fileHasLine(AGENTS(), ASK_LINE), "…with the default autonomy");
+
+    fresh("--harness", "codex", "--rules", "full");
+    r.is("full writes the preferences as a Contextium block", countLines(AGENTS(), /^<!-- contextium:preferences -->$/), "1");
+    r.check(fileHasLine(AGENTS(), "## Stack"), "…and a Stack section of the user's own");
+  }),
+);
+
+test(
+  "--rules: reruns keep the level, and a change touches only Contextium's text",
+  rows((r) => {
+    fresh("--harness", "codex", "--autonomy", "autonomous", "--rules", "minimal");
+    const A = AGENTS();
+    appendFileSync(A, "\n## Mine\n\n- **Deploy on Fridays.** Ours.\n");
+    rerun();
+    copyFileSync(A, join(TMP, "after-one"));
+    rerun();
+    r.is("two reruns of minimal keep minimal", levelOf(A), "minimal");
+    r.check(same(A, join(TMP, "after-one")), "…and the second changes nothing");
+    r.check(fileHasLine(A, AUTO_LINE), "…and keep the autonomy without asking again");
+    r.hasOut("…and say the level was kept", "AGENTS.md rules: minimal (kept from this workbench)");
+
+    rerun("--rules", "full");
+    r.is("minimal -> full", levelOf(A), "full");
+    r.is("…adds the preferences block", countLines(A, /^<!-- contextium:preferences -->$/), "1");
+    const order = lines(A).filter((l) => /^<!-- contextium:/.test(l));
+    r.is("…right after the core block", order.slice(0, 2).join(" "), "<!-- contextium:core --> <!-- contextium:preferences -->");
+    r.check(fileHasLine(A, "- **Deploy on Fridays.** Ours."), "…and keeps the user's text");
+    rerun();
+    r.is("a rerun keeps full", levelOf(A), "full");
+
+    // The Stack section a fresh full install writes is the user's: going down
+    // keeps it, and says so.
+    fresh("--harness", "codex", "--rules", "full");
+    run(BASH, ["-c", `awk '{ print } /^## Stack$/ { print ""; print "Postgres 16." }' "$0" >"$0.x" && mv "$0.x" "$0"`, AGENTS()]);
+    rerun("--rules", "minimal");
+    r.is("full -> minimal", levelOf(AGENTS()), "minimal");
+    r.is("…drops the preferences block", countLines(AGENTS(), /^<!-- contextium:preferences -->$/), "0");
+    r.check(fileHasLine(AGENTS(), "## Stack") && fileHasLine(AGENTS(), "Postgres 16."), "…keeps the user's Stack section");
+    r.hasOut("…and names it as kept", "## Stack");
+    r.check(!fileHas(AGENTS(), "**Name the simpler option.**"), "…and drops the recommended standards");
+  }),
+);
+
+test(
+  "--rules: bad input is refused before anything is written",
+  rows((r) => {
+    scratch();
+    const target = join(T, "new");
+    for (const [args, why] of [
+      [["--rules", "huge"], "an unknown level"],
+      [["--rules", ""], "an empty level"],
+      [["--rules"], "a missing value"],
+    ] as const) {
+      const status = install([target, "--yes", "--no-integrations", "--harness", "claude", ...args]);
+      r.is(`${why} exits 1`, String(status), "1");
+      r.hasOut(`${why} is named`, "--rules");
+      r.gone(`${why} makes no target`, "new");
+      r.is(`${why} writes nothing in HOME`, readdirSync(H).join(" "), "");
+    }
+
+    fresh("--harness", "codex", "--rules", "minimal");
+    const A = AGENTS();
+    run(BASH, ["-c", `sed -e 's/^Contextium rule level: minimal\\./Contextium rule level: maximal./' "$0" >"$0.x" && mv "$0.x" "$0"`, A]);
+    copyFileSync(A, join(TMP, "before"));
+    copyFileSync(join(T, ".agents/harness"), join(TMP, "before-harness"));
+    const status = rerun("--harness", "grok");
+    r.is("a malformed level in AGENTS.md exits 1", String(status), "1");
+    r.hasOut("…and names it", "maximal");
+    r.check(same(A, join(TMP, "before")), "…leaving AGENTS.md as it was");
+    r.check(same(join(T, ".agents/harness"), join(TMP, "before-harness")), "…and wiring nothing new");
+  }),
+);
+
+/** v9.1.0's AGENTS.md as its installer rendered it, unedited. */
+function v9AgentsMd(autonomy: "ask" | "autonomous"): string {
+  const t = spawnSync("git", ["-C", HERE, "show", "v9.1.0:templates/agents/AGENTS.md"], { encoding: "utf8" });
+  if (t.status !== 0) throw new Error("cannot read v9.1.0:templates/agents/AGENTS.md — run from a clone with its tags");
+  return t.stdout.replaceAll("{{NAME}}", "Pat Doe").replaceAll("{{AUTONOMY}}", (autonomy === "ask" ? ASK_LINE : AUTO_LINE).slice(2));
+}
+/** A workbench this version installed, whose AGENTS.md is then put back to v9.1.0's. */
+function v9target(autonomy: "ask" | "autonomous", edit?: (s: string) => string): void {
+  fresh("--harness", "codex");
+  const body = v9AgentsMd(autonomy);
+  writeFileSync(AGENTS(), edit ? edit(body) : body);
+}
+
+test(
+  "--rules: an AGENTS.md from before rule levels",
+  rows((r) => {
+    v9target("autonomous");
+    rerun();
+    const A = AGENTS();
+    r.is("an unchanged v9 file with no --rules keeps all it had: full", levelOf(A), "full");
+    r.is("…with one Working preferences section, Contextium's", countLines(A, /^## Working preferences$/), "1");
+    r.is("…inside the preferences block", countLines(A, /^<!-- contextium:preferences -->$/), "1");
+    r.check(fileHasLine(A, AUTO_LINE) && blockOf(A, "core").includes(AUTO_LINE), "…and the autonomy it chose, in the core block");
+    r.is("…once", countLines(A, /^- Act and report on routine work/), "1");
+    r.check(fileHasLine(A, "## Stack"), "…and its Stack section");
+    copyFileSync(A, join(TMP, "after-one"));
+    rerun();
+    r.check(same(A, join(TMP, "after-one")), "a second rerun changes nothing");
+
+    v9target("ask");
+    rerun("--rules", "minimal");
+    r.is("an unchanged v9 file with --rules minimal", levelOf(AGENTS()), "minimal");
+    r.is("…loses the unchanged preferences", countLines(AGENTS(), /^## Working preferences$/), "0");
+    r.hasOut("…and says they were Contextium's", "unchanged Working preferences");
+    r.check(fileHasLine(AGENTS(), ASK_LINE), "…keeping the autonomy");
+
+    const edited = (s: string): string => s.replace("## Working preferences\n", "## Working preferences\n\n- Reply in British English.\n");
+    v9target("autonomous", edited);
+    const prefs = (p: string): string => run(BASH, ["-c", `awk '/^## Working preferences$/ { f = 1 } /^## Stack$/ { f = 0 } f' "$0"`, p]).stdout;
+    const before = prefs(AGENTS());
+    rerun();
+    r.is("an edited v9 file with no --rules is recommended", levelOf(AGENTS()), "recommended");
+    r.is("…its edited preferences kept exactly", prefs(AGENTS()), before);
+    r.hasOut("…and named as kept", "## Working preferences");
+
+    v9target("autonomous", edited);
+    rerun("--rules", "minimal");
+    r.is("an edited v9 file with --rules minimal", levelOf(AGENTS()), "minimal");
+    r.is("…still keeps the edited preferences exactly", prefs(AGENTS()), before);
+    r.lacksOut("…and never claims they were removed", "unchanged Working preferences");
+    r.hasOut("…naming them as still in force", "## Working preferences");
+
+    v9target("autonomous", edited);
+    rerun("--rules", "full");
+    r.is("an edited v9 file with --rules full", levelOf(AGENTS()), "full");
+    r.is("…keeps the user's section beside Contextium's", countLines(AGENTS(), /^## Working preferences$/), "2");
+    r.check(fileHasLine(AGENTS(), "- Reply in British English."), "…untouched");
+  }),
+);
+
+test(
+  "--rules: the interview asks, previews, and a no writes nothing",
+  rows((r) => {
+    scratch();
+    install([T], { input: "2\nn\nPat Doe\n2\n3\n\n\nn\n", env: { CONTEXTIUM_PROMPT_STDIN: "1" } });
+    r.hasOut("the level is asked", "How much guidance should AGENTS.md carry?");
+    r.is("the third choice is full", levelOf(AGENTS()), "full");
+    r.hasOut("the preview names what full adds", "Working preferences");
+
+    scratch();
+    const status = install([T], { input: "2\nn\nPat Doe\n1\n1\nn\n", env: { CONTEXTIUM_PROMPT_STDIN: "1" } });
+    r.is("a no at the preview exits 1", String(status), "1");
+    r.gone("…before the layer is written", ".agents");
+  }),
+);
+
+test(
+  "--rules reaches the copy a piped install fetches",
+  rows((r) => {
+    // The installer on its own, as `curl … | bash` runs it: it clones the
+    // template and hands its arguments to the clone's installer. A git stub
+    // answers the clone from this checkout.
+    const alone = join(TMP, `alone${++n}`);
+    mkdirSync(alone, { recursive: true });
+    copyFileSync(INSTALL, join(alone, "install.sh"));
+    const bin = join(TMP, `gitstub${n}`);
+    mkdirSync(bin, { recursive: true });
+    const realGit = chomp(spawnSync("sh", ["-c", "command -v git"], { encoding: "utf8" }).stdout);
+    writeFileSync(
+      join(bin, "git"),
+      `#!/bin/sh\nif [ "$1" = clone ]; then for a in "$@"; do d="$a"; done; mkdir -p "$d" && cd "${HERE}" && tar --exclude=./.git -cf - . | (cd "$d" && tar -xf -); exit $?; fi\nexec "${realGit}" "$@"\n`,
+    );
+    chmodSync(join(bin, "git"), 0o755);
+    scratch();
+    git("init", "-q", T);
+    const status = install([T, "--yes", "--no-integrations", "--harness", "codex", "--rules", "minimal"], {
+      script: join(alone, "install.sh"),
+      env: { PATH: `${bin}:${PATH}` },
+    });
+    r.is("the fetched installer runs", String(status), "0");
+    r.hasOut("…after fetching", "fetched the template");
+    r.is("…with --rules as given", levelOf(AGENTS()), "minimal");
   }),
 );

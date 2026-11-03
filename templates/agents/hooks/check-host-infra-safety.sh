@@ -36,6 +36,12 @@
 #       kills the session issuing the command — and with it any background run
 #       the session was waiting on, whose in-flight results are lost.
 #       Same hazard class as (f), which reaches only systemctl.
+#   (j) a kill by PORT at a command position — `fuser -k`, `lsof … | xargs
+#       kill`, `kill $(lsof …)`, `kill-port`. Whatever holds the port dies,
+#       and on a shared host that is not always the dev server the session
+#       started: `fuser -k 8791/tcp` kills whatever other service listens on
+#       8791. Most port kills took this route once, because this hook's own
+#       (g)/(h) remedy text used to teach `fuser -k 3000/tcp`.
 #
 # Read-only inspection commands (ip route show, ls /etc/, cat /etc/foo) pass.
 #
@@ -56,7 +62,7 @@
 # Those prompt even in bypassPermissions mode, which this hook does not. Their
 # reach is the built-in file-editing tools — an Edit(path) rule covers Write
 # and NotebookEdit too — but NOT Bash subprocess writes, which is the limit that
-# matters here. Every trigger (a)-(i) above stays hook-owned, and NO branch below is
+# matters here. Every trigger (a)-(j) above stays hook-owned, and NO branch below is
 # removable on the belief that permissions now cover it:
 #   (a) `Bash(sudo *)` cannot tell `sudo x` from `ssh host sudo x`, and would
 #       prompt on every local sudo — a widening this rule never asked for.
@@ -98,8 +104,8 @@
 #   pass: rg --fixed-strings 'pkill -f' .claude/hooks/
 #   pass: echo "do not use pkill -f here"
 #   pass: pkill -x node_exporter
-#   pass: fuser -k 3000/tcp
-#   pass: lsof -ti tcp:3000 | xargs -r kill
+#   block: fuser -k 3000/tcp
+#   block: lsof -ti tcp:3000 | xargs -r kill
 #   pass: kill "$PID"
 #   pass: systemctl --user stop nightly-report
 # (h) pgrep -f whose output reaches a kill
@@ -115,6 +121,37 @@
 #   pass: pgrep -f astro || echo "nothing to kill"
 #   pass: kill "$PID"; pgrep -af astro
 #   pass: grep -rn 'pgrep -f' journal/*.md
+# (j) killing whatever holds a port
+#   block: fuser -k 8791/tcp
+#   block: fuser -k -n tcp 3000
+#   block: sudo fuser -km 3000/tcp
+#   block: lsof -t -i :3000 | xargs kill -9
+#   block: lsof -i :3000 | awk 'NR>1 {print $2}' | xargs -r kill
+#   block: kill $(lsof -ti:3000)
+#   block: for p in $(lsof -ti:3000); do kill "$p"; done
+#   block: npx kill-port 3000
+#   block: npm run build && npx -y kill-port 4321
+#   block: fuser --kill 8791/tcp
+#   block: echo "$(fuser -k 8791/tcp)"
+#   block: echo "stopped: `fuser -k 3000/tcp`"
+#   block: echo "$(lsof -ti:3000 | xargs kill)"
+#   pass: grep -rn 'fuser -k' journal/
+#   pass: grep -rn '$(fuser -k 8791/tcp)' journal/
+#   block: echo "'$(fuser -k 8791/tcp)'"
+#   block*: cat > /tmp/stop.sh <<EOF\n$(fuser -k 8791/tcp)\nEOF
+#   pass*: cat >> journal/x.md <<'EOF'\nran $(fuser -k 8791/tcp) by mistake\nEOF
+#   pass*: cat >> journal/x.md <<"EOF"\nran `fuser -k 3000/tcp` once\nEOF
+#   pass: echo "it's fine"; grep -rn '$(fuser -k 1/tcp)' x
+#   block: cat <<<'EOF'; echo "$(fuser -k 8791/tcp)"
+#   block*: cat >> journal/x.md <<'END '\nprose\nEND \necho "$(fuser -k 8791/tcp)"
+#   block*: cat <<<'EOF'\necho "$(fuser -k 8791/tcp)"
+#   block*: cat >> journal/x.md <<'END-TEXT'\nprose\nEND-TEXT\necho "$(fuser -k 8791/tcp)"
+#   pass*: cat >> journal/x.md <<'END-TEXT'\nran $(fuser -k 8791/tcp)\nEND\nstill prose $(fuser -k 1/tcp)\nEND-TEXT
+#   pass: echo "never fuser -k"
+#   pass: kill -- -"$PGID"
+#   pass: fuser 3000/tcp
+#   pass: lsof -ti:3000
+#   pass*: cat >> journal/x.md <<'EOF'\nfuser -k 8791/tcp killed the wrong service\nEOF
 # (i) killing the session's own process name
 #   block: pkill -x claude
 #   block: pkill -f claude
@@ -222,12 +259,12 @@
 #   block: ssh nas "sudo docker exec kuma sqlite3 -readonly /db \"UPDATE monitor SET active=0;\""
 #   pass: ssh nas "sudo timeout 20 zpool status -x"
 #   pass: ssh nas "sudo timeout 20 midclt call alert.list"
-# the founding case — a host network change made without asking — all four BLOCK
+# a host network change made without asking — every step blocks
 #   block: ssh nas 'sudo ip link add ipvshim type ipvlan link bond0 mode l2'
 #   block: ssh nas 'sudo ip route add 192.168.1.58/32 dev ipvshim'
 #   block: ssh nas 'sudo cp /etc/docker/daemon.json /etc/docker/daemon.json.bak'
 #   block: echo '{"insecure-registries":["192.168.1.58:5000"]}' > /etc/docker/daemon.json
-#   block: ssh nas 'sudo systemctl enable trigger-registry-shim.service'
+#   block: ssh nas 'sudo systemctl enable example-registry.service'
 #   block: ssh nas 'sudo docker login -u user -p token 192.168.1.58:5000'
 #
 #   block: sudo systemctl restart t3code.service
@@ -363,8 +400,7 @@ $mechanism
 A mistake made on many separate days is mechanized, so this one is.
 
 Kill by something that is not a substring of your own command instead:
-  by port     fuser -k 3000/tcp
-              lsof -ti tcp:3000 | xargs -r kill
+  own group   kill -- -"\$PGID"         # of a process you launched with setsid
   exact name  pkill -x node_exporter   # -x, not -f: matches comm, not cmdline
                                        # NEVER with the name \`claude\` — see (i)
   by pid      kill "\$PID"              # pid captured when you spawned it
@@ -385,6 +421,30 @@ Command:
   $COMMAND
 MSG
   deny "${_msg%$'\n'}"
+}
+
+block_port_kill() {
+  deny "$(cat <<MSG
+BLOCKED: a kill by port kills whatever holds the port, not the server you started.
+
+On a shared host the port is not always yours: \`fuser -k 8791/tcp\` kills
+whatever other service listens on 8791. A port number says nothing about
+which process answers on it, so this guard refuses \`fuser -k\`,
+\`lsof … | xargs kill\`, \`kill \$(lsof …)\` and \`kill-port\` at a command
+position.
+
+Stop the server by the process group you launched it in instead:
+  setsid npm run dev > /tmp/dev.log 2>&1 &
+  PGID=\$!                               # setsid makes the child its group leader
+  …
+  kill -- -"\$PGID"                       # ends the server and everything it spawned
+Or by its pid (\`kill "\$PID"\`), or its unit (\`systemctl --user stop <unit>\`).
+To see who holds a port without killing it: \`fuser 3000/tcp\`, \`ss -ltnp\`.
+
+Command:
+  $COMMAND
+MSG
+)"
 }
 
 block_kill_claude() {
@@ -422,8 +482,14 @@ the one you mean deterministically instead:
                                    # Every other pid in the list belongs to a
                                    # DIFFERENT live session, not to junk.
 
-If you truly intend to end every Claude session on this host, that is a
-user decision — ask in prose and wait for the answer first.
+If this session does not already authorize ending every session,
+ask the user in prose and wait for the answer first. State that this ends
+THIS session too. Reuse authorization already given; do not ask again.
+The hook cannot see conversational approval and still blocks the literal
+command. Use its recorded-script route: use the Write tool to write the
+authorized command into a script file, record the authorization as a comment at the top with its date
+and how it was given, then run the script. This route needs that actual
+authorization; the comment does not grant it.
 
 Command:
   $COMMAND
@@ -442,12 +508,14 @@ $reason
   Diagnose freely (read-only). Propose freely (text-only).
   Treatment requires authorization.
 
-Ask the user in prose and wait BEFORE executing. Describe:
+If this session does not already authorize this change,
+ask the user in prose and wait BEFORE executing. Describe:
   - verbatim commands you intend to run
   - host name + affected containers/services
   - rollback procedure
 
-Once the user authorizes it, this hook still cannot see that approval and will
+Reuse authorization already given; do not ask again.
+This hook cannot see that approval and will
 re-block the literal command. The sanctioned route — handing the command back
 to the user is not an option — is:
   1. write the command into a script file with the Write tool,
@@ -497,15 +565,23 @@ scrub_prose() {
     BEGIN { indoc = 0; delim = "" }
     {
       if (indoc) {
-        if ($0 ~ ("^[[:space:]]*" delim "[[:space:]]*$")) { indoc = 0; print $0 }
+        # Verbatim, or equal once both sides are trimmed: ending the blanked
+        # region early only means more of the command gets checked.
+        t = $0; sub(/^[[:space:]]+/, "", t); sub(/[[:space:]]+$/, "", t)
+        if ($0 == delim || t == tdelim) { indoc = 0; print $0 }
         else print ""
         next
       }
-      if (match($0, /<<-?[[:space:]]*["'"'"']?[A-Za-z_][A-Za-z0-9_]*["'"'"']?/)) {
+      # Not a here-string (<<<), and a quoted delimiter is the whole quoted
+      # word: <<'"'"'END-TEXT'"'"' closes at END-TEXT, never at END.
+      if (match($0, /(^|[^<])<<-?[[:space:]]*("[^"]+"|'"'"'[^'"'"']+'"'"'|[A-Za-z_][A-Za-z0-9_]*)/)) {
         tag = substr($0, RSTART, RLENGTH)
-        sub(/^<<-?[[:space:]]*/, "", tag)
+        sub(/^[^<]?<<-?[[:space:]]*/, "", tag)
         gsub(/["'"'"']/, "", tag)
-        if (strippable($0)) { delim = tag; indoc = 1 }
+        if (strippable($0)) {
+          delim = tag; indoc = 1
+          tdelim = tag; sub(/^[[:space:]]+/, "", tdelim); sub(/[[:space:]]+$/, "", tdelim)
+        }
       }
       print $0
     }
@@ -653,6 +729,29 @@ ssh_payload_has_sudo() {
   ' <<<"$1"
 }
 
+# sqlite3 is a read only when ALL of these hold. Without -readonly, sqlite3 opens
+# the database read/write and CREATES the file if the path is wrong; under sudo
+# that is a host write. ~6 measured false positives use `docker exec … sqlite3
+# <db> "SELECT …"` with no -readonly and still block. That is the right outcome:
+# the remedy is one word at the call site. -readonly is checked on the SEGMENT
+# ($1): it must be on this invocation, not merely somewhere in the command. The
+# SQL is read on the full text ($2), since a quoted body spans newlines.
+# -readonly protects the database and nothing else: the CLI's writefile() and
+# edit() write files, load_extension() loads code, -cmd/-init run dot-commands,
+# and .shell/.system run commands while .output/.once/.save/.backup/.import
+# write, so each of them fails the read.
+sqlite_read_ok() {
+  local c="$1" full="$2"
+  grep -qE '(^|[[:space:]])-readonly([[:space:]"'"'"']|$)' <<<"$c" || return 1
+  grep -qiE '\b(INSERT|UPDATE|DELETE|DROP|ALTER|CREATE|ATTACH|REPLACE|TRUNCATE|VACUUM)\b' <<<"$full" && return 1
+  grep -qiE '\bPRAGMA\b' <<<"$full" && return 1
+  grep -qiE '\b(writefile|edit|load_extension)[[:space:]]*\(' <<<"$full" && return 1
+  grep -qE '(^|[[:space:]])-(cmd|init)([[:space:]]|=|$)' <<<"$full" && return 1
+  grep -qE '(^|[[:space:]"'"'"'])\.(shell|system|output|once|save|backup|import|load|excel|open|read|restore|cd|log)\b' <<<"$full" && return 1
+  grep -qiE '\bSELECT\b' <<<"$full" || return 1
+  return 0
+}
+
 # Is a single sudo-invoked command read-only? Fail closed: the default is no.
 #
 # $2 is the FULL command text. Two checks below deliberately read it rather
@@ -695,43 +794,49 @@ readonly_sudo_cmd() {
   head=${head##*/}          # /usr/bin/zpool and ./zpool are the same binary
   head=${head%%[\"\']*}     # a name flush against a closing quote
 
-  # sqlite3 — BOTH conditions required. Without -readonly, sqlite3 opens the
-  # database read/write and CREATES the file if the path is wrong; under sudo
-  # that is a host write. ~6 measured false positives use `docker exec …
-  # sqlite3 <db> "SELECT …"` with no -readonly and still block. That is the
-  # right outcome: the remedy is one word at the call site.
+  # The arguments after the command name, one per element, quotes removed and
+  # redirect tokens (`2>&1`, `>/dev/null`) dropped: the per-command option
+  # rules below read these. A NAME is never enough on its own: `sort -o`,
+  # `uniq IN OUT`, `date --set`, `hostname NAME`, `rg --pre` and
+  # `awk 'BEGIN{system(...)}'` all passed as "diagnosis" while their names
+  # sat on the plain list below.
+  local -a args=()
+  local a
+  read -r -a args <<<"${norm#"${norm%%[[:space:]]*}"}"
+  # A bare redirect operator (`2>`, `>>`, `&>`) takes the NEXT token as its
+  # target, so that token is dropped too: `uniq in 2> /dev/null` has one operand.
+  local -a kept=()
+  local skipnext=0
+  for a in ${args[@]+"${args[@]}"}; do
+    a=${a//[\"\']/}
+    if (( skipnext )); then skipnext=0; continue; fi
+    if [[ "$a" =~ ^([0-9]*[\<\>]{1,2}\&?|\&\>{1,2})$ ]]; then skipnext=1; continue; fi
+    [[ -z "$a" || "$a" =~ ^[0-9]*[\<\>]|^\&\> ]] && continue
+    kept+=("$a")
+  done
+  args=(${kept[@]+"${kept[@]}"})
+
+  # sqlite3 — the rule lives in sqlite_read_ok, shared with the container route.
   if [[ "$head" == "sqlite3" ]] ; then
-    # -readonly is checked on the SEGMENT: it must be on this invocation, not
-    # merely somewhere in the command.
-    grep -qE '(^|[[:space:]])-readonly([[:space:]"'"'"']|$)' <<<"$c" || return 1
-    grep -qiE '\b(INSERT|UPDATE|DELETE|DROP|ALTER|CREATE|ATTACH|REPLACE|TRUNCATE|VACUUM)\b' <<<"$full" && return 1
-    grep -qiE '\bPRAGMA\b' <<<"$full" && return 1
-    grep -qiE '\bSELECT\b' <<<"$full" || return 1
-    return 0
+    sqlite_read_ok "$c" "$full"
+    return
   fi
 
-  # docker — read verbs only. exec is allowed only when its INNER command is
-  # itself on this list; `sh -c` / `bash -c` are NOT, because their payload
-  # would have to be re-parsed and an unparsed payload cannot be cleared.
+  # docker — read verbs only, anchored at the command (a read verb that is
+  # merely an ARGUMENT, as in `docker rm -f x docker ps`, is not a read). exec
+  # hands its INNER command back to this same function, so a container gets
+  # exactly the option rules a direct command gets: the container route once
+  # kept its own shorter list, and `env touch`, `sed --in-place` and every
+  # option-level write passed there while the direct route refused them.
+  # `sh -c` / `bash -c` stay unlisted, because an unparsed payload cannot be
+  # cleared.
   if [[ "$head" == "docker" ]] ; then
-    grep -qE "(^|[[:space:]])docker[[:space:]]+(ps|logs|inspect|images|version|info|top|port|stats|diff)${T}" <<<"$c" && return 0
-    if grep -qE "(^|[[:space:]])docker[[:space:]]+exec([[:space:]]+-[^[:space:]]+)*[[:space:]]+[^[:space:]]+[[:space:]]+(grep|egrep|cat|head|tail|ls|getent|ping|env|date|wc|stat|df|uptime|sqlite3|nc|sed)${T}" <<<"$c" ; then
-      # An inner sqlite3 obeys the SAME rule as a direct one — all three
-      # conditions, not just -readonly. Checking only the flag let
-      # `docker exec c sqlite3 -readonly /db "DELETE FROM heartbeat;"` pass
-      # while the identical SQL blocked one branch up, so the two sqlite3 paths
-      # disagreed about what a read is.
-      if grep -qE "(^|[[:space:]])sqlite3${T}" <<<"$c" ; then
-        grep -qE "(^|[[:space:]])-readonly${T}" <<<"$c" || return 1
-        grep -qiE '\b(INSERT|UPDATE|DELETE|DROP|ALTER|CREATE|ATTACH|REPLACE|TRUNCATE|VACUUM)\b' <<<"$full" && return 1
-        grep -qiE '\bPRAGMA\b' <<<"$full" && return 1
-        grep -qiE '\bSELECT\b' <<<"$full" || return 1
-      fi
-      # `sed -i` edits in place; only `sed -n` reads.
-      grep -qE '(^|[[:space:]])sed[[:space:]]+-i' <<<"$c" && return 1
-      return 0
-    fi
-    return 1
+    grep -qE "^docker[[:space:]]+(ps|logs|inspect|images|version|info|top|port|stats|diff)${T}" <<<"$norm" && return 0
+    local inner
+    inner=$(sed -nE 's/^docker[[:space:]]+exec([[:space:]]+-[^[:space:]]+)*[[:space:]]+[^[:space:]-][^[:space:]]*[[:space:]]+//p' <<<"$norm")
+    [[ -n "$inner" ]] || return 1
+    readonly_sudo_cmd "$inner" "$full"
+    return
   fi
 
   # zpool / zfs — status and list read; everything else mutates a pool.
@@ -741,9 +846,16 @@ readonly_sudo_cmd() {
   fi
 
   # smartctl — information flags only. -t starts a self-test, which writes to
-  # the drive's own log and is a host action, so it is deliberately absent.
+  # the drive's own log and is a host action, so it is deliberately absent;
+  # -s/-o/-S switch SMART, offline testing and attribute autosave. A long
+  # option passes only from the read list: `--smart=off` beside `-a` disabled
+  # SMART while the -a satisfied the check.
   if [[ "$head" == "smartctl" ]] ; then
-    grep -qE '(^|[[:space:]])-[a-zA-Z]*[tXs]' <<<"$c" && return 1
+    grep -qE '(^|[[:space:]])-[a-zA-Z]*[tXsoS]' <<<"$c" && return 1
+    for a in ${args[@]+"${args[@]}"}; do
+      [[ "$a" == --* ]] || continue
+      [[ "$a" =~ ^--(all|xall|health|info|attributes|capabilities|log|json|device|scan|scan-open|identify|format|quietmode|tolerance|badsum|report|nocheck|get|help|version|license)(=|$) ]] || return 1
+    done
     grep -qE "(^|[[:space:]])-(a|H|l|i|A|x|c)${T}" <<<"$c" && return 0
     return 1
   fi
@@ -756,9 +868,10 @@ readonly_sudo_cmd() {
 
   # journalctl — READ options only. --vacuum-size/-time/-files, --rotate,
   # --flush, --sync, --relinquish-var and --setup-keys all mutate persistent
-  # journal state on the host, so any option outside this list blocks.
+  # journal state on the host, and --cursor-file writes the file it names, so
+  # any of them blocks.
   if [[ "$head" == "journalctl" ]] ; then
-    grep -qE '(^|[[:space:]])--(vacuum-[a-z]+|rotate|flush|sync|relinquish-var|setup-keys|update-catalog)([[:space:]]|=|$)' <<<"$c" && return 1
+    grep -qE '(^|[[:space:]])--(vacuum-[a-z]+|rotate|flush|sync|relinquish-var|setup-keys|update-catalog|cursor-file)([[:space:]]|=|$)' <<<"$c" && return 1
     return 0
   fi
 
@@ -768,30 +881,155 @@ readonly_sudo_cmd() {
     return 1
   fi
 
-  # ipmitool — `mc info` and `sensor list` read. `lan print` exposes BMC
-  # network config and `lan set` changes it; neither is on the list.
+  # ipmitool — `mc info`, `sensor list`, `chassis status` and `sdr` read.
+  # `lan print` exposes BMC network config and `lan set` changes it; neither is
+  # on the list. `sdr dump FILE` writes FILE and `sdr fill` writes the SDR.
   if [[ "$head" == "ipmitool" ]] ; then
+    [[ "${args[0]:-}" == "sdr" && "${args[1]:-}" =~ ^(dump|fill)$ ]] && return 1
     grep -qE "^ipmitool[[:space:]]+(mc[[:space:]]+info|sensor[[:space:]]+list|sdr${T}|chassis[[:space:]]+status)" <<<"$norm" && return 0
     return 1
   fi
 
-  # `sed` reads only as `sed -n`; `sed -i` edits in place.
+  # sed — read-only unless it edits in place (-i, --in-place, a cluster such as
+  # -ni), runs a script file (-f), or its script holds a w/W (write) or e
+  # (execute) command or s///w, s///e flag. `-n` alone was the old test, and
+  # `sed -n -i s/a/b/ f` passed it. The script scan reads the full text, since a
+  # script routinely crosses a separator the segment stops at.
   if [[ "$head" == "sed" ]] ; then
-    grep -qE "^sed[[:space:]]+-n${T}" <<<"$norm" && return 0
-    return 1
+    for a in ${args[@]+"${args[@]}"}; do
+      [[ "$a" =~ ^-[A-Za-z]*[if]|^--(in-place|file) ]] && return 1
+    done
+    # Any character but a letter, `_` or `-` before the command letter, not only
+    # `/`: an s command may use any delimiter (`s#a#b#w FILE`, `s|a|b|e`), and an
+    # address may be a line number (`1e CMD`). `-` is excluded so `-e SCRIPT`
+    # stays an option.
+    grep -qE "[^A-Za-z_-][wWe]([[:space:]\"';}]|$)" <<<"$full" && return 1
+    # An s command's flags, read with the delimiter it actually uses — any
+    # character, `-` included (`s-a-b-w FILE`), matched by back-reference. A
+    # backslash and the character after it are one unit, so an escaped
+    # delimiter (`s-a-b\-w text-`) is text, not the end of a part. The pattern
+    # is single-quoted: in double quotes bash turned `\\.` into `\.`, a literal
+    # dot, and `s-a-b\n-w FILE` slipped through.
+    local sre='s([^A-Za-z0-9[:space:]\\])([^\\]|\\.)*\1([^\\]|\\.)*\1[gpIiMm0-9]*([wW][[:space:]]|e([[:space:]"'"'"';}]|$))'
+    grep -qE "$sre" <<<"$full" && return 1
+    return 0
   fi
 
-  # `nc` reads only as a port probe (-z).
+  # awk — a language, so its program decides. system(), getline from a
+  # command, a coprocess, `print … >` / `print … |`, and @load/@include run or
+  # write something; -f/-i/-l/-E load program text or code from elsewhere.
+  # Scanned on the full text for the same reason as sed.
+  if [[ "$head" == "awk" ]] ; then
+    for a in ${args[@]+"${args[@]}"}; do
+      [[ "$a" =~ ^-[filE]|^--(file|include|load|exec) ]] && return 1
+    done
+    grep -qE '(system|getline)|\|&|@(load|include)|printf?[^;}]*[|>]' <<<"$full" && return 1
+    return 0
+  fi
+
+  # sort — -o/--output writes, --compress-program runs a program.
+  if [[ "$head" == "sort" ]] ; then
+    for a in ${args[@]+"${args[@]}"}; do
+      [[ "$a" =~ ^-[A-Za-z]*o|^--(output|compress-program) ]] && return 1
+    done
+    return 0
+  fi
+
+  # uniq — a second file operand is the OUTPUT file.
+  if [[ "$head" == "uniq" ]] ; then
+    local n=0 skip=0
+    for a in ${args[@]+"${args[@]}"}; do
+      if (( skip )); then skip=0; continue; fi
+      case "$a" in
+        -f|-s|-w|--skip-fields|--skip-chars|--check-chars) skip=1 ;;
+        -?*) ;;
+        *) n=$((n + 1)) ;;
+      esac
+    done
+    (( n <= 1 ))
+    return
+  fi
+
+  # date — -s/--set sets the clock, and so does a bare MMDDhhmm[[CC]YY][.ss]
+  # operand (`date 110212002026`).
+  if [[ "$head" == "date" ]] ; then
+    local value=0
+    for a in ${args[@]+"${args[@]}"}; do
+      # The value of -d/-f/-r (`date -d 20261102`) is read, not set.
+      if (( value )); then value=0; continue; fi
+      [[ "$a" =~ ^-[uRI]*[dfr]$ ]] && { value=1; continue; }
+      [[ "$a" =~ ^-[uR]*s|^--set ]] && return 1
+      [[ "$a" =~ ^[0-9]{8}([0-9]{2}|[0-9]{4})?(\.[0-9]{2})?$ ]] && return 1
+    done
+    return 0
+  fi
+
+  # hostname — any operand, -F/--file and -b/--boot SET the name; only the
+  # display options read.
+  if [[ "$head" == "hostname" ]] ; then
+    for a in ${args[@]+"${args[@]}"}; do
+      [[ "$a" =~ ^-[sfdiIAayn]+$|^--(short|fqdn|long|domain|ip-address|ip-addresses|all-ip-addresses|all-fqdns|alias|nis|yp)$ ]] || return 1
+    done
+    return 0
+  fi
+
+  # rg — --pre runs a preprocessor per file; --hostname-bin runs a program.
+  if [[ "$head" == "rg" ]] ; then
+    for a in ${args[@]+"${args[@]}"}; do
+      [[ "$a" =~ ^--(pre|hostname-bin)(=|$) ]] && return 1
+    done
+    return 0
+  fi
+
+  # file — -C compiles a magic file, writing the result.
+  if [[ "$head" == "file" ]] ; then
+    for a in ${args[@]+"${args[@]}"}; do
+      [[ "$a" =~ ^-[A-Za-z]*C|^--compile ]] && return 1
+    done
+    return 0
+  fi
+
+  # pvecm — status and nodes read; add, delnode, expected, updatecerts change
+  # the cluster.
+  if [[ "$head" == "pvecm" ]] ; then
+    [[ "${args[0]:-}" =~ ^(status|nodes)$ ]]
+    return
+  fi
+
+  # nvidia-smi — query and list options only. Its setters (-pm, -pl, -r, -c,
+  # -ac, -lgc, …) change GPU state, and -f writes a log file.
+  if [[ "$head" == "nvidia-smi" ]] ; then
+    local prev=""
+    for a in ${args[@]+"${args[@]}"}; do
+      if [[ "$prev" =~ ^-(i|d|l|lms)$ ]]; then prev=""; continue; fi
+      [[ "$a" =~ ^(-q|--query|-L|--list-gpus|-x|--xml-format|-i|-d|-l|-lms|-u|-h|--help|--query-[a-z-]+=.*|--format=.*|--id=.*|--display=.*|--loop=.*|--loop-ms=.*|dmon|pmon|topo|-m)$ ]] || return 1
+      prev="$a"
+    done
+    return 0
+  fi
+
+  # nc — reads only as a port probe (-z), and never with -e/-c, which run a
+  # program on connect.
   if [[ "$head" == "nc" ]] ; then
+    for a in ${args[@]+"${args[@]}"}; do
+      [[ "$a" =~ ^-[A-Za-z]*[ec]|^--(exec|sh-exec|lua-exec) ]] && return 1
+    done
     grep -qE '^nc[[:space:]]+(-[a-zA-Z]*z)' <<<"$norm" && return 0
     return 1
   fi
 
-  # Plain text/inspection binaries — read-only whatever their arguments.
+  # env — bare, it lists the environment. With a command it RUNS that command,
+  # which the wrapper strip above already resolved to its own name.
+  if [[ "$head" == "env" ]] ; then
+    (( ${#args[@]} == 0 ))
+    return
+  fi
+
+  # Plain text/inspection binaries — no option of these writes or runs
+  # anything, so their arguments are free.
   case "$head" in
-    grep|egrep|fgrep|rg|ls|cat|head|tail|getent|ping|dig|host|uptime|date|df|du|\
-free|wc|stat|readlink|realpath|lsblk|blkid|hostname|uname|id|which|pvecm|\
-nvidia-smi|awk|sort|uniq|tr|cut|file|md5sum|sha256sum)
+    grep|egrep|fgrep|ls|cat|head|tail|getent|ping|dig|host|uptime|df|du|\
+free|wc|stat|readlink|realpath|lsblk|blkid|uname|id|which|tr|cut|md5sum|sha256sum)
       return 0 ;;
   esac
 
@@ -1046,8 +1284,84 @@ EOS
     "$mechanism" 'pgrep and the kill'
 fi
 
+# --- (j) a kill by port. Read on SCRUBBED, so a heredoc body or a quoted
+#     grep/echo argument that NAMES the command (a journal line about a
+#     past port kill) is prose, not a command; and anchored at a command
+#     position, as (g) (h) (i) are. The forms are the ones sessions actually
+#     used, widened to the flag orders a narrower match missed:
+#     `fuser -k -n tcp 3000`, `-km`, `--kill`, `xargs -r kill`, an awk between lsof and
+#     xargs, and a loop over `$(lsof …)` — which, like (h), needs the lsof in
+#     a substitution AND a kill in the same command, so `lsof -ti:3000` alone
+#     still passes.
+# A command substitution runs wherever it sits, even inside the double quotes
+# scrub_prose blanks as an echo's prose (`echo "$(fuser -k 8791/tcp)"`), so the
+# substitution forms are read on a view of the raw command that drops only what
+# bash never expands: single-quoted spans outside double quotes (a `'` inside
+# "…" is a literal character, and `$(…)` beside it still runs) and the body of
+# a heredoc whose delimiter is quoted (<<'EOF', <<"EOF"). An unquoted heredoc
+# expands, so its body stays. Quote state carries across lines.
+SUBST_VIEW=$(awk -v sq="'" -v dq='"' '
+  BEGIN { q = ""; indoc = 0 }
+  {
+    line = $0
+    if (indoc) {
+      # Verbatim, or equal once both sides are trimmed (ending early is the safe side).
+      t = line; sub(/^[\t ]+/, "", t); sub(/[\t ]+$/, "", t)
+      if (line == delim || t == tdelim) { indoc = 0; print ""; next }
+      print (lit ? "" : line); next
+    }
+    out = ""; n = length(line); pending = ""
+    for (i = 1; i <= n; i++) {
+      c = substr(line, i, 1)
+      if (q == sq) { if (c == sq) q = ""; continue }
+      if (c == "\\") { out = out c substr(line, i + 1, 1); i++; continue }
+      if (q == dq) { if (c == dq) q = ""; out = out c; continue }
+      if (c == sq) { q = sq; continue }
+      if (c == dq) { q = dq; out = out c; continue }
+      # A here-string (<<<) is one token: its second `<` is not a heredoc.
+      if (substr(line, i, 3) == "<<<") { out = out "<<<"; i += 2; continue }
+      if (substr(line, i, 2) == "<<") {
+        # The delimiter is the whole next word, quotes removed; any quote in
+        # it makes the body literal (bash: "If any part of word is quoted").
+        j = i + 2
+        if (substr(line, j, 1) == "-") j++
+        while (substr(line, j, 1) == " " || substr(line, j, 1) == "\t") j++
+        tag = ""; plit = 0
+        while (j <= n) {
+          d = substr(line, j, 1)
+          if (d == sq || d == dq) {
+            plit = 1
+            k = index(substr(line, j + 1), d)
+            if (k == 0) { tag = tag substr(line, j + 1); j = n + 1; break }
+            tag = tag substr(line, j + 1, k - 1); j += k + 1; continue
+          }
+          if (index(" \t;&|<>()", d) > 0) break
+          tag = tag d; j++
+        }
+        if (tag != "") pending = tag
+        out = out substr(line, i, j - i); i = j - 1; continue
+      }
+      out = out c
+    }
+    print out
+    if (pending != "") {
+      indoc = 1; delim = pending; lit = plit
+      tdelim = pending; sub(/^[\t ]+/, "", tdelim); sub(/[\t ]+$/, "", tdelim)
+    }
+  }' <<<"$COMMAND")
+fuser_kill='fuser[[:space:]]([^|;&)`]*[[:space:]])?(-[a-zA-Z]*k|--kill)'
+subst='[$`]\(?[[:space:]]*'
+if grep -qE "${cmd_pos}${wrapper}${path_pfx}${fuser_kill}" <<<"$SCRUBBED" \
+    || grep -qE "${subst}${wrapper}${path_pfx}${fuser_kill}" <<<"$SUBST_VIEW" \
+    || grep -qE "${cmd_pos}${wrapper}${path_pfx}lsof[[:space:]][^;&]*\|[^;&]*xargs[[:space:]]([^|;&]*[[:space:]])?kill\b" <<<"$SCRUBBED" \
+    || { grep -qE "${subst}${wrapper}${path_pfx}lsof[[:space:]]" <<<"$SUBST_VIEW" \
+           && grep -qE '\bkill\b' <<<"$SUBST_VIEW" ; } \
+    || grep -qE "${cmd_pos}${wrapper}${path_pfx}((npx|pnpx|bunx|pnpm|yarn)[[:space:]]+([^[:space:];&|]+[[:space:]]+)*)?kill-port\b" <<<"$SCRUBBED" ; then
+  block_port_kill
+fi
+
 # --- (f) session-hosting service restart. Checked AFTER the kill-family
-#     triggers (i) (i2) (g) (h): a command combining both forms should report
+#     triggers (i) (i2) (g) (h) (j): a command combining both forms should report
 #     the kill, which is the one with no safe rewrite.
 #     Reads the RAW command, not SCRUBBED: a restart of the session's own host
 #     unit is fatal wherever it appears, and this trigger has no measured

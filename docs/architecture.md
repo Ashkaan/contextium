@@ -90,16 +90,49 @@ the tool you drive the workbench with, name a different `--harness` (or `--agent
 
 ## AGENTS.md: your text and Contextium's blocks
 
-`AGENTS.md` opens with sections that are yours: working preferences, including the autonomy line the
-installer asks about, and a Stack section for your runtime, storage and credentials. Below them come
-Contextium's sections, each fenced between `<!-- contextium:<name> -->` and `<!-- /contextium -->`:
-what lives where, how records are written, the skills, the shape a skill must have, and the Standards.
+Contextium's sections of `AGENTS.md` are each fenced between `<!-- contextium:<name> -->` and
+`<!-- /contextium -->`: the working agreement (the rule level and your autonomy answer), what lives
+where, how records are written, the skills, the shape a skill must have, the Standards, and at the
+full level the working preferences. Everything outside the fences is yours.
 
-A re-run of the installer replaces each fenced block with the template's current one, drops a block
-the template no longer has, and appends a new one at the end. Every line outside the fences is copied
-through untouched. So you can edit your preferences, fill in your stack, and add standards of your own
-in a section outside the blocks, and an upgrade never undoes it. An edit inside a block is lost on the
-next run, which is why the Standards block says to put yours elsewhere.
+A re-run of the installer replaces each fenced block with the template's current one and drops a
+block the template no longer has; a block the file lacks goes in beside its neighbours in the
+template. Every line outside the fences is copied through untouched. So you can add preferences, a
+stack and standards of your own in sections outside the blocks, and an upgrade never undoes it. An
+edit inside a block is lost on the next run, which is why the Standards block says to put yours
+elsewhere. A block that is never closed, or a rule level that is not one of the three, stops the
+installer before it writes anything; `--force` replaces the file instead, keeping the old one as
+`.agents/AGENTS.md.bak`.
+
+### How much guidance: the rule level
+
+The installer asks how much of Contextium's guidance `AGENTS.md` carries (`--rules` answers
+without the question):
+
+| Level | Carries |
+|---|---|
+| `minimal` | what the installed skills, checks and guards rely on |
+| `recommended` | that, plus the general engineering standards |
+| `full` | that, plus working preferences and a Stack section |
+
+Minimal is not a stripped workbench: it keeps every standard a shipped skill or check cites or
+enforces, and the layout, records, skills and skill-shape sections the machinery assumes, so every
+check still passes. Recommended, the default for a new workbench, adds the standards and clauses no
+shipped file depends on. Full adds the working preferences block (how replies read) and a Stack
+section that is yours to fill in. The template marks each optional passage once, with
+`<!-- rules:recommended -->` or `<!-- rules:full -->` … `<!-- /rules -->`; the installer drops the
+passages above the chosen level and every such marker, so the rule text lives only in the template.
+Before writing, it prints what the level holds, what it leaves out, the text of yours that stays in
+force and anything of Contextium's it removes; `--yes` prints the same and goes on.
+
+The level is recorded in the core block (`Contextium rule level: <level>.`), and a re-run without
+`--rules` keeps it. Changing level changes only Contextium's blocks: a section of yours, such as the
+Stack section full wrote, stays and is named as still in force. An `AGENTS.md` written before levels
+existed has no core block, and a re-run without `--rules` keeps the guidance it carried: the v8 and
+v9 working preferences, still exactly as shipped, become the full level's preferences block; edited
+ones stay as yours, at the recommended level; an unchanged v6 or v7 file is replaced at the full
+level. With `--rules`, unchanged shipped preferences go or stay with the level, and edited ones are
+always kept and named.
 
 ## The Loop
 
@@ -237,8 +270,10 @@ running on the same model as the author shares the blind spot that produced the 
 
 So every review goes through `.agents/skills/review/`, which reads `policy.json`: one row per kind of
 work, each an ordered list of model CLIs. The chain walks a row until one answers, so one vendor being
-down is not an outage. A review row skips the family recorded as `agent=` in `.agents/harness` (an
-Antigravity author counts as Gemini; Cursor and Copilot name no single family, so nothing is skipped).
+down is not an outage. A review row skips every model family that wrote the work: the skill that
+calls the review names them (`POLICY_CHAIN_AUTHOR_VENDORS` — the `agent=` family in `.agents/harness`,
+plus any other model that edited the change), and a code review refuses to run without that list.
+An Antigravity author counts as Gemini.
 
 | Row | Used by | Order |
 |---|---|---|
@@ -356,10 +391,9 @@ it on early just gets in the way.
   session, rather than scripts you trigger by hand.
 - A declarative reconciler that watches for drift across many checks and fixes it, instead of
   one-off scripts.
-- A deploy on every push. `land.ts` has the hook for it and leaves it off: add
-  `.agents/deployable-prefixes.json` (a JSON array of path prefixes whose push deploys something) and
-  your own `.agents/deploy/await-deploy-run.sh`, and a landing that touches one of those paths must see
-  a deploy start before the close succeeds.
+- A deploy on every push. `/close` already waits for the checks GitHub runs on each push it makes
+  (through the `gh` CLI, signed in; without it the close says no push checks were read) and fails
+  when one fails, so a deploy you add is a workflow of your own that the close then waits on.
 - Runtime and dependency pinning rules, once you have enough code that version drift starts to bite.
 
 Each of those earns its weight only at a certain scale. Add the mechanism when the failure it prevents

@@ -13,6 +13,12 @@ methodology is short. The interesting part is the habit, and you pick that up by
   TypeScript, run as `node --experimental-strip-types <script>.ts`, which Node has accepted since
   22.6 (earlier releases of that line print an ExperimentalWarning for it, which is harmless). `/qa` assumes 22.18 or later.
   Without Node the installer still lays the layer down, but it cannot check it, and says so.
+- The GitHub CLI (`gh`), signed in, when your `origin` is on GitHub. `/close` waits for the checks
+  GitHub runs on each push it makes and fails when one fails; without `gh` it still lands, and says
+  that no push checks were read.
+- For `/author` to verify a bash hook it writes, and for the reviewer's map of who calls what a diff
+  changed: `npm i -g typescript@5 web-tree-sitter tree-sitter-bash`. Without them `/author` names
+  that command, and the reviewer falls back to a plain-text search.
 - An AI tool to drive the loop. T3 Code is the recommended one; Claude Code, Codex, Cursor, VS Code
   with Copilot, Gemini CLI, Antigravity and Grok Build all work.
 - For reviews that are independent of the model writing your code: the Codex CLI or the Grok CLI,
@@ -45,9 +51,12 @@ The questions come in this order:
 4. Where your workbench is. The default is `~/code/workbench`, and the folder is created if it
    doesn't exist.
 5. Your name, and whether the agent should ask before changing infrastructure or act and report.
-6. Which integration starters to copy in, if any. The rest stay in the Contextium repo; re-run the
+6. How much guidance `AGENTS.md` carries: `minimal` (only what the installed skills, checks and
+   guards rely on), `recommended` (plus the general engineering standards; the default) or `full`
+   (plus working preferences and a Stack section). It shows what the level holds before writing.
+7. Which integration starters to copy in, if any. The rest stay in the Contextium repo; re-run the
    installer with `--integrations "<name>"` to pull one in later.
-7. If the workbench has no `origin`, a remote URL for it (Enter skips). When you skip and the GitHub
+8. If the workbench has no `origin`, a remote URL for it (Enter skips). When you skip and the GitHub
    CLI (`gh`) is signed in, it offers to create a private GitHub repo named after the folder and push
    to it, defaulting to no.
 
@@ -55,7 +64,7 @@ To skip the interview, pass the answers as flags. `--yes` takes the default for 
 pass, never installs software unless you add `--install-missing`, and never creates a remote:
 
 ```bash
-bash install.sh ~/code/workbench --yes --harness t3 --agents claude --name "Your Name"
+bash install.sh ~/code/workbench --yes --harness t3 --agents claude --name "Your Name" --rules recommended
 ```
 
 It's safe to re-run. A second run replaces each skill, agent, hook, check and generator Contextium
@@ -83,7 +92,7 @@ In the workbench:
 ```
 AGENTS.md               a link to .agents/AGENTS.md, the working agreement
 .agents/
-  AGENTS.md             your preferences and stack, plus Contextium's sections
+  AGENTS.md             Contextium's sections at your rule level, plus your own
   harness               harness=<your tool>  agent=<the model family that writes code>
                         tools=<every tool wired in this workbench>
   skills/               the eleven skills and their scripts
@@ -260,7 +269,7 @@ repeats the first verdict instead of paying for the same review twice.
 
 Both try to run on a model other than the one that writes your code. The table is
 `.agents/skills/review/policy.json`: code and spec reviews try the Codex CLI, then the Grok CLI, and
-skip whichever is your `agent=`. When neither can answer, the review still happens: a fresh-context
+skip every model that wrote the work — your `agent=`, and any other model that edited it. When neither can answer, the review still happens: a fresh-context
 agent in your own session does it, and the recorded line says
 `claude-fallback (fresh context, NOT independent)`. That is still worth running. What it is not is
 independent, and the label is there so you never mistake one for the other.

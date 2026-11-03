@@ -469,3 +469,53 @@ test("invoked through a symlink, the script still runs", () => {
   assert.equal(r.status, 2, `through a symlink: exit ${r.status}, output '${out}'`);
   assert.match(out, /--verify-sweep needs a regex/);
 });
+
+// ── A name git would C-quote is read as it is on disk ───────────────────
+// Without -z, `git grep -n` prints `"apps/x \303\251.ts":1:…` and
+// `git diff --name-only` prints `"apps/one \303\251.ts"`: the survivor is named by
+// a path that is not on disk, the exclusion audit's extension test misses it,
+// and mode 2 reads a changed file that does not exist.
+describe("quoted names", () => {
+  test("a surviving match in a quoted name is named by its real path", () => {
+    const repo = newRepo("sweep-quoted");
+    put(repo, "apps/a.ts", DATETIME);
+    put(repo, "apps/x é.ts", BARE);
+    commitAll(repo, "init");
+    const r = run(repo, ["--verify-sweep", RE, "--", "apps"]);
+    assert.equal(r.rc, 1, "a survivor in a quoted name fails the sweep");
+    assert.ok(r.err.includes("apps/x é.ts:1:updated_at"), `names the real path and line; got: ${r.err}`);
+  });
+
+  test("an excluded directory hiding runnable code in a quoted name exits 1", () => {
+    const repo = newRepo("sweep-exclusion-quoted");
+    put(repo, "apps/a.ts", DATETIME);
+    put(repo, "projects/old/scripts/scan é.ts", "const s = z.string(),\n");
+    commitAll(repo, "init");
+    const r = run(repo, ["--verify-sweep", RE, "--", ".", ":!projects"]);
+    assert.equal(r.rc, 1, `an exclusion hiding a quoted runnable file should exit 1; got: ${r.err}`);
+    assert.ok(r.err.includes("projects/old/scripts/scan é.ts"), `names it; got: ${r.err}`);
+  });
+
+  test("a binary file matching the sweep is still a surviving match", () => {
+    const repo = newRepo("sweep-binary");
+    put(repo, "apps/a.ts", DATETIME);
+    writeFileSync(path.join(repo, "apps/blob.bin"), "z.string(),\0\n");
+    commitAll(repo, "init");
+    const r = run(repo, ["--verify-sweep", RE, "--", "apps"]);
+    assert.equal(r.rc, 1, `a binary match fails the sweep; got: ${r.err}`);
+    assert.ok(r.err.includes("apps/blob.bin"), `names the binary file; got: ${r.err}`);
+  });
+
+  test("mode 2 reads a changed file whose name git quotes", () => {
+    const repo = newRepo("peer-quoted");
+    put(repo, "apps/one é.ts", ONE_OLD);
+    put(repo, "apps/two.ts", "const v = envelope.data.scores;\n");
+    commitAll(repo, "init");
+    put(repo, "apps/one é.ts", ONE_NEW);
+    const r = run(repo, []);
+    assert.ok(
+      r.err.includes("apps/two.ts") && r.err.includes("data.scores"),
+      `should warn about the left-behind peer; got: ${r.err}`,
+    );
+  });
+});

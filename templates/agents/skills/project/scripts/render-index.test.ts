@@ -23,13 +23,13 @@ const tmp = realpathSync(mkdtempSync(join(tmpdir(), "render-index-test.")));
 after(() => rmSync(tmp, { recursive: true, force: true }));
 
 const baseEnv: Record<string, string | undefined> = { ...process.env };
+// Node 22.6 prints an ExperimentalWarning for type stripping on stderr, which
+// cases that read stderr would otherwise see.
+baseEnv.NODE_NO_WARNINGS = "1";
 delete baseEnv.CLAUDE_SESSION_ID;
 delete baseEnv.CLAUDE_CODE_SESSION_ID;
 delete baseEnv.CONTEXT_CODE_REPO;
 delete baseEnv.CONTEXT_WRITE_ROOT;
-// Node 22.6 prints an ExperimentalWarning for type stripping on every child's
-// stderr, and these cases read stderr: keep it to the script's own lines.
-baseEnv.NODE_NO_WARNINGS = "1";
 
 const pad = (n: number): string => String(n).padStart(2, "0");
 /** `date -d "<n> days ago" +%Y-%m-%d`, in the host's zone as the bash suite had it. */
@@ -163,6 +163,34 @@ test("a failing staleness scan is not rendered as no lapsed projects", () => {
   );
 });
 
+// ── --json ────────────────────────────────────────────────────────────────
+// The generator's JSON from the same fresh view, and nothing else: no lapsed
+// block, no prompt. The stub echoes its own arguments so the test sees the flag
+// and the view it was handed.
+test("--json passes the generator's JSON through with no lapsed block or prompt", () => {
+  stub('JSON.stringify({ args: process.argv.slice(2) }) + "\\n"');
+  mon("lapsed-one", PAST10);
+  const r = spawnSync(process.execPath, ["--experimental-strip-types", SUT, "--json"], {
+    encoding: "utf8",
+    env: { ...baseEnv, ...both },
+  });
+  assert.equal(r.status, 0, r.stderr);
+  const args = (JSON.parse(r.stdout) as { args: string[] }).args;
+  assert.deepEqual(args.slice(0, 2), ["--json", "--projects-dir"]);
+  assert.match(args[2], /\/projects$/);
+  assert.doesNotMatch(r.stdout, /Lapsed|Which one/);
+});
+
+test("--json: a failing generator prints nothing and passes its status through", () => {
+  stub('"{\\"partial\\":true}\\n"); process.exit(5');
+  const r = spawnSync(process.execPath, ["--experimental-strip-types", SUT, "--json"], {
+    encoding: "utf8",
+    env: { ...baseEnv, ...both },
+  });
+  assert.equal(r.status, 5);
+  assert.equal(r.stdout, "");
+});
+
 test("a missing generator names where it looked", () => {
   rmSync(join(tmp, ".agents"), { recursive: true, force: true });
   const r = run();
@@ -194,4 +222,140 @@ test("one checkout for both halves", () => {
     `render-index: no project-index generator at ${tmp}/.agents/generators/project-index.generate.ts (set CONTEXT_CODE_REPO)`,
     "a write root with no generator is named, not bypassed",
   );
+});
+
+// ── Read from origin/main, not from a stale worktree ──────────────────────
+// A thread's worktree is cut when the thread opens; the index must show main as
+// it is now, with only the thread's own unlanded README edits laid over it. The
+// fixture is a bare "origin", a "seed" clone that lands on it, and a "wt" clone
+// cut before those landings. The stub generator lists `<folder> <status>` for
+// every README under --projects-dir, so the assertions read which copy it saw.
+const GIT_ENV = {
+  GIT_AUTHOR_NAME: "t",
+  GIT_AUTHOR_EMAIL: "t@t",
+  GIT_COMMITTER_NAME: "t",
+  GIT_COMMITTER_EMAIL: "t@t",
+  GIT_CONFIG_GLOBAL: "/dev/null",
+  GIT_CONFIG_NOSYSTEM: "1",
+};
+function git(cwd: string, ...args: string[]): string {
+  const r = spawnSync("git", ["-C", cwd, ...args], { encoding: "utf8", env: { ...baseEnv, ...GIT_ENV } });
+  assert.equal(r.status, 0, `git ${args.join(" ")}: ${r.stderr}`);
+  return r.stdout;
+}
+const LISTING_STUB = `import { readdirSync, readFileSync } from "node:fs";
+const dir = process.argv[process.argv.indexOf("--projects-dir") + 1];
+const rows = [];
+for (const d of readdirSync(dir).sort()) for (const p of readdirSync(dir + "/" + d).sort()) {
+  rows.push(p + " " + /^status: (.*)$/m.exec(readFileSync(dir + "/" + d + "/" + p + "/README.md", "utf8"))[1]);
+}
+process.stdout.write(rows.join("\\n") + "\\n\\n**Completed — 0**\\n");
+`;
+function readmeAt(root: string, slug: string, body: string): void {
+  const d = join(root, "projects/web", `2026-01-01_${slug}`);
+  mkdirSync(d, { recursive: true });
+  writeFileSync(join(d, "README.md"), body);
+}
+function gitFixture(): { origin: string; seed: string; wt: string } {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "render-index-git.")));
+  const origin = join(root, "origin.git");
+  const seed = join(root, "seed");
+  const wt = join(root, "wt");
+  git(root, "init", "-q", "--bare", "-b", "main", origin);
+  git(root, "clone", "-q", origin, seed);
+  git(seed, "checkout", "-q", "-b", "main");
+  mkdirSync(join(seed, ".agents/generators"), { recursive: true });
+  writeFileSync(join(seed, ".agents/generators/project-index.generate.ts"), LISTING_STUB);
+  for (const s of ["landed", "mine", "gone"]) readmeAt(seed, s, "---\nstatus: active\n---\n");
+  git(seed, "add", "-A");
+  git(seed, "commit", "-q", "-m", "seed");
+  git(seed, "push", "-q", "origin", "main");
+  git(root, "clone", "-q", origin, wt);
+  return { origin, seed, wt };
+}
+const listing = (r: Run): string =>
+  r.out
+    .split("\n")
+    .filter((l) => l.startsWith("2026-"))
+    .join("|");
+
+test("a status landed on main after the worktree was cut is what the index shows", () => {
+  const fx = gitFixture();
+  readmeAt(fx.seed, "landed", "---\nstatus: blocked\n---\n");
+  readmeAt(fx.seed, "new-on-main", "---\nstatus: active\n---\n");
+  git(fx.seed, "commit", "-q", "-am", "block it");
+  git(fx.seed, "add", "-A");
+  git(fx.seed, "commit", "-q", "-m", "add one");
+  git(fx.seed, "push", "-q", "origin", "main");
+  const r = exec(SUT, { CONTEXT_CODE_REPO: fx.wt });
+  assert.equal(r.rc, 0, r.err);
+  assert.equal(
+    listing(r),
+    "2026-01-01_gone active|2026-01-01_landed blocked|2026-01-01_mine active|2026-01-01_new-on-main active",
+    "main's newer README wins over the worktree's stale copy, and main's new project is listed",
+  );
+});
+
+test("the worktree's own edits — committed, uncommitted, added, deleted — win over main", () => {
+  const fx = gitFixture();
+  readmeAt(fx.seed, "mine", "---\nstatus: completed\n---\n");
+  git(fx.seed, "commit", "-q", "-am", "main moves mine too");
+  git(fx.seed, "push", "-q", "origin", "main");
+  readmeAt(fx.wt, "mine", "---\nstatus: monitor\n---\n");
+  readmeAt(fx.wt, "drafted", "---\nstatus: active\n---\n");
+  rmSync(join(fx.wt, "projects/web/2026-01-01_gone"), { recursive: true });
+  readmeAt(fx.wt, "landed", "---\nstatus: blocked\n---\n");
+  git(fx.wt, "commit", "-q", "-am", "unlanded branch commit");
+  readmeAt(fx.wt, "mine", "---\nstatus: monitor\n---\n");
+  const r = exec(SUT, { CONTEXT_CODE_REPO: fx.wt });
+  assert.equal(r.rc, 0, r.err);
+  assert.equal(
+    listing(r),
+    "2026-01-01_drafted active|2026-01-01_landed blocked|2026-01-01_mine monitor",
+    "the thread's own edits are newer than main for this thread",
+  );
+});
+
+// A folder git would C-quote (`"projects/web/2026-01-01_caf\303\251/README.md"`)
+// is laid over main as it is on disk: quoted, the edit read as missing, so
+// main's copy won and an added project was not listed at all.
+test("the worktree's edits under a folder with an accent win over main", () => {
+  const fx = gitFixture();
+  readmeAt(fx.seed, "café", "---\nstatus: active\n---\n");
+  git(fx.seed, "add", "-A");
+  git(fx.seed, "commit", "-q", "-m", "add café");
+  git(fx.seed, "push", "-q", "origin", "main");
+  git(fx.wt, "pull", "-q", "origin", "main");
+  readmeAt(fx.wt, "café", "---\nstatus: monitor\n---\n");
+  readmeAt(fx.wt, "thé", "---\nstatus: active\n---\n");
+  const r = exec(SUT, { CONTEXT_CODE_REPO: fx.wt });
+  assert.equal(r.rc, 0, r.err);
+  assert.equal(
+    listing(r),
+    "2026-01-01_café monitor|2026-01-01_gone active|2026-01-01_landed active|2026-01-01_mine active|2026-01-01_thé active",
+    "the worktree's café edit and its added thé project are both in the index",
+  );
+});
+
+test("a lapsed window landed on main reaches the Lapsed block", () => {
+  const fx = gitFixture();
+  readmeAt(fx.seed, "watched", `---\nstatus: monitor\nmonitoring-until: ${PAST10}\n---\n`);
+  git(fx.seed, "add", "-A");
+  git(fx.seed, "commit", "-q", "-m", "watch");
+  git(fx.seed, "push", "-q", "origin", "main");
+  const r = exec(SUT, { CONTEXT_CODE_REPO: fx.wt });
+  assert.equal(r.rc, 0, r.err);
+  assert.match(r.out, new RegExp(`^- web/watched — ended ${PAST10} \\(10 days ago\\)$`, "m"));
+});
+
+test("a fetch that fails renders the last fetched main and says so", () => {
+  const fx = gitFixture();
+  readmeAt(fx.seed, "landed", "---\nstatus: blocked\n---\n");
+  git(fx.seed, "commit", "-q", "-am", "block it");
+  git(fx.seed, "push", "-q", "origin", "main");
+  git(fx.wt, "remote", "set-url", "origin", join(fx.origin, "missing"));
+  const r = exec(SUT, { CONTEXT_CODE_REPO: fx.wt });
+  assert.equal(r.rc, 0, r.err);
+  assert.equal(r.err, "render-index: could not fetch origin/main; rendering from the last fetched copy");
+  assert.match(listing(r), /2026-01-01_landed active/, "the unfetched landing is not invented");
 });

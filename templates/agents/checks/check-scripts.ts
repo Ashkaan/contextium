@@ -38,8 +38,6 @@
 //          - a maker of the tree TypeScript runs from: a command line (not a
 //            comment, not inside a string) running `git … worktree add` or
 //            `git … clone`, or `git -C <other tree> … reset --hard`;
-//          - the deploy poller land.ts runs by name,
-//            `.agents/deploy/await-deploy-run.sh`;
 //          - the script a `curl … | bash` line in the repo's README installs;
 //          - a provisioner of a stock host: `apt-get install` in a file that
 //            runs `ssh`;
@@ -51,8 +49,26 @@
 //        cannot be resolved to a file, is a violation too, and so is a `.ts`
 //        whose shebang passes flags without `env -S` (Linux hands the whole
 //        rest of the line to env as ONE argument).
+//   (d)  no script runs a git file listing without `-z`. Without it git
+//        C-quotes a path holding a non-ASCII byte, a tab or a newline
+//        (`"caf\303\251.md"`), and a reader splitting on newlines gets a name
+//        that is not on disk, so a scan that reads the listing silently never
+//        sees that file. A git invocation is a shell command line whose
+//        head is `git` (comments blanked); a TypeScript string or template
+//        literal handed to `execSync`/`exec`/`spawnSync` that begins `git `,
+//        read as shell; or a TypeScript call handing literal arguments to
+//        `spawnSync`/`spawn`/`execFileSync`/`execFile` with "git" as the
+//        program, or to a function of the same file whose body runs git —
+//        read together with the literal arguments that function adds. It
+//        is a listing when its arguments hold `--name-only`, `--name-status`,
+//        `ls-files` or `ls-tree`, or are `grep` with `-l`, `-n`, `-c` or their
+//        long forms (short flags read letter by letter, so `-nE` is `-n`), and
+//        clean when they hold `-z`, `--null` or `--error-unmatch` (a bundled
+//        `z` counts). `status --porcelain` is outside (d): a reader of its paths
+//        must use `-z` itself, and its other uses only test emptiness. Literal
+//        arguments only: a `-z` held in a variable is not seen.
 //
-// WHAT IS A SCRIPT, for (a) and (b). Under ROOTS below: every `*.sh`; every
+// WHAT IS A SCRIPT, for (a), (b) and (d). Under ROOTS below: every `*.sh`; every
 // `.ts`, `.mjs`, `.js` or `.py` whose first line starts `#!` or whose parent
 // folder is one of SCRIPT_DIRS. Never a `*.test.*`, a `*.template.*`, or
 // anything under a `references/`, `tests/`, `templates/` or `node_modules/`
@@ -75,7 +91,7 @@
 // when the importer sits in the subject's directory, or one folder below it.
 // A comment that mentions the file matches neither shape.
 //
-// WHAT IT SCANS. With no arguments: part (a) over the scripts changed in this
+// WHAT IT SCANS. With no arguments: parts (a) and (d) over the scripts changed in this
 // worktree since HEAD, staged or not, plus untracked ones — land.ts calls it
 // BEFORE its `git add -A`; a changed or deleted `*.test.*` selects its paired
 // subject (removing a script's only test is refused); a subject no longer on
@@ -84,7 +100,7 @@
 // under ROOTS, changed or not, because a file leaves the tier when ANOTHER file
 // changes (a hook entry deleted, a `source` line removed). With `--since <ref>`
 // the same, measured from where this branch left <ref>: a script the session
-// already COMMITTED differs from nothing at HEAD. `--all` runs (a) and (b) over every
+// already COMMITTED differs from nothing at HEAD. `--all` runs (a), (b) and (d) over every
 // script under ROOTS; explicit paths run them over exactly those files, or
 // every script beneath a directory argument. Part (c) is the same in all four.
 //
@@ -96,7 +112,7 @@
 //
 // Output (stdout): exactly one line — `OK — N script(s) checked`, or
 //   `FAIL — N script(s) checked, M violation(s)`. N is the number of scripts
-//   part (a) was run over; a (b) or (c) violation found by a whole-universe or
+//   parts (a) and (d) were run over; a (b) or (c) violation found by a whole-universe or
 //   whole-roots pass does not add to it.
 // Output (stderr): one line per violation, `<path>: (<part>) <what is wrong>`.
 //
@@ -132,8 +148,6 @@ import { fileURLToPath } from "node:url";
 // ── The universe ─────────────────────────────────────────────────────────
 const ROOTS = [".agents"];
 const SCRIPT_DIRS = ["scripts", "checks", "deploy", "generators", "hooks"];
-/** The deploy poller land.ts runs on a landing, by this name (`AWAIT_REL` there). */
-const DEPLOY_POLLER = ".agents/deploy/await-deploy-run.sh";
 const EXCLUDE_SEGMENTS = ["references", "tests", "templates", "node_modules"];
 const SCRIPT_EXTS = ["sh", "ts", "mjs", "js", "py"];
 const TEST_EXTS = ["sh", "ts"];
@@ -1277,8 +1291,6 @@ function partC(): void {
   const bash = new Set(files.filter((p) => p.endsWith(".sh")));
   const found: [string, string][] = [];
   const tier = new Set<string>([...hookFiles(files, bash), ...installerFiles(files, bash)]);
-  // land.ts runs the opt-in deploy poller by this one name, `.sh` included.
-  if (bash.has(DEPLOY_POLLER)) tier.add(DEPLOY_POLLER);
   for (const p of bash) if (shellFacts(p).bootstrap) tier.add(p);
   // The closure, over SOURCE edges only.
   const queue = [...tier];
@@ -1311,6 +1323,409 @@ function partC(): void {
   }
   found.sort((a, b) => byteCompare(a[0], b[0]));
   for (const [p, what] of found) violation(p, "c", what);
+}
+
+// ── Part (d): a git file listing without -z ──────────────────────────────
+
+// Without `-z`, git C-quotes a path holding a non-ASCII byte, a tab or a
+// newline (`"caf\303\251.md"`), so a reader splitting on newlines gets a name
+// that is not on disk and the file drops out of whatever it was listed for.
+const LISTS = new Set(["--name-only", "--name-status", "ls-files", "ls-tree"]);
+const GREP_LISTS = new Set(["--name-only", "--files-with-matches", "--line-number", "--count"]);
+const CLEAN = new Set(["-z", "--null", "--error-unmatch"]);
+const SHORT = /^-[A-Za-z]+$/;
+const GIT_LISTING = new RegExp(`${GIT_HEAD}(\\S+)([^\\n;&|)]*)`, "gm");
+const SPAWNS = "(?:spawnSync|spawn|execFileSync|execFile|execFileAsync)";
+const SHELLS = "(?:execSync|exec|execAsync|spawnSync|spawn)";
+// A call by name: not a method (`x.read(`), but a spread (`...read(`) is still a call.
+const CALLED = "(?<![\\w$])(?<![^.]\\.)";
+
+/** Is this argument list — the verb first, global options already dropped — a
+ *  listing that is not NUL-separated? Short flags are read letter by letter, so
+ *  `-nE` is `-n` and `-lz` carries `-z`. <fixed> are the literal arguments a
+ *  wrapper adds itself, wherever it puts them. */
+function listsWithoutZ(args: string[], fixed: string[] = []): boolean {
+  const all = [...args, ...fixed];
+  if (all.some((a) => CLEAN.has(a) || (SHORT.test(a) && a.includes("z")))) return false;
+  if (all.some((a) => LISTS.has(a))) return true;
+  if (args[0] !== "grep" && !fixed.includes("grep")) return false;
+  return all.some((a) => GREP_LISTS.has(a) || (SHORT.test(a) && /[lnc]/.test(a)));
+}
+
+/** <args> without git's global options: `-C <dir>`, `-c <k=v>`, `--no-pager`… */
+function verbOn(args: (string | null)[]): string[] {
+  let k = 0;
+  while (k < args.length) {
+    const a = args[k];
+    if (a === "-C" || a === "-c") k += 2;
+    else if (a !== null && a.startsWith("-")) k += 1;
+    else break;
+  }
+  return args.slice(k).map((a) => a ?? "");
+}
+
+/** Shell text (comments blanked) → the offset of every `git` listing in it. */
+function shellListings(code: string): number[] {
+  const at: number[] = [];
+  for (const m of code.matchAll(GIT_LISTING)) {
+    const args = [m[2] ?? "", ...(m[3] ?? "").split(/\s+/).filter((w) => w !== "")];
+    if (listsWithoutZ(args)) at.push((m.index ?? 0) + m[0].indexOf("git"));
+  }
+  return at;
+}
+
+interface TsLiteral {
+  start: number;
+  end: number;
+  /** the text between the quotes; a template's `${…}` reads as `_` */
+  value: string;
+}
+
+/** TypeScript with its comments blanked (offsets kept) and every string,
+ *  template and regex literal located. A lexer, not a parser: enough to tell a
+ *  comment from code and a `"` inside a regex from a string's. */
+function tsLex(text: string): { code: string; literals: Map<number, TsLiteral> } {
+  const out = text.split("");
+  const literals = new Map<number, TsLiteral>();
+  const n = text.length;
+  let i = 0;
+  let prev = ""; // the last significant character of code, for the regex rule
+  const blank = (from: number, to: number): void => {
+    for (let k = from; k < to; k++) if (out[k] !== "\n") out[k] = " ";
+  };
+  const quoted = (q: string): void => {
+    const start = i;
+    i += 1;
+    let value = "";
+    while (i < n && text.charAt(i) !== q) {
+      if (text.charAt(i) === "\\") {
+        value += text.charAt(i + 1);
+        i += 2;
+      } else if (q === "`" && text.startsWith("${", i)) {
+        value += "_";
+        let depth = 0;
+        for (i += 2; i < n; i++) {
+          const c = text.charAt(i);
+          if (c === "{") depth += 1;
+          else if (c === "}" && depth-- === 0) break;
+        }
+        i += 1;
+      } else {
+        value += text.charAt(i);
+        i += 1;
+      }
+    }
+    i += 1;
+    literals.set(start, { start, end: i, value });
+  };
+  while (i < n) {
+    const c = text.charAt(i);
+    if (c === "/" && text.charAt(i + 1) === "/") {
+      const e = text.indexOf("\n", i);
+      const end = e === -1 ? n : e;
+      blank(i, end);
+      i = end;
+    } else if (c === "/" && text.charAt(i + 1) === "*") {
+      const e = text.indexOf("*/", i + 2);
+      const end = e === -1 ? n : e + 2;
+      blank(i, end);
+      i = end;
+    } else if (c === '"' || c === "'" || c === "`") {
+      quoted(c);
+      prev = c;
+    } else if (c === "/" && (prev === "" || /[(,=:[!&|?{};+\-*%<>~^]/.test(prev))) {
+      let cls = false;
+      for (i += 1; i < n && text.charAt(i) !== "\n"; i++) {
+        const r = text.charAt(i);
+        if (r === "\\") i += 1;
+        else if (r === "[") cls = true;
+        else if (r === "]") cls = false;
+        else if (r === "/" && !cls) break;
+      }
+      i += 1;
+      prev = "/";
+    } else {
+      if (!/\s/.test(c)) prev = c;
+      i += 1;
+    }
+  }
+  return { code: out.join(""), literals };
+}
+
+/** The offset just past the bracket closing the one at <open>, literals skipped. */
+function closeAt(code: string, open: number, literals: Map<number, TsLiteral>): number {
+  let depth = 0;
+  for (let k = open; k < code.length; k++) {
+    const lit = literals.get(k);
+    if (lit !== undefined) {
+      k = lit.end - 1;
+      continue;
+    }
+    const c = code.charAt(k);
+    if (c === "(" || c === "[" || c === "{") depth += 1;
+    else if ((c === ")" || c === "]" || c === "}") && --depth === 0) return k + 1;
+  }
+  return code.length;
+}
+
+interface ArgItem {
+  /** a string literal's value, or null for anything else */
+  value: string | null;
+  /** the argument's own text, trimmed */
+  raw: string;
+}
+
+/** The arguments of a call or the elements of an array, <from> to <to>. With
+ *  <flatten>, an array argument is read element by element in place. */
+function argItems(
+  code: string,
+  from: number,
+  to: number,
+  literals: Map<number, TsLiteral>,
+  flatten: boolean,
+): ArgItem[] {
+  const args: ArgItem[] = [];
+  const take = (s: number, e: number): void => {
+    while (s < e && /\s/.test(code.charAt(s))) s += 1;
+    while (e > s && /\s/.test(code.charAt(e - 1))) e -= 1;
+    if (s === e) return;
+    if (flatten && code.charAt(s) === "[") {
+      args.push(...argItems(code, s + 1, closeAt(code, s, literals) - 1, literals, true));
+      return;
+    }
+    const lit = literals.get(s);
+    args.push({ value: lit !== undefined && lit.end === e ? lit.value : null, raw: code.slice(s, e) });
+  };
+  let item = from;
+  for (let k = from; k < to; ) {
+    const lit = literals.get(k);
+    const c = code.charAt(k);
+    if (lit !== undefined) {
+      k = lit.end;
+    } else if (c === "(" || c === "[" || c === "{") {
+      k = closeAt(code, k, literals);
+    } else if (c === ",") {
+      take(item, k);
+      k += 1;
+      item = k;
+    } else {
+      k += 1;
+    }
+  }
+  take(item, to);
+  return args;
+}
+
+/** A TypeScript file → the offset of every call that runs a git listing
+ *  without -z: an array handed to a spawn with "git" as the program, a shell
+ *  string handed to an exec, or the arguments of a function in the same file
+ *  whose body runs git. */
+function tsListings(text: string): number[] {
+  const { code, literals } = tsLex(text);
+  const at: number[] = [];
+  // A string or template literal handed to an exec is a shell command line.
+  for (const m of code.matchAll(new RegExp(`${CALLED}${SHELLS}\\s*\\(\\s*`, "g"))) {
+    const lit = literals.get((m.index ?? 0) + m[0].length);
+    if (lit !== undefined && /^\s*git\s/.test(lit.value) && shellListings(lit.value).length > 0) at.push(m.index ?? 0);
+  }
+  // The wrappers: a function whose body spawns git, or calls a wrapper, to a
+  // fixpoint — each with the literal arguments it adds to its callers' own.
+  const defs: { name: string; start: number; end: number; params: Set<string> }[] = [];
+  const DEF =
+    /^([ \t]*)(?:export\s+)?(?:async\s+)?(?:function\s+([A-Za-z_$][\w$]*)|(?:const|let)\s+([A-Za-z_$][\w$]*)\s*=)/gm;
+  for (const m of code.matchAll(DEF)) {
+    const indent = (m[1] ?? "").length;
+    const start = m.index ?? 0;
+    let end = code.indexOf("\n", start);
+    while (end !== -1) {
+      const next = code.indexOf("\n", end + 1);
+      const line = code.slice(end + 1, next === -1 ? code.length : next);
+      if (line.trim() !== "" && line.length - line.trimStart().length <= indent) {
+        // `): Run {` closes a parameter list that spans lines and opens the body.
+        if (/^\s*\)[^;]*[{(]\s*$/.test(line)) {
+          end = next;
+          continue;
+        }
+        if (/^\s*[)}\]]/.test(line)) end = next;
+        break;
+      }
+      end = next;
+    }
+    // Its parameters: `(a, ...rest: string[])` after the name or the `=`, or one bare `a =>`.
+    const after = start + m[0].length;
+    const params = new Set<string>();
+    const paren = /^\s*(?:async\s*)?(?:function\s*[\w$]*\s*)?\(/.exec(code.slice(after, after + 200));
+    if (paren !== null) {
+      const open = after + paren[0].length - 1;
+      for (const p of argItems(code, open + 1, closeAt(code, open, literals) - 1, literals, false)) {
+        const id = /^(?:\.\.\.)?([A-Za-z_$][\w$]*)/.exec(p.raw);
+        if (id !== null) params.add(id[1] ?? "");
+      }
+    } else {
+      const bare = /^\s*(?:async\s+)?([A-Za-z_$][\w$]*)\s*=>/.exec(code.slice(after, after + 200));
+      if (bare !== null) params.add(bare[1] ?? "");
+    }
+    // A local bound from a parameter (`const args = a;`) forwards it too.
+    const body = code.slice(start, end === -1 ? code.length : end);
+    for (let grew = true; grew; ) {
+      grew = false;
+      for (const b of body.matchAll(/\b(?:const|let)\s+([A-Za-z_$][\w$]*)\s*(?::[^=;\n]+)?=\s*([^;\n]+)/g)) {
+        const alias = b[1] ?? "";
+        if (params.has(alias)) continue;
+        if ([...params].some((p) => new RegExp(`(?<![\\w$])${escapeRe(p)}(?![\\w$])`).test(b[2] ?? ""))) {
+          params.add(alias);
+          grew = true;
+        }
+      }
+    }
+    defs.push({ name: m[2] ?? m[3] ?? "", start, end: end === -1 ? code.length : end, params });
+  }
+  // A runner: a function of this file that spawns its own parameter as the
+  // program (`run("git", [...])`), read like a spawn. To a fixpoint, so a
+  // runner of a runner counts.
+  // Each keeps the literal arguments it adds itself (`[...args, "-z"]`), per spawn.
+  const runners = new Map<string, string[][]>();
+  const spawnNames = (): string[] => [SPAWNS, ...[...runners.keys()].map(escapeRe)];
+  /** The literal arguments a spawn or runner call adds around what it is handed. */
+  const addedBy = (open: number, list: ArgItem | undefined): string[] => {
+    if (list === undefined || !list.raw.startsWith("[")) return [];
+    const bracket = code.indexOf("[", code.indexOf(list.raw, open));
+    return argItems(code, bracket + 1, closeAt(code, bracket, literals) - 1, literals, true)
+      .map((a) => a.value)
+      .filter((a): a is string => a !== null);
+  };
+  for (let grew = true; grew; ) {
+    grew = false;
+    for (const { name, start, end, params } of defs) {
+      if (runners.has(name)) continue;
+      const re = new RegExp(`${CALLED}(${spawnNames().join("|")})\\s*\\(`, "g");
+      re.lastIndex = start;
+      const runs: string[][] = [];
+      for (let m = re.exec(code); m !== null && m.index < end; m = re.exec(code)) {
+        const open = m.index + m[0].length - 1;
+        const [program, list] = argItems(code, open + 1, closeAt(code, open, literals) - 1, literals, false);
+        if (program === undefined || program.value !== null || !params.has(program.raw)) continue;
+        const own = addedBy(open, list);
+        for (const v of runners.get(m[1] ?? "") ?? [[]]) runs.push([...v, ...own]);
+      }
+      if (runs.length > 0) {
+        runners.set(name, runs);
+        grew = true;
+      }
+    }
+  }
+  const isSpawn = (callee: string): boolean => new RegExp(`^${SPAWNS}$`).test(callee) || runners.has(callee);
+  /** What a spawn-like callee adds itself: nothing for a spawn, a runner's own. */
+  const spawnRuns = (callee: string): string[][] => runners.get(callee) ?? [[]];
+  // `for (const args of [[…], […]]) spawnSync("git", args)`: each array is a git invocation.
+  const forOf: { name: string; from: number; to: number; rows: { at: number; args: (string | null)[] }[] }[] = [];
+  for (const m of code.matchAll(/\bfor\s*\(\s*(?:const|let)\s+([A-Za-z_$][\w$]*)\s+of\s*\[/g)) {
+    const open = (m.index ?? 0) + m[0].length - 1;
+    // The loop's body: a block, or one statement up to its `;` or line end.
+    const header = closeAt(code, code.indexOf("(", m.index ?? 0), literals);
+    let from = header;
+    while (/\s/.test(code.charAt(from))) from += 1;
+    let to = code.charAt(from) === "{" ? closeAt(code, from, literals) : code.slice(from).search(/[;\n]/);
+    if (code.charAt(from) !== "{") to = to === -1 ? code.length : from + to;
+    const rows: { at: number; args: (string | null)[] }[] = [];
+    for (const el of argItems(code, open + 1, closeAt(code, open, literals) - 1, literals, false)) {
+      if (!el.raw.startsWith("[")) continue;
+      const at = code.indexOf(el.raw, open + 1);
+      rows.push({
+        at,
+        args: argItems(code, at + 1, closeAt(code, at, literals) - 1, literals, true).map((a) => a.value),
+      });
+    }
+    forOf.push({ name: m[1] ?? "", from, to, rows });
+  }
+  /** Each call in code[from, to) to one of <names>: the callee and the arguments
+   *  it hands git — a spawn's argument array (never its options), a wrapper's
+   *  every argument — or null for a spawn whose program is not "git". */
+  const callsIn = (
+    from: number,
+    to: number,
+    names: string[],
+  ): { callee: string; at: number; args: ArgItem[]; runs: string[][] }[] => {
+    if (names.length === 0) return [];
+    const out: { callee: string; at: number; args: ArgItem[]; runs: string[][] }[] = [];
+    const re = new RegExp(`${CALLED}(${names.join("|")})\\s*\\(`, "g");
+    re.lastIndex = from;
+    for (let m = re.exec(code); m !== null && m.index < to; m = re.exec(code)) {
+      // A definition's own parameter list is not a call.
+      if (/(?:function\s+|(?:const|let)\s+)$/.test(code.slice(Math.max(0, m.index - 20), m.index))) continue;
+      const open = m.index + m[0].length - 1;
+      const close = closeAt(code, open, literals) - 1;
+      const callee = m[1] ?? "";
+      if (!isSpawn(callee)) {
+        out.push({ callee, at: m.index, args: argItems(code, open + 1, close, literals, true), runs: [[]] });
+        continue;
+      }
+      const [program, list] = argItems(code, open + 1, close, literals, false);
+      if (program?.value !== "git" || list === undefined) continue;
+      // The array is the first `[` after the program literal, which holds none.
+      const bracket = code.indexOf("[", open);
+      out.push({
+        callee,
+        at: m.index,
+        runs: spawnRuns(callee),
+        args: list.raw.startsWith("[")
+          ? argItems(code, bracket + 1, closeAt(code, bracket, literals) - 1, literals, true)
+          : [list],
+      });
+    }
+    return out;
+  };
+  // A wrapper is a set of git invocations that forward one of its own
+  // parameters (`a`, `...args`); each keeps its own literal arguments, so a
+  // `-z` on one git call never clears another, and a call that forwards
+  // nothing of the caller's is no part of what the caller runs.
+  const wrappers = new Map<string, string[][]>();
+  for (let grew = true; grew; ) {
+    grew = false;
+    for (const { name, start, end, params } of defs) {
+      if (wrappers.has(name)) continue;
+      const runs: string[][] = [];
+      for (const c of callsIn(start, end, [...spawnNames(), ...[...wrappers.keys()].map(escapeRe)])) {
+        if (!c.args.some((a) => a.value === null && params.has(a.raw.replace(/^\.\.\.\s*/, "")))) continue;
+        const inner = isSpawn(c.callee) ? c.runs : (wrappers.get(c.callee) ?? []);
+        const lits = c.args.map((a) => a.value).filter((a): a is string => a !== null);
+        for (const v of inner) runs.push([...v, ...lits]);
+      }
+      if (runs.length > 0) {
+        wrappers.set(name, runs);
+        grew = true;
+      }
+    }
+  }
+  // Every call: a spawn of "git" reads the arguments after the program; a
+  // wrapper reads all of its own, plus the ones it adds.
+  for (const c of callsIn(0, code.length, [...spawnNames(), ...[...wrappers.keys()].map(escapeRe)])) {
+    let list = c.args.map((a) => a.value);
+    let runs = c.runs;
+    const only = c.args.length === 1 && c.args[0]?.value === null ? c.args[0].raw : undefined;
+    const loop = forOf.find((l) => l.name === only && l.from <= c.at && c.at < l.to);
+    if (isSpawn(c.callee) && loop !== undefined) {
+      for (const row of loop.rows) if (runs.some((fixed) => listsWithoutZ(verbOn(row.args), fixed))) at.push(row.at);
+      continue;
+    }
+    if (!isSpawn(c.callee)) {
+      runs = wrappers.get(c.callee) ?? [[]];
+      // A wrapper's leading non-literal arguments are its own (a cwd, a root).
+      while (list[0] === null) list = list.slice(1);
+    }
+    if (runs.some((fixed) => listsWithoutZ(verbOn(list), fixed))) at.push(c.at);
+  }
+  return at;
+}
+
+function partD(p: string): void {
+  const text = readText(p);
+  if (text === null) return;
+  const offsets = p.endsWith(".sh") ? shellListings(shellText(text).code) : p.endsWith(".ts") ? tsListings(text) : [];
+  for (const off of [...new Set(offsets)].sort((a, b) => a - b)) {
+    const line = text.slice(0, off).split("\n").length;
+    violation(p, "d", `git file listing without -z at line ${line}`);
+  }
 }
 
 // ── Modes ────────────────────────────────────────────────────────────────
@@ -1376,10 +1791,12 @@ function run(argv: string[], targets: string[]): number {
       }
     }
     for (const p of targets) if (partA(p)) partB(p);
+    for (const p of targets) partD(p);
   } else if (mode === "all") {
     chdirOrExit(toplevel(true) ?? scriptRoot());
     for (const p of universe()) addTarget(p);
     for (const p of targets) if (partA(p)) partB(p);
+    for (const p of targets) partD(p);
   } else {
     const repoRoot = toplevel(false);
     if (repoRoot === undefined) die("check-scripts: not inside a git work tree");
@@ -1411,6 +1828,7 @@ function run(argv: string[], targets: string[]): number {
       }
     }
     for (const p of targets) partA(p);
+    for (const p of targets) partD(p);
     // Part (b) over the whole universe: library status depends on files that
     // did not change, so the changed set cannot scope it.
     for (const p of universe()) partB(p);

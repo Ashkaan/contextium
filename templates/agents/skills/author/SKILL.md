@@ -1,7 +1,7 @@
 ---
 name: author
 description: Scaffolds a conforming AI-layer artifact — skill, hook, agent or output style — that already passes the workbench's format checks, Anthropic's documented frontmatter shape, and the four token/context/determinism principles. Use when authoring or compressing any skill, hook, agent or output style.
-allowed-tools: Bash Read Edit Write AskUserQuestion
+allowed-tools: Bash Read Edit Write
 metadata:
   peers: ".agents/skills/author/references/skill.md .agents/skills/author/references/hook.md .agents/skills/author/references/agent.md .agents/skills/author/references/output-style.md .agents/skills/author/scripts/scaffold.ts .agents/skills/author/scripts/verify.ts .agents/agents/ai-layer-reviewer.md .agents/skills/review/policy-review.ts"
 ---
@@ -31,10 +31,10 @@ Every artifact `/author` emits must satisfy four principles from the original as
 
 | Principle | How it's enforced |
 |---|---|
-| Anthropic best practices | `verify.ts`: skill `description` ≤1,536 + third-person; hook exit-2-for-PreToolUse (emitted by placement); agent 6-field SSOT + scoped `tools` |
-| Low token usage | `verify.ts`: `description` within the always-loaded cap AND exactly one sentence (skill, agent, output-style); SKILL.md body ≤500 lines |
+| Anthropic best practices | `verify.ts` delegates skill conformance to `.agents/checks/check-skills.ts`; the format contract is root `AGENTS.md` § Skill shape. Other branches validate their documented fields and tool scope. |
+| Low token usage | `verify.ts` checks the skill description's published cap and third-person wording. The one-sentence description check applies to agents and output styles; skills have no sentence or body-length cap. |
 | High determinism | `scaffold.ts` emits correct-by-construction (right hook shape + exit code per placement); every type has a non-zero-on-violation backstop; skill branch's determinism inventory pushes data steps to `scripts/` |
-| Low context usage | `verify.ts`: SKILL.md body ≤500 lines; `references/` one level deep (leaf docs) |
+| Low context usage | `verify.ts` checks `references/` for second-hop Markdown links. Put only invocation-needed judgment in the body, with detail loaded on demand. |
 
 ## parse-type
 
@@ -47,7 +47,7 @@ Then open the matching `references/<type>.md` — it carries the branch's questi
 
 ## resolve-shape
 
-Ask the user (a numbered list, recommendation first; in Claude Code, `AskUserQuestion`) for the few decisions that determine STRUCTURE (not content):
+Choose the structure from the job: root `AGENTS.md` § Standards makes technical calls yours. Ask only when the intended experience, scope, permission or cost remains unclear; use numbered options with the recommendation first.
 
 - **skill** — skill-vs-agent (session history → skill; fresh context → agent) + gated-step-graph-or-single-body + **a determinism inventory of every step** (data → `scripts/`, judgment → body prose). The skill branch's Step 2.5 turns each DATA step into a script + paired test; prose-describing a deterministic step is the failure that makes skills non-deterministic.
 - **hook** — which of the 9 categories + firing surface (PreToolUse/PostToolUse vs a check, which is a close gate when it must block).
@@ -56,6 +56,8 @@ Ask the user (a numbered list, recommendation first; in Claude Code, `AskUserQue
 
 Halt if the shape cannot be resolved — the artifact is not yet well-scoped.
 Model assignment is its own step (`model-assignment`, below), not part of shape.
+
+Before moving a rule out of startup instructions, name the existing step, trigger or pointer that loads its destination before the governed action, and check every session type it currently covers. If that path is missing or narrower, retain the uncovered instruction at startup; a document's existence is not coverage.
 
 ## activation-fields
 
@@ -76,7 +78,7 @@ skips — state which line applies and move on:
 - **hook** — activation is its matcher in each harness's hook manifest, wired at `register`.
 
 Decide each row. **Where the answer is not obvious from what the artifact does,
-ask the user (a numbered list, recommendation first; in Claude Code, `AskUserQuestion`) — do not guess a default and do not skip the field silently.**
+ask as a numbered list in the reply, recommendation first — do not guess a default and do not skip the field silently.**
 Batch the uncertain rows into ONE question set, then record every answer so
 `fill` writes it.
 
@@ -112,13 +114,18 @@ Three outcomes:
 
 | The row's primary vendor | What to do |
 |---|---|
-| claude | An agent with `model: inherit` already honors it. Nothing more. |
+| claude | Keep `model: inherit` in the native Claude agent file. In T3, explicitly select the policy's Claude chain when dispatching; the file cannot change a Codex or Grok parent's provider. |
 | codex / grok | An agent CANNOT honor it — the `model:` field takes only `inherit` or a Claude id. The dispatching skill MUST route the assigned work through `.agents/skills/review/policy-review.ts <task-kind> <artifact> <brief>`, using the agent only for the repo-context half a one-shot CLI call cannot do. |
 | no row fits | Legitimate. Every row describes one-shot prompt-in/answer-out work; multi-turn tool-driven agents (repo exploration) have no row by design. Say which rows you considered and why none applies. MUST NOT invent a row or force a bad fit. |
 
 Record the outcome so `fill` can wire it. Authoring a reviewer agent with
 `model: inherit` when its row says Codex, and calling it done, is the
 divergence this step exists to prevent.
+
+The table describes native Claude agent metadata. In T3, the actual execution
+provider/model is selected by the delegation call that starts the subagent and
+the policy row; `model: inherit` in a file does not select a different provider for a
+Codex or Grok parent. Preserve that policy selection in the delegated task.
 
 ## scaffold
 
@@ -151,12 +158,15 @@ the review policy table (`.agents/skills/review/policy.json`), not chosen here:
    what to attack), then:
 
    ```bash
+   POLICY_CHAIN_AUTHOR_THREAD_ID="<writing thread id>" POLICY_CHAIN_AUTHOR_VENDORS="<all writer providers>" \
    node --experimental-strip-types .agents/skills/review/policy-review.ts adversarial-review <artifact-path> <brief-file>
    ```
 
-   The shipped `adversarial-review` row starts with Codex; the script follows
-   the chain and never hard-codes a vendor. Exit 3 means the chain reached the
-   claude slot — dispatch the agent below and note it. Parse findings by
+   First supply verified original authors after reading `.agents/skills/review/SKILL.md`
+   § Where things are found (including T3 execution lineage), including that provenance in any child brief.
+   The script excludes those providers from its policy chain. An unavailable
+   adversary is not replaced by the context reviewer below; report it as such.
+   Parse findings by
    line-anchored grep (`^\[must-fix\]`, `^\[should-fix\]`, `^\[nit\]`).
 
 2. **`ai-layer-reviewer` agent** — dispatch with `{type, path, intent}` and
@@ -202,7 +212,7 @@ Meaningful for exactly one type — **hook** — because hooks are the only arti
 
 ### Example 1 — `/author skill weekly-digest`
 
-`parse-type` → skill. `resolve-shape` asks skill-vs-agent (session-stateful → skill) + gated-or-simple (no gates → single-body). `scaffold` writes `.agents/skills/weekly-digest/SKILL.md` from the template. `fill` completes the description (what + when) + `metadata.peers` + body. `verify` runs `check-skills.ts` → exit 0. `register` is a no-op (auto-discovered). Done.
+`parse-type` → skill. `resolve-shape` chooses skill-vs-agent (session-stateful → skill) + gated-or-simple (no gates → single-body). `scaffold` writes `.agents/skills/weekly-digest/SKILL.md` from the template. `fill` completes the description (what + when) + `metadata.peers` + body. `verify` runs `check-skills.ts` → exit 0. `register` is a no-op (auto-discovered). Done.
 
 ### Example 2 — unknown type
 

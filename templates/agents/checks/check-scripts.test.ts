@@ -1,4 +1,4 @@
-// check-scripts.test.ts — boundary rows for check-scripts.ts: all three parts,
+// check-scripts.test.ts — boundary rows for check-scripts.ts: all four parts,
 // the script definition, the six pairing shapes, the library carve-out with its
 // specifier resolution, the bash tier part (c) derives, the no-args / --since
 // scans land.ts actually calls, --all, explicit paths, caller errors and
@@ -715,17 +715,15 @@ test("part (c): a hook, its sourced library, a worktree maker, and a stray", asy
   await t.test("…not the hook", () => assert.ok(!cErr(r).includes(".agents/hooks/h.sh:"), r.err));
 });
 
-test("part (c): the deploy poller land.ts runs by name is in the tier", async (t) => {
+// land.ts waits on the push checks GitHub runs and calls no deploy poller, so
+// a bash file under .agents/deploy/ earns no tier by its name.
+test("part (c): a bash file named like the old deploy poller has no tier", async (t) => {
   const repo = newrepo();
   f(repo, ".agents/deploy/await-deploy-run.sh", 'echo "polling $1"');
-  f(repo, ".agents/deploy/other.sh", "echo other");
   commitAll(repo, "poller fixture");
   const r = run(repo, "--all");
-  await t.test("the poller is not a (c) violation", () =>
-    assert.ok(!cErr(r).includes("await-deploy-run.sh"), r.err),
-  );
-  await t.test("…another bash file beside it still is", () =>
-    assert.equal(cErr(r), `.agents/deploy/other.sh: (c) ${BASH_OUT}`),
+  await t.test("it is a (c) violation like any other bash file", () =>
+    assert.equal(cErr(r), `.agents/deploy/await-deploy-run.sh: (c) ${BASH_OUT}`),
   );
 });
 
@@ -1236,4 +1234,189 @@ test("a changed bash hook selects and pairs its .test.ts", async (t) => {
     ),
   );
   await t.test("…three selected", () => assert.equal(r.out, "FAIL — 3 script(s) checked, 1 violation(s)"));
+});
+
+// ── Part (d): a git file listing without -z ──────────────────────────────
+// Without `-z`, git C-quotes a name holding a non-ASCII byte, a tab or a
+// newline, and a reader splitting on newlines gets a path that is not on disk:
+// a scan of `café.md` silently never sees it. (d) refuses such a listing.
+
+test("part (d): a git file listing without -z", async (t) => {
+  const repo = newrepo();
+  /** A TypeScript program at .agents/skills/d/scripts/<name>.ts with a test, so only (d) speaks. */
+  const ts = (name: string, body: string): void => {
+    prog(repo, `.agents/skills/d/scripts/${name}.ts`, body);
+    f(repo, `.agents/skills/d/scripts/${name}.test.ts`, "spawnSync");
+  };
+  const sh = (name: string, body: string): void => {
+    f(repo, `.agents/skills/d/scripts/${name}.sh`, `#!/usr/bin/env bash\n${body}`);
+    f(repo, `.agents/skills/d/scripts/${name}.test.ts`, "spawnSync");
+  };
+  ts("array", 'spawnSync("git", ["diff", "--name-only", base]);');
+  ts("array-z", 'spawnSync("git", ["diff", "-z", "--name-only", base]);');
+  ts("array-lines", 'spawnSync("git", [\n  "diff",\n  "--name-only",\n  base,\n  "-z",\n]);');
+  ts("dash-c", 'execFileSync("git", ["-C", dir, "ls-tree", "--name-only", "HEAD"]);');
+  ts("grep-l", 'spawnSync("git", ["grep", "-l", "foo"]);');
+  ts("exec", "execSync(`git diff --name-only ${b}`);");
+  ts("exec-z", "execSync(`git -C ${d} diff -z --name-only ${b}`);");
+  ts(
+    "wrapper",
+    'function git(...a: string[]): string {\n  return String(spawnSync("git", a).stdout);\n}\nconst hits = git("grep", "-nE", "x");',
+  );
+  ts(
+    "wrapper-lz",
+    'function git(...a: string[]): string {\n  return String(spawnSync("git", a).stdout);\n}\nconst hits = git("grep", "-lz", "x");',
+  );
+  ts(
+    "wrapper-array",
+    'const gitRead = (root: string, args: string[]) =>\n  spawnSync("git", ["-C", root, ...args], { encoding: "utf8" });\nconst x = 1;\ngitRead(r, ["ls-files", "--others"]);',
+  );
+  ts(
+    "wrapper-single",
+    "function git(args: string[]): string {\n  return String(spawnSync('git', args).stdout);\n}\ngit(['ls-files', '--others']);",
+  );
+  ts(
+    "wrapper-fixed-z",
+    'function gitPaths(...a: string[]): string[] {\n  return String(spawnSync("git", [...a, "-z"]).stdout).split("\\0");\n}\ngitPaths("ls-files", "--others");',
+  );
+  ts(
+    "wrapper-fixed-list",
+    'function lsFiles(...a: string[]): string {\n  return String(spawnSync("git", ["ls-files", ...a]).stdout);\n}\nlsFiles("--others");',
+  );
+  ts(
+    "wrapper-two-calls",
+    'function w(...a: string[]): string {\n  spawnSync("git", ["grep", "-lz", "m"]);\n  return String(spawnSync("git", a).stdout);\n}\nw("ls-files");',
+  );
+  ts(
+    "wrapper-options",
+    'const ROOT = ".";\nfunction w(...a: string[]): string {\n  spawnSync("git", ["-C", ROOT, "status", "--porcelain"], { encoding: "utf8" });\n  return String(spawnSync("git", [...a, "-z"], { encoding: "utf8" }).stdout);\n}\nw("ls-files");',
+  );
+  ts(
+    "wrapper-spread",
+    'function listed(wt: string): string[] {\n  const read = (args: string[]): string[] => {\n    return String(spawnSync("git", ["-C", wt, ...args]).stdout).split("\\0");\n  };\n  return [...read(["ls-files", "--others"]), ...read(["ls-files", "-z"])];\n}\nconst o = { read: (a: string[]) => a };\no.read(["ls-files"]);',
+  );
+  ts(
+    "runner",
+    'function run(cmd: string, args: string[]): string {\n  return String(spawnSync(cmd, args).stdout);\n}\nfunction git(dir: string, args: string[]): string {\n  return run("git", ["-C", dir, ...args]);\n}\ngit(d, ["ls-tree", "--name-only", "HEAD"]);\ngit(d, ["ls-tree", "-z", "--name-only", "HEAD"]);\nrun("ls", ["--name-only"]);',
+  );
+  ts(
+    "for-of",
+    'for (const args of [\n  ["diff", "-z", "--name-only"],\n  ["ls-files", "--others"],\n]) {\n  spawnSync("git", args);\n}\nfor (const w of [["ls-files"]]) console.log(w);',
+  );
+  ts(
+    "multiline-params",
+    'function run(\n  cmd: string,\n  args: string[],\n): string {\n  const o = { encoding: "utf8" };\n  return String(spawnSync(cmd, args, o).stdout);\n}\nrun("git", ["ls-files", "--others"]);',
+  );
+  ts(
+    "alias",
+    'function git(...a: string[]): string {\n  const args = a;\n  return String(spawnSync("git", args).stdout);\n}\ngit("ls-files");',
+  );
+  ts(
+    "runner-z",
+    'function run(cmd: string, args: string[]): string {\n  return String(spawnSync(cmd, [...args, "-z"]).stdout);\n}\nrun("git", ["ls-files"]);',
+  );
+  ts(
+    "loop-scope",
+    'for (const a of [["status"]]) spawnSync("git", a);\nfor (const a of [["ls-files"]]) {\n  console.log(a);\n}',
+  );
+  ts("label", 'const labels = ["ls-files", "--name-only"];\nconsole.log(labels);');
+  ts(
+    "comment",
+    '// spawnSync("git", ["diff", "--name-only"])\n/* execSync(`git ls-files`) */\nconst re = /"/;\nconst s = "git diff --name-only";',
+  );
+  ts("status", 'spawnSync("git", ["status", "--porcelain"]);');
+  sh("listing", 'r=.\nfiles=$(git -C "$r" ls-files --others)');
+  sh("unmatch", 'p=x\ngit ls-files --error-unmatch -- "$p" >/dev/null 2>&1');
+  sh("grep", "git grep -l foo");
+  sh("shell-comment", "# git diff --name-only\nexit 0");
+  sh("shell-status", "git status --porcelain");
+  tier(repo);
+  let r = run(repo, "--all");
+  const d = part(r.err, "d");
+  const named = (name: string): string[] => d.filter((l) => l.startsWith(`.agents/skills/d/scripts/${name}.`));
+  await t.test("(d1) a TS array without -z is (d), naming the line", () =>
+    assert.deepEqual(named("array"), [".agents/skills/d/scripts/array.ts: (d) git file listing without -z at line 2"]),
+  );
+  await t.test("(d2) the same with -z is clean", () => assert.deepEqual(named("array-z"), []));
+  await t.test("(d3) -z on another line of the same array is clean", () => assert.deepEqual(named("array-lines"), []));
+  await t.test("(d4) -C <dir> before the verb, ls-tree", () => assert.equal(named("dash-c").length, 1, r.err));
+  await t.test("(d5) git grep -l", () => assert.equal(named("grep-l").length, 1, r.err));
+  await t.test("(d6) a shell string handed to execSync", () => assert.equal(named("exec").length, 1, r.err));
+  await t.test("(d7) …and with -z", () => assert.deepEqual(named("exec-z"), []));
+  await t.test("(d8) a local wrapper, bundled -nE", () =>
+    assert.deepEqual(named("wrapper"), [".agents/skills/d/scripts/wrapper.ts: (d) git file listing without -z at line 5"]),
+  );
+  await t.test("(d9) …bundled -lz is clean", () => assert.deepEqual(named("wrapper-lz"), []));
+  await t.test("(d10) an arrow wrapper taking an array", () =>
+    assert.deepEqual(named("wrapper-array"), [
+      ".agents/skills/d/scripts/wrapper-array.ts: (d) git file listing without -z at line 5",
+    ]),
+  );
+  await t.test("(d10a) a wrapper spawning a single-quoted 'git'", () =>
+    assert.deepEqual(named("wrapper-single"), [
+      ".agents/skills/d/scripts/wrapper-single.ts: (d) git file listing without -z at line 5",
+    ]),
+  );
+  await t.test("(d10b) a wrapper that adds a literal -z itself is clean", () =>
+    assert.deepEqual(named("wrapper-fixed-z"), []),
+  );
+  await t.test("(d10c) a wrapper whose own arguments make the listing", () =>
+    assert.deepEqual(named("wrapper-fixed-list"), [
+      ".agents/skills/d/scripts/wrapper-fixed-list.ts: (d) git file listing without -z at line 3",
+      ".agents/skills/d/scripts/wrapper-fixed-list.ts: (d) git file listing without -z at line 5",
+    ]),
+  );
+  await t.test("(d10d) another git call in the wrapper lends it no -z", () =>
+    assert.deepEqual(named("wrapper-two-calls"), [
+      ".agents/skills/d/scripts/wrapper-two-calls.ts: (d) git file listing without -z at line 6",
+    ]),
+  );
+  await t.test("(d10e) spawn options and outer variables are not the caller's arguments", () =>
+    assert.deepEqual(named("wrapper-options"), []),
+  );
+  await t.test("(d10f) a wrapper called inside a spread; a method of the same name is not it", () =>
+    assert.deepEqual(named("wrapper-spread"), [
+      ".agents/skills/d/scripts/wrapper-spread.ts: (d) git file listing without -z at line 6",
+    ]),
+  );
+  await t.test('(d10g) a runner handed "git" as its program, through a wrapper', () =>
+    assert.deepEqual(named("runner"), [".agents/skills/d/scripts/runner.ts: (d) git file listing without -z at line 8"]),
+  );
+  await t.test("(d10h) each array a for-of hands a git spawn", () =>
+    assert.deepEqual(named("for-of"), [".agents/skills/d/scripts/for-of.ts: (d) git file listing without -z at line 4"]),
+  );
+  await t.test("(d10i) a runner whose parameters span lines", () =>
+    assert.deepEqual(named("multiline-params"), [
+      ".agents/skills/d/scripts/multiline-params.ts: (d) git file listing without -z at line 9",
+    ]),
+  );
+  await t.test("(d10j) a wrapper that renames its parameter", () =>
+    assert.deepEqual(named("alias"), [".agents/skills/d/scripts/alias.ts: (d) git file listing without -z at line 6"]),
+  );
+  await t.test("(d10k) a runner that adds -z itself is clean", () => assert.deepEqual(named("runner-z"), []));
+  await t.test("(d10l) a for-of array is git's only inside the loop that spawns it", () =>
+    assert.deepEqual(named("loop-scope"), []),
+  );
+  await t.test("(d11) an array never passed to git", () => assert.deepEqual(named("label"), []));
+  await t.test("(d12) comments, a regex and a plain string", () => assert.deepEqual(named("comment"), []));
+  await t.test("(d13) status --porcelain is outside (d)", () => assert.deepEqual(named("status"), []));
+  await t.test("(d14) bash ls-files --others", () =>
+    assert.deepEqual(named("listing"), [".agents/skills/d/scripts/listing.sh: (d) git file listing without -z at line 3"]),
+  );
+  await t.test("(d15) bash --error-unmatch is clean", () => assert.deepEqual(named("unmatch"), []));
+  await t.test("(d16) bash git grep -l", () => assert.equal(named("grep").length, 1, r.err));
+  await t.test("(d17) a bash comment", () => assert.deepEqual(named("shell-comment"), []));
+  await t.test("(d18) bash status --porcelain", () => assert.deepEqual(named("shell-status"), []));
+  await t.test("(d19) nothing but (d) speaks", () => assert.equal(d.length, lines(r.err), r.err));
+  await t.test("(d20) and it fails the run", () => assert.equal(r.rc, 1));
+
+  // The close's own mode: a changed script is held to (d) too.
+  commitAll(repo, "fixtures");
+  r = run(repo);
+  await t.test("(d21) no-args with nothing changed says nothing", () => assert.deepEqual(part(r.err, "d"), []));
+  ts("array-z", 'spawnSync("git", ["diff", "--name-only", base]);');
+  r = run(repo);
+  await t.test("(d22) no-args: a listing reverted to no -z is named", () =>
+    assert.deepEqual(part(r.err, "d"), [".agents/skills/d/scripts/array-z.ts: (d) git file listing without -z at line 2"]),
+  );
 });

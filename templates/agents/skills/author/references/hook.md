@@ -10,9 +10,9 @@ nothing until it is wired into a harness's hook manifest. A check is not wired
 here — one that must block is a close gate in
 `.agents/skills/close/scripts/land.ts`.
 
-## Step 1 — resolve shape (ask the user: a numbered list, recommendation first; in Claude Code, `AskUserQuestion`)
+## Step 1 — resolve shape
 
-Two structure-determining questions:
+Choose the category and firing surface from the failure, using the parent skill's question boundary:
 
 | Question | Options |
 |---|---|
@@ -53,7 +53,7 @@ node --experimental-strip-types .agents/skills/author/scripts/verify.ts hook .ag
 node --test --experimental-strip-types .agents/checks/<name>.test.ts
 ```
 
-For a `.ts` hook or check it checks that the file parses once its types are stripped and never calls `process.exit`; for a bash hook it runs `shellcheck` and asserts `set -euo pipefail` (disable a shellcheck warning only with an inline `# shellcheck disable=SCXXXX` naming the issue). A top-level hook must not `exit 1`. MUST exit 0 before the branch completes. For a top-level hook it also WARNs (non-blocking) while no hook manifest names it (see Step 5); for a check it makes no claim about wiring.
+For a `.ts` hook or check it checks that the file parses once its types are stripped and never calls `process.exit`; for a bash hook it runs `shellcheck` and asserts `set -euo pipefail` (disable a shellcheck warning only with an inline `# shellcheck disable=SCXXXX` naming the issue). Live refusals in a top-level hook must not `exit 1`. The Bash syntax parser already used by review distinguishes executable exits from quoted data and the explicit `--self-test` branch; that branch's `else` or `elif` still counts as live. Parser installation is documented in `.agents/skills/review/SKILL.md`; missing or invalid parsing fails verification. `AUTHOR_BASH_PARSER_ROOT` only overrides its package root for isolated tests. MUST exit 0 before the branch completes. For a top-level hook it also WARNs (non-blocking) while no hook manifest names it (see Step 5); for a check it makes no claim about wiring.
 
 ## Step 5 — register (a PreToolUse/PostToolUse hook only — it fires from nothing until wired)
 

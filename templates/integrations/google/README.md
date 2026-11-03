@@ -179,7 +179,7 @@ All calls send `Authorization: Bearer $GOOGLE_TOKEN`.
 
 | Error | Fix |
 | --- | --- |
-| 401 Unauthorized | Access token expired — check the refresher job ran, then re-read from the vault |
+| 401 Unauthorized | Access token expired — refresh it with the stored refresh token (Contextium ships no refresher job), write the new one to the vault, then re-read it |
 | 403 Forbidden | Scope not authorized — use the full-grant item, or re-authorize with the scope |
 | 404 Not Found | File/resource ID incorrect or not shared with this account |
 | Token refresh failed | Refresh token expired or revoked — re-run [Authorize an account](#authorize-an-account-one-time-per-account) |

@@ -13,6 +13,17 @@ description: "Task list template for feature implementation"
 **Tests**: The examples below include test tasks. Tests are OPTIONAL - only include them if explicitly requested in the feature specification.
 
 <!-- contextium: tests-required -->
+**Contextium adaptation:** root AGENTS.md's What lives where and Skills (and
+its Stack section, where the workbench keeps one) govern the filled task list. Replace upstream language/path examples with this
+repo's actual structure. Upstream instructions to commit per task or deploy a
+partial slice do not apply: use the producer's canonical close, with every
+agreed class fix and acceptance task complete. A checkpoint validates progress;
+it does not authorize leaving the agreed work unfinished. When filling this
+template, replace the upstream Implementation Strategy and Notes sections with
+the actual validation sequence and one final close for the agreed work. Do not
+copy their per-task commit or partial-deployment steps into the produced task
+list.
+
 **Tests (contextium)**: REQUIRED, never optional — this overrides the line
 above. Every new function gets a test task, and so do its error and boundary
 cases; each test is observed RED before the code that makes it green, including
@@ -27,11 +38,31 @@ don't wait for the schedule.
 <!-- /contextium -->
 <!-- contextium: live-walk -->
 **Live walk**: a task that proves the work on a deployed surface names the
-identity that runs it, and it is one an agent holds — a service token, an API
-key, a test account the session can use — never "signed in as you in the
-browser", which hands you a step the session could have run. A task names a
-person's sign-in only when no agent identity exists for that surface, and then
-it says so.
+identity that runs it, resolved from the target's integration README and its
+actual client before the spec is written, and it is one an agent holds — a
+service token, an API key, a test account the session can use — never "signed
+in as you in the browser", which hands you a step the session could have run.
+Reuse an existing agent identity when that surface supports one, with the
+documented headers and permissions. Do not copy one surface's probe identity
+into another, or infer permission from technical access. A task names a
+person's sign-in only when the access lookup proves no agent identity can
+perform that step, and then it says so.
+
+**Live checks**: a spec that changes something deployed declares the checks
+only the deployed thing can answer in one `live-checks` block, one per line —
+`<id> | <target> | command | <shell command>` (the close runs it) or
+`<id> | <target> | evidence | <what the capture must show>` (judged by eye and
+recorded with a file). `<target>` is `workbench` (the repo holding the spec) or
+`repo:<owner>/<name>` (another repo this close lands in). The close holds until
+each passes on what is live; the form's owner is
+`.agents/skills/close/scripts/live-checks.ts`. Write the resolved command in the
+produced spec's `live-checks` fence; there is no generic command to copy before
+checking the target's identity. An eyes-only entry looks like this (this
+example carries no `live-checks` info string and creates no owed check):
+
+```text
+hero | repo:example-org/marketing-site | evidence | the home page hero shows the new headline
+```
 
 <!-- /contextium -->
 **Organization**: Tasks are grouped by user story to enable independent implementation and testing of each story.

@@ -12,10 +12,11 @@ metadata:
 
 ## Critical
 
+- **One machine reviewer per artifact.** Each artifact gets exactly one machine reviewer, fired by whatever produced it: a SPEC gets `/spec-audit` from `step-2-spec-audit`, and a diff gets `/implement-audit` from `/implement`.
 - **The SPEC is machine-audited BEFORE it lands, never user-first.** `step-2-spec-audit` dispatches `/spec-audit` (reviewer consensus + spirit-check) on every SPEC. The user is NEVER the first reviewer. Folded findings + surfaced escalations/DRIFT ride into the close summary.
-- **No user sign-off halt (option A).** The old "present SPEC, HALT for user review" gate is gone. A machine-audited SPEC is committed + pushed by the auto-close and reviewed by the user on the trunk / in the fresh `/implement` tab. The loop only halts for a genuine decision or deferral.
+- **No user sign-off halt (option A).** The old "present SPEC, HALT for user review" gate is gone. A machine-audited SPEC is committed + pushed by the auto-close and reviewed by the user on the trunk / in the fresh `/implement` session. The loop only halts for a genuine decision or deferral. Nor does a task or success criterion wait on the user's acceptance unless their quoted words asked for one: write it as "verify it is good" — full `/qa`, a fresh-context sighted review, every finding fixed — because a stop nobody asked for leaves the work waiting on a sign-off instead of being checked.
 - **Auto-close is the tail.** `step-3-auto-close` invokes `/close` itself on clean completion per the shared SSOT (`close/references/auto-close-gate.md`). The user does not type `/close`.
-- **Fresh-context boundary preserved.** `/spec`'s auto-close ENDS the session. The next `/implement` runs in a fresh tab — `/spec` does NOT roll into `/implement`.
+- **Fresh-context boundary preserved.** `/spec`'s auto-close ENDS the session. The close prints each ready row's `/implement <slug> <row>` command, and the user runs it in a fresh session — `/spec` does NOT roll into `/implement`.
 - **Credentials in the SPEC must resolve to a named secret-store item + field.** "From the key or whatever app Y uses" is a `AGENTS.md § Standards → Read before asserting` violation — resolve the item's name + field (and its id, where the store has one) during the design (in `/project`'s explore step) and cite it explicitly. `/spec` writes what the design resolved; it does not paper over a gap.
 
 ## step-1-write-spec — write the spec folders
@@ -123,7 +124,7 @@ The `## SPEC Created` summary `/close` surfaces (no sign-off halt):
 
 **Open clarifications**: {none | the rows whose spec still carries a `[NEEDS CLARIFICATION]` marker — they go back to /project, not /implement}
 
-**Next Step**: review the specs on the trunk, then in a fresh context (a new tab, or `/clear`), one session per row:
+**Next Step**: review the specs on the trunk, then in a fresh context (a new session, or `/clear`), one session per row:
 ```
 
 Each row's command goes in its OWN fenced block, so each has its own copy
@@ -148,7 +149,7 @@ matched to the row case-insensitively. These are the same lines
 
 ### Example 1 — dispatched by /project (the golden path)
 
-`/project <slug>` runs the think flow through design + row split + categorize, then its `think-step-4-dispatch-spec` invokes `/spec` with two designed rows, R1 and R2 (R2 depends on R1). `step-1` creates `ROADMAP.md` from the template with those two rows, writes `specs/001-foundation/` and `specs/002-sync/`, and runs `roadmap.ts --set` for each, then `--sync-next`. `step-2` dispatches `/spec-audit specs/001-foundation/` and `/spec-audit specs/002-sync/` → round-1 consensus, spirit MATCH, `spec-audit:` line written into each plan.md. `step-3` sees no decision/deferral + `not-fired` → dispatches `/close`, which commits + pushes and prints one block, `/implement <slug> r1` — R2 is not ready until R1 is done. Session ends; the user opens a fresh tab for `/implement`.
+`/project <slug>` runs the think flow through design + row split + categorize, then its `think-step-4-dispatch-spec` invokes `/spec` with two designed rows, R1 and R2 (R2 depends on R1). `step-1` creates `ROADMAP.md` from the template with those two rows, writes `specs/001-foundation/` and `specs/002-sync/`, and runs `roadmap.ts --set` for each, then `--sync-next`. `step-2` dispatches `/spec-audit` on each folder and folds its findings. `step-3` sees no outstanding decision and an open auto-close gate, then runs `/close`, which commits + pushes and prints one block, `/implement <slug> r1` — R2 is not ready until R1 is done. The planning session ends; the user runs that command in a fresh session.
 
 ### Example 2 — ad-hoc mid-session SPEC
 

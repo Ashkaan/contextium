@@ -36,6 +36,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { after, test } from "node:test";
 import { fileURLToPath } from "node:url";
+import { DatabaseSync } from "node:sqlite";
 import { policyRunChain, spawnCapped, type Validator } from "./policy-chain.ts";
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
@@ -136,9 +137,13 @@ mkstub(`${TMP}/echo-prompt-bytes.sh`, "wc -c < /dev/stdin");
 
 process.env.POLICY_JSON = POLICY;
 process.env.POLICY_CHAIN_SLOT_TIMEOUT_S = "5";
-// No author recorded unless a case names one: the harness record of whatever
-// checkout runs this suite must not decide which slots the cases see.
-process.env.CONTEXTIUM_HARNESS_FILE = `${TMP}/no-such-harness`;
+// Existing fixtures describe Claude-authored artifacts. Individual provenance
+// cases below override or remove this explicitly.
+process.env.POLICY_CHAIN_AUTHOR_VENDORS = "claude";
+process.env.T3CODE_HOME = TMP;
+process.env.HOME = TMP;
+delete process.env.WORKBENCH_THREAD_ID;
+delete process.env.POLICY_CHAIN_AUTHOR_THREAD_ID;
 
 // run — calls the walk with `env` overlaid on process.env for the call only,
 // and collects stdout and stderr separately so the "stdout carries vendor output
@@ -189,6 +194,115 @@ function run(kind: string, prompt: string, env: Record<string, string | undefine
 }
 
 const count = (hay: string, needle: string): number => hay.split("\n").filter((l) => l.includes(needle)).length;
+
+test("review excludes each artifact author, including a primary or backup author", () => {
+  for (const [authors, answer] of [
+    ["codex", "grok"],
+    ["grok", "codex"],
+    ["claude, codex", "grok"],
+    ["gemini", "codex"],
+    ["human", "codex"],
+  ]) {
+    const r = run("adversarial-review", PROMPT, {
+      POLICY_CHAIN_AUTHOR_VENDORS: authors,
+      CODEX_BIN: `${TMP}/say-codex.sh`,
+      GROK_BIN: `${TMP}/say-grok.sh`,
+    });
+    assert.equal(r.rc, 0, r.err);
+    assert.equal(r.out, `[must-fix] from ${answer}`, `authors: ${authors}`);
+  }
+});
+
+test("review refuses missing, empty or unknown original-author provenance before invoking a vendor", () => {
+  for (const authors of [undefined, "", " ", "openai", "claude,,codex", "claude,unknown"]) {
+    const r = run("adversarial-review", PROMPT, {
+      POLICY_CHAIN_AUTHOR_VENDORS: authors,
+      CODEX_BIN: `${TMP}/say-codex.sh`,
+      GROK_BIN: `${TMP}/say-grok.sh`,
+    });
+    assert.equal(r.rc, 2, `authors ${String(authors)}: ${r.err}`);
+    assert.equal(r.out, "");
+    assert.match(r.err, /POLICY_CHAIN_AUTHOR_VENDORS/);
+    assert.doesNotMatch(r.err, /answered:/);
+  }
+});
+
+test("exhausting eligible reviewers never falls back to an artifact author", () => {
+  for (const authors of ["codex,grok", "codex,codex"]) {
+    const r = run("adversarial-review", PROMPT, {
+      POLICY_CHAIN_AUTHOR_VENDORS: authors,
+      CODEX_BIN: `${TMP}/say-codex.sh`,
+      GROK_BIN: `${STUBS}/stub-fail.ts`,
+    });
+    assert.equal(r.rc, 1, r.err);
+    assert.equal(r.out, "");
+    assert.match(r.err, /excluded.*author/);
+    assert.doesNotMatch(r.err, /answered:/);
+  }
+});
+
+test("non-review policy rows need no author metadata", () => {
+  const r = run("one-slot", PROMPT, {
+    POLICY_CHAIN_AUTHOR_VENDORS: undefined,
+    GROK_BIN: `${TMP}/say-grok.sh`,
+  });
+  assert.equal(r.rc, 0, r.err);
+  assert.equal(r.out, "[must-fix] from grok");
+});
+
+test("declared authors cannot omit the writing thread's recorded providers or relabel a model as human", () => {
+  const t3 = join(TMP, "author-trace");
+  mkdirSync(join(t3, "userdata"), { recursive: true });
+  const db = new DatabaseSync(join(t3, "userdata/statev2.sqlite"));
+  db.exec("create table orchestration_v2_projection_provider_sessions(thread_id text,provider text,driver text)");
+  const insert = db.prepare("insert into orchestration_v2_projection_provider_sessions values (?,?,?)");
+  insert.run("codex-writer", "codex_work", "codex");
+  insert.run("claude-writer", "claude-work", null);
+  insert.run("claude-writer", "claudeAgent", null);
+  insert.run("mixed-writer", "codex", null);
+  insert.run("mixed-writer", "grok", null);
+  insert.run("unknown-writer", "unrecognized-model", null);
+  db.close();
+  const base = { T3CODE_HOME: t3, CODEX_BIN: `${TMP}/say-codex.sh`, GROK_BIN: `${TMP}/say-grok.sh` };
+  for (const authors of ["human", "claude"]) {
+    const r = run("adversarial-review", PROMPT, {
+      ...base,
+      POLICY_CHAIN_AUTHOR_THREAD_ID: "codex-writer",
+      POLICY_CHAIN_AUTHOR_VENDORS: authors,
+    });
+    assert.equal(r.rc, 2, "a recorded Codex writer cannot be omitted");
+    assert.match(r.err, /recorded.*codex/);
+    assert.equal(r.out, "");
+  }
+  const codex = run("adversarial-review", PROMPT, {
+    ...base,
+    POLICY_CHAIN_AUTHOR_THREAD_ID: "codex-writer",
+    POLICY_CHAIN_AUTHOR_VENDORS: "codex",
+  });
+  assert.equal(codex.rc, 0, codex.err);
+  assert.equal(codex.out, "[must-fix] from grok");
+  const claude = run("adversarial-review", PROMPT, {
+    ...base,
+    POLICY_CHAIN_AUTHOR_THREAD_ID: "claude-writer",
+    POLICY_CHAIN_AUTHOR_VENDORS: "claude",
+  });
+  assert.equal(claude.rc, 0, claude.err);
+  const mixed = run("adversarial-review", PROMPT, {
+    ...base,
+    POLICY_CHAIN_AUTHOR_THREAD_ID: "mixed-writer",
+    POLICY_CHAIN_AUTHOR_VENDORS: "codex,grok",
+  });
+  assert.equal(mixed.rc, 1, mixed.err);
+  for (const id of ["unknown-writer", "missing-writer"]) {
+    const bad = run("adversarial-review", PROMPT, {
+      ...base,
+      POLICY_CHAIN_AUTHOR_THREAD_ID: id,
+      POLICY_CHAIN_AUTHOR_VENDORS: "claude",
+    });
+    assert.equal(bad.rc, 2, id);
+    assert.equal(bad.out, "");
+  }
+});
 const read = (p: string): string => (existsSync(p) ? readFileSync(p, "utf8").replace(/\n+$/, "") : "");
 // The line just before / after an exact line — `grep -B1 -x` / `grep -A1 -x`.
 function lineBefore(hay: string, exact: string): string {
@@ -477,7 +591,10 @@ test("16b/16c — the table is the one shipped beside the script", () => {
   // the caller's cwd, inside a repo or not. Run in a fresh node so nothing the
   // copy does can reach this suite.
   mkdirSync(`${TMP}/copy/a/b`, { recursive: true });
+  mkdirSync(`${TMP}/copy/a/close/scripts`, { recursive: true });
   copyFileSync(join(SCRIPT_DIR, "policy-chain.ts"), `${TMP}/copy/a/b/policy-chain.ts`);
+  // Its one sibling import, where it resolves from the copy.
+  copyFileSync(join(SCRIPT_DIR, "../close/scripts/t3-db.ts"), `${TMP}/copy/a/close/scripts/t3-db.ts`);
   const code = `const m = await import(${JSON.stringify(`${TMP}/copy/a/b/policy-chain.ts`)}); const p = m.policyChainPolicyPath(); if (p === null) process.exit(2); process.stdout.write(p + "\\n");`;
   const env = { ...process.env };
   delete env.POLICY_JSON;
@@ -658,50 +775,34 @@ test("the DEFAULT resolver has no catalog: an exact id passes, a family is refus
   assert.ok(!existsSync(`${TMP}/argv.txt`), "the family codex slot was run anyway");
 });
 
-test("the author leaves a review row", () => {
-  // `.agents/harness` records `agent=` — the family that writes the code. A
-  // review row (`.chain`) skips that vendor; a panel (`.voices`) keeps it; the
-  // claude slot is never skipped, because it means "dispatch your own agent".
-  const HARNESS = `${TMP}/harness`;
-  writeFileSync(HARNESS, "harness=t3\nagent=codex\n");
-  let r = run("adversarial-review", PROMPT, {
-    CONTEXTIUM_HARNESS_FILE: HARNESS,
+test("Contextium: excluding every author on a fallback row falls back, NOT independent", () => {
+  // The row's fresh-context fallback covers a chain the author exclusion
+  // emptied, exactly as it covers one whose vendors are all unavailable; a row
+  // without the mark keeps the plain exhaustion the case above asserts.
+  const FB = `${TMP}/fallback-authors.json`;
+  writeFileSync(
+    FB,
+    `{ "rows": {
+  "adversarial-review": { "mode": "single", "fallback": "fresh-context", "chain": [{ "vendor": "codex", "model": "codex", "tracks": "" }, { "vendor": "grok", "model": "grok", "tracks": "" }] }
+} }
+`,
+  );
+  const r = run("adversarial-review", PROMPT, {
+    POLICY_JSON: FB,
+    POLICY_CHAIN_AUTHOR_VENDORS: "codex,grok",
     CODEX_BIN: `${TMP}/say-codex.sh`,
     GROK_BIN: `${TMP}/say-grok.sh`,
   });
-  rcIs("author skip: the row still answers", 0, r.rc);
-  eq("author skip: codex wrote the code, so grok reviews", "[must-fix] from grok", r.out);
-  has("author skip: it says why", "codex left out of 'adversarial-review': it wrote the code", r.err);
-  r = run("panel", PROMPT, { CONTEXTIUM_HARNESS_FILE: HARNESS, CODEX_BIN: `${TMP}/say-codex.sh` });
-  eq("author skip: a panel keeps the author's seat", "[must-fix] from codex", r.out);
-
-  writeFileSync(HARNESS, "agent=grok\n");
-  r = run("one-slot", PROMPT, { CONTEXTIUM_HARNESS_FILE: HARNESS, GROK_BIN: `${TMP}/say-grok.sh` });
-  rcIs("author skip: a row holding only the author exhausts", 1, r.rc);
-
-  writeFileSync(HARNESS, "agent=claude\n");
-  r = run("claude-tail", PROMPT, { CONTEXTIUM_HARNESS_FILE: HARNESS, CODEX_BIN: `${STUBS}/stub-fail.ts` });
-  rcIs("author skip: the claude slot still returns 3", 3, r.rc);
-
-  writeFileSync(HARNESS, "agent=antigravity\n");
-  const G = `${TMP}/gemini.json`;
-  writeFileSync(
-    G,
-    '{ "rows": { "r": { "mode": "single", "chain": [{ "vendor": "gemini", "model": "gemini", "tracks": "" }, { "vendor": "codex", "model": "codex", "tracks": "" }] } } }\n',
-  );
-  r = run("r", PROMPT, { POLICY_JSON: G, CONTEXTIUM_HARNESS_FILE: HARNESS, CODEX_BIN: `${TMP}/say-codex.sh` });
-  has("author skip: antigravity is the gemini family", "gemini left out of 'r'", r.err);
-
-  for (const a of ["cursor", "copilot"]) {
-    writeFileSync(HARNESS, `agent=${a}\n`);
-    r = run("adversarial-review", PROMPT, { CONTEXTIUM_HARNESS_FILE: HARNESS, CODEX_BIN: `${TMP}/say-codex.sh` });
-    eq(`author skip: agent=${a} names no family, nothing skipped`, "[must-fix] from codex", r.out);
-  }
-  r = run("adversarial-review", PROMPT, {
-    CONTEXTIUM_HARNESS_FILE: `${TMP}/no-such-harness`,
+  rcIs("every slot an author, fallback row: 3", 3, r.rc);
+  eq("…and no author answered", "", r.out);
+  has("…and it says the review is NOT independent", "fresh-context review, NOT independent", r.err);
+  const one = run("adversarial-review", PROMPT, {
+    POLICY_JSON: FB,
+    POLICY_CHAIN_AUTHOR_VENDORS: "codex",
     CODEX_BIN: `${TMP}/say-codex.sh`,
+    GROK_BIN: `${TMP}/say-grok.sh`,
   });
-  eq("author skip: no harness file, the row as written", "[must-fix] from codex", r.out);
+  eq("one author excluded: the other vendor reviews", "[must-fix] from grok", one.out);
 });
 
 test("Contextium: a review row with every vendor unavailable falls back", () => {

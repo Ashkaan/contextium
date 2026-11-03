@@ -45,9 +45,12 @@
 //   0    A vendor answered.
 //   1    The whole `adversarial-review` chain was exhausted. NOT a review.
 //   2    Caller error (bad arity, missing file, unknown row).
-//   3    No independent reviewer: the chain reached a CLAUDE slot, or (on the
-//        shipped table) every vendor was unavailable. Contextium: the caller
-//        runs the same attack in a FRESH context with its own agent and records
+//   3    No independent reviewer: an eligible CLAUDE slot (agent dispatch this
+//        executor lacks), or — Contextium — a row whose declared fresh-context
+//        fallback found no eligible vendor. NOT an independent review. Original
+//        authors are excluded by policy-chain.ts using POLICY_CHAIN_AUTHOR_VENDORS
+//        (.agents/skills/review/SKILL.md). The caller runs the same attack in a
+//        FRESH context with its own agent and records
 //        `spec-audit: claude-fallback (fresh context, NOT independent) …` — a
 //        completed but weaker audit, never an independent one.
 //   124  Chain exhausted and the last slot's failure was a timeout.
@@ -73,7 +76,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { exit, runToExit } from "../../packages/cli-exit/cli-exit.ts";
-import { policyRunChain, type ValidatorResult } from "./policy-chain.ts";
+import { policyRunChain, salvageTriageLine, type ValidatorResult } from "./policy-chain.ts";
 
 const err = (line: string): void => {
   process.stderr.write(`${line}\n`);
@@ -108,8 +111,29 @@ function answerLines(text: string): string[] {
   return lines.map((l) => l.replace(/\r$/, ""));
 }
 
-function countLines(text: string, re: RegExp): number {
-  return answerLines(text).filter((l) => re.test(l)).length;
+const FINDING_MARKERS = ["[must-fix]", "[should-fix]", "[nit]"] as const;
+const VERDICT_MARKERS = ["[concede]", "[disagree]"] as const;
+
+/**
+ * The answer as every later reader sees it: one line per answer line, with a
+ * marker glued onto narration cut free (salvageTriageLine owns that rule). The
+ * shape gate, the count and stdout all read THIS, so they cannot disagree. Round
+ * two salvages verdict markers only and has no sentinel: a round-two NO_FINDINGS
+ * stays unparsed and fails below. Specification reviews that glued their first
+ * finding to narration had the anchored count see the rest, exit 0, and drop
+ * that finding from stdout.
+ */
+function normalizedLines(text: string, roundTwo: boolean): string[] {
+  const markers = roundTwo ? VERDICT_MARKERS : FINDING_MARKERS;
+  return answerLines(text).map((l) => {
+    const { line, salvaged } = salvageTriageLine(l, markers, roundTwo ? null : "NO_FINDINGS");
+    if (salvaged !== null) err(`[spec-audit] salvaged a ${salvaged} from a prefixed line`);
+    return line;
+  });
+}
+
+function countLines(lines: string[], re: RegExp): number {
+  return lines.filter((l) => re.test(l)).length;
 }
 
 async function main(): Promise<void> {
@@ -324,14 +348,10 @@ ${SPEC_CONTENTS}`;
 
     // The chain's shape test: is this output an AUDIT at all?
     //
-    // ANCHORED (`^\[`), deliberately, and NOT the same as code-review.ts's. That
-    // script's parser SALVAGES a marker a vendor glued onto the end of a
-    // narration line, so an unanchored gate there matches what its parser will
-    // actually accept. This script has no salvage: it counts line-anchored prefixes
-    // only. An unanchored gate here would bank a prose answer that merely MENTIONS
-    // `[must-fix]`, skip the healthy backup, and then fail the audit as unparseable
-    // — the exact hole the gate was added to close. A shape test must match the
-    // parser it feeds, not the other gate's parser. Same cheap question
+    // It reads the same normalized lines the count and stdout read below. A
+    // shape test must match the parser it feeds: a gate looser than the parser
+    // banks prose, skips the healthy backup and then fails the audit; a gate
+    // stricter than it rejects an answer the parser would keep. Same cheap question
     // the full parse below asks, moved to where a "no" still has a backup to fall
     // through to — until now a vendor that answered with prose was banked, the walk
     // stopped, and the untried slot never ran.
@@ -345,7 +365,7 @@ ${SPEC_CONTENTS}`;
     // would hand exactly that back as a pass.
     const shape = PUSHBACK_FILE !== "" ? /^\[(concede|disagree)\]/ : /^\[(must-fix|should-fix|nit)\]|^NO_FINDINGS$/;
     const looksLikeAnAudit = (file: string): ValidatorResult => ({
-      rc: countLines(readFileSync(file, "utf8"), shape) > 0 ? 0 : 1,
+      rc: countLines(normalizedLines(readFileSync(file, "utf8"), PUSHBACK_FILE !== ""), shape) > 0 ? 0 : 1,
       stderr: "",
     });
 
@@ -404,7 +424,7 @@ ${SPEC_CONTENTS}`;
     // would satisfy a shared prefix set, exit 0, and then parse as zero disagreements
     // — i.e. CONSENSUS — silently converting a held finding into an approving SPEC
     // sign-off. Round 2 therefore accepts verdicts only.
-    const raw = readFileSync(RAW_OUT, "utf8");
+    const raw = normalizedLines(readFileSync(RAW_OUT, "utf8"), PUSHBACK_FILE !== "");
     const vendor = process.env.POLICY_CHAIN_VENDOR || "";
     let FINDING_COUNT: number;
     const SENTINEL = countLines(raw, /^NO_FINDINGS$/);
@@ -445,7 +465,7 @@ ${SPEC_CONTENTS}`;
     // — the same contract code-review.ts has always enforced by filtering rather
     // than by asking nicely. Anything dropped is echoed to stderr, so an unparseable
     // audit stays diagnosable instead of silently thinning.
-    for (const line of answerLines(raw)) {
+    for (const line of raw) {
       if (/^\[(must-fix|should-fix|nit|concede|disagree)\]/.test(line)) process.stdout.write(`${line}\n`);
       else if (line === "NO_FINDINGS" || line === "") continue;
       else err(`[spec-audit] dropped non-triage line: ${line}`);

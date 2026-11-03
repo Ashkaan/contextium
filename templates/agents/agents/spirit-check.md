@@ -133,9 +133,9 @@ A bearer-auth HTTP daemon with per-caller allowlists, worktree isolation, retry 
 
 **Input:**
 
-User's verbatim ask: "Add a cron job at 8am Pacific that posts a daily health summary to my Slack."
+User's verbatim ask: "Add a daily job at 8am Pacific that posts a health summary to my Slack."
 
-SPEC interpretation: "Cron-triggered task running daily at `15 00 * * *` UTC (== 8am PDT / 7am PST) — `apps/<health-summary>/`. Reads the health-data store, formats summary block, POSTs to Slack webhook via `integrations/<slack>/`. Emits a heartbeat for observability per the canonical scheduled-task shape."
+SPEC interpretation: "Scheduled task with `cron: { pattern: \"0 8 * * *\", timezone: \"America/Los_Angeles\" }` (8am through daylight-saving changes) — `apps/<health-summary>/`. Reads the health data from its database table, formats a summary block, posts it to Slack through `integrations/<slack>/`, and reports each run to a heartbeat monitor."
 
 **Expected output:**
 
@@ -143,14 +143,14 @@ SPEC interpretation: "Cron-triggered task running daily at `15 00 * * *` UTC (==
 ## Spirit check
 
 ### User's verbatim words
-> "Add a cron job at 8am Pacific that posts a daily health summary to my Slack."
+> "Add a daily job at 8am Pacific that posts a health summary to my Slack."
 
 ### SPEC's interpretation (paraphrased)
-A daily cron task that reads health data and posts a formatted summary to Slack at 8am Pacific.
+A daily scheduled task that reads health data and posts a formatted summary to Slack at 8am Pacific.
 
 ### Drift assessment
 
 - **MATCH** — the SPEC's interpretation reasonably captures the user's words. No drift found.
 ```
 
-(One caveat the SPEC handles correctly: 8am Pacific drifts under PST/PDT; the SPEC pins UTC and notes the daylight-savings shift. That's a an adversarial-reviewer correctness concern, not a spirit-check concern.)
+A fixed UTC schedule that moves to 7am in winter would drop the user's 8am requirement and must be flagged as drift. This example preserves the local time they asked for.

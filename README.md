@@ -90,8 +90,8 @@ and a headless run elsewhere needs `GEMINI_CLI_TRUST_WORKSPACE=true`.
   `/debate` (three models argue a decision), and `/author` (scaffold a conforming skill, hook, agent
   or response style).
 - **Reviews that aren't written by the author.** Code and spec reviews run on the Codex or Grok CLI,
-  in the order `.agents/skills/review/policy.json` sets, and skip the model family recorded as your
-  `agent=`. When no such reviewer is installed, the review still runs, in a fresh-context agent of
+  in the order `.agents/skills/review/policy.json` sets, and skip every model that wrote the work —
+  your `agent=`, and any other model that edited it. When no such reviewer is installed, the review still runs, in a fresh-context agent of
   your own, and its recorded line says `claude-fallback (fresh context, NOT independent)`. A weaker
   review is fine; a weaker review reported as a strong one is not.
 - **Each review runs once and leaves a record.** `/implement-audit` reviews once per session, later
@@ -134,8 +134,10 @@ bash install.sh ~/code/workbench
 ```
 
 The installer asks which tool you use (and, for T3 Code, which agent it runs), offers to install it
-if it is missing, then asks where your workbench is (default `~/code/workbench`), your name, and how
-autonomous the AI should be. It writes `AGENTS.md` and `.agents/`, links your harness homes to them,
+if it is missing, then asks where your workbench is (default `~/code/workbench`), your name, how
+autonomous the AI should be, and how much guidance `AGENTS.md` carries — `minimal` (only what the
+installed skills and checks rely on), `recommended` (plus the general engineering standards) or
+`full` (plus working preferences and a Stack section). It writes `AGENTS.md` and `.agents/`, links your harness homes to them,
 merges its guards into your tool's settings without touching the rest, and leaves your data
 directories, and anything you added to `.agents/`, alone on re-runs. A folder that isn't a git repo
 yet is made one on `main`, with the install as its first commit.

@@ -445,3 +445,59 @@ test("--compact with nothing dropped exits 0 and carries no such line", () => {
   const r = compact([{ fm: {} }]);
   assert.doesNotMatch(r.stdout, /could not be read/);
 });
+
+// ── --json ──────────────────────────────────────────────────────────────────
+// /project triage reads these rows, so they come in the compact view's order and
+// an incomplete list is refused rather than printed.
+
+test("--json prints the Active, Blocked and Monitoring rows in index order", () => {
+  const fx = fixture([
+    { fm: { project: "low", priority: "low" } },
+    { fm: { project: "high", priority: "high" } },
+    { fm: { project: "stuck", status: "blocked" } },
+    { fm: { project: "done", status: "completed" } },
+  ]);
+  try {
+    const r = run(fx, "--json");
+    assert.equal(r.code, 0, r.stderr);
+    const data = JSON.parse(r.stdout) as Record<string, Array<{ project: string; linkPath: string }>>;
+    assert.deepEqual(Object.keys(data), ["active", "blocked", "monitor"]);
+    assert.deepEqual(
+      data.active.map((p) => p.project),
+      ["high", "low"],
+    );
+    assert.deepEqual(
+      data.blocked.map((p) => p.project),
+      ["stuck"],
+    );
+    assert.match(data.active[0].linkPath, /^ai\/2026-05-\d\d_demo\d*\/README\.md$/);
+  } finally {
+    rmSync(fx.root, { recursive: true, force: true });
+  }
+});
+
+test("--json with a project that does not render prints nothing and exits 1", () => {
+  const fx = fixture([{ fm: { project: "fine" } }, { fm: { project: "broken", next: "" } }]);
+  try {
+    const r = run(fx, "--json");
+    assert.equal(r.code, 1);
+    assert.equal(r.stdout, "");
+    assert.match(
+      r.stderr,
+      /1 project\(s\) could not be read and are missing below: ai\/[^ ]+: its row does not render/,
+    );
+  } finally {
+    rmSync(fx.root, { recursive: true, force: true });
+  }
+});
+
+test("--json on an empty tree (a new workbench) prints three empty lists and exits 0", () => {
+  const fx = fixture([]);
+  try {
+    const r = run(fx, "--json");
+    assert.equal(r.code, 0, r.stderr);
+    assert.deepEqual(JSON.parse(r.stdout), { active: [], blocked: [], monitor: [] });
+  } finally {
+    rmSync(fx.root, { recursive: true, force: true });
+  }
+});

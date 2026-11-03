@@ -487,7 +487,7 @@ test("6. caps", () => {
 
 test("--files-file is the same list as the arguments", () => {
   const list = path.join(TMP, "list.txt");
-  writeFileSync(list, "src/a.ts\n\nsrc/a.ts\n");
+  writeFileSync(list, "src/a.ts\0\0src/a.ts\0");
   const out = run(["--repo", R, "--files-file", list]).out;
   assert.equal(out.split("\n").filter((l) => l === "src/a.ts").length, 1, "a repeated path is packed once");
   has(out, "doThing", "--files-file packs what it lists");
@@ -551,4 +551,52 @@ test("invoked through a symlink, the script still runs", () => {
   const out = `${r.stdout ?? ""}${r.stderr ?? ""}`;
   assert.equal(r.status, 2, `through a symlink: exit ${r.status}, output '${out}'`);
   assert.match(out, /unknown flag: --no-such-flag/);
+});
+
+// ── A name git would C-quote is read as it is on disk ───────────────────
+// Without -z, `git grep -l` prints `"src/caf\303\251.ts"` and `git grep -n`
+// prints `"src/x:y \303\251.ts":2:…`: the importer fails its extension test and
+// the caller's path splits at the wrong colon. A --files-file is NUL-separated,
+// so a name holding a newline is one record.
+
+test("an importer, a caller and a listed file with quoted names are packed as they are on disk", () => {
+  const Q = newRepo("quoted");
+  put(Q, "src/café.ts", "export function brewCoffee() {\n  return 1\n}\n");
+  put(Q, "src/user é.ts", "import { brewCoffee } from './café'\nexport const u = brewCoffee\n");
+  put(Q, "src/x:y é.ts", "// calls it\nbrewCoffee()\n");
+  put(Q, "src/nl\nname.ts", "export function newlineNamed() {\n  return 2\n}\n");
+  git(Q, "add", "src");
+  git(Q, "commit", "-qm", "init");
+
+  const out = run(["--repo", Q, "src/café.ts"]).out;
+  has(out, "src/user é.ts", "an importer whose name git quotes is listed");
+  has(out, "src/x:y é.ts:2", "a caller whose name holds a colon and an accent is listed with its line");
+
+  // The diff's own header C-quotes the name (`+++ "b/src/caf\303\251.ts"`); the
+  // pack still finds the symbol the hunk changed.
+  edit(path.join(Q, "src/café.ts"), "  return 1", "  return 10");
+  has(
+    run(["--repo", Q, "--diff-file", diffTo(Q, "quoted.diff"), "src/café.ts"]).out,
+    "brewCoffee — callers:",
+    "a hunk in a file whose diff header git quotes names its symbol",
+  );
+  git(Q, "checkout", "-q", "--", "src/café.ts");
+
+  put(Q, "src/sp ace.ts", "export function spacedName() {\n  return 3\n}\n");
+  has(run(["--repo", Q, "src/sp ace.ts"]).out, "spacedName —", "a symbol in a path holding a space is named");
+  // An unquoted header for a name holding a space ends in a tab (`+++ b/src/sp ace.ts<TAB>`).
+  git(Q, "add", "src");
+  git(Q, "commit", "-qm", "spaced");
+  edit(path.join(Q, "src/sp ace.ts"), "  return 3", "  return 30");
+  has(
+    run(["--repo", Q, "--diff-file", diffTo(Q, "spaced.diff"), "src/sp ace.ts"]).out,
+    "changed symbols:\n    spacedName —",
+    "a hunk in a file whose diff header ends in a tab names its symbol",
+  );
+  git(Q, "checkout", "-q", "--", "src/sp ace.ts");
+
+  const list = path.join(TMP, "quoted-list");
+  writeFileSync(list, "src/nl\nname.ts\0");
+  const nl = run(["--repo", Q, "--files-file", list]).out;
+  has(nl, "newlineNamed", "a --files-file record holding a newline is one file");
 });

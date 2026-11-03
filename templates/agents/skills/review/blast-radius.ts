@@ -24,7 +24,8 @@
 //                      file is treated as changed.
 //   --old-ref REV      revision the diff's `-` side came from (default HEAD).
 //                      Only used to fetch old bytes for deleted-export lookup.
-//   --files-file PATH  newline-separated file list, merged with FILE args
+//   --files-file PATH  NUL-separated file list, merged with FILE args (NUL so a
+//                      name holding a newline is one file)
 //
 // Output (stdout): a `BLAST RADIUS` block, or nothing at all. Per listed
 // .ts/.tsx/.sh file that still exists, three independent sections — who imports
@@ -92,6 +93,7 @@ import {
   realpathSync,
   rmSync,
   statSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import os from "node:os";
@@ -112,6 +114,10 @@ const SYMBOLS_TS = path.join(SCRIPT_DIR, "blast-radius-symbols.ts");
 const CHILD_ENV: NodeJS.ProcessEnv = { ...process.env, LC_ALL: "C" };
 const byCodePoint = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
 /** `sort -u` under LC_ALL=C. */
+// A path as the symbol parser's line protocol carries it: JSON-escaped, so a
+// newline or a backslash cannot end or alter the record, and plain otherwise.
+const symbolKey = (f: string): string => JSON.stringify(f).slice(1, -1);
+
 const sortUnique = (xs: string[]): string[] => [...new Set(xs)].sort(byCodePoint);
 
 // Every repo-wide grep below takes these after its `--`.
@@ -266,6 +272,7 @@ function importersOf(repo: string, target: string): string[] {
   if (target.endsWith(".sh")) {
     const r = git([
       "grep",
+      "-z",
       "-l",
       "--untracked",
       "-E",
@@ -276,11 +283,12 @@ function importersOf(repo: string, target: string): string[] {
       ...RECORD_EXCLUDES,
     ]);
     if (r.status > 1) grepFailed(r.status, `the scripts sourcing ${target}`);
-    return r.stdout.split("\n").filter((l) => l !== target && l !== "");
+    return r.stdout.split("\0").filter((l) => l !== target && l !== "");
   }
 
   const r = git([
     "grep",
+    "-z",
     "-l",
     "--untracked",
     "-E",
@@ -294,7 +302,7 @@ function importersOf(repo: string, target: string): string[] {
 
   // Candidates first (one grep), then resolution per candidate (no grep).
   const out: string[] = [];
-  for (const hitfile of r.stdout.split("\n")) {
+  for (const hitfile of r.stdout.split("\0")) {
     if (hitfile === "" || hitfile === target) continue;
     if (!/\.(ts|tsx|js|jsx|mjs|cjs|mts|cts)$/.test(hitfile)) continue;
     for (const spec of tsSpecifiers(repo, hitfile)) {
@@ -347,17 +355,28 @@ function importsOf(repo: string, f: string): { imports: string[]; missing: strin
   return { imports: out, missing };
 }
 
+// `git grep -z -n` emits `path\0line\0text\n` per hit: the path ends at the
+// first NUL and may hold a colon or a newline, the text never holds a newline.
+// -I leaves binary files out — their "Binary file x matches" line carries no
+// NUL and is not a caller.
 function callersOf(symbol: string, defining: string): string[] {
   // A word match as a fixed string: `\b` is not in every git's regex build
-  // (macOS), and a `$` in a JavaScript identifier stays literal.
-  const r = git(["grep", "-n", "--untracked", "-w", "-F", "-e", symbol, "--", ".", ...RECORD_EXCLUDES]);
+  // (macOS), and a `$` in a JavaScript identifier stays literal. -z: the path
+  // arrives as it is on disk; -I: a binary file is no caller.
+  const r = git(["grep", "-z", "-n", "-I", "--untracked", "-w", "-F", "-e", symbol, "--", ".", ...RECORD_EXCLUDES]);
   if (r.status > 1) grepFailed(r.status, `the callers of ${symbol}`);
   const out: string[] = [];
-  for (const line of r.stdout.split("\n")) {
-    if (line.trim() === "") continue;
-    const fields = line.split(":");
-    if (fields[0] === defining) continue;
-    out.push(`${fields[0] ?? ""}:${fields[1] ?? ""}`);
+  let at = 0;
+  while (at < r.stdout.length) {
+    const pathEnd = r.stdout.indexOf("\0", at);
+    const lineEnd = pathEnd === -1 ? -1 : r.stdout.indexOf("\0", pathEnd + 1);
+    if (lineEnd === -1) break;
+    const textEnd = r.stdout.indexOf("\n", lineEnd + 1);
+    const file = r.stdout.slice(at, pathEnd);
+    const lineNo = r.stdout.slice(pathEnd + 1, lineEnd);
+    at = textEnd === -1 ? r.stdout.length : textEnd + 1;
+    if (file === defining) continue;
+    out.push(`${file}:${lineNo}`);
   }
   return out;
 }
@@ -386,6 +405,30 @@ function trivial(s: string): boolean {
 
 const slugFor = (p: string): string => p.replace(/[^A-Za-z0-9._-]/g, "_");
 
+// A diff header names a path holding a byte outside printable ASCII, a quote or
+// a backslash C-quoted — `+++ "b/caf\303\251.ts"` — and no diff option turns
+// that off for every byte. Undone here, so the key is the path on disk.
+const C_ESCAPES: Record<string, number> = { a: 7, b: 8, t: 9, n: 10, v: 11, f: 12, r: 13, '"': 34, "\\": 92 };
+function unquoteGitPath(p: string): string {
+  if (p.length < 2 || !p.startsWith('"') || !p.endsWith('"')) return p;
+  const s = p.slice(1, -1);
+  const out: number[] = [];
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i] ?? "";
+    if (ch !== "\\") {
+      out.push(...Buffer.from(ch, "utf8"));
+    } else if (/^[0-7]{3}$/.test(s.slice(i + 1, i + 4))) {
+      out.push(Number.parseInt(s.slice(i + 1, i + 4), 8));
+      i += 3;
+    } else {
+      const next = s[i + 1] ?? "";
+      out.push(C_ESCAPES[next] ?? next.charCodeAt(0));
+      i++;
+    }
+  }
+  return Buffer.from(out).toString("utf8");
+}
+
 /** Keyed by slug, as the bash's per-file temp names were. */
 function parseDiff(diffText: string): Map<string, FileDiff> {
   const bySlug = new Map<string, FileDiff>();
@@ -408,7 +451,9 @@ function parseDiff(diffText: string): Map<string, FileDiff> {
     }
     if (line.startsWith("--- ")) continue;
     if (line.startsWith("+++ ")) {
-      filePath = line.slice(4).replace(/^b\//, "");
+      // An unquoted name holding a space gets a trailing tab from git; a name
+      // that itself ends in a tab is always C-quoted, so the tab is never its own.
+      filePath = unquoteGitPath(line.slice(4).replace(/\t$/, "")).replace(/^b\//, "");
       if (filePath === "/dev/null") {
         filePath = "";
         continue;
@@ -468,10 +513,10 @@ async function main(): Promise<void> {
     else if (a === "--old-ref") OLD_REF = needsValue("blast-radius: --old-ref needs a revision");
     else if (a === "--files-file") FILES_FILE = needsValue("blast-radius: --files-file needs a path");
     else if (a === "-h" || a === "--help") {
-      // The header comment above, lines 2-40, is the help text.
+      // The header comment above, lines 2-41, is the help text.
       const lines = readFileSync(fileURLToPath(import.meta.url), "utf8")
         .split("\n")
-        .slice(1, 40);
+        .slice(1, 41);
       process.stderr.write(`${lines.join("\n")}\n`);
       exit(0);
     } else if (a.startsWith("--")) {
@@ -534,13 +579,13 @@ async function pack(
       exit(2);
     }
   }
-  for (const a of ARG_FILES) rawList += `${a}\n`;
+  for (const a of ARG_FILES) rawList += `${a}\0`;
 
   // Only the three languages the symbol side can parse, only files that still
   // exist (a deleted file has no new side and nothing left to import), sorted and
-  // deduped so two callers passing the same path do not pack it twice.
-  const listed = rawList.split("\n");
-  if (rawList.endsWith("\n")) listed.pop();
+  // deduped so two callers passing the same path do not pack it twice. Records
+  // are NUL-terminated and never trimmed: a path may hold any other byte.
+  const listed = rawList.split("\0");
   const FILES = sortUnique(listed.filter((l) => !new RegExp(`^${SP}*$`).test(l))).filter(
     (f) => f !== "" && /\.(ts|tsx|sh)$/.test(f) && isFile(`${REPO}/${f}`),
   );
@@ -560,13 +605,21 @@ async function pack(
   mkdirSync(BYTES_DIR, { recursive: true });
   mkdirSync(PARSED_DIR, { recursive: true });
 
+  // The request is line-oriented, so a path holding a newline would split its
+  // record: FILE carries the path JSON-escaped (`symbolKey`, matched below), and
+  // NEWFILE reaches such a file through a symlink whose own name is plain.
   let request = "";
   FILES.forEach((f, i) => {
     const idx = i + 1;
     const slug = slugFor(f);
     const d = parsed.get(slug);
     const lang = f.endsWith(".sh") ? "sh" : "ts";
-    request += `FILE ${f}\nLANG ${lang}\nNEWFILE ${REPO}/${f}\n`;
+    let newFile = `${REPO}/${f}`;
+    if (f.includes("\n")) {
+      newFile = path.join(BYTES_DIR, `new.${idx}`);
+      symlinkSync(`${REPO}/${f}`, newFile);
+    }
+    request += `FILE ${symbolKey(f)}\nLANG ${lang}\nNEWFILE ${newFile}\n`;
     if (DIFF_TEXT === "") {
       request += "NEWLINES all\n";
     } else if (d && d.newlines.length > 0) {
@@ -624,11 +677,13 @@ async function pack(
     if (line.startsWith("WARN ")) err(`blast-radius: ${line.slice(5)}`);
   }
 
+  // `SYMBOL <path> <name>`: the name is the last field and holds no space, the
+  // path is everything before it — a path may hold spaces of its own.
   const symbolsFor = (f: string): string[] => {
     const out: string[] = [];
+    const prefix = `SYMBOL ${symbolKey(f)} `;
     for (const line of symbolLines) {
-      const fields = line.trim().split(/[ \t]+/);
-      if (fields[0] === "SYMBOL" && fields[1] === f) out.push(fields[2] ?? "");
+      if (line.startsWith(prefix)) out.push(line.slice(prefix.length).trim());
     }
     return out;
   };

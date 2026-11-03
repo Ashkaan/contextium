@@ -2,13 +2,11 @@
 // code-review.ts — Adversarial code review of a diff, on whichever vendor the
 // policy's `adversarial-review` row selects.
 //
-// The diff-side mirror of spec-audit.ts. One model writes nearly all the code in
-// a workbench (Claude, usually), so a reviewer of that model is not independent
-// in the sense the assignment policy asks for; this script puts the review on a
-// different vendor by construction. WHICH vendor is not decided here — it is
-// read from the policy table (policy.json beside this script) via
-// .agents/skills/review/policy-chain.ts, which also skips the vendor recorded
-// as the author in .agents/harness.
+// The diff-side mirror of spec-audit.ts. The caller supplies verified original
+// authors via POLICY_CHAIN_AUTHOR_VENDORS (.agents/skills/review/SKILL.md); the chain
+// excludes them. WHICH eligible vendor answers is not decided here — it is read from
+// the policy table (policy.json beside this script) via
+// .agents/skills/review/policy-chain.ts.
 // Renamed from an old vendor-named filename: that name was a pin, and a filename
 // naming a vendor is a promise the table cannot keep.
 //
@@ -83,13 +81,21 @@
 // entirely. The `adversarial-review` row already declared a backup; nothing
 // walked it. Now the chain walks itself, and only whole-chain exhaustion fails.
 //
-// What that does NOT relax: this script never reviews with the author's model
-// itself. Contextium's one exception to the source is the exit-3 path: when no
-// independent vendor can answer, the caller runs a FRESH-CONTEXT review with its
-// own agent and records it as `claude-fallback (fresh context, NOT
-// independent)`, so a weaker review is never mistaken for an independent one.
-// Most installs have a single model CLI; no review at all is worse than a weaker
-// one that says so.
+// A reviewer that cannot run is still a FAILED review. Never substitute an
+// artifact author or an undeclared fallback. Exit 3 means no independent
+// reviewer can answer here: an eligible Claude slot (this executor has no Claude
+// agent dispatch — that is unavailable here, not evidence that Claude authored
+// every artifact), or a row whose DECLARED `"fallback": "fresh-context"` found
+// no eligible vendor (Contextium: most installs have a single model CLI). The
+// caller then runs a FRESH-CONTEXT review with its own agent and records it as
+// `claude-fallback (fresh context, NOT independent)` through validate.ts
+// --fallback-review, so a weaker review is never mistaken for an independent
+// one; no review at all is worse than a weaker one that says so.
+//
+// CODE_REVIEW_LOOP_ID is the stable audit-owner id across fresh T3 review
+// children; set before snapshots and preserve through every round. It does not
+// identify the author. Without it the owner is the session (audit-dedupe.ts
+// reviewOwner: the T3 task in T3 Code, the close's thread id elsewhere).
 //
 // CODEX_BIN / GROK_BIN override the vendor binaries so the failure paths
 // (absent, non-zero, hang, empty) are testable against stubs without touching
@@ -113,7 +119,7 @@
 // step-2 (via the agent's tool call), not pre-commit.
 
 import { spawnSync } from "node:child_process";
-import { createHash, randomBytes } from "node:crypto";
+import { randomBytes } from "node:crypto";
 import {
   appendFileSync,
   existsSync,
@@ -129,7 +135,21 @@ import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { realpathSync } from "node:fs";
 import { exit, runToExit } from "../../packages/cli-exit/cli-exit.ts";
-import { policyRunChain, spawnCapped, type ValidatorResult } from "./policy-chain.ts";
+import { inT3ReviewContext } from "../close/scripts/t3-db.ts";
+import {
+  type Bucket,
+  loopKey,
+  parseStrictJson,
+  readSpend,
+  writeSpend,
+} from "../implement-audit/scripts/audit-dedupe.ts";
+import {
+  policyRunChain,
+  reviewAuthorVendors,
+  salvageTriageLine,
+  spawnCapped,
+  type ValidatorResult,
+} from "./policy-chain.ts";
 
 const err = (line: string): void => {
   process.stderr.write(`${line}\n`);
@@ -179,59 +199,19 @@ function readLines(text: string): string[] {
   return lines;
 }
 
-// `grep -v '^[[:space:]]*$'` over newline-joined parts, then `$(...)`.
-function dropBlankLines(text: string): string {
-  return chomp(
-    text
-      .split("\n")
-      .filter((l) => !/^[ \t\n\v\f\r]*$/.test(l))
-      .join("\n"),
-  );
-}
-
 // `sort` / `sort -u` in the caller's locale, as the pipeline ran it.
 function sortLines(text: string, unique: boolean): string {
   const r = spawnSync("sort", unique ? ["-u"] : [], { input: text, encoding: "utf8", maxBuffer: 1 << 30 });
   return chomp(r.stdout ?? "");
 }
 
-// The key the snapshot ledger and the round counter are filed under, with every
-// character outside [A-Za-z0-9_-] replaced. The session id when the harness
-// exports one; otherwise one is derived from the worktree's own git dir — every
-// session works in its own worktree, so the worktree IS the session — rather
-// than leaving the ledger and the round cap unenforced on a harness that sets no
-// id. "" only when no repo resolves at all.
-function sessionKey(repoRoot: string): string {
-  let sid = process.env.CLAUDE_CODE_SESSION_ID || process.env.CLAUDE_SESSION_ID || "";
-  if (sid === "" && repoRoot !== "") {
-    const gd = spawnSync("git", ["-C", repoRoot, "rev-parse", "--absolute-git-dir"], {
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "ignore"],
-    });
-    const dir = gd.status === 0 ? chomp(gd.stdout ?? "") : "";
-    if (dir !== "") sid = `wt-${createHash("sha1").update(dir).digest("hex").slice(0, 12)}`;
-  }
-  return sid.replace(/[^A-Za-z0-9_-]/g, "_");
-}
-
-// One fix loop's round counter: the session AND the repo it reviews. A row
-// whose code is in other repos runs one loop per repo (CODEX_REVIEW_REPO), and
-// keyed on the session alone they share one budget — parallel loops in one
-// session reach "round 5" after one follow-up apiece, and each repo's full
-// review resets the others. Empty (no counter) only when sessionKey is empty.
-function loopKey(repoRoot: string): string {
-  const sid = sessionKey(repoRoot);
-  if (sid === "") return "";
-  return `${sid}-${createHash("sha256").update(realpathOr(repoRoot)).digest("hex").slice(0, 12)}`;
-}
-
-function realpathOr(path: string): string {
-  try {
-    return realpathSync(path);
-  } catch {
-    return path;
-  }
-}
+// The audit owner, the counter key (owner AND repo) and what the owner has
+// spent live with the review receipt, in the implement-audit skill's
+// audit-dedupe.ts: one owner of the state, durable across a reboot, and a
+// repeated full review no longer resets it. A row whose code is in other repos
+// runs one loop per repo (CODEX_REVIEW_REPO); keyed on the session alone they
+// shared one budget, and parallel loops in one session reached "round 5" after
+// one follow-up apiece.
 
 // The shell's $PWD: the inherited PWD when it still names the working
 // directory (it keeps a symlinked path as typed), else the real one.
@@ -248,6 +228,22 @@ function logicalCwd(): string {
 
 async function main(): Promise<void> {
   const argv = process.argv.slice(2);
+  const needsReviewContext =
+    argv[0] === "--snapshot" || argv[0] === "--since" || argv[0] === "--fixture" || argv.length === 2;
+  if (needsReviewContext && inT3ReviewContext() && !process.env.CODE_REVIEW_LOOP_ID?.trim()) {
+    err(
+      "Error: CODE_REVIEW_LOOP_ID is required in T3; preserve the audit owner's id across snapshots and review children.",
+    );
+    exit(2);
+  }
+
+  if (needsReviewContext && argv[0] !== "--snapshot") {
+    const authors = reviewAuthorVendors();
+    if ("error" in authors) {
+      err(`policy-chain: ${authors.error}`);
+      exit(2);
+    }
+  }
 
   // Per-slot wall clock. CODEX_REVIEW_TIMEOUT_S is kept as an alias so every
   // existing caller and runbook keeps working; the MEANING changed from total to
@@ -317,6 +313,14 @@ async function main(): Promise<void> {
     const r = git(args);
     if (r.status !== 0) gitReadFailed(sub, r.status);
     return chomp(r.stdout);
+  }
+  // A path listing, run with -z at the call site: NUL-separated records, never
+  // trimmed, so a name git would C-quote or one holding a newline arrives as it
+  // is on disk.
+  function gitPaths(sub: string, args: string[]): string[] {
+    const r = git(args);
+    if (r.status !== 0) gitReadFailed(sub, r.status);
+    return r.stdout.split("\0").filter((p) => p !== "");
   }
 
   function usage(): void {
@@ -388,8 +392,8 @@ async function main(): Promise<void> {
   // the review it was only ever meant to enrich, which is worse than no packer.
   const BLAST_RADIUS_TIMEOUT_S = process.env.CODE_REVIEW_BLAST_RADIUS_TIMEOUT_S || "120";
 
-  function blastRadiusPack(files: string, diffText: string, oldRef: string): string {
-    if (files === "") return "";
+  function blastRadiusPack(files: string[], diffText: string, oldRef: string): string {
+    if (files.length === 0) return "";
     if (!existsSync(BLAST_RADIUS) || !statSync(BLAST_RADIUS).isFile()) {
       err(`[code-review] no blast-radius packer at ${BLAST_RADIUS} — reviewing the diff without caller context`);
       return "";
@@ -399,7 +403,8 @@ async function main(): Promise<void> {
     let rc: number;
     let pack: string;
     try {
-      writeFileSync(`${dir}/files`, `${files}\n`);
+      // NUL-separated, as blast-radius.ts reads --files-file.
+      writeFileSync(`${dir}/files`, files.map((p) => `${p}\0`).join(""));
       writeFileSync(`${dir}/diff`, `${diffText}\n`);
       // The bound is policy-chain's spawnCapped, which KILLs a packer that
       // ignores TERM; a packer it stops reads as 124.
@@ -459,7 +464,7 @@ async function main(): Promise<void> {
   // resolves. Callers MUST treat null as "cannot verify" and fall through, never
   // as "reject".
   function snapLedgerPath(): string | null {
-    const key = sessionKey(REPO_ROOT);
+    const key = loopKey(REPO_ROOT);
     return key === "" ? null : `${SNAP_STATE_DIR}/${key}`;
   }
 
@@ -468,6 +473,8 @@ async function main(): Promise<void> {
   /** `--since <tree> --final`: the one review past the ceiling. */
 
   let FINAL = false;
+  /** A first full review: marked spent once a vendor has answered it. */
+  let FULL_PENDING = false;
   let FIXTURE_DIR = "";
   let BASE_SHA = "";
   let HEAD_SHA = "";
@@ -517,6 +524,126 @@ async function main(): Promise<void> {
     exit(2);
   }
 
+  // ── Receipt mode ──────────────────────────────────────────────────────
+  //
+  // With CODE_REVIEW_RESULT_FILE set, the reviewer replies inside one frame —
+  // BEGIN_REVIEW_V1, a strict JSON object {findings, coverage}, END_REVIEW_V1 —
+  // and this script writes the parsed result there for validate.ts to bind to
+  // the reviewed content (.agents/skills/implement-audit/scripts/audit-dedupe.ts). The
+  // frame is split and validated BEFORE the finding parser sees anything, and
+  // that parser reads only the findings field: a severity marker or the clean
+  // sentinel inside the coverage evidence or the narration around the frame is
+  // never read as a finding. stdout is unchanged — triage lines only. Without
+  // the variable the reply is the plain triage lines it always was, and no
+  // receipt can come of it.
+  const RESULT_FILE = process.env.CODE_REVIEW_RESULT_FILE || "";
+  const RECEIPT = RESULT_FILE !== "";
+  let ITEMS: { id: string; text: string }[] = [];
+  /** Must-fix/should-fix lines the last receipt left open, shown to a follow-up round. */
+  let OPEN_FINDINGS: string[] = [];
+  if (RECEIPT && process.env.CODE_REVIEW_COVERAGE_FILE) {
+    try {
+      const v = JSON.parse(readFileSync(process.env.CODE_REVIEW_COVERAGE_FILE, "utf8")) as {
+        items?: unknown;
+        openFindings?: unknown;
+      };
+      if (v.openFindings !== undefined) {
+        if (!Array.isArray(v.openFindings) || !v.openFindings.every((x) => typeof x === "string"))
+          throw new Error("openFindings must be a list of strings");
+        OPEN_FINDINGS = v.openFindings as string[];
+      }
+      if (!Array.isArray(v.items) || !v.items.every((i) => typeof i?.id === "string" && typeof i?.text === "string"))
+        throw new Error("items must be a list of {id, text}");
+      ITEMS = v.items as { id: string; text: string }[];
+    } catch (e) {
+      err(`Error: CODE_REVIEW_COVERAGE_FILE could not be read: ${(e as Error).message}`);
+      exit(2);
+    }
+  }
+  const FRAME_MAX = 64 * 1024;
+  type Coverage = { id: string; status: "checked" | "unchecked"; evidence: string[] };
+  function parseFrame(text: string): { findings: string; coverage: Coverage[] } | { error: string } {
+    const lines = text.split("\n");
+    const at = (w: string): number[] => lines.flatMap((l, i) => (l.trim() === w ? [i] : []));
+    const b = at("BEGIN_REVIEW_V1");
+    const e = at("END_REVIEW_V1");
+    if (b.length === 0 && e.length === 0) return { error: "no BEGIN_REVIEW_V1 frame" };
+    if (b.length !== 1 || e.length !== 1 || (b[0] as number) > (e[0] as number))
+      return { error: "the reply needs exactly one BEGIN_REVIEW_V1 … END_REVIEW_V1 frame" };
+    const body = lines.slice((b[0] as number) + 1, e[0]).join("\n");
+    if (bytes(body) > FRAME_MAX) return { error: `the frame is over ${FRAME_MAX} bytes` };
+    let v: unknown;
+    try {
+      v = parseStrictJson(body);
+    } catch (x) {
+      return { error: `the frame is not strict JSON: ${(x as Error).message}` };
+    }
+    const obj = (o: unknown): o is Record<string, unknown> => typeof o === "object" && o !== null && !Array.isArray(o);
+    if (!obj(v)) return { error: "the frame is not a JSON object" };
+    const keys = Object.keys(v).sort().join(",");
+    if (keys !== "coverage,findings") return { error: `the frame's keys are ${keys}, not coverage,findings` };
+    if (typeof v.findings !== "string" || v.findings.trim() === "") return { error: "findings is empty" };
+    // The findings field is the review, so it is held to the review's shape here,
+    // inside the chain's shape test: exactly NO_FINDINGS, or only triage lines.
+    // Narration in it is an unusable answer, and the chain tries the next slot.
+    const findingLines = v.findings.split("\n").filter((l) => l.trim() !== "");
+    if (
+      !(findingLines.length === 1 && findingLines[0]?.trim() === "NO_FINDINGS") &&
+      !findingLines.every((l) => /^\[(?:must-fix|should-fix|nit)\]/.test(l.trim()))
+    )
+      return { error: "findings is neither NO_FINDINGS nor only triage lines" };
+    if (!Array.isArray(v.coverage)) return { error: "coverage is not an array" };
+    const want = new Set(ITEMS.map((i) => i.id));
+    const seen = new Set<string>();
+    for (const c of v.coverage) {
+      if (!obj(c) || Object.keys(c).sort().join(",") !== "evidence,id,status")
+        return { error: "a coverage entry is not exactly {id, status, evidence}" };
+      if (typeof c.id !== "string" || !want.has(c.id))
+        return { error: `coverage names an unknown item ${String(c.id)}` };
+      if (seen.has(c.id)) return { error: `coverage names ${c.id} twice` };
+      seen.add(c.id);
+      if (c.status !== "checked" && c.status !== "unchecked")
+        return { error: `${c.id}'s status is not checked or unchecked` };
+      if (!Array.isArray(c.evidence) || !c.evidence.every((x) => typeof x === "string" && x.length <= 4000))
+        return { error: `${c.id}'s evidence is not a list of short strings` };
+    }
+    const missing = [...want].filter((id) => !seen.has(id));
+    if (missing.length > 0) return { error: `coverage omits ${missing.join(", ")}` };
+    // Handed on trimmed, so the finding parser reads exactly what the shape
+    // test accepted ("NO_FINDINGS " is the sentinel in both).
+    return { findings: findingLines.map((l) => l.trim()).join("\n"), coverage: v.coverage as Coverage[] };
+  }
+  const REPLY_FORMAT = RECEIPT
+    ? `REPLY FRAME — this review is recorded as a coverage receipt. Reply with exactly
+three parts and nothing else: a line holding only BEGIN_REVIEW_V1, one JSON
+object, and a line holding only END_REVIEW_V1:
+
+BEGIN_REVIEW_V1
+{"findings": "<the triage lines, joined by \\n, or exactly NO_FINDINGS>", "coverage": [{"id": "<item id>", "status": "checked", "evidence": ["<file:line you read, or the recorded run you inspected>"]}]}
+END_REVIEW_V1
+
+"findings" holds the triage lines in the strict format above, or exactly
+NO_FINDINGS when you reviewed the code and found nothing — never empty.
+"coverage" has one entry per COVERAGE ITEM below, every id exactly once:
+"checked" with the evidence you actually read, or "unchecked" with why you
+could not check it. Never mark an item checked that you did not read. No other
+keys, and no text outside the frame.
+
+COVERAGE ITEMS:
+${ITEMS.map((i) => `- ${i.id}: ${i.text}`).join("\n") || "(none declared — return an empty coverage array)"}
+`
+    : `IF YOU REVIEWED THE CODE AND FOUND NOTHING, emit exactly this one line and
+nothing else:
+
+NO_FINDINGS
+
+That sentinel is REQUIRED for a clean review. Emitting nothing at all is
+indistinguishable from a crash, and the caller treats silence as a FAILED
+review rather than a pass. Never emit an empty response.
+
+Be concise. No prose introduction. No summary at the end. Just findings.
+`;
+
   // ── Build the review subject ──────────────────────────────────────────
 
   let SUBJECT = "";
@@ -557,39 +684,40 @@ async function main(): Promise<void> {
 the committed range PLUS uncommitted work; you are NOT reviewing a clean tree.`;
     }
 
-    // ── A FULL REVIEW STARTS A NEW FIX LOOP, so the round counter resets ──
+    // ── A REPEATED FULL REVIEW IS A ROUND, NOT A NEW LOOP ──
     //
-    // The counter below used to be keyed on the session id alone and only ever
-    // climbed, which measured the SESSION rather than the loop.
-    // The cap is about one change's fix loop re-reading its
-    // own fixes; a session that reviews four unrelated changes is four loops, and
-    // the evidence behind the cap — 61% of round-5 findings re-opening earlier
-    // ground — is about repeated passes over the SAME diff.
-    //
-    // Keyed on the session alone, a session that shipped four separate fixes saw
-    // its fourth change's FIRST follow-up refused as "round 5 of at most 4" — the
-    // cap stopping coverage on whatever came last instead of stopping churn.
-    //
-    // Reset here rather than expiring the counter on a timer, because "a new full
-    // review" is exactly the event that means a new loop — no clock has to guess.
-    const resetDir = process.env.CODE_REVIEW_ROUND_STATE_DIR || "/tmp/code-review-rounds";
-    const resetKey = loopKey(REPO_ROOT);
-    if (resetKey !== "") {
-      try {
-        mkdirSync(resetDir, { recursive: true });
-      } catch {
-        // fail open
+    // A full review used to reset this loop's counter, on the theory that a
+    // session reviewing four unrelated changes is four loops. It also meant a
+    // full retry of the SAME change bought four more rounds and another final
+    // pass, so the ceiling bounded nothing. Now one implementation task is one
+    // owner: its first full review is round 1, and any later full review of the
+    // same owner and repo spends a round like a `--since` does. A genuinely new
+    // change starts in a new owning thread, which has its own counter.
+    const BUCKET: Bucket = process.env.CODE_REVIEW_BUCKET === "qa" ? "qa" : "build";
+    {
+      const spent = readSpend(REPO_ROOT, BUCKET);
+      if (spent !== null && "unknown" in spent) {
+        err(`Error: ${spent.unknown} — treating this audit's review allowance as spent.`);
+        err("Restore the counter, or get the user's authorization to exceed the allowance; never reset it.");
+        exit(5);
       }
-      try {
-        rmSync(`${resetDir}/${resetKey}`, { force: true });
-        rmSync(`${resetDir}/${resetKey}.final`, { force: true });
-      } catch {
-        // fail open
+      if (spent !== null && (spent.full || spent.rounds > 0)) {
+        const round = spent.rounds + 2;
+        if (round > 4) {
+          err(`Error: a repeated full review would be round ${round}; the fix loop's ceiling is 4.`);
+          err("A full review does not start a new loop for the same change. Review the fixes made");
+          err("since the last round with --since <tree> --final (once per loop), then report what is still open.");
+          exit(5);
+        }
+        writeSpend(REPO_ROOT, BUCKET, { ...spent, rounds: spent.rounds + 1 });
+        err(`[code-review] a repeated full review — round ${round} of at most 4`);
+      } else {
+        FULL_PENDING = spent !== null;
       }
     }
 
-    const changedFiles = gitRead("diff", ["diff", "--name-only", baseResolved, headResolved]);
-    let workingFiles = gitRead("diff", ["diff", "--name-only", "HEAD"]);
+    const changedFiles = gitPaths("diff", ["diff", "-z", "--name-only", baseResolved, headResolved]);
+    const trackedFiles = gitPaths("diff", ["diff", "-z", "--name-only", "HEAD"]);
 
     // `git diff HEAD` shows only files git already TRACKS, so a file the session
     // created and has not staged is invisible to it. That is a false GREEN, not a
@@ -598,11 +726,8 @@ the committed range PLUS uncommitted work; you are NOT reviewing a clean tree.`;
     // path never had this hole (its snapshot writes untracked files into a temp
     // index), so this is the two-arg form catching up. --exclude-standard keeps
     // build output and other gitignored noise out.
-    const untracked = gitRead("ls-files", ["ls-files", "--others", "--exclude-standard"]);
-    if (untracked !== "") {
-      workingFiles = dropBlankLines(`${workingFiles}\n${untracked}`);
-    }
-    const untrackedList = untracked.split("\n").filter((u) => u !== "");
+    const untrackedList = gitPaths("ls-files", ["ls-files", "-z", "--others", "--exclude-standard"]);
+    const workingFiles = [...trackedFiles, ...untrackedList];
 
     // Each read is checked on its own: a failed one would drop that part of the
     // change and review the rest as if whole.
@@ -645,7 +770,7 @@ the committed range PLUS uncommitted work; you are NOT reviewing a clean tree.`;
     // The pack's file list is the UNION of both lists above — the same bytes the
     // reviewer is about to read, so the pack can never cite a file the diff did
     // not show it.
-    const packFiles = sortLines(`${dropBlankLines(`${changedFiles}\n${workingFiles}`)}\n`, true);
+    const packFiles = [...new Set([...changedFiles, ...workingFiles])].sort();
 
     // …but the DIFF it gets is not the one above. `diffBody` concatenates two
     // diffs with two different bases (base..head, then HEAD..working-tree), so for
@@ -680,10 +805,10 @@ the committed range PLUS uncommitted work; you are NOT reviewing a clean tree.`;
     }
     const blastPack = blastRadiusPack(packFiles, packDiff, baseResolved);
     SUBJECT = `CHANGED FILES (committed range):
-${changedFiles || "(none)"}
+${changedFiles.join("\n") || "(none)"}
 
 CHANGED FILES (uncommitted, vs HEAD):
-${workingFiles || "(none)"}
+${workingFiles.join("\n") || "(none)"}
 ${blastPack ? `\n${blastPack}` : ""}
 
 DIFF:
@@ -702,10 +827,16 @@ ${diffBody}`;
     // snapshot, producing confident findings about files the session never
     // touched, because the diff spans other sessions' commits on main.
     //
-    // With no ledger yet for this key (no --snapshot taken) it falls through. A
-    // ledger that exists but lacks this tree IS a rejection — that is the whole
-    // check.
+    // T3 requires a stable audit-owner key and an issued snapshot for this repo.
+    // With no owner at all (an ambiguous T3 context) it falls through. An
+    // existing ledger missing this tree is always a rejection.
     const ledger = snapLedgerPath();
+    if (process.env.CODE_REVIEW_LOOP_ID && (ledger === null || !existsSync(ledger))) {
+      err(
+        `Error: --since was given a ref this audit's --snapshot never issued: ${PREV_TREE} (no snapshot ledger for this repo)`,
+      );
+      exit(2);
+    }
     if (ledger !== null && existsSync(ledger) && statSync(ledger).isFile()) {
       let issued: string[] = [];
       try {
@@ -730,7 +861,7 @@ ${diffBody}`;
       exit(2);
     }
 
-    const changedFiles = gitRead("diff", ["diff", "--name-only", PREV_TREE, nowTree]);
+    const changedFiles = gitPaths("diff", ["diff", "-z", "--name-only", PREV_TREE, nowTree]);
     const diffBody = gitRead("diff", ["diff", PREV_TREE, nowTree]);
 
     // Converged. Nothing was edited between the last review and this one, so there
@@ -760,24 +891,20 @@ ${diffBody}`;
     // Keyed on `loopKey`: the session id (or the worktree when a harness sets
     // none, so the cap holds on every harness) and the repo under review.
     //
-    // It counts rounds within ONE fix loop, not within the session. The two-arg
-    // branch above clears it, because a full review IS the start of a loop — see
-    // the reset there for what keying it on the session alone cost.
-    const ROUND_STATE_DIR = process.env.CODE_REVIEW_ROUND_STATE_DIR || "/tmp/code-review-rounds";
-    const key = loopKey(REPO_ROOT);
-    if (key !== "") {
-      mkdirSync(ROUND_STATE_DIR, { recursive: true });
-      const counter = `${ROUND_STATE_DIR}/${key}`;
-      let prior = 0;
-      if (existsSync(counter) && statSync(counter).isFile()) {
-        let raw = "0";
-        try {
-          raw = chomp(readFileSync(counter, "utf8"));
-        } catch {
-          raw = "0";
-        }
-        prior = /^[0-9]+$/.test(raw) ? Number(raw) : 0;
-      }
+    // It counts rounds within ONE owner's fix loop on one repo. Nothing resets
+    // it: not a repeated full review (see the two-arg branch), not a new
+    // executor child, not a content, scope or base change.
+    // Spending lives with the receipt (audit-dedupe.ts): durable per owner and
+    // repo, in the build bucket or, for /qa's edits, the qa bucket.
+    const BUCKET: Bucket = process.env.CODE_REVIEW_BUCKET === "qa" ? "qa" : "build";
+    const spent = readSpend(REPO_ROOT, BUCKET);
+    if (spent !== null && "unknown" in spent) {
+      err(`Error: ${spent.unknown} — treating this audit's review allowance as spent.`);
+      err("Restore the counter, or get the user's authorization to exceed the allowance; never reset it.");
+      exit(5);
+    }
+    if (spent !== null) {
+      const prior = spent.rounds;
       const round = prior + 2;
       // ── One final review past the ceiling ──
       // The ceiling stops the CHURN, but without this round 4's own fixes ship
@@ -785,19 +912,18 @@ ${diffBody}`;
       // exactly those fixes, once per
       // loop; its findings are fixed and reported, never another round.
       if (FINAL) {
-        const marker = `${counter}.final`;
         if (round <= 4) {
           err(
             `Error: --final is the one review past the round-4 ceiling, and this loop is at round ${round} — a normal round is the call.`,
           );
           exit(2);
         }
-        if (existsSync(marker)) {
+        if (spent.final) {
           err("Error: the final review already ran in this fix loop. Stop: fix what it found, then report");
           err("what is still open in the implement-audit: trailer and the summary.");
           exit(5);
         }
-        writeFileSync(marker, `${new Date().toISOString()}\n`);
+        writeSpend(REPO_ROOT, BUCKET, { ...spent, final: true });
         err("[code-review] final review past the round-4 ceiling — the loop ends after it");
       } else if (round > 4) {
         err(
@@ -811,7 +937,7 @@ ${diffBody}`;
         err("still get one review: --since <tree> --final, once per loop.");
         exit(5);
       } else {
-        writeFileSync(counter, `${prior + 1}\n`);
+        writeSpend(REPO_ROOT, BUCKET, { ...spent, rounds: prior + 1 });
         err(`[code-review] round ${round} of at most 4`);
       }
     }
@@ -824,8 +950,8 @@ ${diffBody}`;
     ROUND_NOTE = `THIS IS A FOLLOW-UP ROUND, NOT A FULL REVIEW. The diff below is
 ONLY the changes made since the previous review round — that is, the FIXES
 applied in response to earlier findings, plus any work done alongside them.
-Earlier rounds already reviewed the rest of the change and their findings are
-dispositioned; do NOT re-report them.
+Earlier rounds already reviewed the rest of the change; do NOT re-report
+findings they settled.
 
 Review these fixes for two things specifically:
   1. Does each fix actually close the defect it was meant to close?
@@ -833,9 +959,22 @@ Review these fixes for two things specifically:
      bug at the opposite boundary, a broken caller, a contract it no longer
      honors?
 
-If the fixes are correct, emit NO_FINDINGS. Do not hunt for something to say
-about the surrounding file: code outside this diff is out of scope for this
-round.`;
+Unchanged code is in scope only where these fixes change what it relies on:
+when a fix moves a signature, a contract or a behavior, read the unchanged
+callers, entry points and instructions that depend on it, and report the one
+that now breaks. Do not hunt for something to say about the rest of the file,
+and do not reopen settled findings these fixes do not touch.
+
+If the fixes are correct, report no findings (NO_FINDINGS).`;
+    if (RECEIPT && OPEN_FINDINGS.length > 0) {
+      ROUND_NOTE = `${ROUND_NOTE}
+
+EARLIER FINDINGS STILL OPEN. The last review reported these and no review has
+seen them closed. For each, judge whether the fixes below close it; re-report
+it (as written, or updated) if they do not. One you do not re-report is
+recorded as closed by these fixes.
+${OPEN_FINDINGS.map((f) => `  ${f}`).join("\n")}`;
+    }
     if (FINAL) {
       ROUND_NOTE = `THIS IS THE FINAL REVIEW of this fix loop: the round-4 ceiling has been
 reached and no further round will run. Report only real defects in these
@@ -850,7 +989,7 @@ ${ROUND_NOTE}`;
     // this file, arriving by a different door.
     const blastPack = blastRadiusPack(changedFiles, diffBody, PREV_TREE);
     SUBJECT = `CHANGED FILES (since the last review round):
-${changedFiles || "(none)"}
+${changedFiles.join("\n") || "(none)"}
 ${blastPack ? `\n${blastPack}` : ""}
 
 DIFF:
@@ -954,6 +1093,14 @@ Attack across these dimensions:
 6. Class-fix atomicity — if this fixes a shared mechanism, did every peer get
    fixed, or was one quietly left behind?
 7. Contract drift — does the code do what its own header/SPEC/comment claims?
+8. Entry points and unchanged assumptions — find what reaches the changed
+   code (its callers, CLI wiring, the skill step or hook that runs it) and the
+   unchanged files whose assumptions it relies on. Read them. A caller the diff
+   never touched that now breaks is a finding in this diff.
+9. Claims against failure — for each important behavior the change claims,
+   name the concrete input that would make it fail, and check that a test or a
+   recorded run actually exercises that input and fails without the change. A
+   passing suite that never reaches the failure is not evidence; say so.
 
 Required: every [must-fix] finding MUST name the concrete failure it causes
 (the wrong output, the lost data, the crash, the silent skip). A finding that
@@ -971,16 +1118,7 @@ The caller parses by line-anchored match; deviations are silently dropped.
   [should-fix] <file-or-target>: <issue>
   [nit]        <issue>
 
-IF YOU REVIEWED THE CODE AND FOUND NOTHING, emit exactly this one line and
-nothing else:
-
-NO_FINDINGS
-
-That sentinel is REQUIRED for a clean review. Emitting nothing at all is
-indistinguishable from a crash, and the caller treats silence as a FAILED
-review rather than a pass. Never emit an empty response.
-
-Be concise. No prose introduction. No summary at the end. Just findings.
+${REPLY_FORMAT}
 
 REVIEW SUBJECT: ${SUBJECT_LABEL}
 ${DIRTY_NOTE}${COMPANION_NOTE}
@@ -1023,9 +1161,11 @@ ${SUBJECT}`;
     // but it does mean the text must not accuse its reader of something it may not
     // have done, which would be a confusing instruction to act on.
     const REASK_PREAMBLE = `A previous attempt at this review returned only progress
-narration and no review output. Do the review and reply with ONLY the triage
-lines the format below specifies (or the bare word NO_FINDINGS if the diff is
-clean). No preamble, no narration, no announcement of what you are about to do.
+narration and no review output. Do the review and reply with ONLY ${
+      RECEIPT
+        ? "the frame the format below specifies"
+        : "the triage\nlines the format below specifies (or the bare word NO_FINDINGS if the diff is\nclean)"
+    }. No preamble, no narration, no announcement of what you are about to do.
 
 `;
 
@@ -1035,47 +1175,32 @@ clean). No preamble, no narration, no announcement of what you are about to do.
     // than dropped silently, so an unparseable review is diagnosable.
     const MARKERS = ["[must-fix]", "[should-fix]", "[nit]"];
     const startsWithMarker = (l: string) => MARKERS.some((m) => l.startsWith(m));
-    function parseReviewOutput(): { findings: string; count: number; sentinel: boolean } {
+    function parseReviewOutput(): { findings: string; count: number; sentinel: boolean; coverage: Coverage[] } {
       let findings = "";
       let count = 0;
       let sentinel = false;
-      for (let line of readLines(readFileSync(RAW_OUT, "utf8"))) {
-        // Salvage a marker an agent CLI glued onto its own progress narration with no
-        // newline between them. Grok does this on every call ("Reading the engine
-        // paths...[must-fix] engine.ts:1: ..."), so strict line-anchoring silently
-        // discarded its entire review and the caller read that as a dead vendor — a
-        // false "chain exhausted" that cost a session while grok was answering
-        // correctly the whole time. The contract still ASKS for line-anchored
-        // output; this only stops a real finding from being thrown away when a vendor
-        // scuffs the prefix. Ordered marker-first so a findings line that merely
-        // mentions the sentinel is not misread as a clean review.
-        if (startsWithMarker(line)) {
-          // already anchored
-        } else if (MARKERS.some((m) => line.includes(m))) {
-          err("[code-review] salvaged a triage marker from a prefixed line");
-          // Cut at the LEFTMOST marker on the line. A "strip non-bracket prefix"
-          // cannot do this: narration containing any earlier "[" would stop the
-          // strip short and the finding would still drop. Leftmost rather than
-          // highest-severity: when a vendor glues two findings onto one line, the
-          // first one is the one whose text follows, so picking by severity would
-          // keep the wrong marker for that text.
-          let best = "";
-          let bestAt = 0;
-          for (const mk of MARKERS) {
-            const at = line.indexOf(mk);
-            if (at < 0) continue;
-            if (best === "" || at < bestAt) {
-              best = mk;
-              bestAt = at;
-            }
-          }
-          if (best !== "") line = line.slice(line.indexOf(best));
-        } else if (line === "NO_FINDINGS") {
-          // the sentinel
-        } else if (line.includes("NO_FINDINGS")) {
-          err("[code-review] salvaged the NO_FINDINGS sentinel from a prefixed line");
-          line = "NO_FINDINGS";
+      let text = readFileSync(RAW_OUT, "utf8");
+      let coverage: Coverage[] = [];
+      if (RECEIPT) {
+        const f = parseFrame(text);
+        if ("error" in f) {
+          err(`[code-review] unusable framed reply: ${f.error}`);
+          return { findings, count, sentinel, coverage };
         }
+        text = `${f.findings}\n`;
+        coverage = f.coverage;
+      }
+      for (const raw of readLines(text)) {
+        // Salvage a marker an agent CLI glued onto its own progress narration with no
+        // newline between them (salvageTriageLine in policy-chain.ts owns the rule and
+        // its reasons). Strict line-anchoring once discarded grok's entire review and
+        // the caller read that as a dead vendor — a false "chain exhausted" that cost a
+        // session while grok was answering correctly the whole time. The
+        // contract still ASKS for line-anchored output; this only stops a real finding
+        // from being thrown away when a vendor scuffs the prefix.
+        const { line, salvaged } = salvageTriageLine(raw, MARKERS, "NO_FINDINGS");
+        if (salvaged === "marker") err("[code-review] salvaged a triage marker from a prefixed line");
+        if (salvaged === "sentinel") err("[code-review] salvaged the NO_FINDINGS sentinel from a prefixed line");
         if (startsWithMarker(line)) {
           findings += `${line}\n`;
           count += 1;
@@ -1085,7 +1210,7 @@ clean). No preamble, no narration, no announcement of what you are about to do.
           err(`[code-review] dropped non-triage line: ${line}`);
         }
       }
-      return { findings, count, sentinel };
+      return { findings, count, sentinel, coverage };
     }
 
     // Code review is read-only repo investigation, so scope grok to the read-only
@@ -1113,10 +1238,44 @@ clean). No preamble, no narration, no announcement of what you are about to do.
     // end of a narration line, and anchoring here would reject a review the parser
     // would have accepted — a stricter gate than the parser it feeds, which turns
     // good answers into chain burn.
-    const looksLikeAReview = (file: string): ValidatorResult => ({
-      rc: /\[(must-fix|should-fix|nit)\]|NO_FINDINGS/.test(readFileSync(file, "utf8")) ? 0 : 1,
-      stderr: "",
-    });
+    const looksLikeAReview = (file: string): ValidatorResult => {
+      const text = readFileSync(file, "utf8");
+      if (RECEIPT) {
+        const f = parseFrame(text);
+        return "error" in f ? { rc: 1, stderr: `[code-review] ${f.error}` } : { rc: 0, stderr: "" };
+      }
+      return { rc: /\[(must-fix|should-fix|nit)\]|NO_FINDINGS/.test(text) ? 0 : 1, stderr: "" };
+    };
+
+    // A first full review is spent once a vendor has answered it, so a full
+    // retry of the same change is a round (see the two-arg branch). A chain that
+    // never answered spent nothing.
+    const spendFull = (): void => {
+      if (!FULL_PENDING) return;
+      FULL_PENDING = false;
+      const bucket: Bucket = process.env.CODE_REVIEW_BUCKET === "qa" ? "qa" : "build";
+      const s = readSpend(REPO_ROOT, bucket);
+      if (s !== null && !("unknown" in s)) writeSpend(REPO_ROOT, bucket, { ...s, full: true });
+    };
+    // The parsed result, for validate.ts to bind to the content it reviewed. A
+    // result that cannot be written is a review that cannot be counted.
+    const writeResult = (lines: string, coverage: Coverage[], attempt: number): void => {
+      if (!RECEIPT) return;
+      try {
+        writeFileSync(
+          RESULT_FILE,
+          `${JSON.stringify({
+            vendor: `${process.env.POLICY_CHAIN_VENDOR || "unknown"}/${process.env.POLICY_CHAIN_MODEL || "unknown"}`,
+            attempt,
+            findings: readLines(lines),
+            coverage,
+          })}\n`,
+        );
+      } catch (e) {
+        err(`Error: the review result could not be recorded at ${RESULT_FILE}: ${(e as Error).message}`);
+        exit(1);
+      }
+    };
 
     for (const attempt of [1, 2]) {
       if (attempt === 2) {
@@ -1127,6 +1286,7 @@ clean). No preamble, no narration, no announcement of what you are about to do.
       // The shape test is passed per call: policyRunChain drops any validator on
       // return, so one gate's contract cannot bleed onto another's answer.
       const RC = policyRunChain("adversarial-review", PROMPT_FILE, { out: RAW_OUT, validator: looksLikeAReview });
+      if (RC === 0 || RC === 125) spendFull();
 
       // 125: every vendor was alive and answered, and none produced a review. That
       // is exactly what the re-ask below is for, so spend it — and ONLY here. A
@@ -1149,8 +1309,10 @@ clean). No preamble, no narration, no announcement of what you are about to do.
         err("Run the implement-audit-reviewer agent (.agents/agents/implement-audit-reviewer.md)");
         err("in a FRESH context on this diff, and record it as");
         err("  implement-audit: round-<N>; claude-fallback (fresh context, NOT independent); …");
-        err("It is a completed but weaker review — never an independent pass. Install");
-        err("codex or grok for an independent one.");
+        err("(validate.ts --fallback-review <file> records it against the review receipt).");
+        err("It is a completed but weaker review — never an independent pass, and never");
+        err("an artifact author substituted for the chain. Install codex or grok for an");
+        err("independent one.");
         exit(3);
       }
 
@@ -1164,10 +1326,11 @@ clean). No preamble, no narration, no announcement of what you are about to do.
         exit(1);
       }
 
-      const { findings, count, sentinel } = parseReviewOutput();
+      const { findings, count, sentinel, coverage } = parseReviewOutput();
       const vendor = process.env.POLICY_CHAIN_VENDOR || "unknown";
 
       if (count > 0) {
+        writeResult(findings, coverage, attempt);
         process.stdout.write(findings);
         if (sentinel) err("[code-review] both findings and NO_FINDINGS present; findings win.");
         const via = attempt === 2 ? " (on the re-ask)" : "";
@@ -1176,6 +1339,7 @@ clean). No preamble, no narration, no announcement of what you are about to do.
       }
 
       if (sentinel) {
+        writeResult("", coverage, attempt);
         err(`[code-review] complete — reviewed clean (NO_FINDINGS) by ${vendor}.`);
         exit(0);
       }

@@ -25,7 +25,7 @@ cli: "`op` CLI"
 
 **Access order:** cli, api — the `op` CLI reaches every vault operation, while the Connect REST API (optional, below) serves reads and item writes from a local cache on its own rate-limit budget.
 
-Static credentials (API keys, client secrets, passwords) are stored in a dedicated 1Password vault (referred to below as `<your-vault>`). OAuth tokens (access/refresh) are stored in each integration's vault item too, kept fresh by a refresher job. Pick one vault name and use it consistently.
+Static credentials (API keys, client secrets, passwords) are stored in a dedicated 1Password vault (referred to below as `<your-vault>`). OAuth tokens (access/refresh) are stored in each integration's vault item too. Contextium ships no job that refreshes them: refresh a token when a call returns 401, or schedule a refresh of your own. Pick one vault name and use it consistently.
 
 ## Service Account
 

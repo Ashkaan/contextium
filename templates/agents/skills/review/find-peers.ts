@@ -285,6 +285,37 @@ function removedTokens(diffOut: string): string[] {
   return sortUnique(candidates).filter((tok) => !(added !== "" && added.includes(tok)));
 }
 
+// One `git grep -z -n` hit. git emits `path\0line\0text\n` — the path ends at
+// the first NUL and may hold a colon or a newline, the text never holds a
+// newline — and, for a binary file, `Binary file <path> matches\n` with no NUL.
+// `shown` is the hit as plain `git grep -n` would print it, with the real path.
+interface GrepHit {
+  file: string;
+  shown: string;
+}
+function grepHits(out: string): GrepHit[] {
+  const hits: GrepHit[] = [];
+  let at = 0;
+  while (at < out.length) {
+    const nul = out.indexOf("\0", at);
+    const nl = out.indexOf("\n", at);
+    const binary = /^Binary file (.*) matches$/.exec(out.slice(at, nl === -1 ? out.length : nl));
+    if (binary && (nul === -1 || (nl !== -1 && nl < nul))) {
+      hits.push({ file: binary[1] ?? "", shown: binary[0] });
+      at = nl === -1 ? out.length : nl + 1;
+      continue;
+    }
+    const lineEnd = nul === -1 ? -1 : out.indexOf("\0", nul + 1);
+    if (lineEnd === -1) break;
+    const textEnd = out.indexOf("\n", lineEnd + 1);
+    const file = out.slice(at, nul);
+    const text = out.slice(lineEnd + 1, textEnd === -1 ? out.length : textEnd);
+    hits.push({ file, shown: `${file}:${out.slice(nul + 1, lineEnd)}:${text}` });
+    at = textEnd === -1 ? out.length : textEnd + 1;
+  }
+  return hits;
+}
+
 function verifySweep(REPO_ROOT: string, rest: string[]): never {
   const args = [...rest];
   const sweepRegex = args[0] ?? "";
@@ -308,7 +339,7 @@ function verifySweep(REPO_ROOT: string, rest: string[]): never {
   // cannot hide behind the default either.
   const recordExcludes = [":!knowledge", ":!journal", ":!projects/**/*.md"];
 
-  const sweep = git(["grep", "-nE", "-e", sweepRegex, "--", ...args, ...recordExcludes]);
+  const sweep = git(["grep", "-z", "-nE", "-e", sweepRegex, "--", ...args, ...recordExcludes]);
   if (sweep.status > 1) gitFailed("grep", sweep.status);
 
   if (sweep.stdout !== "") {
@@ -318,7 +349,7 @@ function verifySweep(REPO_ROOT: string, rest: string[]): never {
     err(`  pattern:  ${sweepRegex}`);
     err(`  pathspec: ${pathspec}`);
     err("");
-    for (const l of sweep.stdout.split("\n")) err(`  ${l}`);
+    for (const h of grepHits(sweep.stdout)) err(`  ${h.shown}`);
     err("");
     err("Every line above is an instance the sweep claimed to have closed.");
     err("Fix them, or exclude a deliberate survivor with a negative");
@@ -375,14 +406,16 @@ function verifySweep(REPO_ROOT: string, rest: string[]): never {
   // Filtering the OUTPUT by extension rather than narrowing the pathspec
   // keeps this out of git's glob semantics, where `dir/*.ts` crossing `/`
   // is a behaviour to depend on rather than a thing to read.
-  const runnableRe = /^[^:]+\.(ts|tsx|mts|cts|js|jsx|mjs|cjs|sh|bash|py|rb):/;
+  const runnableRe = /\.(ts|tsx|mts|cts|js|jsx|mjs|cjs|sh|bash|py|rb)$/;
 
   let hidden = "";
   for (const bare of broadExcludes) {
-    const hits = git(["grep", "-nE", "-e", sweepRegex, "--", bare, ...fileExcludes]);
+    const hits = git(["grep", "-z", "-nE", "-e", sweepRegex, "--", bare, ...fileExcludes]);
     if (hits.status > 1) gitFailed("grep", hits.status);
     if (hits.stdout === "") continue;
-    const runnable = hits.stdout.split("\n").filter((l) => runnableRe.test(l));
+    const runnable = grepHits(hits.stdout)
+      .filter((h) => runnableRe.test(h.file))
+      .map((h) => h.shown);
     if (runnable.length === 0) continue;
     hidden += `(excluded by :!${bare})\n${runnable.join("\n")}\n`;
   }
@@ -471,9 +504,9 @@ async function main(): Promise<void> {
   if (files.length > 0) {
     changed = files;
   } else {
-    const diff = git(["diff", "--name-only", base]);
+    const diff = git(["diff", "-z", "--name-only", base]);
     if (diff.status !== 0) gitFailed("diff", diff.status);
-    changed = diff.stdout.split("\n").filter((l) => l !== "");
+    changed = diff.stdout.split("\0").filter((l) => l !== "");
   }
 
   if (changed.length === 0) exit(0);

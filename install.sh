@@ -36,7 +36,7 @@ set -euo pipefail
 
 # --- Constants ---
 
-VERSION="v9.1.0"
+VERSION="v9.2.0"
 
 # The tools the installer knows, in menu order. The first is the recommended one.
 HARNESSES="t3 claude codex cursor vscode gemini antigravity grok"
@@ -1319,16 +1319,142 @@ AUTONOMY_AUTO_LINE="Act and report on routine work; only stop to ask when genuin
 # `cksum` of the v6.0.0 and v7.0.0 AGENTS.md templates with their placeholders
 # in place. An installed one that normalizes to either was never edited.
 PRE_V8_AGENTS_MD_CKSUMS="2363100528 6310|3343248693 7742"
+# `cksum` of the § Working preferences section (its heading to the line before
+# § Stack) every v8 and v9 template wrote outside the Contextium blocks, with
+# its autonomy line as `- {{AUTONOMY}}`. One that still matches was never edited.
+V8_PREFS_CKSUM="3075646415 712"
 
-# Render the template for a name and an autonomy. Args: $1=name $2=ask|autonomous
+# How much guidance AGENTS.md carries. The template marks optional text with
+# `<!-- rules:recommended -->` or `<!-- rules:full -->` … `<!-- /rules -->`;
+# everything outside those regions is required, because the installed skills,
+# checks and guards rely on it. The level a workbench chose is recorded in the
+# core block, which every level renders.
+RULE_LEVELS="minimal recommended full"
+rules_rank() {
+  case "$1" in minimal) echo 1 ;; recommended) echo 2 ;; full) echo 3 ;; *) echo 0 ;; esac
+}
+rules_summary() {
+  case "$1" in
+    minimal) echo "AGENTS.md carries only what the installed skills, checks and guards rely on." ;;
+    recommended) echo "AGENTS.md carries what the installed skills, checks and guards rely on, plus the general engineering standards." ;;
+    full) echo "AGENTS.md carries all of Contextium's guidance: the standards, the working preferences and a Stack section to fill in." ;;
+  esac
+}
+
+# The template with the regions above the level dropped and every region
+# marker removed. Args: $1=level; the result on stdout.
+rules_filter() {
+  awk -v want="$(rules_rank "$1")" '
+    function rank(s) { return s == "minimal" ? 1 : s == "recommended" ? 2 : s == "full" ? 3 : 99 }
+    /^<!-- rules:[a-z]+ -->$/ { d++; lvl[d] = rank(substr($0, 12, length($0) - 15)); next }
+    $0 == "<!-- /rules -->" { if (d > 0) d--; next }
+    { for (i = 1; i <= d; i++) if (lvl[i] > want) next; print }
+  ' "$SCRIPT_DIR/templates/agents/AGENTS.md"
+}
+
+# Render the template. Args: $1=name $2=ask|autonomous $3=level
 render_agents_md() {
-  local line name_esc line_esc
+  local line name_esc line_esc sum_esc
   if [ "$2" = "autonomous" ]; then line="$AUTONOMY_AUTO_LINE"; else line="$AUTONOMY_ASK_LINE"; fi
   # The name is whatever the user typed, and it lands in a sed REPLACEMENT,
   # where \ & and the / delimiter all mean something.
   name_esc="$(printf '%s' "$1" | sed -e 's/[\\&/]/\\&/g')"
   line_esc="$(printf '%s' "$line" | sed -e 's/[\\&/]/\\&/g')"
-  sed -e "s/{{NAME}}/$name_esc/g" -e "s/{{AUTONOMY}}/$line_esc/g" "$SCRIPT_DIR/templates/agents/AGENTS.md"
+  sum_esc="$(rules_summary "$3" | sed -e 's/[\\&/]/\\&/g')"
+  rules_filter "$3" | sed -e "s/{{NAME}}/$name_esc/g" -e "s/{{AUTONOMY}}/$line_esc/g" \
+    -e "s/{{RULES}}/$3/g" -e "s/{{RULES_SUMMARY}}/$sum_esc/g"
+}
+
+# What each level adds, read from the template's regions, one `level<TAB>kind<TAB>name`
+# line per item: kind is `section` (a heading), `standard` (a bold-led bullet)
+# or `clause` (more text inside the bullet named).
+rules_inventory() {
+  awk '
+    function rank(s) { return s == "minimal" ? 1 : s == "recommended" ? 2 : s == "full" ? 3 : 99 }
+    function lv() { return d > 0 ? name[d] : "minimal" }
+    /^<!-- contextium:[a-z0-9-]+ -->$/ { inblk = substr($0, 17, length($0) - 20); next }
+    $0 == "<!-- /contextium -->" { inblk = ""; next }
+    /^<!-- rules:[a-z]+ -->$/ { d++; name[d] = substr($0, 12, length($0) - 15); seen = 0; next }
+    $0 == "<!-- /rules -->" { if (d > 0) d--; next }
+    /^## / {
+      if (inblk != "core" && inblk != "standards") printf "%s\tsection\t%s\n", lv(), substr($0, 4)
+      next
+    }
+    /^- \*\*/ {
+      s = substr($0, 5); p = index(s, "**"); if (p) s = substr(s, 1, p - 1); sub(/\.$/, "", s)
+      last = s
+      if (inblk == "standards") { printf "%s\tstandard\t%s\n", lv(), s; seen = 1 }
+      next
+    }
+    d > 0 && !seen && inblk == "standards" && /^  [^ -]/ { printf "%s\tclause\t%s\n", lv(), last; seen = 1 }
+  ' "$SCRIPT_DIR/templates/agents/AGENTS.md"
+}
+
+# A comma-separated list of the inventory's names for one level and kind.
+# Args: $1=level $2=kind
+rules_list() {
+  rules_inventory | awk -F '\t' -v l="$1" -v k="$2" '$1 == l && $2 == k { out = out (out == "" ? "" : "; ") $3 } END { print out }'
+}
+
+# The level a Contextium block of a file records. Prints it, or nothing when the
+# file has no core block. Exit 2 when the core block records no valid level.
+# Args: $1=file
+recorded_rules() {
+  local v
+  grep -qx '<!-- contextium:core -->' "$1" 2>/dev/null || return 0
+  v="$(awk '/^<!-- contextium:core -->$/ { f = 1 } f && /^Contextium rule level: / { s = $0; sub(/^Contextium rule level: /, "", s); sub(/\..*/, "", s); print s; exit } f && /^<!-- \/contextium -->$/ { exit }' "$1")"
+  case " $RULE_LEVELS " in
+    *" $v "*) [ -n "$v" ] && { printf '%s\n' "$v"; return 0; } ;;
+  esac
+  printf '%s\n' "${v:-(none)}"
+  return 2
+}
+
+# The autonomy an existing AGENTS.md was written with: the core block's line,
+# else (an older file) its § Working preferences line. Prints ask, autonomous or
+# nothing. Args: $1=file
+existing_autonomy() {
+  if grep -qxF -- "- $AUTONOMY_AUTO_LINE" "$1" 2>/dev/null; then echo autonomous
+  elif grep -qxF -- "- $AUTONOMY_ASK_LINE" "$1" 2>/dev/null; then echo ask
+  fi
+}
+
+# True when a file has a `<!-- contextium:… -->` block that is never closed.
+# Args: $1=file
+has_unclosed_block() {
+  awk '/^<!-- contextium:[a-z0-9-]+ -->$/ { o = 1; next } $0 == "<!-- /contextium -->" { o = 0 } END { exit o ? 0 : 1 }' "$1"
+}
+
+# The § Working preferences section a v8 or v9 template wrote outside the blocks:
+# `pristine` when it is still exactly as written, `edited`, or `absent`.
+# Args: $1=file
+v8_prefs_state() {
+  local sec sum
+  sec="$(awk -v ask="- $AUTONOMY_ASK_LINE" -v auto="- $AUTONOMY_AUTO_LINE" '
+    /^<!-- contextium:[a-z0-9-]+ -->$/ { blk = 1 }
+    !blk && $0 == "## Working preferences" { f = 1 }
+    f && ($0 == "## Stack" || /^<!-- contextium:/) { exit }
+    f { if ($0 == ask || $0 == auto) $0 = "- {{AUTONOMY}}"; print }
+    $0 == "<!-- /contextium -->" { blk = 0 }
+  ' "$1"; printf x)"
+  sec="${sec%x}"
+  if [ -z "$sec" ]; then echo absent; return 0; fi
+  sum="$(printf '%s' "$sec" | cksum | awk '{print $1, $2}')"
+  if [ "$sum" = "$V8_PREFS_CKSUM" ]; then echo pristine; else echo edited; fi
+}
+
+# A v8 or v9 file with its unchanged § Working preferences replaced by an empty
+# core block for the merge to fill: those preferences were Contextium's text,
+# and now live in the preferences block of the full level. Args: $1=file
+v8_prefs_to_core() {
+  awk '
+    /^<!-- contextium:[a-z0-9-]+ -->$/ { blk = 1 }
+    !blk && !done && $0 == "## Working preferences" { f = 1; done = 1; print "<!-- contextium:core -->"; print "<!-- /contextium -->"; print ""; next }
+    f && ($0 == "## Stack" || /^<!-- contextium:/) { f = 0 }
+    f { next }
+    $0 == "<!-- /contextium -->" { blk = 0 }
+    { print }
+  ' "$1"
 }
 
 # The name and autonomy a v6/v7 AGENTS.md was written with, so replacing an
@@ -1358,16 +1484,30 @@ is_pristine_pre_v8() {
 
 # Merge template blocks into a user file: each `<!-- contextium:<name> -->` …
 # `<!-- /contextium -->` block in the user file is replaced by the template's
-# block of that name, a block the template no longer has is dropped, and a
-# template block the file lacks is appended at the end. Every other line is
+# block of that name, and a block the template no longer has is dropped. A
+# template block the file lacks goes beside its neighbours in the template —
+# before the first block the file has that follows it, or after the one it
+# follows — and at the end of a file with no block at all. Every other line is
 # copied through untouched. Exit 3 when the user file leaves a block unclosed.
 # Args: $1=template $2=user file; the result on stdout.
 merge_contextium_blocks() {
   awk '
     function block_name(s) { return substr(s, 17, length(s) - 20) }
-    FNR == NR {
+    function put(nm) { print blk[nm]; done[nm] = 1 }
+    # Every missing template block ordered before nm, ahead of it.
+    function before(nm,   j) {
+      if (!(nm in idx)) return
+      for (j = 1; j < idx[nm]; j++) if (!(order[j] in have) && !(order[j] in done)) { put(order[j]); print "" }
+    }
+    # The missing template blocks that follow nm, up to the next one the file has.
+    function after(nm,   j) {
+      if (!(nm in idx)) return
+      for (j = idx[nm] + 1; j <= k && !(order[j] in have); j++) if (!(order[j] in done)) { print ""; put(order[j]) }
+    }
+    FNR == 1 { pass++ }
+    pass == 1 {
       if ($0 ~ /^<!-- contextium:[a-z0-9-]+ -->$/) {
-        cur = block_name($0); order[++k] = cur; blk[cur] = $0; next
+        cur = block_name($0); order[++k] = cur; idx[cur] = k; blk[cur] = $0; next
       }
       if (cur != "") {
         blk[cur] = blk[cur] "\n" $0
@@ -1375,10 +1515,12 @@ merge_contextium_blocks() {
       }
       next
     }
-    skipping { if ($0 == "<!-- /contextium -->") skipping = 0; next }
+    pass == 2 { if ($0 ~ /^<!-- contextium:[a-z0-9-]+ -->$/) have[block_name($0)] = 1; next }
+    skipping { if ($0 == "<!-- /contextium -->") { skipping = 0; after(n) } ; next }
     /^<!-- contextium:[a-z0-9-]+ -->$/ {
       n = block_name($0); skipping = 1
-      if ((n in blk) && !(n in done)) { print blk[n]; done[n] = 1 }
+      before(n)
+      if ((n in blk) && !(n in done)) put(n)
       next
     }
     { print }
@@ -1386,52 +1528,136 @@ merge_contextium_blocks() {
       if (skipping) exit 3
       for (i = 1; i <= k; i++) if (!(order[i] in done)) { print ""; print blk[order[i]] }
     }
-  ' "$1" "$2"
+  ' "$1" "$2" "$2"
 }
 
-# Write .agents/AGENTS.md. Absent: the rendered template. --force: the template,
-# the old file kept beside it. A v8 file: only its Contextium blocks are
-# replaced. An unchanged v6/v7 one: replaced whole. An edited v6/v7 one: kept,
-# backed up, with the Contextium blocks appended for the user to reconcile.
-# Args: $1=name $2=autonomy
-install_agents_md() {
-  local dst="$TARGET/.agents/AGENTS.md" tmp bak rc=0
-  mkdir -p "$TARGET/.agents"
-  [ -f "$SCRIPT_DIR/templates/agents/AGENTS.md" ] || { err "template AGENTS.md is missing from this clone."; return 1; }
-  tmp="$(mktemp)"
-  render_agents_md "$1" "$2" >"$tmp"
+# The headings of a file outside the Contextium blocks: the user's own text.
+# Args: $1=file; one `## …` per line.
+user_headings() {
+  awk '/^<!-- contextium:[a-z0-9-]+ -->$/ { b = 1 } !b && /^## / { print } $0 == "<!-- /contextium -->" { b = 0 }' "$1"
+}
 
+# Decide what .agents/AGENTS.md becomes, before anything is written: the result
+# goes to $AGENTS_PLAN and the branch to AGENTS_ACTION (install, force, keep,
+# refresh, replace, append). Absent: the rendered template. --force: the
+# template. A file with blocks: only its blocks replaced, and an unchanged v8/v9
+# § Working preferences becomes the preferences block. An unchanged v6/v7 file:
+# replaced whole. An edited v6/v7 one: the blocks appended to it.
+# Args: $1=name $2=autonomy $3=level
+plan_agents_md() {
+  local dst="$TARGET/.agents/AGENTS.md" src rc=0
+  [ -f "$SCRIPT_DIR/templates/agents/AGENTS.md" ] || { err "template AGENTS.md is missing from this clone."; return 1; }
+  AGENTS_PLAN="$(mktemp)"
+  AGENTS_RENDER="$(mktemp)"
+  AGENTS_REMOVED=""
+  render_agents_md "$1" "$2" "$3" >"$AGENTS_RENDER"
   if [ ! -f "$dst" ]; then
-    mv "$tmp" "$dst"
-    ok "installed .agents/AGENTS.md (personalized for $1)"
+    AGENTS_ACTION="install"; cp "$AGENTS_RENDER" "$AGENTS_PLAN"
   elif [ "$FORCE" = "1" ]; then
-    bak="$(move_aside_as "$dst" bak)"
-    mv "$tmp" "$dst"
-    ok "replaced .agents/AGENTS.md (yours is at ${bak#"$TARGET"/})"
+    AGENTS_ACTION="force"; cp "$AGENTS_RENDER" "$AGENTS_PLAN"
   elif grep -q '^<!-- contextium:[a-z0-9-]* -->$' "$dst"; then
-    merge_contextium_blocks "$tmp" "$dst" >"$tmp.merged" || rc=$?
-    if [ "$rc" -ne 0 ]; then
-      err "Left .agents/AGENTS.md alone: a <!-- contextium:… --> block in it is never closed."
-      err "  Close it with <!-- /contextium --> and re-run to refresh the Contextium sections."
-    elif cmp -s "$tmp.merged" "$dst"; then
-      ok "kept .agents/AGENTS.md (its Contextium sections are current)"
-    else
-      cat "$tmp.merged" >"$dst"
-      ok "refreshed the Contextium sections of .agents/AGENTS.md (your text untouched)"
+    src="$dst"
+    if ! grep -qx '<!-- contextium:core -->' "$dst" && [ "$(v8_prefs_state "$dst")" = "pristine" ]; then
+      src="$(mktemp)"
+      v8_prefs_to_core "$dst" >"$src"
+      AGENTS_REMOVED="the unchanged Working preferences an earlier version wrote (Contextium's text$([ "$3" = full ] && echo ", now its preferences block"))"
     fi
-    rm -f "$tmp" "$tmp.merged"
+    merge_contextium_blocks "$AGENTS_RENDER" "$src" >"$AGENTS_PLAN" || rc=$?
+    [ "$src" = "$dst" ] || rm -f "$src"
+    [ "$rc" -eq 0 ] || return "$rc"
+    if cmp -s "$AGENTS_PLAN" "$dst"; then AGENTS_ACTION="keep"; else AGENTS_ACTION="refresh"; fi
   elif is_pristine_pre_v8 "$dst"; then
-    mv "$tmp" "$dst"
-    ok "replaced .agents/AGENTS.md (it was the unchanged template of an earlier version)"
+    AGENTS_ACTION="replace"; cp "$AGENTS_RENDER" "$AGENTS_PLAN"
   else
-    merge_contextium_blocks "$tmp" "$dst" >"$tmp.merged"
-    bak="$(move_aside_as "$dst" bak)"
-    mv "$tmp.merged" "$dst"
-    rm -f "$tmp"
-    err "Your .agents/AGENTS.md predates v8, so it was kept and the Contextium sections were"
-    err "  appended to it (the original is at ${bak#"$TARGET"/}). Delete the old sections they"
-    err "  replace — What lives where, The Loop, Memory, Enforcement, Principles — and keep yours."
+    AGENTS_ACTION="append"; merge_contextium_blocks "$AGENTS_RENDER" "$dst" >"$AGENTS_PLAN"
   fi
+}
+
+# Print the decision: the level and why, what it holds and leaves out, the
+# user's own text that stays in force, and Contextium text removed.
+# Args: $1=level $2=why
+print_rules_preview() {
+  local level="$1" rank kept req
+  rank="$(rules_rank "$level")"
+  printf '%s\n' "${BOLD}AGENTS.md rules: ${level}${NC}${2:+ ($2)}"
+  req="$(rules_list minimal section)"
+  printf '  %s\n' "Required — the installed skills, checks and guards rely on these: ${req}, and the standards $(rules_list minimal standard)."
+  if [ "$rank" -ge 2 ]; then
+    printf '  %s\n' "Recommended adds: $(rules_list recommended standard); fuller text for $(rules_list recommended clause)."
+  else
+    printf '  %s\n' "Left out (recommended): $(rules_list recommended standard); fuller text for $(rules_list recommended clause)."
+  fi
+  if [ "$rank" -ge 3 ]; then
+    printf '  %s\n' "Full adds: $(rules_list full section)."
+  else
+    printf '  %s\n' "Left out (full): $(rules_list full section)."
+  fi
+  if [ "$AGENTS_ACTION" != "install" ] && [ "$AGENTS_ACTION" != "force" ] && [ "$AGENTS_ACTION" != "replace" ]; then
+    kept="$(user_headings "$AGENTS_PLAN" | paste -sd ',' - | sed 's/,/, /g')"
+    [ -z "$kept" ] || printf '  %s\n' "Yours, kept as written and still in force: ${kept}."
+  fi
+  [ -z "$AGENTS_REMOVED" ] || printf '  %s\n' "Removed: ${AGENTS_REMOVED}."
+}
+
+# Ask how much guidance AGENTS.md carries. Echoes the level.
+choose_rules() {
+  local default="$1" answer="" i=1 l d=2
+  if [ "$NONINTERACTIVE" = "1" ] || ! is_tty; then
+    printf '%s\n' "$default"
+    return 0
+  fi
+  for l in $RULE_LEVELS; do [ "$l" = "$default" ] && d="$i"; i=$((i + 1)); done
+  printf '%s\n' "${BOLD}How much guidance should AGENTS.md carry?${NC}" >&2
+  printf '%s\n' "  ${CYAN}1${NC}) minimal     ${DIM}only what the installed skills, checks and guards rely on${NC}" >&2
+  printf '%s\n' "  ${CYAN}2${NC}) recommended ${DIM}plus the general engineering standards (recommended)${NC}" >&2
+  printf '%s\n' "  ${CYAN}3${NC}) full        ${DIM}plus working preferences for replies and a Stack section${NC}" >&2
+  printf '%s' "${DIM}Choose 1, 2 or 3${NC} ${DIM}[${d}]${NC} " >&2
+  read_answer
+  case "$answer" in
+    1) printf '%s\n' minimal ;;
+    2) printf '%s\n' recommended ;;
+    3) printf '%s\n' full ;;
+    *) printf '%s\n' "$default" ;;
+  esac
+}
+
+# Write the planned .agents/AGENTS.md. --force keeps the old file as .bak; an
+# edited v6/v7 file is kept as .bak with the blocks appended.
+install_agents_md() {
+  local dst="$TARGET/.agents/AGENTS.md" bak
+  mkdir -p "$TARGET/.agents"
+  case "$AGENTS_ACTION" in
+    install)
+      mv "$AGENTS_PLAN" "$dst"
+      ok "installed .agents/AGENTS.md (personalized for $1)"
+      ;;
+    force)
+      bak="$(move_aside_as "$dst" bak)"
+      mv "$AGENTS_PLAN" "$dst"
+      ok "replaced .agents/AGENTS.md (yours is at ${bak#"$TARGET"/})"
+      ;;
+    keep)
+      rm -f "$AGENTS_PLAN"
+      ok "kept .agents/AGENTS.md (its Contextium sections are current)"
+      ;;
+    refresh)
+      cat "$AGENTS_PLAN" >"$dst"
+      rm -f "$AGENTS_PLAN"
+      ok "refreshed the Contextium sections of .agents/AGENTS.md (your text untouched)"
+      ;;
+    replace)
+      mv "$AGENTS_PLAN" "$dst"
+      ok "replaced .agents/AGENTS.md (it was the unchanged template of an earlier version)"
+      ;;
+    append)
+      bak="$(move_aside_as "$dst" bak)"
+      mv "$AGENTS_PLAN" "$dst"
+      err "Your .agents/AGENTS.md predates v8, so it was kept and the Contextium sections were"
+      err "  appended to it (the original is at ${bak#"$TARGET"/}). Delete the old sections they"
+      err "  replace — What lives where, The Loop, Memory, Enforcement, Principles — and keep yours."
+      ;;
+  esac
+  rm -f "$AGENTS_RENDER"
 }
 
 # Move a path aside under the first free `<path>.<suffix>`, `.2`, …; echo it.
@@ -1658,6 +1884,18 @@ Options:
   --force                 replace a customized .agents/AGENTS.md (kept as .bak)
   --name "Your Name"      set the name without prompting
   --autonomy ask|autonomous   set autonomy without prompting
+  --rules minimal|recommended|full
+                          how much guidance AGENTS.md carries, without the
+                          question. minimal: only what the installed skills,
+                          checks and guards rely on (the required standards
+                          and the layout, records and skill rules); recommended
+                          (the default for a new workbench): plus the general
+                          engineering standards; full: plus working preferences
+                          for replies and a Stack section to fill in. The level
+                          is recorded in AGENTS.md, and a re-run without
+                          --rules keeps it; an AGENTS.md from before levels
+                          keeps the guidance it had. Text of yours outside the
+                          Contextium blocks is never removed
   --integrations "a b c"  install these integration starters without prompting
   --no-integrations       start with an empty integrations/ (README stub only)
   --hooks / --no-hooks    accepted and ignored: v8 has no git hooks (land.ts runs
@@ -1690,6 +1928,8 @@ NONINTERACTIVE="0"
 INSTALL_MISSING="0"
 ARG_NAME=""
 ARG_AUTONOMY=""
+ARG_RULES=""
+RULES_GIVEN="0"
 ARG_INTEGRATIONS=""
 INTEGRATIONS_GIVEN="0"
 ARG_HARNESS=""
@@ -1704,6 +1944,9 @@ while [ $# -gt 0 ]; do
     --install-missing) INSTALL_MISSING="1"; shift ;;
     --name) ARG_NAME="${2:-}"; shift 2 ;;
     --autonomy) ARG_AUTONOMY="${2:-}"; shift 2 ;;
+    --rules)
+      if [ $# -lt 2 ]; then err "--rules needs a level: minimal, recommended or full."; exit 1; fi
+      ARG_RULES="$2"; RULES_GIVEN="1"; shift 2 ;;
     --harness) ARG_HARNESS="${2:-}"; shift 2 ;;
     --agents) ARG_AGENTS="${2:-}"; shift 2 ;;
     --tools) EXTRA_WIRE="${2:-}"; shift 2 ;;
@@ -1733,6 +1976,13 @@ if [ -n "$ARG_HARNESS" ]; then
     exit 1
   fi
   ARG_HARNESS="$k"
+fi
+# A level is checked here, with the harness, before anything is made or offered.
+if [ "$RULES_GIVEN" = "1" ]; then
+  case " $RULE_LEVELS " in
+    *" $ARG_RULES "*) [ -n "$ARG_RULES" ] || { err "--rules needs a level: minimal, recommended or full."; exit 1; } ;;
+    *) err "Unknown --rules level '$ARG_RULES' (one of: $RULE_LEVELS)."; exit 1 ;;
+  esac
 fi
 
 # --- Main ---
@@ -1864,14 +2114,35 @@ else
 fi
 printf '\n'
 
-# Gather the minimal profile. An unchanged earlier AGENTS.md about to be
-# replaced supplies its own name and autonomy as the defaults.
+# An AGENTS.md this run cannot read safely stops it here, before anything is
+# written: a block never closed, or a rule level that is not one. --force
+# replaces the file (keeping it as .bak), so it is let through.
 OLD_AGENTS_MD="$TARGET/.agents/AGENTS.md"
+RECORDED_RULES=""
+if [ -f "$OLD_AGENTS_MD" ] && [ "$FORCE" != "1" ]; then
+  if has_unclosed_block "$OLD_AGENTS_MD"; then
+    err "Left .agents/AGENTS.md alone: a <!-- contextium:… --> block in it is never closed."
+    err "  Close it with <!-- /contextium --> and re-run, or re-run with --force to replace the file (kept as .bak)."
+    exit 1
+  fi
+  rr=0
+  RECORDED_RULES="$(recorded_rules "$OLD_AGENTS_MD")" || rr=$?
+  if [ "$rr" -ne 0 ]; then
+    err "Left .agents/AGENTS.md alone: its core block records the rule level '$RECORDED_RULES', which is not one of: $RULE_LEVELS."
+    err "  Fix the 'Contextium rule level:' line, or re-run with --rules <level> --force to replace the file (kept as .bak)."
+    exit 1
+  fi
+fi
+
+# Gather the minimal profile. An earlier AGENTS.md supplies its own name (a
+# v6/v7 one about to be replaced) and autonomy as the defaults.
 DEFAULT_NAME="${USER:-developer}"
 DEFAULT_AUTONOMY="ask"
 if [ -f "$OLD_AGENTS_MD" ] && [ -n "$(pre_v8_name "$OLD_AGENTS_MD")" ]; then
   DEFAULT_NAME="$(pre_v8_name "$OLD_AGENTS_MD")"
   DEFAULT_AUTONOMY="$(pre_v8_autonomy "$OLD_AGENTS_MD")"
+elif [ -f "$OLD_AGENTS_MD" ] && [ -n "$(existing_autonomy "$OLD_AGENTS_MD")" ]; then
+  DEFAULT_AUTONOMY="$(existing_autonomy "$OLD_AGENTS_MD")"
 fi
 NAME="$ARG_NAME"
 if [ -z "$NAME" ]; then
@@ -1884,6 +2155,42 @@ case "$AUTONOMY" in
   "") AUTONOMY="$(choose_autonomy "$DEFAULT_AUTONOMY")" ;;
   *) err "Invalid --autonomy '$AUTONOMY' (use ask|autonomous); defaulting to ask."; AUTONOMY="ask" ;;
 esac
+
+# How much guidance AGENTS.md carries: --rules, else the level this workbench
+# recorded, else for an AGENTS.md from before levels the one that keeps all it
+# carried (full while its working preferences are Contextium's unchanged text,
+# recommended otherwise), else recommended.
+if [ -n "$RECORDED_RULES" ]; then
+  DEFAULT_RULES="$RECORDED_RULES"; RULES_WHY="kept from this workbench"
+elif [ ! -f "$OLD_AGENTS_MD" ] || [ "$FORCE" = "1" ]; then
+  DEFAULT_RULES="recommended"; RULES_WHY="the default"
+elif grep -q '^<!-- contextium:[a-z0-9-]* -->$' "$OLD_AGENTS_MD"; then
+  if [ "$(v8_prefs_state "$OLD_AGENTS_MD")" = "pristine" ]; then DEFAULT_RULES="full"; else DEFAULT_RULES="recommended"; fi
+  RULES_WHY="the guidance this workbench's AGENTS.md already carried"
+elif is_pristine_pre_v8 "$OLD_AGENTS_MD"; then
+  DEFAULT_RULES="full"; RULES_WHY="the guidance this workbench's AGENTS.md already carried"
+else
+  DEFAULT_RULES="recommended"; RULES_WHY="beside the text this workbench's AGENTS.md keeps"
+fi
+if [ "$RULES_GIVEN" = "1" ]; then
+  RULES="$ARG_RULES"; RULES_WHY="chosen with --rules"
+else
+  RULES="$(choose_rules "$DEFAULT_RULES")"
+  [ "$RULES" = "$DEFAULT_RULES" ] || RULES_WHY="chosen"
+fi
+printf '\n'
+plan_agents_md "$NAME" "$AUTONOMY" "$RULES" || {
+  err "Left .agents/AGENTS.md alone: its Contextium blocks could not be merged."
+  exit 1
+}
+print_rules_preview "$RULES" "$RULES_WHY"
+# The level question just asked gets its answer shown back before anything is
+# written; --rules is already the explicit choice, and --yes never prompts.
+if [ "$RULES_GIVEN" != "1" ] && [ "$(ask_yesno "Write AGENTS.md this way and install?" y)" != "y" ]; then
+  rm -f "$AGENTS_PLAN" "$AGENTS_RENDER"
+  err "Nothing was written. Re-run with --rules minimal, recommended or full to choose again."
+  exit 1
+fi
 printf '\n'
 
 ensure_git_repo
@@ -2009,7 +2316,8 @@ case "$HARNESS" in
 esac
 printf '\n'
 printf '%s\n' "Everything lives once: ${BOLD}AGENTS.md${NC} (a link to .agents/AGENTS.md) and ${BOLD}.agents/skills/${NC}."
-printf '%s\n' "Change your preferences and stack in AGENTS.md outside the Contextium blocks, and"
+printf '%s\n' "AGENTS.md carries the ${BOLD}${RULES}${NC} rules; re-run with ${BOLD}--rules <level>${NC} to change that."
+printf '%s\n' "Add your own preferences and stack in AGENTS.md outside the Contextium blocks, and"
 printf '%s\n' "put hooks of your own in ${BOLD}.agents/user-hooks.json${NC}; a re-run merges them in."
 printf '%s\n' "/close runs the checks before every commit it makes, whichever tool made the change."
 printf '\n'
