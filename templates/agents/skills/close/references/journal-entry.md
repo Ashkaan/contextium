@@ -22,7 +22,7 @@ assemble that path by hand** — `scripts/journal-file.ts "<filename-stem>"` own
 creates the day folder, and it persists its answer where `land.ts` checks it:
 
 ```bash
-node --experimental-strip-types .agents/skills/close/scripts/journal-file.ts "security-policy-ai"
+node --experimental-strip-types .agents/skills/close/scripts/journal-file.ts "retry-policy"
 ```
 
 The filename label above is NOT the frontmatter `slug:`. Despite its name,
@@ -33,12 +33,13 @@ heading. For that filename, a valid entry is:
 ---
 date: 2026-05-27
 time: "14:32"
-slug: one-off (security policy and client data in AI)
+slug: one-off (retry policy for flaky tests)
 project: null
 tags: []
+open_items: none
 ---
 
-### one-off (security policy and client data in AI)
+### one-off (retry policy for flaky tests)
 **Action:** <verb>
 
 <one-line summary>
@@ -60,11 +61,11 @@ tags: []
 - ...
 
 **Blocked:**
-- <what waits on the user or an outside party, and for what>
+- wait: <YYYY-MM-DD> <who or what else it waits on — a vendor, data that does not exist yet>
 ```
 
-Use the actual session date/time and heading. Do not put `security-policy-ai`
-in `slug:` when the heading is `one-off (security policy and client data in AI)`.
+Use the actual session date/time and heading. Do not put `retry-policy`
+in `slug:` when the heading is `one-off (retry policy for flaky tests)`.
 Quote the YAML value if the heading needs it (for example, when it contains
 `: `). A repair to the heading or `slug:` does not require renaming the allocated
 file; keep its ledger path stable. Run the check in /close § 3 after each write.
@@ -97,6 +98,8 @@ the first session — goes in `journal/<date>/0000-day.md`; do not add to it in
 an ordinary close. A `0000-*.md` file is the day's, not a
 session's, and the section checks below do not apply to it.
 
+**Reading a day.** List its folder. An absent folder means nobody worked that day, and a surviving `journal/<date>.md` means some writer is still on the retired one-file shape.
+
 ### Section set (checked)
 
 A section is a line at column 0 of the form `**Label:**`. The set is CLOSED:
@@ -114,15 +117,52 @@ summary and nothing else.
 | `**Decisions:**` | links to where a choice lives, and `rejected:` lines — § Decisions. Nothing else |
 | `**Corrections:**` | the user's verbatim words, one quoted bullet per row — § Corrections |
 | `**Lessons:**` | what surprised, and what to do differently |
-| `**Blocked:**` | work waiting on the user — money, an outbound message, host infrastructure, a vendor — and what it waits for |
+| `**Blocked:**` | what waits on someone or something else, checked on a date (`wait:`) — never on the user's hands or their answer; § Blocked |
 | `**Root-Cause Status:**` | for an incident: `<status> — <detail>`, with the same status in the front matter key |
 
 **Retired.** `**Next:**` — outstanding project work is the project's
 `ROADMAP.md`, the one list of what is left, and the close prints the next
-command from it; work waiting on the user is `**Blocked:**`. `**Issues:**` —
+command from it; work waiting on the user keeps the session open (`auto-close-gate.md` precondition (iii)). `**Issues:**` —
 an investigation's results are `**Findings:**`. The check refuses both, naming
 where the content belongs. One-off labels (`Verification`, `Result`,
 `Machine review`, …) fold into Changes, Findings or Lessons.
+
+### Blocked (checked)
+
+Each bullet is one line, and there is one kind:
+
+- `- wait: <YYYY-MM-DD> <on what>` — someone or something else, checked on
+  that date: a vendor's quote, a person's reply, data that does not exist yet.
+
+A close means the work is done (`auto-close-gate.md` precondition (iii) is the
+one definition of what may ride it). So nothing here waits on the user. A step
+for the user's hands — a drafted email they send, a console click, a
+signature — keeps the session open until they have done it; a choice they have
+not made — which option, whether to, their go-ahead for infrastructure or
+money — is asked in the reply as a numbered list and the run halts. Neither is
+written here.
+
+The check refuses (F12) an `act:` bullet, a `wait:` bullet that names the user
+(the user, the owner, you, or the first name in `git config user.name` —
+`open-decision.ts`; it waits on their hands, whatever its date), and a `wait:`
+bullet whose plain text holds no calendar date (`YYYY-MM-DD`, standing alone) on or after the
+entry's own `date`. It refuses (F9) an untyped bullet, a `decide:` bullet, and
+a `wait:` bullet whose words are a decision: `?`, whether, choose, choice,
+go-ahead, your call — and decide, decision, ruling, sign-off, approve,
+authorize, answer, permission, OK, pick or say-so when it names the user
+("the vendor's decision" is a wait; "the user's decision" is a question).
+URLs and code spans are not read, and a bullet on the label line is checked
+like any other. Because Land runs the check, a parked step or question stops
+the close.
+
+Earlier entries keep the shape they were written in: one started before
+F12_FROM (`check-journal-entry.ts`) may carry `- act: <what the user does>`
+lines and undated waits, as F9 allowed; one started before F9_FROM (its `date`
+and `time`) is not read at all.
+
+Why: as prose, a close could land with "waiting on the user's go-ahead for an
+infrastructure change" under Blocked — an open decision that rode out with the
+session, where nobody acts on it.
 
 ### Decisions (checked)
 
@@ -194,6 +234,22 @@ a Findings bullet worth more than a sentence in Changes.
   `projects/<domain>/<date>_<slug>`, or `null` for a one-off. `land.ts` resolves
   it as a path under the repo to derive the next command, and
   refuses the close on a bare slug.
+- **`open_items:`** — required, and its only value is `none` (checked, F10,
+  for entries started at its cutoff in `check-journal-entry.ts` or later). It
+  is the run's open-items sweep (`auto-close-gate.md` precondition (iii))
+  written as an assertion: every question, issue and improvement the run
+  surfaced is done, or is a dated wait (`- wait: <YYYY-MM-DD> …` under
+  `**Blocked:**`). A question for the user is never written anywhere — not the
+  report, not a `rejected:` line, not the reply below the close's last line.
+  It is asked as a numbered list and the run halts before the close; the close
+  runs after the user answers. A question parked as report prose and closed
+  over is lost, because the session that saw it has ended. The assertion is
+  backed by a reading: F11 refuses any body line outside `**Blocked:**` and
+  `**Corrections:**` worded as waiting on the user ("waiting on the user",
+  "pending the owner's call", "the user to decide", "until you answer" —
+  `open-decision.ts` `parkedOnUser`, which also reads the first name in
+  `git config user.name` as the user's), and `check-roadmap-decisions.ts`
+  refuses the same wording in lines a close adds to a spec's `report.md`.
 - **`root_cause_status:`** — optional; when present, one of (checked):
   `fixed` | `unknown-pending-verification` | `deferred-by-user-directive` | `n/a`.
   `fixed` means the cause is gone; `unknown-pending-verification`
@@ -212,7 +268,14 @@ nothing ever did.
 
 If the session shipped to a UI surface — a web app, a dashboard, a device —
 populate a `runtime_identity:` list in the session file's front matter at
-journal-write time, one entry per surface:
+journal-write time. Record the surface actually tested and its deployed
+revision, using the session's command/capture evidence: read the changed
+source and the exact runtime tested, or the hosting provider's deployment
+record. A local render does not prove a deployment. Source changes belong to
+this thread's owned worktree; the normal close lands them. Never commit from a
+shared checkout.
+
+Schema (one entry per surface; multi-surface sessions get multi-entry lists):
 
 ```yaml
 runtime_identity:

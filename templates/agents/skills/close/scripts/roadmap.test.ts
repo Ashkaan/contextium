@@ -447,6 +447,18 @@ test("--derive", () => {
     `status: blocked\nblocked-on: "R12: ${"word ".repeat(11).trim()}…"`,
     "blocked-on is cut to 60 characters at a word",
   );
+  // A watch date is a real calendar day with no digit after it; anything else
+  // is a wait with no date, which is blocked rather than monitor.
+  assert.equal(
+    derive(mk("dv-not-a-day", "| R1 | a | i | s | — | blocked: 2099-99-99 x | — |")),
+    'status: blocked\nblocked-on: "R1: 2099-99-99 x"',
+    "a date that is not a calendar day is no watch",
+  );
+  assert.equal(
+    derive(mk("dv-long-digits", "| R1 | a | i | s | — | blocked: 2099-01-010 x | — |")),
+    'status: blocked\nblocked-on: "R1: 2099-01-010 x"',
+    "a date followed by another digit is no watch",
+  );
   assert.equal(
     derive(
       mk(
@@ -504,7 +516,7 @@ test("--sync-next writes status", () => {
   const readme = join(d, "README.md");
   writeFileSync(
     readme,
-    '---\nproject: x\nstatus: monitor\nmonitoring-until: "R2: waiting on him;\n  R3: the first send"\npriority: high\ndescription: A thing\n---\n\n# P\nmonitoring-until: body text is left alone\n',
+    '---\nproject: x\nstatus: monitor\nmonitoring-until: "R2: waiting on the vendor;\n  R3: the first send"\npriority: high\ndescription: A thing\n---\n\n# P\nmonitoring-until: body text is left alone\n',
   );
   sut(d, "--sync-next");
   assert.equal(
@@ -530,6 +542,305 @@ test("--sync-next writes status", () => {
   const before = read(join(stuck, "README.md"));
   assert.equal(rcOf(stuck, "--sync-next"), 1, "--sync-next refuses a table it cannot derive");
   assert.equal(read(join(stuck, "README.md")), before, "and leaves the README alone");
+});
+
+// listRows is the list mode in-process, for rows-taken.ts: the same rows the
+// program prints, and a failure returned as messages rather than written out.
+test("listRows returns the list mode's rows and keeps its messages", async () => {
+  const { listRows } = await import("./roadmap.ts");
+  const d = mk(
+    "list-rows",
+    "| R1 | a | i | s | — | in-progress | `specs/001-a/` |",
+    "| R2 | b | i | s | R1 | planned | — |",
+  );
+  const program = sut(d).stdout;
+  const got = listRows(join(d, "ROADMAP.md"));
+  assert.equal(got.ok, true);
+  assert.deepEqual(got.messages, []);
+  assert.equal(got.rows.map((r) => `${r.join("\t")}\n`).join(""), program, "the same rows the program prints");
+
+  const bad = mk("list-rows-bad", "| R1 | a | i | s | — | in-progress | specs/001-a |");
+  const b = listRows(join(bad, "ROADMAP.md"));
+  assert.equal(b.ok, false);
+  assert.deepEqual(b.rows, []);
+  assert.match(b.messages.join("\n"), /R1/, "the message names the row");
+
+  const given = listRows(
+    join(d, "ROADMAP.md"),
+    Buffer.from(`# Roadmap: t\n\n${HDR}\n| R9 | z | i | s | — | done | — |\n`),
+  );
+  assert.deepEqual(given.rows, [["R9", "done", "no", "—", "z"]], "given bytes are parsed instead of the file");
+
+  const missing = listRows(join(tmp, "no-such", "ROADMAP.md"));
+  assert.equal(missing.ok, false, "a missing file is a failure, not an empty table");
+  assert.equal(missing.messages.length, 1);
+});
+
+// A wait with an end date: `blocked: until <date>` is a wait like any other —
+// blocked, never a watch, so the project reads blocked rather than monitor —
+// and releaseDate() names the day it ends (/project triage lists it from then).
+test("blocked: until <date> is a wait that names its release day", async () => {
+  const { releaseDate } = await import("./roadmap.ts");
+  assert.equal(releaseDate("blocked: until 2026-11-10 the quarter closes"), "2026-11-10");
+  assert.equal(releaseDate("blocked: until 2026-11-10"), "2026-11-10", "no reason is still a release day");
+  assert.equal(releaseDate("Blocked:  Until 2026-11-10, the quarter"), "2026-11-10", "case and spacing do not matter");
+  assert.equal(releaseDate("blocked: 2026-11-10 the quarter closes"), "", "a watch is not a release");
+  assert.equal(releaseDate("blocked: until the quarter closes"), "", "no date is no release");
+  assert.equal(releaseDate("blocked: until 2026-02-30"), "", "a day that is not on the calendar is no release");
+  assert.equal(releaseDate("blocked: until 2026-11-100"), "", "a date followed by a digit is no release");
+  assert.equal(releaseDate("planned"), "", "only a blocked row is released");
+  assert.equal(releaseDate(""), "");
+
+  assert.equal(
+    derive(
+      mk(
+        "dv-until",
+        "| R1 | watch | i | s | — | blocked: 2026-10-20 | — |",
+        "| R2 | resume | i | s | — | blocked: until 2026-11-10 the quarter closes | `specs/001-a/` |",
+      ),
+    ),
+    'status: blocked\nblocked-on: "R2: until 2026-11-10 the quarter closes"',
+    "a wait with an end date is blocked, ahead of a watch",
+  );
+  assert.equal(
+    derive(
+      mk(
+        "dv-until-earliest",
+        "| R1 | access | i | s | — | blocked: the vendor approving API access | manual |",
+        "| R2 | later | i | s | — | blocked: until 2026-11-06 the code freeze ends | manual |",
+        "| R3 | sooner | i | s | — | blocked: until 2026-10-29 the release window | manual |",
+      ),
+    ),
+    'status: blocked\nblocked-on: "R3: until 2026-10-29 the release window"',
+    "blocked-on names the wait that ends first, over an undated one above it",
+  );
+});
+
+// ── Another project's row in Depends on ──────────────────────────────────────
+
+/** A project at `<root>/projects/<domain>/<folder>` with a README and these rows. */
+function proj(root: string, rel: string, ...rows: string[]): string {
+  const d = join(root, rel);
+  mkdirSync(d, { recursive: true });
+  writeFileSync(join(d, "README.md"), "---\nproject: x\nstatus: active\ndescription: A thing\n---\n\n# Project\n");
+  writeFileSync(join(d, "ROADMAP.md"), `# Roadmap: t\n\n${HDR}\n${rows.map((r) => `${r}\n`).join("")}`);
+  return d;
+}
+/** A tree holding other-proj (R2 at `status`) and a waiting project whose R1 depends on `dep`. */
+function pair(name: string, status: string, dep = "other-proj R2"): string {
+  const root = join(tmp, name);
+  proj(
+    root,
+    "projects/ops/2026-01-02_other-proj",
+    "| R1 | first | i | s | — | done | — |",
+    `| R2 | the decision | i | s | — | ${status} | manual |`,
+  );
+  return proj(root, "projects/web/2026-01-01_waiting", `| R1 | migrate | i | s | ${dep} | planned | manual |`);
+}
+
+test("another project's open row: not ready, blocked, waits on it", () => {
+  const d = pair("fx-open", "planned");
+  assert.equal(field(d, "R1", 3), "no", "an open foreign row is not ready");
+  assert.equal(errs(d), "", "a resolved foreign row warns nothing");
+  assert.equal(derive(d), 'status: blocked\nblocked-on: "R1: waits on other-proj R2"');
+  assert.equal(rcOf(d, "--sync-next"), 0);
+  const readme = read(join(d, "README.md"));
+  assert.match(readme, /^status: blocked$/m);
+  assert.match(readme, /^blocked-on: "R1: waits on other-proj R2"$/m);
+  assert.doesNotMatch(readme, /^next:/m, "a wait has no next");
+});
+
+test("another project's row done, closed or absorbed: ready and active", () => {
+  for (const [name, status] of [
+    ["fx-done", "done"],
+    ["fx-closed", "closed: x"],
+    ["fx-absorbed", "absorbed by R1"],
+  ] as const) {
+    const d = pair(name, status);
+    assert.equal(field(d, "R1", 3), "yes", `${status} satisfies`);
+    assert.equal(derive(d), 'status: active\nnext: "R1: migrate"', `${status} reads active`);
+  }
+});
+
+test("a mixed cell is ready only when both are satisfied", () => {
+  const root = join(tmp, "fx-mixed");
+  proj(root, "projects/ops/2026-01-02_other-proj", "| R2 | d | i | s | — | done | — |");
+  const d = proj(
+    root,
+    "projects/web/2026-01-01_waiting",
+    "| R4 | local | i | s | — | planned | — |",
+    "| R5 | both | i | s | R4, other-proj R2 | planned | — |",
+  );
+  assert.equal(field(d, "R5", 3), "no", "the local row is open");
+  sut(d, "--set", "R4", "done");
+  assert.equal(field(d, "R5", 3), "yes", "both satisfied");
+});
+
+test("the domain form and backticks resolve", () => {
+  const d = pair("fx-domain", "planned", "`ops/other-proj R2`");
+  assert.equal(errs(d), "");
+  assert.equal(derive(d), 'status: blocked\nblocked-on: "R1: waits on ops/other-proj R2"');
+});
+
+test("an entry that names nothing is an error naming the cell, never a wait", () => {
+  const cases: Array<[string, string, RegExp]> = [
+    ["fx-unknown-slug", "nobody R2", /^roadmap: R1 depends on nobody R2: no project nobody under projects\/$/],
+    ["fx-unknown-id", "other-proj R9", /^roadmap: R1 depends on other-proj R9: other-proj has no row R9$/],
+    ["fx-wrong-domain", "data/other-proj R2", /^roadmap: R1 depends on data\/other-proj R2: no project data\/other-proj/],
+  ];
+  for (const [name, dep, want] of cases) {
+    const d = pair(name, "planned", dep);
+    assert.equal(field(d, "R1", 3), "no", `${dep} is not ready`);
+    assert.match(errs(d), want, `${dep} names the cell`);
+    assert.equal(rcOf(d), 0, `${dep} list exits 0, as an unknown local row does`);
+    const before = read(join(d, "README.md"));
+    assert.equal(rcOf(d, "--sync-next"), 1, `${dep}: --sync-next refuses`);
+    assert.equal(read(join(d, "README.md")), before, `${dep}: README.md is byte-unchanged`);
+  }
+});
+
+test("a foreign table that does not read is an error naming it", () => {
+  const d = pair("fx-malformed", "planned");
+  writeFileSync(join(tmp, "fx-malformed/projects/ops/2026-01-02_other-proj/ROADMAP.md"), "no table here\n");
+  assert.match(
+    errs(d),
+    /^roadmap: R1 depends on other-proj R2: projects\/ops\/2026-01-02_other-proj\/ROADMAP\.md does not read \(no `# Roadmap` heading in ROADMAP\.md\)$/,
+  );
+  assert.equal(rcOf(d, "--sync-next"), 1);
+});
+
+test("an ambiguous slug names both folders; the domain form settles it", () => {
+  const d = pair("fx-ambiguous", "planned");
+  proj(join(tmp, "fx-ambiguous"), "projects/web/2026-03-03_other-proj", "| R2 | x | i | s | — | done | — |");
+  assert.match(
+    errs(d),
+    /other-proj names more than one project \(projects\/ops\/2026-01-02_other-proj, projects\/web\/2026-03-03_other-proj\) — write <domain>\/other-proj/,
+  );
+  const settled = proj(
+    join(tmp, "fx-ambiguous"),
+    "projects/web/2026-01-05_settled",
+    "| R1 | c | i | s | web/other-proj R2 | planned | — |",
+  );
+  assert.equal(field(settled, "R1", 3), "yes", "web's R2 is done");
+});
+
+test("no projects root: unresolved; --projects-root finds a scratch copy's projects", () => {
+  const scratch = join(tmp, "fx-noroot");
+  mkdirSync(scratch, { recursive: true });
+  writeFileSync(
+    join(scratch, "ROADMAP.md"),
+    `# Roadmap: t\n\n${HDR}\n| R1 | c | i | s | other-proj R2 | planned | — |\n`,
+  );
+  assert.match(errs(scratch), /R1 depends on other-proj R2: no projects\/ folder above this table/);
+  assert.equal(field(scratch, "R1", 3), "no");
+  const root = join(tmp, "fx-root");
+  proj(root, "projects/ops/2026-01-02_other-proj", "| R2 | d | i | s | — | done | — |");
+  const r = sut(scratch, "--projects-root", root);
+  assert.equal(r.stderr, "");
+  assert.equal(cs(r.stdout), "R1\tplanned\tyes\t—\tc", "--projects-root resolves");
+  assert.equal(rcOf(scratch, "--projects-root", join(tmp, "no-such")), 2, "a missing root is usage");
+});
+
+test("a self-reference reads the same table", () => {
+  const root = join(tmp, "fx-self");
+  const d = proj(
+    root,
+    "projects/ops/2026-01-02_self",
+    "| R1 | a | i | s | — | planned | — |",
+    "| R2 | b | i | s | self R1 | planned | — |",
+  );
+  assert.equal(field(d, "R2", 3), "no");
+  sut(d, "--set", "R1", "done");
+  assert.equal(field(d, "R2", 3), "yes");
+});
+
+test("an open foreign entry beside an unknown one: refused, README unchanged", () => {
+  const d = pair("fx-hidden-typo", "planned", "other-proj R2, nobody R1");
+  const before = read(join(d, "README.md"));
+  const r = sut(d, "--sync-next");
+  assert.equal(r.rc, 1, "never a wait while an entry is unresolved");
+  assert.match(r.stderr, /cannot derive status: R1 open, none ready or blocked/);
+  assert.equal(read(join(d, "README.md")), before);
+});
+
+test("a waiting row beside a dated watch still reads blocked", () => {
+  const root = join(tmp, "fx-watch");
+  proj(root, "projects/ops/2026-01-02_other-proj", "| R2 | d | i | s | — | planned | — |");
+  const d = proj(
+    root,
+    "projects/web/2026-01-01_waiting",
+    "| R1 | watch | i | s | — | blocked: 2026-10-20 | — |",
+    "| R2 | migrate | i | s | other-proj R2 | planned | manual |",
+  );
+  assert.equal(derive(d), 'status: blocked\nblocked-on: "R2: waits on other-proj R2"');
+});
+
+test("listRows returns each row's dependency results; the list output is unchanged", async () => {
+  const { listRows } = await import("./roadmap.ts");
+  const root = join(tmp, "fx-listrows");
+  proj(root, "projects/ops/2026-01-02_other-proj", "| R2 | the decision | i | s | — | planned | — |");
+  const d = proj(
+    root,
+    "projects/web/2026-01-01_waiting",
+    "| R1 | a | i | s | — | done | — |",
+    "| R3 | c | i | s | R1, other-proj R2, nobody R4 | planned | — |",
+  );
+  const got = listRows(join(d, "ROADMAP.md"));
+  assert.equal(got.rows.map((r) => `${r.join("\t")}\n`).join(""), sut(d).stdout, "byte-identical to the program");
+  assert.deepEqual(got.dependsOn, ["—", "R1, other-proj R2, nobody R4"]);
+  assert.deepEqual(got.deps[0], []);
+  assert.deepEqual(
+    got.deps[1]?.map((x) => [x.project, x.id, x.state, x.feature]),
+    [
+      ["", "R1", "satisfied", ""],
+      ["other-proj", "R2", "open", "the decision"],
+      ["nobody", "R4", "unresolved", ""],
+    ],
+  );
+  const none = listRows(join(d, "ROADMAP.md"), undefined, { projectsRoot: null });
+  assert.equal(none.deps[1]?.[1]?.state, "unresolved", "projectsRoot null resolves nothing");
+});
+
+test("the list output of an existing table is byte-identical", () => {
+  const d = mk(
+    "fx-bytes",
+    "| R1 | a | i | s | — | done | — |",
+    "| R2 | b | i | s | R1, R3 | planned | `specs/002-b/` |",
+    "| R3 | c | i | s | — | blocked: vendor | manual |",
+  );
+  assert.equal(
+    sut(d).stdout,
+    "R1\tdone\tno\t—\ta\nR2\tplanned\tno\tspecs/002-b\tb\nR3\tblocked: vendor\tno\tmanual\tc\n",
+  );
+});
+
+test("matchProject: exact folder names, any date, ambiguity reported", async () => {
+  const { matchProject } = await import("./roadmap.ts");
+  const rels = [
+    "projects/a/2026-01-01_x",
+    "projects/b/2026-02-02_x",
+    "projects/a/2026-01-01_xy",
+    "projects/a/2026-01-01_y",
+  ];
+  assert.deepEqual(matchProject(rels, "y"), { rel: "projects/a/2026-01-01_y" });
+  assert.deepEqual(matchProject(rels, "x", "b"), { rel: "projects/b/2026-02-02_x" });
+  assert.match(String((matchProject(rels, "x") as { error: string }).error), /more than one/);
+  assert.match(String((matchProject(rels, "z") as { error: string }).error), /no project z/);
+  assert.match(String((matchProject([], "x") as { error: string }).error), /no project x/);
+});
+
+test("another project's row with an unknown status is unresolved, never silently open", () => {
+  const d = pair("fx-typo-status", "don");
+  assert.equal(errs(d), "roadmap: R1 depends on other-proj R2: other-proj R2 has unknown status");
+  assert.equal(field(d, "R1", 3), "no");
+  assert.equal(rcOf(d, "--sync-next"), 1, "never a wait on a row whose status does not read");
+});
+
+test("a same-named folder holding no ROADMAP.md is no candidate", () => {
+  const d = pair("fx-stray", "done");
+  mkdirSync(join(tmp, "fx-stray/projects/web/2026-05-05_other-proj"), { recursive: true });
+  assert.equal(errs(d), "", "a stray folder makes nothing ambiguous");
+  assert.equal(field(d, "R1", 3), "yes");
 });
 
 // --check: an explicit row may be built only when it is ready, names a spec,

@@ -23,12 +23,21 @@
 // being watched>` — so a project whose last piece just landed says so rather
 // than pointing at a phase that does not exist. A ROADMAP.md row whose spec is
 // complete but whose Status is not yet `done` prints `# <slug> <ID>'s spec is
-// complete — run /close to flip the row to done` in place of a command.
+// complete — run /close to flip the row to done` in place of a command. A
+// monitor project with planned rows still behind its watch says `N planned rows
+// wait on the watch` instead.
 //
 // An active project is read from its ROADMAP.md alone. Loose `*.spec.md` files
 // and the README's `## Shard Status` table are not read: ROADMAP.md replaced
 // both. A project with no ROADMAP.md gets `/project <slug>`, which scaffolds
 // one.
+//
+// A ready row another open T3 thread is building (rows-taken.ts) gets no command:
+// pasting it would build the row twice, and the second thread would learn it
+// only when its landing conflicted. It is named instead, one line per
+// holder: `# <ID> is being built in thread "<title>"`. A rows-taken.ts that
+// fails prints as without the check. NEXT_IMPLEMENT_ROWS_TAKEN points at another
+// copy of the helper (a test seam).
 //
 // peers:
 //   .agents/skills/close/scripts/next-implement-command.test.ts
@@ -208,9 +217,28 @@ async function main(): Promise<void> {
           break;
         }
       }
-      if (watch === "") say(`# ${slug} — work complete, monitor window open (monitoring-until not set)`);
-      else if (reason !== "") say(`# ${slug} — work complete, monitoring until ${untilDate}: ${reason}`);
-      else say(`# ${slug} — work complete, monitoring until ${untilDate} (no command — passive observation)`);
+      // `monitor` only says every open row is a dated wait or depends on one, so
+      // "work complete" is true only when no planned or in-progress row is left
+      // behind the watch: a project with 18 planned rows waiting on a meeting
+      // read "work complete", and looked closed.
+      let waiting = 0;
+      if (isFile(`${projectDir}/ROADMAP.md`)) {
+        const rm = sibling(`${SCRIPT_DIR}/roadmap.ts`, [projectDir], "pipe");
+        if (rm.rc === 0)
+          for (const line of hereLines(rm.out)) {
+            const s = lowerAscii(readTab(line, 5)[1] ?? "");
+            if (s === "planned" || s === "in-progress") waiting++;
+          }
+      }
+      const state =
+        waiting === 0
+          ? "work complete"
+          : waiting === 1
+            ? "1 planned row waits on the watch"
+            : `${waiting} planned rows wait on the watch`;
+      if (watch === "") say(`# ${slug} — ${state}, monitor window open (monitoring-until not set)`);
+      else if (reason !== "") say(`# ${slug} — ${state}, monitoring until ${untilDate}: ${reason}`);
+      else say(`# ${slug} — ${state}, monitoring until ${untilDate} (no command — passive observation)`);
       exit(0);
       break;
     }
@@ -261,6 +289,14 @@ async function main(): Promise<void> {
   const out: string[] = [];
   let needsPlanning = false;
   const comments: string[] = [];
+  const heldBy = new Map<string, string[]>();
+  const rt = sibling(process.env.NEXT_IMPLEMENT_ROWS_TAKEN || `${SCRIPT_DIR}/rows-taken.ts`, [projectDir], "pipe");
+  process.stderr.write(rt.err);
+  if (rt.rc === 0)
+    for (const [id = "", title = ""] of hereLines(rt.out).map((l) => l.split("\t"))) {
+      if (id !== "") heldBy.set(id, [...(heldBy.get(id) ?? []), `# ${id} is being built in thread "${title}"`]);
+    }
+  else process.stderr.write(`next-implement-command: rows-taken.ts exited ${rt.rc}; printed as without it\n`);
   const rowFields = hereLines(rows).map((l) => l.split("\t"));
   const ordered = [
     ...rowFields.filter((f) => f[2] === "yes" && lowerAscii(f[1] ?? "") === "in-progress"),
@@ -269,6 +305,11 @@ async function main(): Promise<void> {
   for (const line of ordered.length === 0 ? [""] : ordered) {
     const [id = "", , , sub = "", feat = ""] = readTab(line, 5);
     if (id === "") continue;
+    const holders = heldBy.get(id);
+    if (holders !== undefined) {
+      comments.push(...holders);
+      continue;
+    }
     if (sub === "manual") {
       comments.push(`# ${slug} ${id} is a manual step: ${feat}`);
       continue;

@@ -44,6 +44,8 @@
 // Usage:
 //   thread.ts                  — the thread id
 //   thread.ts --id             — same
+//   thread.ts --require-unique — refuse a cwd shared by several tasks; a review
+//                                caller supplies its actual WORKBENCH_THREAD_ID
 //   thread.ts --branch         — the branch T3 gave the thread's worktree
 //   thread.ts --worktree       — the thread's own worktree path (T3's, or the
 //                                linked worktree a harness started it in)
@@ -265,6 +267,7 @@ async function main(): Promise<void> {
 
   let MODE = "id";
   let LOCAL: "" | "time" | "day" = "";
+  let requireUnique = false;
   for (const arg of process.argv.slice(2)) {
     switch (arg) {
       case "--id":
@@ -286,14 +289,20 @@ async function main(): Promise<void> {
       case "--local-day":
         LOCAL = "day";
         break;
+      case "--require-unique":
+        requireUnique = true;
+        break;
       default:
-        fail("usage: thread.ts [--id | --branch | --worktree | --started [--local | --local-day]]");
+        fail("usage: thread.ts [--id | --branch | --worktree | --started [--local | --local-day]] [--require-unique]");
     }
   }
 
   const COLUMNS = "thread_id, branch, worktree_path, created_at";
 
   let row = "";
+  // Whether `row` is T3's own thread row (not a harness session's): only a T3
+  // row can share its worktree with another task, which --require-unique refuses.
+  let t3Row = false;
   const override = process.env.WORKBENCH_THREAD_ID ?? "";
   if (override !== "") {
     // The override names the thread. Everything except `--id` still needs the row,
@@ -329,6 +338,7 @@ async function main(): Promise<void> {
     if (isFile(DB)) {
       const r = dbRow(DB, `select ${COLUMNS} from ${THREADS} where worktree_path = ? and deleted_at is null`, TOP);
       row = rowOrNone(DB, r);
+      t3Row = row !== "";
     }
 
     if (row === "") {
@@ -361,7 +371,7 @@ async function main(): Promise<void> {
       } else {
         if (count > 1) fail(`ambiguous: ${TOP} is claimed by ${count} ledgers`);
         const TID = basename(dirname(found[0] ?? ""));
-        if (MODE === "id") {
+        if (MODE === "id" && !requireUnique) {
           process.stdout.write(`${TID}\n`);
           exit(0);
         }
@@ -369,6 +379,7 @@ async function main(): Promise<void> {
         if (isFile(DB)) {
           const r = dbRow(DB, `select ${COLUMNS} from ${THREADS} where thread_id = ? and deleted_at is null`, TID);
           row = rowOrNone(DB, r);
+          t3Row = row !== "";
         }
         if (row === "") row = harnessRow(LEDGER_HOME, TID, false);
       }
@@ -376,6 +387,17 @@ async function main(): Promise<void> {
   }
 
   const [F_ID = "", F_BRANCH = "", F_WORKTREE = "", F_CREATED = ""] = fields(row);
+  if (requireUnique && override === "" && t3Row) {
+    if (!F_WORKTREE) fail("ambiguous review identity: thread has no primary worktree");
+    const count = rowOrNone(
+      DB,
+      dbRow(DB, `select count(*) from ${THREADS} where worktree_path = ? and deleted_at is null`, F_WORKTREE),
+    );
+    if (Number(count) > 1)
+      fail(
+        `ambiguous: ${F_WORKTREE} belongs to ${count} threads; pass WORKBENCH_THREAD_ID from the executing task's T3 context`,
+      );
+  }
 
   switch (MODE) {
     case "id":

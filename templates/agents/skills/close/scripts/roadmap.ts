@@ -49,6 +49,8 @@
 //   roadmap.ts <project-folder> --sync-next     rewrite README.md's `status:`, `next:`,
 //                                               `blocked-on:` and `monitoring-until:` lines
 //                                               from --derive (the name predates status)
+//   any of the above … --projects-root <dir>    the folder holding projects/, for a
+//                                               table outside one (a scratch copy)
 //
 // --set and --sync-next take a per-project lock (`.roadmap.lock` beside the
 // table), re-read the files under it, and replace them through a temp file and
@@ -70,10 +72,28 @@
 // UTF-8 only where a line is READ as text; the rewritten row and the `next:`
 // line are the only bytes this program composes.
 //
+// ANOTHER PROJECT'S ROW. A Depends on entry `<slug> <ID>`, or
+// `<domain>/<slug> <ID>`, names a row of the project in
+// `<root>/projects/<domain>/<YYYY-MM-DD>_<slug>/`, where <root> is
+// `--projects-root` or the folder three above a table at
+// `<root>/projects/<domain>/<folder>/`. That ROADMAP.md is read once per run
+// through the same readTable(). An entry naming nothing that reads is an error
+// naming the cell, and the row is never ready and never a wait.
+//
+// EXPORTS. calendarDay() and watchDate(), the watch-date rule --derive uses.
+// check-roadmap-decisions.ts and check-journal-entry.ts import them rather than
+// copy the pattern. releaseDate(), the day a `blocked: until <date>` wait ends,
+// for /project triage, which lists such a row once the day has passed (nothing
+// sets it back to `planned` on its own). listRows(), the list mode in-process,
+// for rows-taken.ts, with each row's dependency results for
+// check-roadmap-decisions.ts, project-status.ts and land.ts. dependsOnEntries()
+// and matchProject(), the cell's grammar and the slug-to-folder match.
+//
 // peers:
 //   .agents/skills/close/scripts/roadmap.test.ts
 //   .agents/skills/close/scripts/spec-state.ts   (what each Sub-spec's state is)
 //   .agents/skills/close/scripts/lock.sh         (the lock protocol this ports)
+//   .agents/skills/close/scripts/check-roadmap-decisions.ts (watchDate, calendarDay)
 //   .agents/skills/project/references/templates/ROADMAP.md
 
 import { spawnSync } from "node:child_process";
@@ -82,6 +102,7 @@ import {
   closeSync,
   mkdirSync,
   openSync,
+  readdirSync,
   readFileSync,
   readlinkSync,
   realpathSync,
@@ -92,19 +113,22 @@ import {
   unlinkSync,
   writeSync,
 } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { exit, runToExit } from "../../../packages/cli-exit/cli-exit.ts";
 
 const SPEC_STATE = join(dirname(fileURLToPath(import.meta.url)), "spec-state.ts");
 
+// listRows() collects the messages instead of printing them; the program prints.
+let errSink: ((msg: string) => void) | null = null;
 const err = (msg: string): void => {
-  process.stderr.write(`roadmap: ${msg}\n`);
+  if (errSink !== null) errSink(msg);
+  else process.stderr.write(`roadmap: ${msg}\n`);
 };
 
 function usage(): never {
   err(
-    "usage: roadmap.ts <project-folder> [--next | --ready | --check <ID> | --derive | --set <ID> <status> [--sub-spec <path>] | --sync-next]",
+    "usage: roadmap.ts <project-folder> [--next | --ready | --check <ID> | --derive | --set <ID> <status> [--sub-spec <path>] | --sync-next] [--projects-root <dir>]",
   );
   return exit(2);
 }
@@ -124,9 +148,9 @@ const isFile = (p: string): boolean => {
   }
 };
 
-/** awk's records: split on \n, and a final newline ends the last record rather than starting an empty one. Latin1: one char per byte. */
-function records(path: string): { lines: string[]; raw: Buffer } {
-  const raw = readFileSync(path);
+/** awk's records: split on \n, and a final newline ends the last record rather than starting an empty one. Latin1: one char per byte. `given` is the file's bytes when the caller already holds them. */
+function records(path: string, given?: Buffer): { lines: string[]; raw: Buffer } {
+  const raw = given ?? readFileSync(path);
   const text = raw.toString("latin1");
   const lines = text === "" ? [] : text.split("\n");
   if (lines.length > 0 && lines[lines.length - 1] === "") lines.pop();
@@ -281,6 +305,34 @@ function substr(s: string, m: number, n?: number): string {
 }
 const trim = (s: string): string => s.replace(/^[ \t]+|[ \t]+$/g, "");
 
+/** Whether `token` is a `YYYY-MM-DD` naming a real calendar day: it survives a
+ *  `Date.UTC` round trip, so `2099-99-99` and `2026-02-30` do not. */
+export function calendarDay(token: string): boolean {
+  const m = /^([0-9]{4})-([0-9]{2})-([0-9]{2})$/.exec(token);
+  if (!m) return false;
+  const d = new Date(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3])));
+  return d.toISOString().slice(0, 10) === token;
+}
+
+/** The watch date of a `blocked:` status — its leading `YYYY-MM-DD`, when that
+ *  is a calendar day and no digit follows it — or "". The template's watch
+ *  rule: --derive reads `monitor` from it. */
+export function watchDate(status: string): string {
+  if (!/^blocked:/i.test(status)) return "";
+  const m = /^([0-9]{4}-[0-9]{2}-[0-9]{2})(?![0-9])/.exec(trim(status.replace(/^blocked:/i, "")));
+  return m?.[1] !== undefined && calendarDay(m[1]) ? m[1] : "";
+}
+
+/** The day a `blocked: until YYYY-MM-DD …` wait ends — its date, when that is a
+ *  calendar day and no digit follows it — or "". The template's release rule:
+ *  until that day the row is a wait like any other, so the project derives
+ *  `blocked`. Nothing sets it back to `planned` on its own: from that day
+ *  `/project triage blocked` lists it as a date passed, and `unblock` there does. */
+export function releaseDate(status: string): string {
+  const m = /^blocked:[ \t]*until[ \t]+([0-9]{4}-[0-9]{2}-[0-9]{2})(?![0-9])/i.exec(trim(status));
+  return m?.[1] !== undefined && calendarDay(m[1]) ? m[1] : "";
+}
+
 /** Split a table line into raw segments between unescaped pipes. seg[0] is whatever precedes the first pipe, the last whatever follows the last. */
 function segs(line: string): string[] {
   const seg: string[] = [];
@@ -377,17 +429,46 @@ interface SetArgs {
  */
 type ParseMode = "list" | "next" | "ready" | "check" | "derive" | "set";
 
-function parse(roadmap: string, mode: ParseMode, set: SetArgs, out: { text: string }): number {
+function parse(
+  roadmap: string,
+  mode: ParseMode,
+  set: SetArgs,
+  out: { text: string; deps?: DepResult[][]; dependsOn?: string[] },
+  given?: Buffer,
+): number {
   try {
-    return parseOrThrow(roadmap, mode, set, out);
+    return parseOrThrow(roadmap, mode, set, out, given);
   } catch (e) {
     if (e instanceof ParseFail) return 1;
     throw e;
   }
 }
 
-function parseOrThrow(roadmap: string, mode: ParseMode, set: SetArgs, out: { text: string }): number {
-  const { lines } = records(roadmap);
+/** One table as read: rows in order, cells as found by header name. */
+interface Table {
+  lines: string[];
+  colStatus: number;
+  colSub: number;
+  rid: string[];
+  rline: number[];
+  rstatus: string[];
+  rfeat: string[];
+  rsub: string[];
+  rdep: string[];
+  byid: Map<string, number>;
+}
+
+/** Status → kind, by the template derivation rule's vocabulary. */
+function kindOf(status: string): string {
+  const s = status.toLowerCase();
+  if (s === "planned" || s === "in-progress" || s === "done") return s;
+  if (/^blocked:/.test(s)) return "blocked";
+  if (/^absorbed by /.test(s) || /^closed:/.test(s)) return "closed"; // finished without being done
+  return "unknown";
+}
+
+/** The table under `# Roadmap`, or a ParseFail after err() names what is wrong. */
+function readTable(lines: string[]): Table {
   let state = "seek-heading";
   let hdr: string[] = [];
   let nh = 0;
@@ -465,37 +546,174 @@ function parseOrThrow(roadmap: string, mode: ParseMode, set: SetArgs, out: { tex
   if (!colId || !colStatus || state === "seek-table" || state === "skip-table") {
     fail("no table under `# Roadmap` with ID and Status columns");
   }
+  return { lines, colStatus, colSub, rid, rline, rstatus, rfeat, rsub, rdep, byid };
+}
+
+// ── Another project's row in Depends on ─────────────────────────────────────
+
+/** A `Depends on` entry: a local row ID, or `<slug> <ID>` / `<domain>/<slug> <ID>`
+ *  naming a row of another project. */
+export type DepEntry = { text: string; project: string; domain: string; slug: string; id: string };
+
+/** The entries of a `Depends on` cell — comma-separated, backticks stripped,
+ *  `—`, `-` and blank meaning none. `project` is "" for a local ID. */
+export function dependsOnEntries(cell: string): DepEntry[] {
+  const d = trim(cell);
+  if (d === "" || d === "—" || d === "-") return [];
+  const entries: DepEntry[] = [];
+  for (const raw of d.split(",")) {
+    const text = trim(raw).replace(/`/g, "");
+    if (text === "") continue;
+    const m = /^(?:([^\s/]+)\/)?([^\s/]+)[ \t]+(\S+)$/.exec(text);
+    if (m?.[2] && m[3]) {
+      const domain = m[1] ?? "";
+      entries.push({ text, project: domain ? `${domain}/${m[2]}` : m[2], domain, slug: m[2], id: m[3] });
+    } else entries.push({ text, project: "", domain: "", slug: "", id: text });
+  }
+  return entries;
+}
+
+/** Which of `rels` (`projects/<domain>/<YYYY-MM-DD>_<slug>`) is the project
+ *  `slug` names, in `domain` when given: an exact folder-name match, any date.
+ *  Two matches are ambiguous, never the first one. */
+export function matchProject(rels: string[], slug: string, domain = ""): { rel: string } | { error: string } {
+  const hits = rels.filter((rel) => {
+    const m = /^projects\/([^/]+)\/[0-9]{4}-[0-9]{2}-[0-9]{2}_(.+)$/.exec(rel);
+    return m?.[2] === slug && (domain === "" || m[1] === domain);
+  });
+  if (hits.length === 1 && hits[0] !== undefined) return { rel: hits[0] };
+  const named = domain ? `${domain}/${slug}` : slug;
+  if (hits.length === 0) return { error: `no project ${named} under projects/` };
+  return { error: `${named} names more than one project (${hits.sort().join(", ")}) — write <domain>/${slug}` };
+}
+
+/** `matchProject` over the project folders under `<root>/projects/` — those
+ *  holding a ROADMAP.md, the only rows a Depends on entry can name; a stray
+ *  folder of the same name is no candidate and makes nothing ambiguous. */
+export function findProjectFolder(root: string, slug: string, domain = ""): { rel: string } | { error: string } {
+  const rels: string[] = [];
+  const top = `${root}/projects`;
+  let domains: string[] = [];
+  try {
+    domains = readdirSync(top, { withFileTypes: true })
+      .filter((e) => e.isDirectory())
+      .map((e) => e.name);
+  } catch {
+    return { error: `no projects/ folder in ${root}` };
+  }
+  for (const d of domains) {
+    if (domain !== "" && d !== domain) continue;
+    for (const e of readdirSync(`${top}/${d}`, { withFileTypes: true }))
+      if (e.isDirectory() && isFile(`${top}/${d}/${e.name}/ROADMAP.md`)) rels.push(`projects/${d}/${e.name}`);
+  }
+  return matchProject(rels, slug, domain);
+}
+
+/** The repo root above a table at `<root>/projects/<domain>/<folder>/ROADMAP.md`, or null. */
+function rootAbove(roadmap: string): string | null {
+  const folder = dirname(resolve(roadmap));
+  const projects = dirname(dirname(folder));
+  return basename(projects) === "projects" ? dirname(projects) : null;
+}
+
+/** A dependency as resolved: `open` until the row it names is done, closed or
+ *  absorbed, then `satisfied`; `unresolved` when it names nothing that reads.
+ *  `feature` is the named row's Sub-feature, for a foreign entry that resolved. */
+export type DepResult = DepEntry & { state: "open" | "satisfied" | "unresolved"; feature: string };
+
+/** `--projects-root`, or listRows' option: the folder holding `projects/`.
+ *  undefined walks up from the table; null means there is none. */
+let projectsRootOpt: string | null | undefined;
+
+function parseOrThrow(
+  roadmap: string,
+  mode: ParseMode,
+  set: SetArgs,
+  out: { text: string; deps?: DepResult[][]; dependsOn?: string[] },
+  given?: Buffer,
+): number {
+  const { lines, colStatus, colSub, rid, rline, rstatus, rfeat, rsub, rdep, byid } = readTable(
+    records(roadmap, given).lines,
+  );
 
   const nrow = rid.length;
-  // Status → kind. The vocabulary is the template derivation rule.
   const kind: string[] = [];
   for (let r = 0; r < nrow; r++) {
-    const s = (rstatus[r] ?? "").toLowerCase();
-    if (s === "planned" || s === "in-progress" || s === "done") kind[r] = s;
-    else if (/^blocked:/.test(s)) kind[r] = "blocked";
-    else if (/^absorbed by /.test(s) || /^closed:/.test(s))
-      kind[r] = "closed"; // finished without being done
-    else {
-      kind[r] = "unknown";
-      err(`${rid[r]} has unknown status`);
-    }
+    kind[r] = kindOf(rstatus[r] ?? "");
+    if (kind[r] === "unknown") err(`${rid[r]} has unknown status`);
   }
+
+  // Another project's table, read once per folder through readTable; its
+  // messages are kept, not printed, and one of them explains a failed read.
+  const root = projectsRootOpt === undefined ? rootAbove(roadmap) : projectsRootOpt;
+  const foreign = new Map<string, { kinds: Map<string, { kind: string; feature: string }> } | { why: string }>();
+  const readForeign = (rel: string) => {
+    const hit = foreign.get(rel);
+    if (hit) return hit;
+    const saved = errSink;
+    const said: string[] = [];
+    errSink = (m) => said.push(m);
+    let got: { kinds: Map<string, { kind: string; feature: string }> } | { why: string };
+    try {
+      const t = readTable(records(`${root}/${rel}/ROADMAP.md`).lines);
+      const kinds = new Map<string, { kind: string; feature: string }>();
+      t.rid.forEach((id, i) =>
+        kinds.set(id.toUpperCase(), { kind: kindOf(t.rstatus[i] ?? ""), feature: t.rfeat[i] ?? "" }),
+      );
+      got = { kinds };
+    } catch (e) {
+      const why =
+        e instanceof ParseFail
+          ? (said[0] ?? "malformed")
+          : (e as NodeJS.ErrnoException).code === "ENOENT"
+            ? "no ROADMAP.md"
+            : String(e);
+      got = { why };
+    } finally {
+      errSink = saved;
+    }
+    foreign.set(rel, got);
+    return got;
+  };
+
+  // Every row's dependencies, resolved once: the ready column, the waits and
+  // canBeReady all read these.
+  const deps: DepResult[][] = [];
   const ready: boolean[] = [];
   for (let r = 0; r < nrow; r++) {
     ready[r] = kind[r] === "planned" || kind[r] === "in-progress";
-    const d = trim(rdep[r] ?? "");
-    if (d === "" || d === "—" || d === "-") continue;
-    for (const raw of d.split(",")) {
-      const dep = trim(raw).replace(/`/g, "");
-      if (dep === "") continue;
-      const at = byid.get(dep.toUpperCase());
-      if (at === undefined) {
-        err(`${rid[r]} depends on unknown ${dep}`);
-        ready[r] = false;
-        continue;
+    deps[r] = [];
+    for (const e of dependsOnEntries(rdep[r] ?? "")) {
+      let state: DepResult["state"] = "unresolved";
+      let feature = "";
+      if (e.project === "") {
+        const at = byid.get(e.id.toUpperCase());
+        if (at === undefined) err(`${rid[r]} depends on unknown ${e.text}`);
+        else state = kind[at] === "done" || kind[at] === "closed" ? "satisfied" : "open";
+      } else if (root === null) {
+        err(
+          `${rid[r]} depends on ${e.text}: no projects/ folder above this table to find ${e.project} in — pass --projects-root`,
+        );
+      } else {
+        const found = findProjectFolder(root, e.slug, e.domain);
+        if ("error" in found) err(`${rid[r]} depends on ${e.text}: ${found.error}`);
+        else {
+          const t = readForeign(found.rel);
+          if ("why" in t) err(`${rid[r]} depends on ${e.text}: ${found.rel}/ROADMAP.md does not read (${t.why})`);
+          else {
+            const row = t.kinds.get(e.id.toUpperCase());
+            if (row === undefined) err(`${rid[r]} depends on ${e.text}: ${e.project} has no row ${e.id}`);
+            else if (row.kind === "unknown")
+              err(`${rid[r]} depends on ${e.text}: ${e.project} ${e.id} has unknown status`);
+            else {
+              state = row.kind === "done" || row.kind === "closed" ? "satisfied" : "open";
+              feature = row.feature;
+            }
+          }
+        }
       }
-      const dk = kind[at];
-      if (dk !== "done" && dk !== "closed") ready[r] = false;
+      if (state !== "satisfied") ready[r] = false;
+      deps[r]?.push({ ...e, state, feature });
     }
   }
 
@@ -507,6 +725,8 @@ function parseOrThrow(roadmap: string, mode: ParseMode, set: SetArgs, out: { tex
   };
   if (mode === "list") {
     for (let r = 0; r < nrow; r++) out.text += rowTsv(r);
+    out.deps = deps;
+    out.dependsOn = rdep;
     return 0;
   }
   if (mode === "ready") {
@@ -522,21 +742,18 @@ function parseOrThrow(roadmap: string, mode: ParseMode, set: SetArgs, out: { tex
       err(`${rid[r]} not ready: its Status is \`${rstatus[r]}\``);
       bad = true;
     }
-    const d = trim(rdep[r] ?? "");
-    if (d !== "" && d !== "—" && d !== "-") {
-      for (const raw of d.split(",")) {
-        const dep = trim(raw).replace(/`/g, "");
-        if (dep === "") continue;
-        const q = byid.get(dep.toUpperCase());
-        if (q === undefined) {
-          err(`${rid[r]} not ready: depends on ${dep}, which is not a row`);
-          bad = true;
-          continue;
-        }
-        if (kind[q] !== "done" && kind[q] !== "closed") {
-          err(`${rid[r]} not ready: depends on ${rid[q]}, which is \`${rstatus[q]}\``);
-          bad = true;
-        }
+    // Each dependency as resolved above: a local row by its Status, another
+    // project's row (`<slug> <ID>`) by whether it is still open.
+    for (const x of deps[r] ?? []) {
+      if (x.state === "satisfied") continue;
+      bad = true;
+      const q = x.project === "" ? byid.get(x.id.toUpperCase()) : undefined;
+      if (x.state === "unresolved") {
+        err(`${rid[r]} not ready: depends on ${x.text}, which is not a row`);
+      } else if (q !== undefined) {
+        err(`${rid[r]} not ready: depends on ${rid[q]}, which is \`${rstatus[q]}\``);
+      } else {
+        err(`${rid[r]} not ready: depends on ${x.text}, which is still open`);
       }
     }
     if (rsub[r] === "—") {
@@ -562,28 +779,40 @@ function parseOrThrow(roadmap: string, mode: ParseMode, set: SetArgs, out: { tex
     // monitor, until the earliest; else nothing open (no rows at all included)
     // → completed.
     const what = (r: number): string => trim((rstatus[r] ?? "").replace(/^blocked:/i, ""));
-    const dated = (r: number): string => /^[0-9]{4}-[0-9]{2}-[0-9]{2}/.exec(what(r))?.[0] ?? "";
+    const dated = (r: number): string => watchDate(rstatus[r] ?? "");
     const open: number[] = [];
     for (let r = 0; r < nrow; r++) if (kind[r] !== "done" && kind[r] !== "closed") open.push(r);
-    const waiting = open.find((r) => kind[r] === "blocked" && dated(r) === "");
-    /** Ready once every blocked row it waits on clears: planned or in-progress, every dependency known and closed, blocked, or itself able to be ready. A row met again on the way (`seen`) is a cycle. */
+    // blocked-on names the wait that ends first — the earliest `blocked: until`
+    // date, the day the project reads active again — else the first wait in
+    // table order.
+    const released = (r: number): string => releaseDate(rstatus[r] ?? "");
+    // A row that would be ready but for another project's open row is a wait
+    // too — unless any of its entries is unresolved: a typo never reads as a
+    // wait, so the table is refused below rather than blocked on nothing.
+    const waitsOn = (r: number): DepResult[] => {
+      if (kind[r] !== "planned" && kind[r] !== "in-progress") return [];
+      const ds = deps[r] ?? [];
+      if (ds.some((x) => x.state === "unresolved")) return [];
+      return ds.filter((x) => x.project !== "" && x.state === "open");
+    };
+    const isWait = (r: number): boolean => (kind[r] === "blocked" && dated(r) === "") || waitsOn(r).length > 0;
+    let waiting: number | undefined;
+    for (const r of open) {
+      if (!isWait(r)) continue;
+      if (waiting === undefined) waiting = r;
+      else if (released(r) !== "" && (released(waiting) === "" || released(r) < released(waiting))) waiting = r;
+    }
+    /** Ready once every blocked row it waits on clears: planned or in-progress, every dependency known and closed, blocked, another project's row, or itself able to be ready. A row met again on the way (`seen`) is a cycle. */
     const canBeReady = (r: number, seen: Set<number>): boolean => {
       if (kind[r] !== "planned" && kind[r] !== "in-progress") return false;
       if (seen.has(r)) return false;
       seen.add(r);
-      const deps = trim(rdep[r] ?? "");
-      const ok =
-        deps === "" ||
-        deps === "—" ||
-        deps === "-" ||
-        deps.split(",").every((raw) => {
-          const dep = trim(raw).replace(/`/g, "");
-          if (dep === "") return true;
-          const at = byid.get(dep.toUpperCase());
-          if (at === undefined) return false;
-          const dk = kind[at];
-          return dk === "done" || dk === "closed" || dk === "blocked" || canBeReady(at, seen);
-        });
+      const ok = (deps[r] ?? []).every((x) => {
+        if (x.state === "unresolved") return false;
+        if (x.project !== "" || x.state === "satisfied") return true;
+        const at = byid.get(x.id.toUpperCase()) ?? -1;
+        return kind[at] === "blocked" || canBeReady(at, seen);
+      });
       seen.delete(r);
       return ok;
     };
@@ -595,7 +824,11 @@ function parseOrThrow(roadmap: string, mode: ParseMode, set: SetArgs, out: { tex
     if (pick >= 0) d.status = "active";
     else if (waiting !== undefined) {
       d.status = "blocked";
-      d.blockedOn = cut60(`${rid[waiting]}: `, what(waiting));
+      const on = waitsOn(waiting);
+      d.blockedOn = cut60(
+        `${rid[waiting]}: `,
+        kind[waiting] === "blocked" ? what(waiting) : `waits on ${on.map((x) => `${x.project} ${x.id}`).join(", ")}`,
+      );
     } else if (watch >= 0) {
       // Monitor says every open row is a watch or waits on one. A row that can
       // never be ready — in a dependency cycle, of unknown status, or after an
@@ -636,11 +869,60 @@ function parseOrThrow(roadmap: string, mode: ParseMode, set: SetArgs, out: { tex
   return 0;
 }
 
+/**
+ * The list mode's rows in this process, one string[] of the five TSV fields per
+ * row, with any message the parse would print returned in `messages` instead.
+ * For rows-taken.ts, which reads one ROADMAP.md per open thread and cannot start
+ * a program for each inside its one-second budget. `given` parses those bytes
+ * instead of the file — a committed copy read with `git show` — and `roadmap`
+ * then only names it in messages.
+ *
+ * Beside each row, index for index: `dependsOn`, its raw `Depends on` cell, and
+ * `deps`, each entry resolved — another project's row included, read under
+ * `opts.projectsRoot` (the folder holding `projects/`; null for none), else the
+ * root above `roadmap`.
+ */
+export function listRows(
+  roadmap: string,
+  given?: Buffer,
+  opts: { projectsRoot?: string | null } = {},
+): { ok: boolean; rows: string[][]; deps: DepResult[][]; dependsOn: string[]; messages: string[] } {
+  const messages: string[] = [];
+  const out: { text: string; deps?: DepResult[][]; dependsOn?: string[] } = { text: "" };
+  let rc = 1;
+  errSink = (m) => messages.push(m);
+  projectsRootOpt = opts.projectsRoot;
+  try {
+    rc = parse(roadmap, "list", { id: "", status: "", subspec: "" }, out, given);
+  } catch (e) {
+    messages.push(e instanceof Error ? e.message : String(e));
+  } finally {
+    errSink = null;
+    projectsRootOpt = undefined;
+  }
+  if (rc !== 0) return { ok: false, rows: [], deps: [], dependsOn: [], messages };
+  const rows = out.text
+    .split("\n")
+    .filter((l) => l !== "")
+    .map((l) => l.split("\t"));
+  return { ok: true, rows, deps: out.deps ?? [], dependsOn: out.dependsOn ?? [], messages };
+}
+
 async function main(): Promise<void> {
   const argv = process.argv.slice(2);
   if (argv.length < 1) usage();
   const projectDir = argv[0] ?? "";
   const rest = argv.slice(1);
+  const at = rest.indexOf("--projects-root");
+  if (at >= 0) {
+    const dir = rest[at + 1] ?? "";
+    if (!isDir(dir)) {
+      err(`--projects-root '${dir}' is not a directory`);
+      exit(2);
+    }
+    projectsRootOpt = resolve(dir);
+    rest.splice(at, 2);
+  }
   if (!isDir(projectDir)) {
     err(`not a directory: ${projectDir}`);
     exit(2);

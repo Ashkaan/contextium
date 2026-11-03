@@ -12,7 +12,6 @@ import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { DatabaseSync } from "node:sqlite";
 import { after, test } from "node:test";
 import { fileURLToPath } from "node:url";
 
@@ -601,7 +600,7 @@ test("on statev2.sqlite, post-cutover turns are read and imported ones are not d
   const V2 = join(TMP, "v2");
   mkdirSync(join(V2, "userdata"), { recursive: true });
   const T = "12345678-1111-2222-3333-444444444444";
-  const db = new DatabaseSync(join(V2, "userdata/statev2.sqlite"));
+  const db = new FixtureDb(join(V2, "userdata/statev2.sqlite"));
   db.exec(MESSAGES);
   db.exec(ACTIVITIES);
   db.exec("create table projection_thread_sessions (thread_id TEXT, provider_name TEXT)");
@@ -628,4 +627,169 @@ test("on statev2.sqlite, post-cutover turns are read and imported ones are not d
   has("the post-cutover turn", out, "10:31\tCan you send it today?");
   is("the imported turn once", String(out.split("Typed before the cutover.").length - 1), "1");
   hasnt("no assistant text", out, "an answer");
+});
+
+// ── T3 0.1.1-nightly.20261018: the legacy activities table is gone ────────────
+//
+// That nightly dropped `projection_thread_activities` from statev2.sqlite. The v2
+// views unioned it unconditionally, so every close's corrections step died with
+// "no such table: main.projection_thread_activities". A legacy table that is absent
+// is read as empty.
+
+test("on statev2.sqlite without the legacy activities table, turns are still read", () => {
+  const V2 = join(TMP, "v2-no-activities");
+  mkdirSync(join(V2, "userdata"), { recursive: true });
+  const T = "22345678-1111-2222-3333-444444444444";
+  const db = new FixtureDb(join(V2, "userdata/statev2.sqlite"));
+  db.exec(MESSAGES);
+  db.exec("create table projection_thread_sessions (thread_id TEXT, provider_name TEXT)");
+  db.exec(
+    "create table orchestration_v2_projection_threads (thread_id TEXT, title TEXT, created_at TEXT, deleted_at TEXT, payload_json TEXT)",
+  );
+  db.exec(
+    "create table orchestration_v2_projection_messages (message_id TEXT, thread_id TEXT, role TEXT, created_at TEXT, payload_json TEXT)",
+  );
+  db.exec("create table orchestration_v2_projection_provider_sessions (thread_id TEXT, provider TEXT)");
+  db.exec(
+    "create table orchestration_v2_projection_turn_items (turn_item_id TEXT, thread_id TEXT, type TEXT, status TEXT, updated_at TEXT, payload_json TEXT)",
+  );
+  db.prepare("insert into orchestration_v2_projection_messages values (?, ?, ?, ?, ?)").run(
+    "y1",
+    T,
+    "user",
+    "2026-10-18T05:40:00.000Z",
+    JSON.stringify({ text: "Why did this stop?", createdBy: "user" }),
+  );
+  // T3 writes its own restart notice as a role-user message, created by the agent side.
+  db.prepare("insert into orchestration_v2_projection_messages values (?, ?, ?, ?, ?)").run(
+    "y2",
+    T,
+    "user",
+    "2026-10-18T05:50:46.824Z",
+    JSON.stringify({
+      text: "Note: the T3 server restarted",
+      createdBy: "agent",
+      notification: { source: { kind: "system" } },
+    }),
+  );
+  db.close();
+
+  const { out, rc } = run({ T3CODE_HOME: V2, HOME: join(TMP, "home"), WORKBENCH_THREAD_ID: T });
+  is("exits 0", String(rc), "0");
+  hasnt("no missing-table error", out, "no such table");
+  has("the v2 turn", out, "22:40\tWhy did this stop?");
+  hasnt("T3's own restart notice is not the user's words", out, "T3 server restarted");
+});
+
+// T3 stamps every message a client sends `createdBy: "user"` (its launch and
+// dispatch handlers hard-code it), so a script's prompt — a probe's "Say hello.",
+// a script sending a scheduled prompt — would read as the user's words. What the user types
+// arrives from the app as `creationSource` "web" or "mobile"; a script sends as
+// "server". Only typed turns count; a row with no source predates
+// the field and is kept.
+test("on statev2.sqlite, only what the user typed in the app counts: a script's server-sent prompt is left out", () => {
+  const V2 = join(TMP, "v2-server-source");
+  mkdirSync(join(V2, "userdata"), { recursive: true });
+  const T = "42345678-1111-2222-3333-444444444444";
+  const db = new FixtureDb(join(V2, "userdata/statev2.sqlite"));
+  db.exec(
+    "create table orchestration_v2_projection_threads (thread_id TEXT, title TEXT, created_at TEXT, deleted_at TEXT, payload_json TEXT)",
+  );
+  db.exec(
+    "create table orchestration_v2_projection_messages (message_id TEXT, thread_id TEXT, role TEXT, created_at TEXT, payload_json TEXT)",
+  );
+  db.exec("create table orchestration_v2_projection_provider_sessions (thread_id TEXT, provider TEXT)");
+  db.exec(
+    "create table orchestration_v2_projection_turn_items (turn_item_id TEXT, thread_id TEXT, type TEXT, status TEXT, updated_at TEXT, payload_json TEXT)",
+  );
+  const msg = db.prepare("insert into orchestration_v2_projection_messages values (?, ?, ?, ?, ?)");
+  msg.run(
+    "s1",
+    T,
+    "user",
+    "2026-10-20T05:00:00.000Z",
+    JSON.stringify({ text: "Say hello.", createdBy: "user", creationSource: "server" }),
+  );
+  msg.run(
+    "s2",
+    T,
+    "user",
+    "2026-10-20T05:01:00.000Z",
+    JSON.stringify({ text: "Typed on the desktop.", createdBy: "user", creationSource: "web" }),
+  );
+  msg.run(
+    "s3",
+    T,
+    "user",
+    "2026-10-20T05:02:00.000Z",
+    JSON.stringify({ text: "Typed on the phone.", createdBy: "user", creationSource: "mobile" }),
+  );
+  msg.run(
+    "s4",
+    T,
+    "user",
+    "2026-10-20T05:03:00.000Z",
+    JSON.stringify({ text: "Typed before the field existed.", createdBy: "user" }),
+  );
+  db.close();
+
+  const { out, rc } = run({ T3CODE_HOME: V2, HOME: join(TMP, "home"), WORKBENCH_THREAD_ID: T });
+  is("exits 0", String(rc), "0");
+  hasnt("a script's prompt is not the user's words", out, "Say hello.");
+  has("desktop turn", out, "Typed on the desktop.");
+  has("phone turn", out, "Typed on the phone.");
+  has("a row with no source is kept", out, "Typed before the field existed.");
+});
+
+// On v2 every assistant message is `createdBy: "agent"` too. Only a role-user message
+// an agent created is not the user's; the assistant turn before a user turn is still
+// what window mode quotes as `reply_to`, and a bare "continue" carries no correction.
+test("on statev2.sqlite, window mode keeps the agent's reply as reply_to and drops a bare continue", () => {
+  const V2 = join(TMP, "v2-reply");
+  mkdirSync(join(V2, "userdata"), { recursive: true });
+  const T = "32345678-1111-2222-3333-444444444444";
+  const db = new FixtureDb(join(V2, "userdata/statev2.sqlite"));
+  db.exec(
+    "create table orchestration_v2_projection_threads (thread_id TEXT, title TEXT, created_at TEXT, deleted_at TEXT, payload_json TEXT)",
+  );
+  db.exec(
+    "create table orchestration_v2_projection_messages (message_id TEXT, thread_id TEXT, role TEXT, created_at TEXT, payload_json TEXT)",
+  );
+  db.exec("create table orchestration_v2_projection_provider_sessions (thread_id TEXT, provider TEXT)");
+  db.exec(
+    "create table orchestration_v2_projection_turn_items (turn_item_id TEXT, thread_id TEXT, type TEXT, status TEXT, updated_at TEXT, payload_json TEXT)",
+  );
+  db.prepare("insert into orchestration_v2_projection_threads values (?, ?, ?, ?, ?)").run(
+    T,
+    "R",
+    "2026-10-18T05:00:00.000Z",
+    null,
+    "{}",
+  );
+  const m = db.prepare("insert into orchestration_v2_projection_messages values (?, ?, ?, ?, ?)");
+  m.run(
+    "z1",
+    T,
+    "assistant",
+    "2026-10-18T05:10:00.000Z",
+    JSON.stringify({ text: "The tiles are three columns.", createdBy: "agent" }),
+  );
+  m.run("z2", T, "user", "2026-10-18T05:11:00.000Z", JSON.stringify({ text: "Make them two.", createdBy: "user" }));
+  m.run("z3", T, "user", "2026-10-18T05:20:00.000Z", JSON.stringify({ text: "continue", createdBy: "user" }));
+  db.close();
+
+  const { out, rc } = run(
+    { T3CODE_HOME: V2, HOME: join(TMP, "home") },
+    "--since",
+    "2026-10-18T00:00:00Z",
+    "--until",
+    "2026-10-19T00:00:00Z",
+    "--json",
+  );
+  is("exits 0", String(rc), "0");
+  const items = (
+    JSON.parse(out) as { threads: { items: { text: string; reply_to: string | null }[] }[] }
+  ).threads.flatMap((t) => t.items);
+  is("one turn: the correction, not the bare continue", JSON.stringify(items.map((i) => i.text)), '["Make them two."]');
+  is("reply_to is the agent's assistant turn", String(items[0]?.reply_to), "The tiles are three columns.");
 });

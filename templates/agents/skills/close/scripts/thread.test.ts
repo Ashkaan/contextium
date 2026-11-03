@@ -103,6 +103,43 @@ test("db hit prints the thread id", () => {
   expect("db hit prints the thread id", 0, TID_A, run(WT_A, ENV_OK));
 });
 
+test("review identity refuses a shared worktree unless the caller supplies its thread id", () => {
+  const t3 = join(TMP, "shared-identity");
+  mkdirSync(join(t3, "userdata"), { recursive: true });
+  sh(process.execPath, [
+    "--experimental-sqlite",
+    "--disable-warning=ExperimentalWarning",
+    "-e",
+    `
+    const {DatabaseSync}=require('node:sqlite'); const db=new DatabaseSync(process.argv[1]);
+    db.exec('create table projection_threads(thread_id text,branch text,worktree_path text,created_at text,deleted_at text)');
+    const insert=db.prepare('insert into projection_threads values (?,null,?,null,null)');
+    insert.run('parent',process.argv[2]); insert.run('thread:child',process.argv[2]); db.close();
+  `,
+    join(t3, "userdata/state.sqlite"),
+    WT_A,
+  ]);
+  const env = { HOME: FAKE_HOME, T3CODE_HOME: t3 };
+  expect("a shared worktree cannot identify the executing task", 2, "ambiguous", run(WT_A, env, ["--require-unique"]));
+  const satelliteHome = join(t3, "home");
+  const ledger = join(satelliteHome, ".cache/workbench/threads/parent");
+  mkdirSync(ledger, { recursive: true });
+  writeFileSync(join(ledger, "worktrees"), `${NOT_A_THREAD}\t${TMP}/shared\tt3/parent\n`);
+  expect(
+    "a satellite cannot hide the shared primary worktree",
+    2,
+    "ambiguous",
+    run(NOT_A_THREAD, { ...env, HOME: satelliteHome }, ["--require-unique"]),
+  );
+  expect(
+    "an explicit child identity stays its own",
+    0,
+    "thread:child",
+    run(WT_A, { ...env, WORKBENCH_THREAD_ID: "thread:child" }, ["--require-unique"]),
+  );
+  expect("one thread is unambiguous", 0, TID_A, run(WT_A, ENV_OK, ["--require-unique"]));
+});
+
 // Node 22 prints an ExperimentalWarning to stderr when node:sqlite loads, and
 // every caller reads the id as `$(… thread.ts --id 2>&1)`: a warning there
 // became part of the id, and a branch named `session/(node:111) Experimental…`

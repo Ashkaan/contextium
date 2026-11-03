@@ -74,7 +74,25 @@
 //        grep for that prefix.
 //   F8 — `root_cause_status:` is one of its four values. A value outside them
 //        splits one meaning across several buckets for anything counting them.
-//   F6–F8 skip `0000-*.md`, as F5 does, and skip lines inside a ``` or ~~~
+//   F9 — a `**Blocked:**` bullet is `- act: …` or `- wait: …` on one line, and
+//        carries no decision words (`?`, whether, decide, choose, go-ahead,
+//        approve, answer, …): an open decision is asked and the run halts.
+//        Binds entries started at F9_FROM or later.
+//   F10 — the front matter carries `open_items: none`: the run's open-items
+//        sweep (auto-close-gate.md precondition (iii)) as an assertion. Anything
+//        still open is asked and the run halts before the close, so no other
+//        value exists. A question parked as report prose or a `rejected:` line
+//        is read by neither F9 nor check-roadmap-decisions. Binds entries
+//        started at F10_FROM or later.
+//   F11 — no body line outside **Blocked:** and **Corrections:** leaves
+//        something waiting on the user (open-decision.ts parkedOnUser). F10
+//        alone was an assertion a writer could make over a parked question;
+//        this reads for the question. Binds from F10_FROM.
+//   F12 — a `**Blocked:**` bullet is never `- act: …`, and a `- wait: …`
+//        carries a calendar date on or after the entry's: a step for the user
+//        keeps the session open, because a close means it is done. Binds from
+//        F12_FROM.
+//   F6–F9 and F12 skip `0000-*.md`, as F5 does, and skip lines inside a ``` or ~~~
 //   fence — an entry quoting an old entry is not writing a section.
 //
 // Schema SSOT is close/references/journal-entry.md. The two lists below are
@@ -89,11 +107,13 @@
 // and from journal-file.ts --check during /close § 3.
 
 import { spawnSync } from "node:child_process";
+import { namesUser, openDecisionWord, parkedOnUser, plainText } from "./open-decision.ts";
 import { closeSync, mkdtempSync, openSync, readFileSync, realpathSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { exit, runToExit } from "../../../packages/cli-exit/cli-exit.ts";
+import { calendarDay } from "./roadmap.ts";
 
 // Copies of close/references/journal-entry.md § Section set and § Field
 // reference; the test fails when either drifts from the file.
@@ -157,13 +177,133 @@ function firstBodyHeading(lines: string[]): string {
   return "";
 }
 
+// ─── F9: a Blocked bullet is an act or a wait, never an open decision ──
+// The auto-close gate let an item ride the close only when the user had
+// something to DO and nothing to ANSWER; a question is asked and the run halts
+// (close/references/auto-close-gate.md precondition (iii)). As prose, that let
+// a close land with "waiting on the user's go-ahead for an infrastructure
+// change" under Blocked. Every bullet now names its kind — `act:` (the user's
+// hands: a send, a click, a signature) or `wait:` (someone else, data that does
+// not exist yet, a date) — and a bullet whose words are a choice the user has
+// not made refuses the close, whatever it is typed. The words are
+// open-decision.ts's, shared with check-roadmap-decisions.ts: a choice on its
+// own, or one only when the line is the user's — any `act:`, or a `wait:`
+// naming them.
+/**
+ * F9, F10 and F12 bind entries started (`date` + `time`, the entry's own local
+ * time) at or after the day each rule began; an entry written before keeps the
+ * shape it was written in, so re-landing an old entry never refuses it.
+ */
+const F9_FROM = "2026-10-18T07:30";
+const F10_FROM = "2026-10-19T15:11";
+/** F12: an entry written before keeps its `- act:` lines. */
+const F12_FROM = "2026-10-21T11:08";
+const HALT =
+  "an open decision does not ride the close — ask it in the reply as a numbered list, recommendation first, and halt; the verb closes after the user answers (auto-close-gate.md precondition (iii))";
+
+function blockedCheck(l: string, n: number, report: (n: number, id: string, msg: string) => void, when: string): void {
+  if (new RegExp(`^${SP}*$`).test(l)) return;
+  if (/^[ \t]/.test(l)) {
+    report(n, "F9", "a Blocked bullet wraps onto an indented line — each bullet is one line");
+    return;
+  }
+  const typed = /^- (act|wait): (.*)$/.exec(l);
+  const f12 = when >= F12_FROM;
+  if (!typed) {
+    if (/^- (decide|ask|question|choose):/i.test(l)) report(n, "F9", `this is an open decision: ${HALT}`);
+    else if (f12)
+      report(
+        n,
+        "F9",
+        "a Blocked bullet is `- wait: <YYYY-MM-DD> <who or what>` — someone else, or data that does not exist yet, checked on that date",
+      );
+    else
+      report(
+        n,
+        "F9",
+        "a Blocked bullet starts `- act: ` (what the user does: a send, a click, a signature) or `- wait: ` (someone else, data that does not exist yet, a date)",
+      );
+    return;
+  }
+  if (f12) futureWaitCheck(typed[1] ?? "", typed[2] ?? "", n, report, when.slice(0, 10));
+  const text = typed[2] ?? "";
+  // An act is the user's own by definition; a wait names them when it waits on
+  // them. An act waits on the user's hands by definition, so "waiting on the
+  // user to send" is an act; on one, only a ruling ("until the user rules") is
+  // parked on them.
+  // "confirm" and the parked-wait wording landed with F10, and bind from it.
+  const f10 = when >= F10_FROM;
+  const word =
+    openDecisionWord(text, typed[1] === "act" || namesUser(text), { confirm: f10 }) ??
+    (f10 ? parkedOnUser(text, { act: typed[1] === "act" }) : null);
+  if (word) report(n, "F9", `"${word}" makes this an open decision, not an ${typed[1]}: ${HALT}`);
+}
+
+// ─── F12: nothing under Blocked waits on the user ─────────────────────
+// A close means the work is done: anything open keeps the session open. A
+// step for the user's hands keeps the session open, so an `act:` is refused; a
+// `wait:` that names the user waits on them too, whatever its date; any other
+// `wait:` rides only as a check set for a future date — a calendar day standing
+// alone in its plain text (code spans and URLs read out), on or after the
+// entry's own date. What "open" means is auto-close-gate.md precondition (iii).
+function futureWaitCheck(
+  kind: string,
+  text: string,
+  n: number,
+  report: (n: number, id: string, msg: string) => void,
+  day: string,
+): void {
+  if (kind === "act") {
+    report(
+      n,
+      "F12",
+      "a step for the user does not ride the close — list it in the reply as what they do; the session stays open until they have done it, then closes (auto-close-gate.md precondition (iii))",
+    );
+    return;
+  }
+  if (namesUser(text)) {
+    report(
+      n,
+      "F12",
+      "a wait that names the user waits on them, whatever its date — the session stays open until they have done it; a wait names who or what else it waits on (auto-close-gate.md precondition (iii))",
+    );
+    return;
+  }
+  const dates = [...plainText(text).matchAll(/(?<![0-9])([0-9]{4}-[0-9]{2}-[0-9]{2})(?![0-9])/g)]
+    .map((m) => m[1] ?? "")
+    .filter(calendarDay);
+  if (dates.length === 0)
+    report(
+      n,
+      "F12",
+      "a wait with no date — write `- wait: <YYYY-MM-DD> <who or what>` with the day to check, or keep the session open until it clears",
+    );
+  else if (!dates.some((d) => d >= day))
+    report(
+      n,
+      "F12",
+      `a wait whose date is already past the entry's ${day} — the check is due: do it now, or set the next date`,
+    );
+}
+
+/** F11 — a line worded as waiting on the user (open-decision.ts parkedOnUser). */
+function parkedCheck(l: string, n: number, report: (n: number, id: string, msg: string) => void): void {
+  const parked = parkedOnUser(l);
+  if (parked)
+    report(
+      n,
+      "F11",
+      `"${parked}" leaves this waiting on the user: ${HALT}. If it is something the user DOES (a send, a click), the session stays open until they have done it`,
+    );
+}
+
 // ─── F6 + F7: the body's sections and the Decisions bullets ──────────
 // One pass over the body (after the closing `---`). A fence opener flips
 // `fence` and an unclosed fence runs to the end of the file, so quoted
 // text is never read as a section. The length is counted in CHARACTERS (code
 // points), never bytes, and needs no locale: a `rejected:` line usually
 // carries an em-dash, and a byte count would refuse a 499-character line.
-function bodyChecks(lines: string[], file: string): string[] {
+function bodyChecks(lines: string[], file: string, when = ""): string[] {
   const out: string[] = [];
   const allowed = new Set(SECTION_LABELS.split("|"));
   const report = (n: number, id: string, msg: string): void => {
@@ -200,7 +340,7 @@ function bodyChecks(lines: string[], file: string): string[] {
         let where: string;
         if (label === "Next")
           where =
-            "retired: outstanding project work belongs in the project ROADMAP.md, work waiting on the user under **Blocked:**";
+            "retired: outstanding project work belongs in the project ROADMAP.md, and work waiting on the user keeps the session open";
         else if (label === "Issues")
           where = "retired: what an investigation found belongs under **Findings:**, each bullet naming its reading";
         else
@@ -209,8 +349,19 @@ function bodyChecks(lines: string[], file: string): string[] {
         report(n, "F6", `\`**${label}:**\` is not one of the eight sections (${SECTION_LABELS}) — ${where}`);
       }
       section = label;
+      // A bullet written on the label line itself is still a Blocked bullet.
+      const inline = l.replace(/^\*\*[^*]+:\*\*/, "").trim();
+      if (label === "Blocked" && inline !== "" && when >= F9_FROM) blockedCheck(inline, n, report, when);
+      if (label !== "Blocked" && label !== "Corrections" && inline !== "" && when >= F10_FROM)
+        parkedCheck(inline, n, report);
       continue;
     }
+    if (section === "Blocked") {
+      if (when >= F9_FROM) blockedCheck(l, n, report, when);
+      continue;
+    }
+    // F11: Corrections are the user's own words, so they are not read.
+    if (section !== "Corrections" && when >= F10_FROM) parkedCheck(l, n, report);
     if (section !== "Decisions") continue;
     if (new RegExp(`^${SP}*$`).test(l)) continue;
     if (/^[ \t]/.test(l)) {
@@ -359,18 +510,20 @@ async function main(): Promise<void> {
   } else {
     STAGED_MODE = true;
     // Read and checked before it is filtered: a failed read that listed
-    // nothing would exit 0 on "nothing staged" — a gate passed.
-    const r = spawnSync("git", ["diff", "--cached", "--name-only", "--diff-filter=ACM"], {
+    // nothing would exit 0 on "nothing staged" — a gate passed. NUL-separated,
+    // because without -z git C-quotes a name like "caf\303\251.md" and the
+    // quoted form never matched the journal pattern below.
+    const r = spawnSync("git", ["diff", "--cached", "-z", "--name-only", "--diff-filter=ACM"], {
       encoding: "utf8",
       stdio: ["inherit", "pipe", "pipe"],
     });
-    const staged = `${r.stdout ?? ""}${r.stderr ?? ""}`.replace(/\n+$/, "");
     if (r.status !== 0) {
-      const last = staged.slice(staged.lastIndexOf("\n") + 1);
+      const err = (r.stderr ?? "").replace(/\n+$/, "");
+      const last = err.slice(err.lastIndexOf("\n") + 1);
       process.stderr.write(`check-journal-entry: could not read the staged files: ${last}\n`);
       exit(1);
     }
-    files = staged.split("\n").filter((f) => /^journal\/[0-9]{4}-[0-9]{2}-[0-9]{2}\/[^/]+\.md$/.test(f));
+    files = (r.stdout ?? "").split("\0").filter((f) => /^journal\/[0-9]{4}-[0-9]{2}-[0-9]{2}\/[^/]+\.md$/.test(f));
   }
 
   if (files.length === 0) exit(0);
@@ -475,7 +628,18 @@ function scanAll(files: string[], staged: boolean, scratch: string): void {
         );
       }
 
-      issues.push(...bodyChecks(lines, journalPath));
+      const when = `${frontMatterValue(lines, "date", false)?.value ?? ""}T${frontMatterValue(lines, "time", false)?.value ?? "00:00"}`;
+
+      // ─── F10: the entry says nothing is left to ask ──────────────────────
+      if (when >= F10_FROM) {
+        const open = frontMatterValue(lines, "open_items", true);
+        if (!open || open.value !== "none") {
+          issues.push(
+            `${journalPath}${open ? `:${open.line}` : ""}: F10 — ${open ? `open_items '${open.value}'` : "no 'open_items:' key"}: the only value is 'none'. A question, issue or improvement this run surfaced is done now or asked in the reply as a numbered list, recommendation first, and the run halts before the close — never parked in a report, a \`rejected:\` line or the reply under the close's last line (auto-close-gate.md precondition (iii)).`,
+          );
+        }
+      }
+      issues.push(...bodyChecks(lines, journalPath, when));
     }
 
     // Reported against the file actually read — in staged mode, the copy

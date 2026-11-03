@@ -150,6 +150,7 @@ db.close();
 // worktree runs it.
 const SCRIPT = join(T3_WT, ".agents/skills/close/scripts/journal-file.ts");
 
+// Resolve the fake session from this fixture, never the caller's live thread.
 const HARNESS_VARS = ["CLAUDE_CODE_SESSION_ID", "CLAUDE_SESSION_ID", "CONTEXTIUM_SESSION", "CONTEXTIUM_HARNESS", "CODEX_THREAD_ID", "CODEX_SESSION_ID", "WORKBENCH_THREAD_ID"];
 function childEnv(env: Record<string, string>): NodeJS.ProcessEnv {
   // NODE_OPTIONS=--no-warnings reaches the grandchildren too (thread.ts,
@@ -281,18 +282,18 @@ test("--check", () => {
     `---
 date: 2026-09-13
 time: "20:15"
-slug: security-policy-ai
+slug: retry-policy
 tags: []
 ---
 
-### one-off (security policy and client data in AI)
+### one-off (retry policy for flaky tests)
 **Action:** completed
 
-Policy drafted.
+Policy written.
 `,
   );
   r = run("--check");
-  is("the real filename-stem/title mismatch exits 3", String(r.rc), "3");
+  is("a filename-stem/title mismatch exits 3", String(r.rc), "3");
   has("the check exposes the existing validator's diagnosis", r.out, "front matter says slug");
   is(
     "a failed check preserves the allocated path",
@@ -302,14 +303,14 @@ Policy drafted.
   is(
     "a failed check leaves the journal intact",
     readFileSync(CHECK_PATH, "utf8").split("\n")[3] ?? "",
-    "slug: security-policy-ai",
+    "slug: retry-policy",
   );
 
   writeFileSync(
     CHECK_PATH,
     readFileSync(CHECK_PATH, "utf8").replace(
-      /^slug: security-policy-ai$/m,
-      "slug: one-off (security policy and client data in AI)",
+      /^slug: retry-policy$/m,
+      "slug: one-off (retry policy for flaky tests)",
     ),
   );
   r = run("--check");

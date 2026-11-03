@@ -41,8 +41,32 @@
 // convention an integration has no typecheck target of its own, so its silence
 // is the norm and not a gap.
 //
+// AND WHICH PACKAGES. A `packages/<name>` folder is held to the same rule:
+// verified when its own files moved and it declares a `test` or `check`,
+// silent when it declares neither (most have no package.json). Without it no
+// close would run any package's own tests.
+//
+// THE RECORD. Every run ends by
+// writing `<thread state>/verified`: the run's result, and a content digest of
+// every path each ledger worktree changes — the same changed-path listing the
+// passes below read, so the importer fallback's integration edits are in it —
+// leaving out only the records /close writes AFTER verify (`journal/`,
+// `knowledge/`, a project's ROADMAP.md and README.md). `land.ts` asks
+// `--stamped` before it commits anything and refuses a thread whose code moved
+// since verify passed: otherwise nothing proves verify ran at all, and the step
+// lives only as a SKILL.md sentence. The digests are
+// taken at the START of the run, so a file edited while the suites ran reads
+// as changed, and a run that halts before its end leaves `incomplete`, never
+// the pass an earlier run wrote. The file, whose one reader is `--stamped`:
+//
+//   {"result":"pass"|"fail"|"incomplete","repos":{"<shared>":{"<path>":"<digest>"}}}
+//
 // Usage:
-//   verify.ts              — verify every app this thread touched
+//   verify.ts              — verify every app, integration, package, product
+//                            repo and skill folder this thread touched
+//   verify.ts --stamped    — run nothing: exit 0 when the last run passed and no
+//                            worktree changed since (or none changed at all),
+//                            else 1 with one stderr line per worktree saying why
 //
 // WHICH SKILLS. The same question, asked of the skills tree: every top-level
 // folder under `.agents/skills/` whose files moved in this thread's WORKBENCH
@@ -57,6 +81,13 @@
 // workbench's own toolchain, and nothing else runs their suites before a close.
 // See pass 3 below for why the unit is the folder rather than the file,
 // and for the backstop that catches a write which never reached a worktree.
+//
+// WHICH PROJECTS. A project that carries suites of its own is a unit when any
+// of its files but markdown moved in the workbench worktree — code, or a
+// fixture a suite reads — and every `*.test.ts` beneath it runs with
+// `node --test`, bounded like a skill suite; otherwise a project's own suites
+// run on no close. A project's markdown records (README, ROADMAP, specs) move
+// nothing a test reads, so they select nothing.
 //
 // Output, one line per app:
 //   ok <app>
@@ -87,13 +118,18 @@
 //   FAIL skills — N uncommitted file(s) under .agents/skills/ in the shared checkout
 //                 this thread's worktree does not account for
 //
+// and one line per project unit:
+//   ok projects/<domain>/<slug>
+//   FAIL projects/<domain>/<slug> <suite> — rerun: cd <worktree> && node --test … <suite>
+//   FAIL projects/<domain>/<slug> <suite> — timed out after <N>s
+//
 // Env:
 //   WORKBENCH_THREAD_ID, T3CODE_HOME — read by thread.ts.
 //   VERIFY_RUNNER — the command used to run a script, default `npm run`. The
 //                   test suite replaces it; nothing in production does.
 //   VERIFY_IMPORTER_CAP — how many importer apps may be RUN in the fallback pass
 //                   before they are named unverified instead. Default 8.
-//   VERIFY_SKILLS_TIMEOUT — seconds one skill suite may take. Default 180.
+//   VERIFY_SKILLS_TIMEOUT — seconds one skill or project suite may take. Default 180.
 //                   Enforced by a watchdog in this process (the suite runs in a
 //                   process group of its own, TERMed at the limit and KILLed 5s
 //                   later), not by timeout(1), which stock macOS does not have.
@@ -103,8 +139,10 @@
 //   .agents/skills/close/scripts/write-root.sh   (writes the ledger walked here)
 //
 // Exit: 0 all green (or nothing to verify) · 1 at least one FAIL · 2 no thread
+//       --stamped: 0 stamped, or nothing changed · 1 not stamped · 2 no thread
 
 import { spawn, spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import {
   accessSync,
   closeSync,
@@ -115,11 +153,13 @@ import {
   readFileSync,
   readlinkSync,
   realpathSync,
+  renameSync,
   statSync,
+  writeFileSync,
   writeSync,
 } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { exit, runToExit } from "../../../packages/cli-exit/cli-exit.ts";
 
@@ -127,6 +167,8 @@ const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const THREAD = join(SCRIPT_DIR, "thread.ts");
 const TRUNK = join(SCRIPT_DIR, "trunk.ts");
 const WRITE_ROOT = join(SCRIPT_DIR, "write-root.sh");
+// The review receipt's reader, run as a program.
+const AUDIT = join(SCRIPT_DIR, "../../implement-audit/scripts/audit-dedupe.ts");
 const RUNNER = process.env.VERIFY_RUNNER || "npm run";
 
 let FAILED = 0;
@@ -178,8 +220,10 @@ function ledgerRows(ledger: string): LedgerRow[] {
 
 // Every path this worktree changed, committed or not. Deliberately three
 // questions rather than one `git status --porcelain` parse: porcelain's rename
-// rows (`R old -> new`) and its quoting of unusual filenames both need a real
-// parser, and getting either wrong silently drops an app from the verify set.
+// rows (`R old -> new`) need a real parser, and getting it wrong silently drops
+// an app from the verify set. Each read is NUL-separated (`-z`): without it git
+// C-quotes a name holding a tab or a non-ASCII byte, and `"apps/x/…` maps to no
+// app at all.
 //
 // A READ THAT FAILED HALTS. Each git read's status is checked: a failed diff or
 // untracked listing contributed no lines, dropped every app it would have named,
@@ -187,7 +231,20 @@ function ledgerRows(ledger: string): LedgerRow[] {
 // The trunk lookup and the `origin/<trunk>` probe are questions whose "no" is an
 // answer — a repo with no origin has no committed range to diff — so only the
 // three reads that list paths are held to it.
+//
+// ASKED ONCE PER WORKTREE PER RUN. Every pass and the record ask it again, and
+// each answer costs a `trunk.ts` start; the tree they ask about is the one the
+// record's digests were taken from at the start.
+const CHANGED = new Map<string, string[]>();
 function changedPaths(wt: string): string[] {
+  const hit = CHANGED.get(wt);
+  if (hit) return hit;
+  const paths = listChangedPaths(wt);
+  CHANGED.set(wt, paths);
+  return paths;
+}
+
+function listChangedPaths(wt: string): string[] {
   const all: string[] = [];
   const read = (args: string[]): string[] => {
     const r = spawnSync("git", ["-C", wt, ...args], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
@@ -196,18 +253,24 @@ function changedPaths(wt: string): string[] {
       say(`FAIL verify — could not list the changed files in ${wt}: git ${args.join(" ")}: ${why}`);
       exit(1);
     }
-    return (r.stdout ?? "").split("\n");
+    return (r.stdout ?? "").split("\0");
   };
   // The trunk is asked for per repo rather than spelled `main`: a repo whose
   // trunk is `master` would otherwise fall through to the untracked-only
   // branch below and verify NOTHING it had committed.
   const t = out(process.execPath, ["--experimental-strip-types", TRUNK, wt]);
   const vtrunk = t.ok ? t.stdout : "";
-  if (vtrunk !== "" && out("git", ["-C", wt, "rev-parse", "--verify", "-q", `origin/${vtrunk}`]).ok) {
-    all.push(...read(["diff", `origin/${vtrunk}...HEAD`, "--name-only"]));
+  // A trunk `trunk.ts` names from origin/HEAD before `origin/<trunk>` is a
+  // local ref hid every COMMITTED change: only a fetch creates the ref, and
+  // land.ts fetches before it measures. Fetched here too, once, so verify sees
+  // what the landing will push (otherwise the stamp disagrees with land).
+  const hasTrunk = (): boolean => out("git", ["-C", wt, "rev-parse", "--verify", "-q", `origin/${vtrunk}`]).ok;
+  if (vtrunk !== "" && !hasTrunk()) out("git", ["-C", wt, "fetch", "-q", "origin", vtrunk]);
+  if (vtrunk !== "" && hasTrunk()) {
+    all.push(...read(["diff", "-z", `origin/${vtrunk}...HEAD`, "--name-only"]));
   }
-  all.push(...read(["diff", "HEAD", "--name-only"]));
-  all.push(...read(["ls-files", "--others", "--exclude-standard"]));
+  all.push(...read(["diff", "-z", "HEAD", "--name-only"]));
+  all.push(...read(["ls-files", "-z", "--others", "--exclude-standard"]));
   return sortUnique(all);
 }
 
@@ -246,7 +309,7 @@ function integrationDirsFor(wt: string): string[] {
   return sortUnique(
     changedPaths(wt).flatMap((p) => {
       const f = p.split("/");
-      return f[0] === "integrations" && f.length >= 2 ? [`${f[0]}/${f[1]}`] : [];
+      return (f[0] === "integrations" || f[0] === "packages") && f.length >= 2 ? [`${f[0]}/${f[1]}`] : [];
     }),
   );
 }
@@ -426,6 +489,16 @@ function skillUnitsFor(wt: string): SkillUnit[] {
   return [...units.keys()].sort().map((k) => units.get(k) as SkillUnit);
 }
 
+// `<domain>/<slug>` of every project whose files other than markdown moved.
+function projectUnitsFor(wt: string): string[] {
+  return sortUnique(
+    changedPaths(wt).flatMap((p) => {
+      const f = p.split("/");
+      return f[0] === "projects" && f.length >= 4 && !p.endsWith(".md") ? [`${f[1]}/${f[2]}`] : [];
+    }),
+  );
+}
+
 // Which of this thread's worktrees is the WORKBENCH row — the one holding the
 // skills? Proven by its tree rather than by its ledger position or its SHARED
 // column: `.agents/skills/` is the tree this pass reads. Asking write-root.sh
@@ -512,7 +585,7 @@ const SIGNUM: Record<string, number> = { SIGHUP: 1, SIGINT: 2, SIGKILL: 9, SIGTE
 // leave a child that ignores TERM; once TERM has gone out, the promise settles
 // only after the group is empty or the KILL has been sent — resolving on the
 // leader's exit cancelled the KILL, and that child outlived the close for good.
-function runBounded(argv: string[], cwd: string, log: string, secs: number): Promise<number> {
+function runBounded(argv: string[], cwd: string, log: string, secs: number, env?: NodeJS.ProcessEnv): Promise<number> {
   const fd = openSync(log, "w");
   return new Promise((done) => {
     const [cmd, ...args] = argv;
@@ -529,7 +602,7 @@ function runBounded(argv: string[], cwd: string, log: string, secs: number): Pro
       closeSync(fd);
       done(rc);
     };
-    const child = spawn(cmd ?? "", args, { cwd, stdio: ["ignore", fd, fd], detached: true });
+    const child = spawn(cmd ?? "", args, { cwd, env, stdio: ["ignore", fd, fd], detached: true });
     const signal = (sig: NodeJS.Signals | 0): boolean => {
       try {
         if (child.pid === undefined) return false;
@@ -687,7 +760,182 @@ async function verifySkillUnit(logs: string, timeout: string, wt: string, unit: 
   }
 }
 
+// Every `*.test.ts` beneath one project, each run where it sits with the
+// flags layer-2.ts gives a test run in place (`--experimental-test-module-mocks`
+// so a mock.module() suite does not read as a regression). Same vocabulary and
+// clock as verifySkillUnit; a project with code and no suites prints nothing,
+// which is the common case.
+async function verifyProjectUnit(logs: string, timeout: string, wt: string, unit: string): Promise<void> {
+  const dir = `${wt}/projects/${unit}`;
+  if (!isDir(dir)) return;
+  const ts = findSuites(dir, false, "*.test.ts");
+  if (ts.rc !== 0) {
+    say(`FAIL projects/${unit} — could not list its node:test suites (find exited ${ts.rc})`);
+    FAILED = 1;
+    return;
+  }
+  if (ts.suites.length === 0) return;
+  const limit = Number(timeout);
+  const flags = [
+    "--test",
+    "--experimental-strip-types",
+    "--experimental-test-module-mocks",
+    "--preserve-symlinks",
+    "--preserve-symlinks-main",
+  ];
+  // A `node --test` started under another one reports to it and exits 0
+  // whatever its tests did, so the parent's NODE_TEST_CONTEXT is not passed on.
+  const { NODE_TEST_CONTEXT: _, ...env } = process.env;
+  let unitFailed = false;
+  for (const suite of ts.suites) {
+    const rel = suite.startsWith(`${wt}/`) ? suite.slice(wt.length + 1) : suite;
+    const log = `${logs}/${rel.replace(/\//g, "-")}.log`;
+    const start = Date.now();
+    const rc = await runBounded([process.execPath, ...flags, rel], wt, log, limit, env);
+    const elapsed = Date.now() - start;
+    if (elapsed >= limit * 1000) {
+      say(`FAIL projects/${unit} ${rel} — timed out after ${timeout}s`);
+    } else if (rc !== 0) {
+      say(`FAIL projects/${unit} ${rel} — rerun: cd ${wt} && node ${flags.join(" ")} ${rel}`);
+    } else {
+      continue;
+    }
+    say(`     log: ${log}`);
+    unitFailed = true;
+    FAILED = 1;
+  }
+  if (!unitFailed) say(`ok projects/${unit}`);
+}
+
+// ── The record ─────────────────────────────────────────────────────────────
+
+// The records /close writes after verify has run: § 2's project README and
+// ROADMAP (and land.ts's promotion of a finished row in them), § 3's journal
+// entry, and anything under knowledge/. Every other changed path is code or a
+// spec, and moving one after verify passed makes the pass stale.
+function isAfterVerifyRecord(p: string): boolean {
+  return /^(?:journal|knowledge)\//.test(p) || /^projects\/(?:.*\/)?(?:ROADMAP|README)\.md$/.test(p);
+}
+
+// One path's content as git would record it: absent, a symlink's target, or
+// the exec bit and the bytes. A directory is a nested repo `ls-files` lists
+// whole; its own contents are its own repo's business. Exported for the review
+// receipt (.agents/skills/implement-audit/scripts/audit-dedupe.ts), which compares the
+// content a review covered the same way.
+export function digest(p: string): string {
+  let st: ReturnType<typeof lstatSync>;
+  try {
+    st = lstatSync(p);
+  } catch {
+    return "absent";
+  }
+  if (st.isSymbolicLink()) return `link:${readlinkSync(p)}`;
+  if (!st.isFile()) return "dir";
+  return `${st.mode & 0o111 ? "x" : "-"}:${createHash("sha256").update(readFileSync(p)).digest("hex")}`;
+}
+
+type Digests = Record<string, string>;
+
+// Every live ledger worktree's changed paths and their digests, keyed by the
+// row's shared checkout: a worktree removed and made again for the same repo
+// is the same repo, and unchanged content still matches.
+function snapshot(rows: LedgerRow[]): Record<string, { wt: string; paths: Digests }> {
+  const out: Record<string, { wt: string; paths: Digests }> = {};
+  for (const { wt, shared } of rows) {
+    if (wt === "" || !isDir(wt)) continue;
+    const paths: Digests = {};
+    for (const p of changedPaths(wt)) if (!isAfterVerifyRecord(p)) paths[p] = digest(join(wt, p));
+    out[shared || wt] = { wt, paths };
+  }
+  return out;
+}
+
+function writeRecord(file: string, result: string, snap: ReturnType<typeof snapshot>): void {
+  const repos: Record<string, Digests> = {};
+  for (const [key, { paths }] of Object.entries(snap)) repos[key] = paths;
+  const tmp = `${file}.tmp.${process.pid}`;
+  writeFileSync(tmp, `${JSON.stringify({ result, repos })}\n`);
+  renameSync(tmp, file);
+}
+
+// THE REVIEW RECEIPT. Implementation source
+// lands only on an independent review of the content as it is now: the same
+// reader validate.ts's review path writes for, asked of every live ledger
+// worktree. It says nothing about a thread with no implementation work (no
+// registered audit, no report carrying a coverage block), so an ad-hoc fix or a
+// planning close is judged exactly as before. A missing or crashing reader is
+// a failure, never a pass. Returns the lines to print and whether it passed.
+function reviewReceipts(tid: string, rows: LedgerRow[]): { ok: boolean; lines: string[] } {
+  const wts = rows.map((r) => r.wt).filter((wt) => wt !== "" && isDir(wt));
+  if (wts.length === 0) return { ok: true, lines: [] };
+  if (!isFile(AUDIT)) return { ok: false, lines: [`FAIL review — the receipt reader is missing: ${AUDIT}`] };
+  const r = spawnSync(process.execPath, ["--experimental-strip-types", AUDIT, "check", "--owner", tid, ...wts], {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  const lines = [
+    ...(r.stdout ?? "")
+      .split("\n")
+      .filter((l) => l.startsWith("review: "))
+      .map((l) => `ok ${l}`),
+    ...(r.stderr ?? "")
+      .split("\n")
+      .filter((l) => l.startsWith("review: "))
+      .map((l) => `FAIL ${l}`),
+  ];
+  if (r.status === 0) return { ok: true, lines };
+  if (r.status === 1 && lines.some((l) => l.startsWith("FAIL "))) return { ok: false, lines };
+  const why = (r.stderr ?? r.error?.message ?? "").trim().split("\n").pop() || `exited ${r.status}`;
+  return { ok: false, lines: [...lines, `FAIL review — the receipt check could not run: ${why}`] };
+}
+
+// --stamped: the record against the worktrees as they are now. Runs no suite.
+// A worktree with nothing changed needs no stamp — a thread that wrote only
+// records, or one whose earlier landing already put its work on the trunk.
+function stamped(file: string, rows: LedgerRow[], tid: string): never {
+  const now = snapshot(rows);
+  const receipts = reviewReceipts(tid, rows);
+  const unreviewed = receipts.lines.filter((l) => l.startsWith("FAIL ")).map((l) => `verify: ${l.slice(5)}`);
+  const moved = Object.entries(now).filter(([, { paths }]) => Object.keys(paths).length > 0);
+  if (moved.length === 0 && unreviewed.length === 0) return exit(0);
+  let rec: { result?: unknown; repos?: Record<string, Digests> } | null = null;
+  if (isFile(file)) {
+    try {
+      rec = JSON.parse(readFileSync(file, "utf8"));
+    } catch {
+      rec = null;
+    }
+  }
+  const why: string[] = [...unreviewed];
+  for (const [key, { wt, paths }] of moved) {
+    if (rec === null) {
+      why.push(`verify: ${wt}: verify never ran on this worktree`);
+      continue;
+    }
+    if (rec.result !== "pass") {
+      why.push(`verify: ${wt}: the last run ${rec.result === "incomplete" ? "did not finish" : "failed"}`);
+      continue;
+    }
+    const was = rec.repos?.[key];
+    if (!was) {
+      why.push(`verify: ${wt}: verify never ran on this worktree`);
+      continue;
+    }
+    const differ = sortUnique([...Object.keys(paths), ...Object.keys(was)]).filter((p) => paths[p] !== was[p]);
+    if (differ.length > 0) why.push(`verify: ${wt}: changed since verify passed: ${differ.join(", ")}`);
+  }
+  if (why.length === 0) return exit(0);
+  process.stderr.write(why.map((l) => `${l}\n`).join(""));
+  return exit(1);
+}
+
 async function main(): Promise<void> {
+  const args = process.argv.slice(2);
+  const STAMPED = args[0] === "--stamped";
+  if (args.length > (STAMPED ? 1 : 0)) {
+    process.stderr.write("usage: verify.ts [--stamped]\n");
+    exit(2);
+  }
   const tid = spawnSync(process.execPath, ["--experimental-strip-types", THREAD, "--id"], {
     encoding: "utf8",
     stdio: ["inherit", "pipe", "pipe"],
@@ -703,6 +951,22 @@ async function main(): Promise<void> {
   }
   const TID = (tid.stdout ?? "").replace(/\n+$/, "");
 
+  const threadDir = `${process.env.HOME ?? homedir()}/.cache/workbench/threads/${TID}`;
+  const LEDGER = `${threadDir}/worktrees`;
+  const RECORD = `${threadDir}/verified`;
+
+  // A question about the last run, asked of the ledger as it stands: it
+  // registers nothing, because land.ts has seeded the ledger by the time it asks.
+  if (STAMPED) {
+    if (!isFile(LEDGER)) exit(0);
+    stamped(RECORD, ledgerRows(LEDGER), TID);
+  }
+
+  // Whatever an earlier run recorded stops counting now: a run that halts
+  // anywhere below leaves `incomplete` behind, never that run's pass.
+  mkdirSync(threadDir, { recursive: true });
+  writeRecord(RECORD, "incomplete", {});
+
   // REGISTER THE THREAD'S OWN WORKTREE BEFORE READING THE LEDGER. A session that
   // edited only app code has never called the resolver — nothing asked it where
   // to write, because the harness had already put it in the right tree. Its
@@ -715,7 +979,15 @@ async function main(): Promise<void> {
   const T3_WT = t3.stdout;
   // A registration that failed is a FAIL, never skipped: with no ledger behind it
   // the close would print "nothing to verify" over outstanding app changes.
-  if (T3_WT !== "" && isDir(T3_WT)) {
+  // A worktree the ledger already lists is registered: the resolver would
+  // change nothing, and it costs a second of every run (land.ts's own suite
+  // repeats verify in every landing case).
+  const listed =
+    isFile(LEDGER) &&
+    readFileSync(LEDGER, "utf8")
+      .split("\n")
+      .some((l) => l.split("\t")[0] === T3_WT);
+  if (T3_WT !== "" && isDir(T3_WT) && !listed) {
     const reg = spawnSync("bash", [WRITE_ROOT, T3_WT], { encoding: "utf8", stdio: ["inherit", "ignore", "pipe"] });
     if (reg.status !== 0) {
       const why = (reg.stderr ?? reg.error?.message ?? "").trim().split("\n").pop() || `exited ${reg.status}`;
@@ -724,8 +996,6 @@ async function main(): Promise<void> {
     }
   }
 
-  const threadDir = `${process.env.HOME ?? homedir()}/.cache/workbench/threads/${TID}`;
-  const LEDGER = `${threadDir}/worktrees`;
   // What `land.ts` has already put on a trunk, one `<shared-path>\t<sha>` row per
   // landing. Read here for one question only: is a ledger row whose worktree is
   // gone a LOSS or a completed landing?
@@ -734,12 +1004,15 @@ async function main(): Promise<void> {
 
   if (!isFile(LEDGER)) {
     say("verify: this thread owns no worktrees yet — nothing to verify");
+    writeRecord(RECORD, "pass", {});
     exit(0);
   }
 
   mkdirSync(LOGS, { recursive: true });
   const rows = ledgerRows(LEDGER);
   const SEEN: string[] = [];
+  // The content this run verifies, taken before any suite runs.
+  const SNAP = snapshot(rows);
 
   // ── Pass 1: apps whose own files moved ─────────────────────────────────────
 
@@ -767,6 +1040,22 @@ async function main(): Promise<void> {
       if (hasScript(pkg, "test") === 1 && hasScript(pkg, "check") === 1) continue;
       verifyUnit(LOGS, wt, integ, integ);
     }
+  }
+
+  // ── Pass 1b: product repos whose own files moved ───────────────────────────
+  //
+  // A ledger row that is not the workbench worktree is a product repo's (a
+  // site, an app with a repo of its own). When anything in it moved and its
+  // root carries a package.json, its own `check` and `test` run from that
+  // root, exactly as an app's do, and a red half fails the close: a product
+  // repo whose push builds without testing is tested here or nowhere.
+  // Labelled by the repo's name. Kept out of SEEN, which is about APPS.
+  const PRODUCT_SKIP = workbenchWorktree(rows);
+  for (const { wt, shared } of rows) {
+    if (wt === "" || wt === PRODUCT_SKIP || !isDir(wt) || isDir(`${wt}/apps`)) continue;
+    if (!isFile(`${wt}/package.json`)) continue;
+    if (changedPaths(wt).length === 0) continue;
+    verifyUnit(LOGS, wt, ".", basename(shared || wt));
   }
 
   // ── Pass 2: nothing moved in any app, but shared code did ──────────────────
@@ -874,6 +1163,10 @@ async function main(): Promise<void> {
       await verifySkillUnit(LOGS, SKILLS_TIMEOUT, WB_WT, unit);
     }
 
+    for (const unit of projectUnitsFor(WB_WT)) {
+      await verifyProjectUnit(LOGS, SKILLS_TIMEOUT, WB_WT, unit);
+    }
+
     // ── The backstop ─────────────────────────────────────────────────────────
     //
     // The write guard fails OPEN on any Bash form it cannot parse, and the
@@ -889,11 +1182,19 @@ async function main(): Promise<void> {
     // IN A SESSION ALREADY EDITING SKILLS, and it halts. If it changed nothing
     // under `.agents/skills/`, there is no evidence this session touched skills at all —
     // another session's uncommitted work must not stop an unrelated close.
-    const DIRT = sortUnique(
-      out("git", ["-C", WB_SHARED, "status", "--porcelain", "--", ".agents/skills"])
-        .stdout.split("\n")
-        .map((l) => (l.length >= 3 ? l.slice(3) : l).replace(/^.* -> /, "")),
-    );
+    //
+    // NUL-separated, so a quoted name is read as it is on disk: each record is
+    // `XY path`, and a rename or copy is followed by one more record, the old
+    // path, which is skipped — the new path is the file in the tree.
+    const dirty: string[] = [];
+    const recs = out("git", ["-C", WB_SHARED, "status", "--porcelain", "-z", "--", ".agents/skills"]).stdout.split("\0");
+    for (let i = 0; i < recs.length; i++) {
+      const rec = recs[i] ?? "";
+      if (rec.length < 4) continue;
+      dirty.push(rec.slice(3));
+      if (/[RC]/.test(rec.slice(0, 2))) i++;
+    }
+    const DIRT = sortUnique(dirty);
 
     if (DIRT.length > 0) {
       if (SKILLS_TOUCHED) {
@@ -938,6 +1239,15 @@ async function main(): Promise<void> {
     say("verify: no app files changed in this thread's worktrees — skills units above");
   }
 
+  const receipts = reviewReceipts(TID, rows);
+  for (const l of receipts.lines) say(l);
+  if (!receipts.ok) {
+    say("     an independent review must cover this content before it lands — run /implement-audit (its");
+    say("     driver reuses what is still covered), or restore the reviewed bytes");
+    FAILED = 1;
+  }
+
+  writeRecord(RECORD, FAILED ? "fail" : "pass", SNAP);
   exit(FAILED);
 }
 

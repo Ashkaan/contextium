@@ -1,16 +1,19 @@
-// land-cases.ts — the cases close.spec.md § 6 names as the hard gate, and every
-// one the close has grown since. Not a suite itself: land.test.ts,
-// land.gates.test.ts and land.rows.test.ts each run one range of these cases.
+// land-cases.ts — the cases the close's spec names as the hard gate, and every
+// one the close has grown since. Not a suite itself: the eight `land*.test.ts`
+// files beside land.ts each run one range of these cases.
 //
-// WHY THREE FILES. The cases run strictly one after another, and every one
+// WHY EIGHT FILES. The cases run strictly one after another, and every one
 // spawns land.ts and its helpers as Node processes. In bash that cost a few
 // milliseconds a child; in TypeScript it is a Node start each, and the whole
-// suite takes about 200 s — past the 180 s verify.ts gives one suite. Three
-// files are three processes that `node --test` runs side by side and verify.ts
-// times one at a time, while every case and expected string stays in this one
-// file.
+// suite takes minutes — past the 180 s verify.ts gives one suite. The files
+// are processes that `node --test` runs side by side and verify.ts times one
+// at a time, while every case and expected string stays in this one file.
+// Three files were enough until every landing began running verify.ts first
+// (the `land` helper below), which put the gates file alone past four
+// minutes; the eight are cut from each case's measured time to finish in
+// about two minutes apiece, the live-check case (27) in a file of its own.
 //
-// Run all three:
+// Run them all:
 //   node --test --experimental-strip-types .agents/skills/close/scripts/land*.test.ts
 //
 // Each scenario builds its own throwaway world: two real repos with real bare
@@ -27,11 +30,10 @@
 // (`.agents/packages/cli-exit/`, and whatever else a relative import names), at
 // the same relative path under `.agents/`, so the copy runs.
 //
-// Nothing is stubbed except what is not this script's job: the deploy-run
-// poller (`.agents/deploy/await-deploy-run.sh` owns its own behavior — what is
-// tested here is that its VERDICT is honoured, that a repo that has not opted
-// in is not polled at all, and that one that opted in without a poller is
-// refused), and the pre-commit checkers, whose rules their own suites own.
+// Nothing is stubbed except what is not this script's job: the push-checks
+// waiter (`await-push-checks.ts` owns its own behavior — what is tested here is
+// that its VERDICT is honoured, and which repo and SHA it is asked about), and
+// the pre-commit checkers, whose rules their own suites own.
 //
 // Ported from land.test.sh case for case, with each expected string verbatim
 // except where it names a file that changed extension (`check-skills.sh`,
@@ -44,6 +46,7 @@
 import assert from "node:assert/strict";
 import { type ChildProcess, spawn, spawnSync } from "node:child_process";
 import {
+  appendFileSync,
   chmodSync,
   closeSync,
   copyFileSync,
@@ -143,12 +146,17 @@ function caseNumber(name: string): number {
   return Number(m[1]);
 }
 
-/** Register every case numbered from..to (inclusive), in file order. */
-export function runCases(from: number, to: number): void {
+/**
+ * Register every case numbered from..to (inclusive), in file order — those
+ * whose label (`Case 14g`) `pick` accepts, when one number's cases are too
+ * long for one file.
+ */
+export function runCases(from: number, to: number, pick: (label: string) => boolean = () => true): void {
   let chain: Promise<void> = Promise.resolve();
   for (const c of CASES) {
     const n = caseNumber(c.name);
     if (n < from || n > to) continue;
+    if (!pick(c.name.split(":")[0] ?? "")) continue;
     const prev = chain;
     let release: () => void = () => {};
     chain = new Promise((r) => {
@@ -262,7 +270,11 @@ function sleep(ms: number): Promise<void> {
 function relativeImports(file: string): string[] {
   const src = readFileSync(file, "utf8");
   const out: string[] = [];
-  for (const m of src.matchAll(/(?:from|import)\s*\(?\s*["'](\.{1,2}\/[^"']+)["']/g)) {
+  // Static imports only. A dynamic `import(…)` is a script's lazy half, loaded
+  // on a path no fixture reaches, and copying it could put `integrations/`
+  // into every fixture repo — which the close then reads as a workbench app
+  // change in a product repo (Case 9).
+  for (const m of src.matchAll(/(?:from|import)\s+["'](\.{1,2}\/[^"']+)["']/g)) {
     const spec = m[1];
     if (spec) out.push(resolve(dirname(file), spec));
   }
@@ -294,6 +306,9 @@ function copyScripts(destRoot: string): void {
     if (!/\.(sh|ts)$/.test(f) || f.includes(".test.")) continue;
     copyWithImports(join(HERE, f), destRoot, seen);
   }
+  // The review receipt's reader, which verify.ts and land.ts run as a program
+  // by path rather than import.
+  copyWithImports(join(HERE, "../../implement-audit/scripts/audit-dedupe.ts"), destRoot, seen);
 }
 
 // The harness-links check land.ts runs from the shared checkout after every
@@ -314,6 +329,8 @@ type Fx = {
   HOME_DIR: string;
   env1: Record<string, string>;
   env2: Record<string, string>;
+  /** The land.ts `land` runs when a case names none: a stubbed copy (writeAwaitStub). */
+  script?: string;
 };
 let F: Fx;
 
@@ -416,23 +433,99 @@ ins.run(t2, "p", "two", "t3code/two", w2, a2, "x", null);
 }
 
 function envOf(n: 1 | 2, cwd: string, extra: Record<string, string> = {}): NodeJS.ProcessEnv {
-  return { ...process.env, ...(n === 1 ? F.env1 : F.env2), ...extra, PWD: cwd };
+  // Each scenario owns its fake session; explicit per-test overrides still win.
+  // LAND_GH: a stand-in that answers `--version`, so the push check asks the
+  // stub waiter whether or not this machine has gh.
+  return {
+    ...process.env,
+    WORKBENCH_THREAD_ID: "",
+    LAND_GH: process.execPath,
+    ...(n === 1 ? F.env1 : F.env2),
+    ...extra,
+    PWD: cwd,
+  };
 }
 
 // Run land.ts as thread N, from that thread's own T3 worktree. `merge` is the
 // bash suite's `2>&1`.
+//
+// A landing first gets what a session's § 1 and § 3 give it, since land.ts
+// refuses without them: a journal entry, committed on its own so each
+// case's commit holds only its own files, and a verify run over the worktrees
+// as they are now. `bare` leaves both out, for the cases about those refusals.
+// The entry is recorded the way journal-file.ts records one — its path in the
+// thread's `journal` file — rather than by running it: that script has its own
+// suite, and a second and a half on every case's first landing is what pushed
+// these files past verify.ts's bound.
 function land(
   n: 1 | 2,
   args: string[],
-  opt: { merge?: boolean; extra?: Record<string, string>; script?: string } = {},
+  opt: { merge?: boolean; extra?: Record<string, string>; script?: string; bare?: boolean } = {},
 ): Res {
   const cwd = n === 1 ? F.WT1 : F.WT2;
-  return sh(process.execPath, [...NODE_TS, opt.script ?? LAND, ...args], {
+  const script = opt.script ?? F.script;
+  const landing = args.some((a) => !a.startsWith("-")) && !args.includes("--check") && !args.includes("--gate");
+  if (landing && !opt.bare) prereqs(n, script);
+  return sh(process.execPath, [...NODE_TS, script ?? LAND, ...args], {
     cwd,
     env: envOf(n, cwd, opt.extra),
     merge: opt.merge ?? false,
   });
 }
+function prereqs(n: 1 | 2, script?: string): void {
+  const cwd = n === 1 ? F.WT1 : F.WT2;
+  const ref = threadFile(n === 1 ? TID1 : TID2, "journal");
+  if (!isFile(ref) || !isFile(cat(ref))) {
+    const J = join(cwd, `journal/2026-09-13/0000-auto-${n}.md`);
+    entry(J, `auto-${n}`, `thread ${n}'s entry`);
+    write(ref, `${J}\n`);
+    gDo(cwd, "add", "--", J);
+    gDo(cwd, "commit", "-q", "-m", "journal");
+  }
+  // A retry over the same content needs no second run: the record still
+  // describes it. Measured by what verify measures — every ledger worktree's
+  // HEAD and its working tree, untracked files included — through a scratch
+  // index, so nothing in the worktree is touched.
+  const key = contentKey(n);
+  if (VERIFIED_AT.get(`${F.S}:${n}`) === key) return;
+  verify(n, script ? join(dirname(script), "verify.ts") : join(HERE, "verify.ts"));
+  VERIFIED_AT.set(`${F.S}:${n}`, key);
+}
+
+const VERIFIED_AT = new Map<string, string>();
+function contentKey(n: 1 | 2): string {
+  const ledger = threadFile(n === 1 ? TID1 : TID2, "worktrees");
+  const wts = isFile(ledger)
+    ? cat(ledger)
+        .split("\n")
+        .map((l) => l.split("\t")[0] ?? "")
+    : [n === 1 ? F.WT1 : F.WT2];
+  const idx = join(F.S, `key-index-${n}`);
+  const env = { ...process.env, GIT_INDEX_FILE: idx };
+  return wts
+    .filter((wt) => wt !== "" && isDir(wt))
+    .map((wt) => {
+      rmSync(idx, { force: true });
+      spawnSync("git", ["-C", wt, "add", "-A"], { env, stdio: "ignore" });
+      const tree = sh("git", ["-C", wt, "write-tree"], { env }).out;
+      return `${wt} ${g(wt, "rev-parse", "HEAD")} ${tree} ${g(wt, "rev-parse", "origin/main")}`;
+    })
+    .join("\n");
+}
+
+// Run verify.ts as thread N, the way § 1 does. No app in a fixture has a real
+// toolchain, so a declared half passes (`true <half>`); a skill suite runs for
+// real. A script that is not there runs nothing (the case about a missing one).
+function verify(n: 1 | 2, script = join(HERE, "verify.ts"), extra: Record<string, string> = {}): Res {
+  const cwd = n === 1 ? F.WT1 : F.WT2;
+  if (!isFile(script)) return { rc: 0, out: "" };
+  return sh(process.execPath, ["--experimental-strip-types", script], {
+    cwd,
+    env: envOf(n, cwd, { VERIFY_RUNNER: "true", WORKBENCH_THREAD_ID: n === 1 ? TID1 : TID2, ...extra }),
+    merge: true,
+  });
+}
+
 function writeRoot(n: 1 | 2, target: string, merge = false): Res {
   const cwd = n === 1 ? F.WT1 : F.WT2;
   return sh("bash", [WRITE_ROOT, target], { cwd, env: envOf(n, cwd), merge });
@@ -730,202 +823,175 @@ kase("Case 5: a conflict halts loud and changes nothing shared", () => {
 
 // ── Case 6 ────────────────────────────────────────────────────────────────
 //
-// A deploy that never starts is the failure a push-triggered deploy can have
-// and a merger that deployed could not: a dropped webhook, a runner that is
-// down, and silence looks exactly like success. So: a run that completes
-// closes, a run that fails does NOT, and no run at all does NOT — for a repo
-// that opted in with `.agents/deployable-prefixes.json`. One that did not has
-// no deploy check at all.
+// The push deploys, and this script only checks: a merger that ran the deploy
+// would deploy the shared checkout, which another session may hold dirty. The
+// failure a push path can have is a deploy that never starts — a workflow that
+// never starts, a runner that is gone — and silence would look exactly like
+// success. So: a run that completes closes, a run that fails does NOT, and no
+// run at all where one was expected does NOT.
 
-// The poller lives in the repo, so it has to be ON main before the close runs —
-// which is how the real one gets there. It is a bash script, as the repo's own
-// `.agents/deploy/await-deploy-run.sh` is.
+// The waiter is land's own sibling, so the stub replaces it in a COPY of these
+// scripts, run as that copy's land.ts (`F.script`, which `land` uses until the
+// next fixture). It logs what it was asked and from where, and answers from
+// the environment: AWAIT_STUB_RC and AWAIT_STUB_LINE for every repo, or only
+// for the one whose name ends in AWAIT_STUB_ONLY. Both repos' origins are
+// given GitHub names, mapped back to their bare origins with `insteadOf`,
+// because land.ts asks GitHub only about a repo whose origin names one.
 function writeAwaitStub(): void {
+  const STUBROOT = join(F.S, "stubchecks");
+  const STUBDIR = join(STUBROOT, ".agents/skills/close/scripts");
+  cpSync(HERE, STUBDIR, { recursive: true });
+  copyScripts(STUBROOT);
   write(
-    join(F.CODE, ".agents/deploy/await-deploy-run.sh"),
-    `#!/usr/bin/env bash
-sha=""
-while [ $# -gt 0 ]; do case "$1" in --sha) sha="$2"; shift 2 ;; *) shift ;; esac; done
-echo "polled \${sha}" >&2
-echo "cwd $(pwd -P)" >&2
-if [ -n "\${AWAIT_STUB_FAIL_SHA:-}" ] && [ "\${AWAIT_STUB_FAIL_SHA}" = "\${sha}" ]; then
-  echo "deploy: failed (run_old)"
-  exit 3
-fi
-printf '%s\\n' "\${AWAIT_STUB_LINE:-deploy: completed (run_stub)}"
-exit "\${AWAIT_STUB_RC:-0}"
+    join(STUBDIR, "await-push-checks.ts"),
+    `const arg = (f: string): string => process.argv[process.argv.indexOf(f) + 1] ?? "";
+const repo = arg("--repo");
+const sha = arg("--sha");
+process.stderr.write(\`polled \${sha} \${repo}\\ncwd \${process.cwd()}\\n\`);
+if (process.env.AWAIT_STUB_FAIL_SHA === sha) {
+  process.stdout.write("deploy: failure (run_old)\\ndeploy failure\\n");
+  process.exit(1);
+}
+const only = process.env.AWAIT_STUB_ONLY;
+const mine = !only || repo.endsWith(only);
+process.stdout.write(\`\${(mine && process.env.AWAIT_STUB_LINE) || "deploy: success (run_stub)"}\\n\`);
+process.exit(mine ? Number(process.env.AWAIT_STUB_RC ?? "0") : 0);
 `,
   );
+  asGitHub(F.CODE);
+  asGitHub(F.PROD);
+  F.script = join(STUBDIR, "land.ts");
+}
+
+/** Give <repo>'s origin a GitHub URL that git still reaches as the bare origin. */
+function asGitHub(repo: string): void {
+  const bare = g(repo, "config", "--get", "remote.origin.url");
+  const url = `https://github.com/test/${basename(repo)}.git`;
+  gDo(repo, "config", `url.${bare}.insteadOf`, url);
+  gDo(repo, "config", "remote.origin.url", url);
+}
+
+// EVERY PUSH IS OWED ITS CHECKS. An earlier close read
+// `.agents/deployable-prefixes.json` out of the landed commit and skipped the
+// poll for a push that touched no listed path; the workflows decide from their
+// own diff what to run, so a list here drifts from theirs, and the list and the
+// skip went together. A list left in a commit is not read.
+function writeLeftoverPrefixList(): void {
+  write(join(F.CODE, ".agents/deployable-prefixes.json"), '["apps/", "integrations/", "packages/"]\n');
   gDo(F.CODE, "add", ".agents");
-  gDo(F.CODE, "commit", "-q", "-m", "the deploy poller");
+  gDo(F.CODE, "commit", "-q", "-m", "a leftover prefix list");
   gDo(F.CODE, "push", "-q", "origin", "main");
   gDo(F.WT1, "fetch", "-q", "origin", "main");
   gDo(F.WT1, "merge", "-q", "--no-edit", "origin/main");
 }
 
-// The prefix list is the opt-in: without it the deploy check is off. A RUN IS
-// OWED ONLY WHEN THE LANDED DIFF CAN DEPLOY SOMETHING: this script reads the
-// list out of the landed commit, never the shared checkout's working tree, and
-// polls only when the diff since the trunk it left matches. Anything it cannot
-// read (unparseable JSON) polls: never skip on an unknown.
-function writePrefixList(json: string): void {
-  write(join(F.CODE, ".agents/deployable-prefixes.json"), `${json}\n`);
-  gDo(F.CODE, "add", ".agents");
-  gDo(F.CODE, "commit", "-q", "-m", "the prefix list");
-  gDo(F.CODE, "push", "-q", "origin", "main");
-  gDo(F.WT1, "fetch", "-q", "origin", "main");
-  gDo(F.WT1, "merge", "-q", "--no-edit", "origin/main");
-}
-
+const polledLines = (): string[] =>
+  cat(threadFile(TID1, "deploy.log"))
+    .split("\n")
+    .filter((l) => l.startsWith("polled "));
 const polledCount = (): string => countLines(threadFile(TID1, "deploy.log"), (l) => l.includes("polled "));
 
 kase("Case 6: the landing CHECKS the push deployed, and never deploys", () => {
-  // OFF UNLESS OPTED IN. A poller with no prefix list: the landing closes and
-  // no deploy line is printed.
-  fixture("c6off");
-  writeAwaitStub();
-  write(join(F.WT1, "one.txt"), "one\n");
-  let r = land(1, ["thread one"], { merge: true });
-  is("with no .agents/deployable-prefixes.json the deploy check is off", r.rc, "0");
-  hasnt("…and nothing is polled", r.out, "deploy:");
-
-  // OPTED IN WITHOUT A POLLER is the silent case again, so it is NOT CLOSED —
-  // and stays so on the retry, because the push is owed a run nobody checked.
-  fixture("c6nopoll");
-  writePrefixList('["one"]');
-  write(join(F.WT1, "one.txt"), "one\n");
-  r = land(1, ["thread one"], { merge: true });
-  isnt("a prefix list with no poller does NOT close", r.rc, "0");
-  has("…and names the missing poller", r.out, ".agents/deploy/await-deploy-run.sh");
-  r = land(1, ["thread one"], { merge: true });
-  is("…nor does the retry", r.rc, "3");
-  hasnt("…which prints no proof line", r.out, "loses nothing");
-
   fixture("c6");
   writeAwaitStub();
-  writePrefixList('["one"]');
   write(join(F.WT1, "one.txt"), "one\n");
   const SAT1 = writeRoot(1, F.PROD).out;
   write(join(SAT1, "one-prod.md"), "prod\n");
 
-  r = land(1, ["thread one"], { merge: true });
-  is("a completed deploy run closes", r.rc, "0");
-  has("…and the run is named in the report", r.out, "deploy: completed (run_stub)");
-  has("…and the poller was asked about the landed commit", cat(threadFile(TID1, "deploy.log")), "polled ");
-  has(
-    "…and it ran from the landing worktree, not the shared checkout",
-    cat(threadFile(TID1, "deploy.log")),
-    `cwd ${realpathSync(F.WT1)}\n`,
-  );
-  hasnt(
-    "the product repo, which has not opted in, was not polled",
-    r.out,
-    "deploy: completed (run_stub)\ndeploy: completed (run_stub)",
+  let r = land(1, ["thread one"], { merge: true });
+  is("a push whose checks all passed closes", r.rc, "0");
+  has("…and the check is named in the report", r.out, "deploy: success (run_stub)");
+  is(
+    "…and each repo was asked about its own landed commit, by the name its origin gives",
+    polledLines().sort().join("\n"),
+    [
+      `polled ${g(F.CODE, "rev-parse", "origin/main")} test/${basename(F.CODE)}`,
+      `polled ${g(F.PROD, "rev-parse", "origin/main")} test/${basename(F.PROD)}`,
+    ]
+      .sort()
+      .join("\n"),
   );
 
-  // NO RUN AT ALL IS NOT CLOSED. This is the whole reason the check exists: the
+  // NO DEPLOY AT ALL IS NOT CLOSED. This is the whole reason the check exists: the
   // push is the only thing that deploys, and nothing else would notice it failing.
   fixture("c6b");
   writeAwaitStub();
-  writePrefixList('["one"]');
   write(join(F.WT1, "one.txt"), "one\n");
   r = land(1, ["thread one"], {
     merge: true,
-    extra: { AWAIT_STUB_RC: "3", AWAIT_STUB_LINE: "deploy: no run seen for sha:abc within 60s" },
+    extra: {
+      AWAIT_STUB_RC: "1",
+      AWAIT_STUB_LINE: "expected a deploy for test/x and none started (abc1234 ran deploy)",
+    },
   });
   isnt("a landing whose push started no deploy does NOT close", r.rc, "0");
-  has("…and says so", r.out, "no run seen");
-  has("…naming the checkout that is on origin undeployed", r.out, "nothing deployed it");
+  has("…and says so", r.out, "expected a deploy for test/x and none started");
+  has("…naming the checkout that is on origin undeployed", r.out, "is on origin but its deploy did not succeed");
 
-  // A run that FAILED is the same verdict, for the same reason.
+  // A check that FAILED is the same verdict, for the same reason.
   fixture("c6c");
   writeAwaitStub();
-  writePrefixList('["one"]');
   write(join(F.WT1, "one.txt"), "one\n");
   r = land(1, ["thread one"], {
     merge: true,
-    extra: { AWAIT_STUB_RC: "3", AWAIT_STUB_LINE: "deploy: failed (run_bad)" },
+    extra: { AWAIT_STUB_RC: "1", AWAIT_STUB_LINE: "deploy: failure (run_bad)\ndeploy failure" },
   });
-  isnt("a failed deploy run does NOT close", r.rc, "0");
-  has("…and names the run", r.out, "deploy: failed (run_bad)");
+  isnt("a failed deploy does NOT close", r.rc, "0");
+  has("…and names the check", r.out, "NOT CLOSED: deploy failure — ");
 
-  // The journal-only close, the not-owed case: the entry is allocated by
-  // journal-file.ts into this thread's own worktree, the landed diff touches
-  // `journal/` and nothing under `apps/`, `integrations/` or `packages/`, so the
-  // close says no run was owed and never asks the poller, and its deploy line
-  // says why nothing was waited for.
+  // The journal-only close. With a prefix list it was the not-owed case: the
+  // landed diff touched only `journal/`, the list said no run would start, and
+  // the poller was never asked. Now every push's checks are waited for, so the
+  // close waits like any other — and a prefix list still sitting in the commit
+  // changes nothing.
   fixture("c6d");
   writeAwaitStub();
-  writePrefixList('["apps/", "integrations/", "packages/"]');
+  writeLeftoverPrefixList();
   const J6D = jf(1, "journal only");
   entry(J6D, "journal-only", "a session that wrote only its journal");
   r = land(1, ["journal only"], { merge: true });
   is("a journal-only close lands", r.rc, "0");
-  has("…and says no run was owed", r.out, "deploy: not owed (no deployable path)");
-  hasnt("…and the poller was never asked", r.out, "deploy: completed");
-  is("…nor even started", polledCount(), "0");
+  has("…and waits for the run like any other", r.out, "deploy: success (run_stub)");
+  hasnt("…never `not owed`", r.out, "not owed");
+  is("…polled exactly once", polledCount(), "1");
   is("…and the entry is on main", onMain(F.CODE, `journal/2026-09-13/${basename(J6D)}`), "yes");
 
   fixture("c6e");
   writeAwaitStub();
-  writePrefixList('["apps/", "integrations/", "packages/"]');
+  writeLeftoverPrefixList();
   write(join(F.WT1, "journal/2026-09-25/1200-x.md"), "entry\n");
   write(join(F.WT1, "projects/ai/x/README.md"), "record\n");
   r = land(1, ["records only, in the code repo"], { merge: true });
-  is("a landing touching only records closes", r.rc, "0");
-  has("…and says no run was owed", r.out, "deploy: not owed (no deployable path)");
-  hasnt("…and the poller was never asked", r.out, "deploy: completed");
-  is("…nor even started", polledCount(), "0");
+  is("a landing touching only records closes on its run", r.rc, "0");
+  has("…which the poller was asked about", r.out, "deploy: success (run_stub)");
+  hasnt("…never `not owed`", r.out, "not owed");
 
-  // A path under a listed prefix is owed a run, and the verdict is the poller's.
+  // A failed check on a records-only push refuses like any other: the push
+  // checks run whatever paths changed, and one that failed is a check the close
+  // must not read as passed.
   fixture("c6f");
   writeAwaitStub();
-  writePrefixList('["apps/", "integrations/", "packages/"]');
-  write(join(F.WT1, "packages/shared/x.ts"), "code\n");
   write(join(F.WT1, "journal/2026-09-25/1200-x.md"), "entry\n");
-  r = land(1, ["code and a record"], { merge: true });
-  is("a landing touching a deployable path closes on a completed run", r.rc, "0");
-  has("…and the poller decided", r.out, "deploy: completed (run_stub)");
-  hasnt("…not the prefix rule", r.out, "not owed");
+  r = land(1, ["records only, failed run"], {
+    merge: true,
+    extra: { AWAIT_STUB_RC: "1", AWAIT_STUB_LINE: "deploy: failure (run_bad)\ndeploy failure" },
+  });
+  isnt("a records-only push whose run failed does NOT close", r.rc, "0");
+  has("…naming the run", r.out, "deploy: failure (run_bad)");
 
-  // THE LIST IS PARSED, NOT GREPPED. A pretty-printed list is the same list, and
-  // a prefix matches only at the START of a path: `docs/apps/x.ts` is records.
+  // EVERY CHECK ON THE COMMIT IS WAITED FOR AND NAMED. A push that starts three
+  // workflows is waited on for all three, not the one named `deploy`.
   fixture("c6g");
   writeAwaitStub();
-  writePrefixList('[\n  "apps/",\n  "integrations/",\n  "packages/"\n]');
-  write(join(F.WT1, "docs/apps/x.ts"), "prose\n");
-  r = land(1, ["a path with apps in the middle"], { merge: true });
-  is("a mid-path prefix is not a match", r.rc, "0");
-  has("…so no run is owed", r.out, "deploy: not owed (no deployable path)");
-
-  // A LIST THAT CANNOT BE READ POLLS. Skipping on "I could not tell" is the one
-  // way a deployed-nothing close ships a stale fleet with a green report.
-  fixture("c6h");
-  writeAwaitStub();
-  writePrefixList("not json at all");
-  write(join(F.WT1, "journal/2026-09-25/1200-x.md"), "entry\n");
-  r = land(1, ["records under a broken list"], { merge: true });
-  is("an unreadable list falls back to polling", r.rc, "0");
-  has("…and the poller was asked", r.out, "deploy: completed (run_stub)");
-  hasnt("…never skipped on an unknown", r.out, "not owed");
-
-  // A PUSH EVENT CARRIES EVERY COMMIT'S FILES, NOT THE NET DIFF. A path added in
-  // one commit and deleted in the next is in the payload's union and starts a run,
-  // while `git diff` across the range shows nothing — so the close must read the
-  // same union, or it reports `not owed` over a run that may have failed.
-  fixture("c6i");
-  writeAwaitStub();
-  writePrefixList('["apps/", "integrations/", "packages/"]');
-  write(join(F.WT1, "apps/x/y.ts"), "code\n");
-  gDo(F.WT1, "add", "apps");
-  gDo(F.WT1, "commit", "-q", "-m", "add it");
-  gDo(F.WT1, "rm", "-q", "apps/x/y.ts");
-  gDo(F.WT1, "commit", "-q", "-m", "remove it again");
-  write(join(F.WT1, "journal/2026-09-25/1200-x.md"), "entry\n");
-  r = land(1, ["a path that came and went"], { merge: true });
-  is("a path touched by an intermediate commit closes on the poller's verdict", r.rc, "0");
-  has("…and the poller was asked, as the deployer started a run", r.out, "deploy: completed (run_stub)");
-  hasnt("…never not-owed on the net diff alone", r.out, "not owed");
+  write(join(F.WT1, "one.txt"), "one\n");
+  r = land(1, ["three workflows"], {
+    merge: true,
+    extra: { AWAIT_STUB_LINE: "deploy: success (a)\nsync: success (b)\nrebuild: success (c)" },
+  });
+  is("a push whose three workflows passed closes", r.rc, "0");
+  has("…naming deploy", r.out, "  deploy: success (a)\n");
+  has("…naming sync", r.out, "  sync: success (b)\n");
+  has("…naming rebuild", r.out, "  rebuild: success (c)\n");
 });
 
 // ── Case 6r ───────────────────────────────────────────────────────────────
@@ -940,9 +1006,8 @@ kase("Case 6: the landing CHECKS the push deployed, and never deploys", () => {
 kase("Case 6r: a failed deploy is re-checked on the retry, never forgotten", () => {
   fixture("c6r");
   writeAwaitStub();
-  writePrefixList('["one"]');
   write(join(F.WT1, "one.txt"), "one\n");
-  const failing = { AWAIT_STUB_RC: "3", AWAIT_STUB_LINE: "deploy: failed (run_bad)" };
+  const failing = { AWAIT_STUB_RC: "1", AWAIT_STUB_LINE: "deploy: failure (run_bad)\ndeploy failure" };
   let r = land(1, ["thread one"], { merge: true, extra: failing });
   is("the failed deploy does not close", r.rc, "3");
   is("…after polling once", polledCount(), "1");
@@ -959,7 +1024,7 @@ kase("Case 6r: a failed deploy is re-checked on the retry, never forgotten", () 
   r = land(1, ["thread one"], { merge: true });
   is("a retry whose run now completes closes", r.rc, "0");
   is("…having polled the same SHA a third time", polledCount(), "3");
-  has("…and the run is named", r.out, "deploy: completed (run_stub)");
+  has("…and the run is named", r.out, "deploy: success (run_stub)");
 
   r = land(1, ["--check"], { merge: true });
   is("--check passes once the deploy is proved", r.rc, "0");
@@ -970,7 +1035,6 @@ kase("Case 6r: a failed deploy is re-checked on the retry, never forgotten", () 
   // refuse every close, and the fix could never land through one.
   fixture("c6s");
   writeAwaitStub();
-  writePrefixList('["one", "fix"]');
   write(join(F.WT1, "one.txt"), "one\n");
   r = land(1, ["broken"], { merge: true, extra: failing });
   is("the broken push's deploy fails", r.rc, "3");
@@ -979,7 +1043,7 @@ kase("Case 6r: a failed deploy is re-checked on the retry, never forgotten", () 
   r = land(1, ["the fix"], { merge: true, extra: { AWAIT_STUB_FAIL_SHA: owed } });
   is("the corrective push lands and closes", r.rc, "0");
   is("…with the fix on main", onMain(F.CODE, "fix.txt"), "yes");
-  has("…settled by the new SHA's completed run", r.out, "deploy: completed (run_stub)");
+  has("…settled by the new SHA's completed run", r.out, "deploy: success (run_stub)");
   is("…and nothing is owed any more", cat(threadFile(TID1, "deploy-owed")), "");
 
   // THE OBLIGATION IS WRITTEN BEFORE THE LANDED SHA. A close killed between
@@ -988,7 +1052,6 @@ kase("Case 6r: a failed deploy is re-checked on the retry, never forgotten", () 
   // SHA that lets it skip the poll.
   fixture("c6k");
   writeAwaitStub();
-  writePrefixList('["one"]');
   const real = spawnSync("sh", ["-c", "command -v git"], { encoding: "utf8" }).stdout.trim();
   write(
     join(F.S, "killgit/git"),
@@ -1006,95 +1069,162 @@ kase("Case 6r: a failed deploy is re-checked on the retry, never forgotten", () 
 
 // ── Case 6t ───────────────────────────────────────────────────────────────
 //
-// WHETHER A REPO DEPLOYS IS A FACT ABOUT THE LANDED COMMIT, and the poller that
-// runs is the landing worktree's copy. The shared checkout is advanced only
-// when it is clean and on the trunk, so reading the opt-in or the poller off
-// its working tree would turn a deploying landing into "this repo deploys
-// nothing" whenever it is dirty or lagging, with no line printed at all.
+// EVERY REPO IS ASKED, WHATEVER IT CARRIES. land's own waiter is asked about
+// every landed repo by name, so nothing in the landed tree is needed — and an
+// owed SHA whose worktree is gone is polled exactly the same way.
 
-kase("Case 6t: whether a repo deploys is read from the landed commit", () => {
+kase("Case 6t: every repo is polled, and an owed SHA without its worktree", () => {
   fixture("c6t");
   writeAwaitStub();
-  writePrefixList('["apps/"]');
-  rmSync(join(F.CODE, ".agents/deploy/await-deploy-run.sh"));
-  rmSync(join(F.CODE, ".agents/deployable-prefixes.json"));
-  write(join(F.CODE, "stray.txt"), "somebody's uncommitted work\n");
   write(join(F.WT1, "apps/x/one.ts"), "code\n");
-  let r = land(1, ["shared checkout dirty and missing the poller"], { merge: true });
-  is("a landing whose shared checkout lacks the poller on disk still polls", r.rc, "0");
-  has("…and the run is named", r.out, "deploy: completed (run_stub)");
-  is("…polled exactly once", polledCount(), "1");
+  let r = land(1, ["no poller anywhere"], { merge: true });
+  is("a landing of a repo that carries no poller is polled", r.rc, "0");
+  is("…once", polledCount(), "1");
 
-  // AN OWED DEPLOY WHOSE WORKTREE IS GONE. The retry has no landed tree to run
-  // the poller from, so the copy that runs is the shared checkout's — and a
-  // failing run keeps the obligation.
   fixture("c6u");
-  write(
-    join(F.PROD, ".agents/deploy/await-deploy-run.sh"),
-    `#!/usr/bin/env bash
-sha=""
-while [ $# -gt 0 ]; do case "$1" in --sha) sha="$2"; shift 2 ;; *) shift ;; esac; done
-echo "polled \${sha}" >&2
-echo "cwd $(pwd -P)" >&2
-printf '%s\\n' "\${AWAIT_STUB_LINE:-deploy: completed (run_stub)}"
-exit "\${AWAIT_STUB_RC:-0}"
-`,
-  );
-  write(join(F.PROD, ".agents/deployable-prefixes.json"), '["one"]\n');
-  gDo(F.PROD, "add", ".agents");
-  gDo(F.PROD, "commit", "-q", "-m", "the prod poller");
-  gDo(F.PROD, "push", "-q", "origin", "main");
+  writeAwaitStub();
   const SAT = writeRoot(1, F.PROD).out;
   write(join(SAT, "one-prod.md"), "prod\n");
-  const failing = { AWAIT_STUB_RC: "3", AWAIT_STUB_LINE: "deploy: failed (run_bad)" };
+  const failing = { AWAIT_STUB_ONLY: "-prod", AWAIT_STUB_RC: "1", AWAIT_STUB_LINE: "deploy failure" };
   r = land(1, ["thread one"], { merge: true, extra: failing });
   is("the satellite's failed deploy does not close", r.rc, "3");
-  ok(
-    "…and its satellite ran the poller",
-    cat(threadFile(TID1, "deploy.log")).includes(`cwd ${realpathSync(SAT)}\n`),
-    cat(threadFile(TID1, "deploy.log")),
-  );
+  const owed = g(F.PROD, "rev-parse", "origin/main");
+  has("…with the obligation kept", cat(threadFile(TID1, "deploy-owed")), `${F.PROD}\t${owed}`);
   gDo(F.PROD, "worktree", "remove", "--force", SAT);
   r = land(1, ["thread one"], { merge: true, extra: failing });
-  is("a retry after the worktree vanished still refuses on a failed run", r.rc, "3");
-  is("…having polled again", polledCount(), "2");
+  is("a retry after the worktree vanished still refuses on a failed deploy", r.rc, "3");
+  is("…having polled the owed SHA again", polledLines().pop() ?? "", `polled ${owed} test/${basename(F.PROD)}`);
   is(
-    "…from the shared checkout's copy",
-    lastLine(
-      cat(threadFile(TID1, "deploy.log"))
-        .split("\n")
-        .filter((l) => l.startsWith("cwd "))
-        .join("\n"),
-    ),
+    "…from the shared checkout",
+    cat(threadFile(TID1, "deploy.log"))
+      .split("\n")
+      .filter((l) => l.startsWith("cwd "))
+      .pop() ?? "",
     `cwd ${realpathSync(F.PROD)}`,
   );
-  has("…with the obligation kept", cat(threadFile(TID1, "deploy-owed")), F.PROD);
   r = land(1, ["thread one"], { merge: true });
-  is("…and a retry whose run completes closes", r.rc, "0");
+  is("…and a retry whose deploy passed closes", r.rc, "0");
   is("…settling it", cat(threadFile(TID1, "deploy-owed")), "");
+
+  // AN OBLIGATION AN OLDER CLOSE LEFT names a SHA its poller owed; it is
+  // polled the same way, and a deploy that passed settles it.
+  const OLD = g(F.PROD, "rev-list", "--max-parents=0", "HEAD").split("\n")[0] ?? "";
+  write(threadFile(TID1, "deploy-owed"), `${F.PROD}\t${OLD}\n`);
+  r = land(1, ["thread one"], { merge: true });
+  is("an older obligation is polled", r.rc, "0");
+  is("…about that SHA", polledLines().pop() ?? "", `polled ${OLD} test/${basename(F.PROD)}`);
+  is("…and settled", cat(threadFile(TID1, "deploy-owed")), "");
 });
 
-kase("Case 6p: a satellite's poller runs in the checkout that supplies it", () => {
-  // A poller asks git or gh about ITS repo, from where it stands. Started in
-  // the caller's directory (the thread's own worktree of another repo), a
-  // satellite's poller asked about the wrong repo, and a push that deployed
-  // fine stayed NOT CLOSED.
+// ── Case 6p ───────────────────────────────────────────────────────────────
+//
+// A REPO WHOSE ORIGIN IS NOT ON GITHUB has nobody to ask, so it closes saying
+// so. Every other case's fixture is that repo: a local bare origin.
+
+kase("Case 6p: a repo whose origin is not on GitHub closes, saying so", () => {
   fixture("c6p");
+  write(join(F.WT1, "one.txt"), "one\n");
+  let r = land(1, ["thread one"], { merge: true });
+  is("it closes", r.rc, "0");
+  has("…saying why nothing was waited for", r.out, `no deploy reported for ${F.CODE} — its origin is not on GitHub`);
+  is("…and owes nothing", cat(threadFile(TID1, "deploy-owed")), "");
+
+  // AN SSH HOST ALIAS IS RESOLVED. An origin like `git@github-work:…` names a
+  // ~/.ssh/config alias for github.com, and read by its text it would be "not
+  // on GitHub" and waited for not at all. What
+  // `ssh -G` says the alias connects to decides; a stub `ssh` answers here.
+  fixture("c6q");
+  writeAwaitStub();
+  const real = g(F.CODE, "remote", "get-url", "origin");
+  const aliasUrl = (host: string): string => `git@${host}:test/${basename(F.CODE)}.git`;
+  for (const host of ["github-alias", "gitlab-alias"])
+    gDo(F.CODE, "config", "--add", `url.${real}.insteadOf`, aliasUrl(host));
   write(
-    join(F.PROD, ".agents/deploy/await-deploy-run.sh"),
-    `#!/usr/bin/env bash
-echo "deploy: completed for $(basename "$(git remote get-url origin)")"
-`,
+    join(F.S, "sshstub/ssh"),
+    '#!/bin/sh\n[ "$1" = -G ] || exit 255\ncase "$2" in github-alias) echo "hostname github.com" ;; *) echo "hostname $2" ;; esac\n',
   );
-  write(join(F.PROD, ".agents/deployable-prefixes.json"), '["one"]\n');
-  gDo(F.PROD, "add", ".agents");
-  gDo(F.PROD, "commit", "-q", "-m", "the prod poller");
-  gDo(F.PROD, "push", "-q", "origin", "main");
-  const SAT = writeRoot(1, F.PROD).out;
+  chmodSync(join(F.S, "sshstub/ssh"), 0o755);
+  const SSHPATH = { PATH: `${join(F.S, "sshstub")}:${process.env.PATH ?? ""}` };
+  gDo(F.CODE, "config", "remote.origin.url", aliasUrl("github-alias"));
+  write(join(F.WT1, "one.txt"), "one\n");
+  r = land(1, ["through an alias"], { merge: true, extra: SSHPATH });
+  is("a repo whose origin is an alias for github.com closes on its checks", r.rc, "0");
+  is(
+    "…asked about by the name in its origin",
+    polledLines().pop() ?? "",
+    `polled ${g(F.CODE, "rev-parse", "origin/main")} test/${basename(F.CODE)}`,
+  );
+  gDo(F.CODE, "config", "remote.origin.url", aliasUrl("gitlab-alias"));
+  write(join(F.WT1, "two.txt"), "two\n");
+  r = land(1, ["through another host's alias"], { merge: true, extra: SSHPATH });
+  is("an alias for another host is not on GitHub", r.rc, "0");
+  has("…and says so", r.out, `no deploy reported for ${F.CODE} — its origin is not on GitHub`);
+
+  // NO `gh` ON THIS MACHINE. A repo on GitHub with nothing to ask it through
+  // closes saying so, and the waiter is never started.
+  fixture("c6nogh");
+  writeAwaitStub();
+  write(join(F.WT1, "one.txt"), "one\n");
+  r = land(1, ["no gh"], { merge: true, extra: { LAND_GH: join(F.S, "no-such-gh") } });
+  is("a GitHub repo on a machine without gh closes", r.rc, "0");
+  has("…saying so", r.out, `no push checks read for test/${basename(F.CODE)} — the gh CLI is not installed`);
+  is("…and the waiter was never asked", polledCount(), "0");
+  is("…and owes nothing", cat(threadFile(TID1, "deploy-owed")), "");
+});
+
+// ── Case 6w ───────────────────────────────────────────────────────────────
+//
+// A PRODUCT REPO IS WAITED FOR TOO. A Pages site connected to git carries no
+// wrangler file and no workflow, and a close that waited only for workflows
+// would wait for nothing there; its `Cloudflare Pages` check is waited for like
+// any other.
+// A repo GitHub reports nothing for, and expected nothing of, closes with the
+// waiter's line.
+
+kase("Case 6w: a product repo's checks are waited for, and its silence is said", () => {
+  fixture("c6w");
+  writeAwaitStub();
+  let SAT = writeRoot(1, F.PROD).out;
   write(join(SAT, "one-prod.md"), "prod\n");
-  const r = land(1, ["thread one"], { merge: true });
-  is("a satellite that opted in closes on its own poller's verdict", r.rc, "0");
-  has("…which asked about the satellite's repo", r.out, `deploy: completed for ${basename(F.PROD)}.git`);
+  let PRODNAME = `test/${basename(F.PROD)}`;
+  let r = land(1, ["thread one"], {
+    merge: true,
+    extra: { AWAIT_STUB_ONLY: "-prod", AWAIT_STUB_RC: "3", AWAIT_STUB_LINE: `no deploy reported for ${PRODNAME}` },
+  });
+  is("a product repo GitHub reports nothing for closes", r.rc, "0");
+  has("…saying so", r.out, `  no deploy reported for ${PRODNAME}\n`);
+  is("…and owes nothing", cat(threadFile(TID1, "deploy-owed")), "");
+
+  // A FAILED CHECK IS NOT CLOSED, and stays owed for the retry.
+  fixture("c6w2");
+  writeAwaitStub();
+  SAT = writeRoot(1, F.PROD).out;
+  PRODNAME = `test/${basename(F.PROD)}`;
+  write(join(SAT, "one-prod.md"), "prod\n");
+  r = land(1, ["thread one"], {
+    merge: true,
+    extra: {
+      AWAIT_STUB_ONLY: "-prod",
+      AWAIT_STUB_RC: "1",
+      AWAIT_STUB_LINE: "Cloudflare Pages: failure (https://pages.test/1)\nCloudflare Pages failure",
+    },
+  });
+  is("a product repo whose Pages build failed does NOT close", r.rc, "3");
+  const failedSha = g(F.PROD, "rev-parse", "origin/main");
+  has("…naming the check", r.out, "NOT CLOSED: Cloudflare Pages failure — ");
+  has("…with the obligation kept", cat(threadFile(TID1, "deploy-owed")), `${F.PROD}\t${failedSha}`);
+  r = land(1, ["--check"], { merge: true });
+  is("--check refuses while the deploy is owed", r.rc, "3");
+  r = land(1, ["thread one"], { merge: true });
+  is("a retry whose check now passed closes", r.rc, "0");
+  is(
+    "…having polled the owed SHA again",
+    polledLines()
+      .filter((l) => l.endsWith(PRODNAME))
+      .join("\n"),
+    `polled ${failedSha} ${PRODNAME}\npolled ${failedSha} ${PRODNAME}`,
+  );
+  is("…and settled it", cat(threadFile(TID1, "deploy-owed")), "");
 });
 
 // ── Case 7 ────────────────────────────────────────────────────────────────
@@ -1256,7 +1386,11 @@ process.stdout.write("/implement stubbed\\n");
   has("…with its refusal, not the warning", r.out, "NOT CLOSED: could not derive next action: Error: no such project");
   r = land(1, ["stub next"], { merge: true, script: join(STUBDIR, "land.ts") });
   is("the project close lands", r.rc, "0");
-  has("…with the Next block from stdout", r.out, "**Next:**\n\n```\n/implement stubbed\n```");
+  has(
+    "…handing the stub's command off to a fresh session, in its own block",
+    r.out,
+    "**Next:**\n\nRun each `/implement` in a fresh session, one per row; rows listed together can run in parallel.\n\n```\n/implement stubbed\n```",
+  );
   hasnt("…and no warning in the report", r.out, "ExperimentalWarning");
 });
 
@@ -1455,6 +1589,8 @@ kase("Case 11: the final report includes the generated next action", () => {
   const r = land(1, ["Ship portal phase"], { merge: true });
   is("the project close lands", r.rc, "0");
   has("the generated block states what shipped", r.out, "**Shipped:** Ship portal phase");
+  has("each field is its own paragraph", r.out, "**Shipped:** Ship portal phase\n\n**Journal:** ");
+  has("the project's state follows the journal", r.out, ")\n\n**Project:** portal is **active**.\n\n**Next:**");
   has("the generated block labels the next action", r.out, "**Next:**");
   has("the generated block includes the exact command", r.out, "/project portal");
   has("the generated next action is its own fenced block", r.out, "**Next:**\n\n```\n/project portal\n```");
@@ -1470,14 +1606,16 @@ kase("Case 11: the final report includes the generated next action", () => {
   );
 });
 
-// A ROADMAP project with two rows ready to implement and one blocked: the close
-// must print TWO fenced blocks — one copy button per parallel session — and the
-// blocked row as prose, not a heading, with the proof line still last.
-kase("Case 11b: several next commands, each in its own block", () => {
+// A ROADMAP project with rows ready to implement and one blocked: the close
+// hands EACH ready row off as its own `/implement` command, in its own block
+// for a fresh session, the blocked row as prose, not a heading, with the proof
+// line still last. Nothing starts a row on its own.
+kase("Case 11b: several next commands, each in its own block for a fresh session", () => {
   fixture("c11b");
   const P11B = join(F.WT1, "projects/sales/2026-09-18_par");
   mkdirSync(join(P11B, "specs/001-a"), { recursive: true });
   mkdirSync(join(P11B, "specs/002-b"), { recursive: true });
+  mkdirSync(join(P11B, "specs/004-d"), { recursive: true });
   write(join(P11B, "README.md"), lines("---", "status: active", "---", "", "# Par"));
   write(
     join(P11B, "ROADMAP.md"),
@@ -1488,11 +1626,20 @@ kase("Case 11b: several next commands, each in its own block", () => {
       "|----|-------------|------------|--------|----------|",
       "| R1 | a | — | planned | `specs/001-a/` |",
       "| R2 | b | — | planned | `specs/002-b/` |",
-      "| R3 | c | — | blocked: vendor reply | — |",
+      "| R3 | c | — | blocked: 2099-01-01 vendor reply | — |",
+      "| R4 | d | — | in-progress | `specs/004-d/` |",
     ),
   );
   write(join(P11B, "specs/001-a/spec.md"), "# spec\n");
   write(join(P11B, "specs/002-b/spec.md"), "# spec\n");
+  write(join(P11B, "specs/004-d/spec.md"), "# spec\n");
+  write(join(P11B, "specs/001-a/plan.md"), "- spec-audit: grok round-1; spirit MATCH\n");
+  write(join(P11B, "specs/004-d/plan.md"), "- spec-audit: grok round-1; spirit MATCH\n");
+  // The in-progress row predates this close; this session did not add or
+  // change a half-built row.
+  gDo(F.WT1, "add", "projects");
+  gDo(F.WT1, "commit", "-q", "-m", "existing project state");
+  gDo(F.WT1, "push", "-q", "origin", "HEAD:main");
   const J = jf(1, "par");
   write(
     J,
@@ -1514,11 +1661,17 @@ kase("Case 11b: several next commands, each in its own block", () => {
   const r = land(1, ["Spec par rows"], { merge: true });
   is("the parallel close lands", r.rc, "0");
   has(
-    "two commands are two fenced blocks",
+    "the handoff says each command runs in a fresh session",
     r.out,
-    "**Next:**\n\n```\n/implement par r1\n```\n\n```\n/implement par r2\n```",
+    "Run each `/implement` in a fresh session, one per row; rows listed together can run in parallel.",
   );
-  has("a comment line is escaped prose", r.out, "\n\\# par R3 is blocked: vendor reply");
+  has("a ready row is its own block", r.out, "\n```\n/implement par r1\n```\n");
+  has("…and so is the next", r.out, "\n```\n/implement par r2\n```\n");
+  hasnt("…never two commands in one block", r.out, "/implement par r1\n/implement par r2");
+  hasnt("…and nothing promises an automatic start", r.out, "automatically");
+  has("a comment line is a list item", r.out, "\n- par R3 is blocked: 2099-01-01 vendor reply");
+  hasnt("…never an escaped hash", r.out, "\\#");
+  has("the project's state is its own line", r.out, "\n\n**Project:** par is **active**");
   is(
     "the proof remains the last line after several blocks",
     lastLine(r.out),
@@ -1986,6 +2139,123 @@ kase("Case 14: the skill-manifest gate", () => {
   is("…and the skill checker was invoked for it", skInvoked(), "invoked");
 });
 
+// ── Case 14g ──────────────────────────────────────────────────────────────
+//
+// The workbench gate and the merged tree. check-roadmap-decisions.ts runs from
+// the workbench worktree's OWN copy, only in a workbench worktree (one holding
+// .agents/skills/close/scripts/land.ts), over its project changes, and again
+// on the merged tree when the trunk merge brought commits in; each app the
+// branch changed runs its own `check` on that merged tree. The roadmap rules
+// are check-roadmap-decisions.test.ts's; what is tested is that land.ts finds
+// the gate, refuses without it, and that the merged tree is judged.
+
+kase("Case 14g: the workbench roadmap gate and an app's check on the merged tree", () => {
+  // 1. A workbench worktree with a project change and no gate is refused, not skipped.
+  fixture("c14ge");
+  const GATE = ".agents/skills/close/scripts/check-roadmap-decisions.ts";
+  gDo(F.WT1, "rm", "-q", GATE);
+  write(join(F.WT1, "projects/d/2026-01-01_p/README.md"), "fine\n");
+  let r = land(1, ["thread one"], { merge: true });
+  is("no roadmap gate in the worktree exits 3", r.rc, "3");
+  has(
+    "…with the merge-trunk hint",
+    r.out,
+    `something left open in a roadmap or report inputs changed in ${F.WT1}, but ${F.WT1} holds no ${GATE} — merge origin/main into the branch`,
+  );
+
+  // 2. An app's own check on the merged tree: a shared builder gains an
+  //    argument on one branch while another branch adds a caller of it; each
+  //    type-checks alone, the merged tree does not. The trunk here gains an app
+  //    whose check fails beside this branch's file; the branch's own close
+  //    passes its first run and is refused on the merged tree, before the push.
+  fixture("c14gj");
+  gDo(F.WT2, "pull", "-q", "origin", "main");
+  const check = `node -e "const f=require('fs');require('fs').writeFileSync(process.env.HOME+'/.app-check-invoked','');if(f.existsSync('a.ts')&&f.existsSync('raise.ts')){console.error('a.ts(1,1): error TS2554: Expected 7 arguments, but got 6.');process.exit(2)}"`;
+  write(
+    join(F.WT2, "apps/x/package.json"),
+    `${JSON.stringify({ name: "x", private: true, scripts: { check } }, null, 2)}\n`,
+  );
+  write(join(F.WT2, "apps/x/raise.ts"), "export const raise = 1;\n");
+  gDo(F.WT2, "add", "-A");
+  gDo(F.WT2, "commit", "-q", "-m", "the trunk changes the app");
+  gDo(F.WT2, "push", "-q", "origin", "HEAD:main");
+  write(join(F.WT1, "apps/x/a.ts"), "export const a = 1;\n");
+  rmSync(join(F.HOME_DIR, ".app-check-invoked"), { force: true });
+  r = land(1, ["thread one"], { merge: true });
+  is("an app that fails its check only on the merged tree exits 3", r.rc, "3");
+  has(
+    "naming the app and the check's error line",
+    r.out,
+    `NOT CLOSED: apps/x's check fails on the merged tree in ${F.WT1}: a.ts(1,1): error TS2554: Expected 7 arguments, but got 6.`,
+  );
+  is("…and nothing of it was pushed", onMain(F.CODE, "apps/x/a.ts"), "no");
+  //     The refusal leaves the merge committed; an unchanged retry must not push it.
+  r = land(1, ["thread one"], { merge: true });
+  is("an unchanged retry is refused again", r.rc, "3");
+  has("…on the same check", r.out, "apps/x's check fails on the merged tree");
+  is("…and still nothing was pushed", onMain(F.CODE, "apps/x/a.ts"), "no");
+
+  //     The same app with a check that passes beside it lands, after the check ran.
+  fixture("c14gk");
+  gDo(F.WT2, "pull", "-q", "origin", "main");
+  const pass = `node -e "require('fs').writeFileSync(process.env.HOME+'/.app-check-invoked','')"`;
+  write(
+    join(F.WT2, "apps/x/package.json"),
+    `${JSON.stringify({ name: "x", private: true, scripts: { check: pass } }, null, 2)}\n`,
+  );
+  gDo(F.WT2, "add", "-A");
+  gDo(F.WT2, "commit", "-q", "-m", "the trunk adds the app");
+  gDo(F.WT2, "push", "-q", "origin", "HEAD:main");
+  write(join(F.WT1, "apps/x/a.ts"), "export const a = 1;\n");
+  rmSync(join(F.HOME_DIR, ".app-check-invoked"), { force: true });
+  r = land(1, ["thread one"], { merge: true });
+  is("an app whose check passes on the merged tree lands", r.rc, "0");
+  is("…after its check ran", existsSync(join(F.HOME_DIR, ".app-check-invoked")) ? "invoked" : "not", "invoked");
+
+  // 3. The REAL roadmap gate over a row-by-row ROADMAP merge: two threads each add
+  //    a row to one project, the second landing after the first. Thread one
+  //    also finishes R1, so thread two's own table still says R1 is next while
+  //    the merged one says R2 (R2 depends on R1). The merged table leaves
+  //    nothing open, so it lands, and next: is the merged table's.
+  fixture("c14gi");
+  write(join(F.CODE, RMP, "ROADMAP.md"), lines(...tableHead(), "| R1 | first | — | planned | `specs/001-first/` |"));
+  write(join(F.CODE, RMP, "specs/001-first/spec.md"), "# spec\n");
+  write(
+    join(F.CODE, RMP, "README.md"),
+    '---\nproject: rows\nstatus: active\nnext: "R1: first"\n---\n\n# Project: rows\n',
+  );
+  gDo(F.CODE, "add", "-A");
+  gDo(F.CODE, "commit", "-q", "-m", "a project");
+  gDo(F.CODE, "push", "-q", "origin", "main");
+  for (const wt of [F.WT1, F.WT2]) {
+    gDo(wt, "fetch", "-q", "origin");
+    gDo(wt, "reset", "-q", "--hard", "origin/main");
+  }
+  const addRow = (wt: string, row: string): void => {
+    writeFileSync(join(wt, RMP, "ROADMAP.md"), `${readFileSync(join(wt, RMP, "ROADMAP.md"), "utf8")}${row}\n`);
+    roadmap(join(wt, RMP), "--sync-next");
+  };
+  roadmap(join(F.WT1, RMP), "--set", "R1", "done");
+  addRow(F.WT1, "| R3 | third | — | planned | — |");
+  addRow(F.WT2, "| R2 | second | R1 | planned | — |");
+  is("thread two's own table names R1", nextLine(cat(join(F.WT2, RMP, "README.md"))), '"R1: first"');
+  const r1 = land(1, ["thread one"], { merge: true });
+  is("the first row's project change lands past the real checker", r1.rc, "0");
+  const r2 = land(2, ["thread two"], { merge: true });
+  is("the second lands on the merged table", r2.rc, "0");
+  if (r2.rc !== 0) process.stdout.write(`${r2.out.split("\n").slice(-3).join("\n")}\n`);
+  gOk(F.CODE, "fetch", "-q", "origin");
+  const merged = g(F.CODE, "show", `origin/main:${RMP}/ROADMAP.md`);
+  has("origin's ROADMAP holds thread one's row", merged, "| R3 | third |");
+  has("…and thread two's", merged, "| R2 | second |");
+  is(
+    "…and next: is the merged table's first ready row, not thread two's own",
+    nextLine(g(F.CODE, "show", `origin/main:${RMP}/README.md`)),
+    '"R2: second"',
+  );
+});
+
+
 // ── Case 14s ──────────────────────────────────────────────────────────────
 //
 // The secrets and standards gates. Both checkers sit in the workbench
@@ -2071,6 +2341,7 @@ kase("Case 14s: the secrets and standards gates", () => {
   is("a scanner only a later ledger worktree holds still runs", r.rc, "3");
   has("…and refuses the secret", r.out, `secret scan rejected in ${F.WT1}`);
 });
+
 
 // ── Case 15 ───────────────────────────────────────────────────────────────
 
@@ -2162,13 +2433,11 @@ kase("Case 15: two threads land adjacent roadmap rows", () => {
   has("the driver is registered in the repo's config", g(F.CODE, "config", "merge.roadmap.driver"), "roadmap-merge.ts");
 });
 
-// A ROW WHOSE LANDING WAS PARTIAL GOES BACK TO `planned`. `/implement` flips a
-// row `in-progress`; only a `complete` report ever made the close move it on,
-// so a row built over two landings stayed `in-progress` with nobody working it,
-// and a dispatcher that starts only `planned` rows never started its next
-// landing. A row
-// whose report this push did not touch is someone else's and stays as it is.
-kase("Case 15p: a partial report releases its in-progress row to planned", () => {
+// A HALF-BUILT PIECE DOES NOT LAND: a close means the work is done. A report
+// this push writes as `partial` used to land and return its row to `planned`
+// for the next landing; now the close refuses before anything is pushed, and a re-run lands it once the report is
+// `complete`. A partial report this push did not touch is someone else's.
+kase("Case 15p: a partial report is NOT CLOSED and nothing lands", () => {
   fixture("c15p");
   write(
     join(F.CODE, RMP, "ROADMAP.md"),
@@ -2192,15 +2461,72 @@ kase("Case 15p: a partial report releases its in-progress row to planned", () =>
   gDo(F.CODE, "push", "-q", "origin", "main");
   gDo(F.WT1, "fetch", "-q", "origin");
   gDo(F.WT1, "reset", "-q", "--hard", "origin/main");
+  const before = g(F.CODE, "rev-parse", "origin/main");
   const report = (status: string) => `---\nspec: x\nspec-status: ${status}\n---\n\n# Implementation Report\n`;
   write(join(F.WT1, RMP, "specs/001-first/report.md"), report("partial"));
   write(join(F.WT1, RMP, "specs/003-third/report.md"), report("complete"));
   entry(jf(1, "partial"), "partial", "landing one of R1");
   const r = land(1, ["landing one of R1"], { merge: true });
-  is("the partial landing lands", r.rc, "0");
-  if (r.rc !== "0") process.stdout.write(`${r.out.split("\n").slice(-3).join("\n")}\n`);
+  is("a partial landing does not close", r.rc, "3");
+  has("…and says NOT CLOSED", r.out, "NOT CLOSED: something left open in a roadmap or report rejected");
+  has(
+    "…naming R1's report and its row",
+    r.out,
+    `${RMP}/specs/001-first/report.md: reads partial, and its row R1 is "in-progress"`,
+  );
+  is("…R2's partial report, not in this push, is not named", String(r.out.includes("002-second/report.md")), "false");
   gOk(F.CODE, "fetch", "-q", "origin");
-  const rows = g(F.CODE, "show", `origin/main:${RMP}/ROADMAP.md`)
+  is("…and nothing is pushed", g(F.CODE, "rev-parse", "origin/main"), before);
+  has(
+    "…and the report is still in the worktree",
+    readFileSync(join(F.WT1, RMP, "specs/001-first/report.md"), "utf8"),
+    "partial",
+  );
+});
+
+// A PROJECT FOLDER GIT WOULD QUOTE. Without -z git prints a path holding a
+// non-ASCII byte C-quoted (`"projects/demo/2026-01-01_caf\303\251/…"`), which
+// matched no report or project pattern: a partial report went unseen, and a
+// table changed with no `next:` re-derive landed its stale `next:`.
+kase("Case 15q: a project folder with an accent is judged and re-derived", () => {
+  fixture("c15q");
+  const QP = "projects/demo/2026-01-01_café-rows";
+  write(
+    join(F.CODE, QP, "ROADMAP.md"),
+    lines(
+      ...tableHead(),
+      "| R1 | first | — | planned | `specs/001-first/` |",
+      "| R2 | second | — | in-progress | `specs/002-second/` |",
+      "| R3 | third | — | planned | `specs/003-third/` |",
+    ),
+  );
+  for (const s of ["001-first", "002-second", "003-third"]) write(join(F.CODE, QP, `specs/${s}/spec.md`), "# spec\n");
+  write(
+    join(F.CODE, QP, "README.md"),
+    '---\nproject: rows\nstatus: active\nnext: "R1: first"\n---\n\n# Project: rows\n',
+  );
+  gDo(F.CODE, "add", "-A");
+  gDo(F.CODE, "commit", "-q", "-m", "roadmap");
+  gDo(F.CODE, "push", "-q", "origin", "main");
+  gDo(F.WT1, "fetch", "-q", "origin");
+  gDo(F.WT1, "reset", "-q", "--hard", "origin/main");
+  write(join(F.WT1, QP, "specs/002-second/report.md"), "---\nspec: x\nspec-status: partial\n---\n");
+  // R1 is set done by hand with no --sync-next, so only the close's re-derive
+  // can move `next:` off R1.
+  roadmap(join(F.WT1, QP), "--set", "R1", "done");
+  entry(jf(1, "accent"), "accent", "a landing in a quoted folder");
+  const r = land(1, ["a landing in a quoted folder"], { merge: true });
+  is("a partial report under the accented folder does not close", r.rc, "3");
+  has(`…and names it, under ${QP}`, r.out, `${QP}/specs/002-second/report.md: reads partial, and its row R2`);
+  // Finished: the report complete and R2 done. The re-run lands, and `next:`
+  // is re-derived from the landed table.
+  write(join(F.WT1, QP, "specs/002-second/report.md"), "---\nspec: x\nspec-status: complete\n---\n");
+  roadmap(join(F.WT1, QP), "--set", "R2", "done");
+  const r2 = land(1, ["a landing in a quoted folder"], { merge: true });
+  is("the finished landing lands", r2.rc, "0");
+  if (r2.rc !== 0) process.stdout.write(`${r2.out.split("\n").slice(-3).join("\n")}\n`);
+  gOk(F.CODE, "fetch", "-q", "origin");
+  const rows = g(F.CODE, "show", `origin/main:${QP}/ROADMAP.md`)
     .split("\n")
     .filter((l) => l.startsWith("| R"))
     .map((l) => {
@@ -2208,12 +2534,49 @@ kase("Case 15p: a partial report releases its in-progress row to planned", () =>
       return `${(f[1] ?? "").replace(/ /g, "")}=${(f[4] ?? "").replace(/^ +| +$/g, "")} `;
     })
     .join("");
+  is(`the rows under ${QP} land as set`, rows, "R1=done R2=done R3=planned ");
   is(
-    "R1 (partial report in this push) is planned; R2 (partial, but not in this push) and R3 (complete) are untouched",
-    rows,
-    "R1=planned R2=in-progress R3=in-progress ",
+    `…and next: in ${QP}/README.md is re-derived from the landed table`,
+    nextLine(g(F.CODE, "show", `origin/main:${QP}/README.md`)),
+    '"R3: third"',
   );
-  has("…and the close says so", r.out, "R1 back to planned");
+});
+
+// A STEP WAITING ON THE USER, OR A HALF-BUILT ROW, HOLDS THE CLOSE. Each open row the
+// push adds is printed on its own line above the one NOT CLOSED, nothing is
+// pushed, and the worktree keeps the change for the re-run.
+kase("Case 15o: a manual row and an in-progress row are NOT CLOSED", () => {
+  fixture("c15o");
+  write(join(F.CODE, RMP, "ROADMAP.md"), lines(...tableHead(), "| R1 | first | — | done | — |"));
+  write(join(F.CODE, RMP, "README.md"), "---\nproject: rows\nstatus: completed\n---\n\n# Project: rows\n");
+  gDo(F.CODE, "add", "-A");
+  gDo(F.CODE, "commit", "-q", "-m", "roadmap");
+  gDo(F.CODE, "push", "-q", "origin", "main");
+  gDo(F.WT1, "fetch", "-q", "origin");
+  gDo(F.WT1, "reset", "-q", "--hard", "origin/main");
+  const before = g(F.CODE, "rev-parse", "origin/main");
+  write(
+    join(F.WT1, RMP, "ROADMAP.md"),
+    lines(
+      ...tableHead(),
+      "| R1 | first | — | done | — |",
+      "| R4 | renew | — | planned | manual |",
+      "| R5 | build | — | in-progress | — |",
+    ),
+  );
+  entry(jf(1, "open rows"), "open-rows", "two open rows");
+  const r = land(1, ["two open rows"], { merge: true });
+  is("the close is refused", r.rc, "3");
+  has(
+    "…naming R4 as a step waiting on the user",
+    r.out,
+    'ROADMAP.md: R4 "planned" (Sub-spec manual): a step waiting on the user',
+  );
+  has("…and R5 as half-built", r.out, 'ROADMAP.md: R5 "in-progress" (Sub-spec —): half-built');
+  has("…above one NOT CLOSED", r.out, "NOT CLOSED: something left open in a roadmap or report rejected");
+  gOk(F.CODE, "fetch", "-q", "origin");
+  is("…nothing is pushed", g(F.CODE, "rev-parse", "origin/main"), before);
+  has("…and the worktree still holds the rows", readFileSync(join(F.WT1, RMP, "ROADMAP.md"), "utf8"), "| R4 | renew |");
 });
 
 // THE NEXT ACTION IS THE MERGED PROJECT'S. The same two parallel rows, each
@@ -2233,6 +2596,7 @@ kase("Case 15n: parallel rows print the next action of the merged table", () => 
     ),
   );
   for (const s of ["001-first", "002-second", "003-third"]) write(join(F.CODE, RMP, "specs", s, "spec.md"), "# spec\n");
+  write(join(F.CODE, RMP, "specs/003-third/plan.md"), "- spec-audit: grok round-1; spirit MATCH\n");
   write(
     join(F.CODE, RMP, "README.md"),
     '---\nproject: rows\nstatus: active\nnext: "R1: first"\n---\n\n# Project: rows\n',
@@ -2270,7 +2634,11 @@ kase("Case 15n: parallel rows print the next action of the merged table", () => 
   is("the first row lands", r1.rc, "0");
   const r2 = land(2, ["row two"], { merge: true });
   is("the second row lands", r2.rc, "0");
-  has("…and its Next is the merged table's R3", r2.out, "**Next:**\n\n```\n/implement rows r3\n```");
+  has(
+    "…and its handoff is the merged table's R3",
+    r2.out,
+    "\n```\n/implement rows r3\n```\n",
+  );
   hasnt("…never the row thread one already landed", r2.out, "/implement rows r1");
   is("…and the remembered next action is the merged one too", cat(threadFile(TID2, "next")), "/implement rows r3");
 });
@@ -2363,6 +2731,49 @@ kase("Case 15c: a table only the trunk changed, a README only we changed", () =>
   has("…and thread two's edit", g(F.CODE, "show", `origin/main:${RMP}/README.md`), "Body, edited by thread two.");
 });
 
+// A PROJECT WAITING ON ANOTHER'S ROW IS FREED IN THE SAME PUSH. This
+// push finishes other-proj R2 and touches nothing of the waiting project, whose
+// R1 names `other-proj R2` in Depends on; the waiting README must land `active`
+// in the same push, not a day later.
+kase("Case 15s: a project waiting on another project's row is re-derived in the same push", () => {
+  fixture("c15s");
+  const OTHER = "projects/demo/2026-01-02_other-proj";
+  const WAIT = "projects/web/2026-01-01_waiting";
+  write(
+    join(F.CODE, OTHER, "ROADMAP.md"),
+    lines(...tableHead(), "| R1 | first | — | done | — |", "| R2 | the decision | — | planned | — |"),
+  );
+  write(
+    join(F.CODE, OTHER, "README.md"),
+    '---\nproject: other\nstatus: active\nnext: "R2: the decision"\n---\n\n# P\n',
+  );
+  write(join(F.CODE, WAIT, "ROADMAP.md"), lines(...tableHead(), "| R1 | migrate | other-proj R2 | planned | — |"));
+  write(
+    join(F.CODE, WAIT, "README.md"),
+    '---\nproject: waiting\nstatus: blocked\nblocked-on: "R1: waits on other-proj R2"\n---\n\n# P\n',
+  );
+  gDo(F.CODE, "add", "-A");
+  gDo(F.CODE, "commit", "-q", "-m", "two projects");
+  gDo(F.CODE, "push", "-q", "origin", "main");
+  gDo(F.WT1, "fetch", "-q", "origin");
+  gDo(F.WT1, "reset", "-q", "--hard", "origin/main");
+  if (roadmap(join(F.WT1, OTHER), "--set", "R2", "done")) roadmap(join(F.WT1, OTHER), "--sync-next");
+  entry(jf(1, "decided"), "decided", "the decision is made");
+  const r = land(1, ["the decision is made"], { merge: true });
+  is("the landing lands", r.rc, "0");
+  if (r.rc !== 0) process.stdout.write(`${r.out.split("\n").slice(-3).join("\n")}\n`);
+  gOk(F.CODE, "fetch", "-q", "origin");
+  const readme = g(F.CODE, "show", `origin/main:${WAIT}/README.md`);
+  has("…the waiting project reads active", readme, "status: active");
+  has("…and names its next row", readme, 'next: "R1: migrate"');
+  hasnt("…with no blocked-on left", readme, "blocked-on:");
+  has(
+    "…in the re-derive commit",
+    g(F.CODE, "show", "--name-only", "--format=%s", "origin/main"),
+    `next: re-derived from the merged table)\n\n${WAIT}/README.md`,
+  );
+});
+
 // A folder outside projects/ that holds a README.md and a ROADMAP.md — the
 // project templates, whose rows are placeholders on purpose — is not a project,
 // and editing both must not stop the close on a table that never reads.
@@ -2441,6 +2852,30 @@ kase("Case 12x: a failed git read never reads as clean", () => {
   is("a failed SHA read stops the close", r.rc, "3");
   has("…naming the read that failed", r.out, `NOT CLOSED: could not read origin/main in ${F.WT1}`);
   hasnt("…never calling it nothing to push", r.out, "nothing to push");
+
+  // And for the script gate's own read, when no worktree holds the checker:
+  //     its listing failing read as "no script changed", the gate was skipped,
+  //     and the untracked script landed with no checker ever run. The two
+  //     checkers before it are stubbed so this gate makes the first
+  //     untracked-file listing, and only that one fails: the reads after it
+  //     cannot stand in for this one's refusal. They are pushed, so the
+  //     untracked script is the whole change.
+  fixture("c12x5", undefined, undefined, false);
+  drStub(F.WT1);
+  imStub(F.WT1);
+  gDo(F.WT1, "push", "-q", "origin", "HEAD:main");
+  const ONCE = join(F.S, "failonce");
+  const real = spawnSync("sh", ["-c", "command -v git"], { encoding: "utf8" }).stdout.trim();
+  write(
+    join(ONCE, "git"),
+    `#!/usr/bin/env bash\ncase " $* " in *" ls-files -z --others "*) [ -e "${ONCE}/done" ] || { : > "${ONCE}/done"; echo "fatal: simulated read failure" >&2; exit 128; } ;; esac\nexec "${real}" "$@"\n`,
+  );
+  chmodSync(join(ONCE, "git"), 0o755);
+  write(join(F.WT1, ".agents/skills/y/scripts/new.sh"), "echo new\n");
+  r = land(1, ["thread one"], { merge: true, extra: { PATH: `${ONCE}:${process.env.PATH ?? ""}` } });
+  is("a failed listing in the script gate stops the close", r.rc, "3");
+  has("…saying it could not list the change", r.out, `could not list what ${F.WT1} changed`);
+  is("…and the script did not reach main", onMain(F.CODE, ".agents/skills/y/scripts/new.sh"), "no");
 });
 
 // ── Case 15r ──────────────────────────────────────────────────────────────
@@ -2517,6 +2952,9 @@ kase("Case 16: a session outside T3 that started in the main checkout", () => {
   entry(J16, "outside-t3", "a session outside T3");
   const W16 = J16.slice(0, J16.indexOf("/journal/"));
   write(join(W16, "work.txt"), "work\n");
+  // § 1 of the close, as the session runs it: land.ts refuses without a pass.
+  const v = sh(process.execPath, [...NODE_TS, join(scripts, "verify.ts")], { cwd: F.CODE, env: NOT3, merge: true });
+  is("verify passes for the session", v.rc, "0");
   const r = sh(process.execPath, [...NODE_TS, join(scripts, "land.ts"), "outside t3"], {
     cwd: F.CODE,
     env: NOT3,
@@ -2603,7 +3041,7 @@ kase("Case 17: the script-tests gate", () => {
   fixture("c17c");
   scStub(F.WT1);
   write(join(F.WT1, ".agents/skills/y/scripts/new.sh"), "echo new\n");
-  write(join(F.WT1, ".agents/skills/y/scripts/new.test.sh"), "bash new.sh\n");
+  write(join(F.WT1, ".agents/skills/y/scripts/new.test.sh"), "bash .agents/skills/y/scripts/new.sh\n");
   r = land(1, ["thread one"], { merge: true });
   is("a close carrying a tested script lands", r.rc, "0");
   is("and the script is on main", onMain(F.CODE, ".agents/skills/y/scripts/new.sh"), "yes");
@@ -2611,7 +3049,7 @@ kase("Case 17: the script-tests gate", () => {
   // 4. A changed script with no checker in any ledger worktree is refused, not skipped.
   fixture("c17d", undefined, undefined, false);
   write(join(F.WT1, ".agents/skills/y/scripts/new.sh"), "echo new\n");
-  write(join(F.WT1, ".agents/skills/y/scripts/new.test.sh"), "bash new.sh\n");
+  write(join(F.WT1, ".agents/skills/y/scripts/new.test.sh"), "bash .agents/skills/y/scripts/new.sh\n");
   r = land(1, ["thread one"], { merge: true });
   is("a script with no resolvable checker exits 3", r.rc, "3");
   has(
@@ -2624,7 +3062,7 @@ kase("Case 17: the script-tests gate", () => {
   //    selects the gate, so a worktree without the checker is refused for it.
   fixture("c17e", undefined, undefined, false);
   write(join(F.WT1, ".agents/skills/y/scripts/old.sh"), "echo old\n");
-  write(join(F.WT1, ".agents/skills/y/scripts/old.test.sh"), "bash old.sh\n");
+  write(join(F.WT1, ".agents/skills/y/scripts/old.test.sh"), "bash .agents/skills/y/scripts/old.sh\n");
   gDo(F.WT1, "add", "-A");
   gDo(F.WT1, "commit", "-q", "-m", "old with its test");
   gDo(F.WT1, "push", "-q", "origin", "HEAD:main");
@@ -2724,6 +3162,7 @@ kase("Case 18: the repo lock another writer holds", async () => {
     const held = await waitForLine(holder, "held\n");
     const before = originHead();
 
+    prereqs(1);
     const child = spawn(process.execPath, [...NODE_TS, LAND, "thread one"], {
       cwd: F.WT1,
       env: envOf(1, F.WT1, extra),
@@ -2840,7 +3279,7 @@ kase("Case 19: the final line comes from a fresh fetch and an ancestry check", (
 // run completes, so its first run's deploy succeeds.
 
 kase("Case 20: every kill point in a landing leaves a retry that polls or refuses", () => {
-  const failing = { AWAIT_STUB_RC: "3", AWAIT_STUB_LINE: "deploy: failed (run_bad)" };
+  const failing = { AWAIT_STUB_RC: "1", AWAIT_STUB_LINE: "deploy: failure (run_bad)\ndeploy failure" };
   const points: [string, string][] = [
     ["owed-replace:1", "the obligation's rename, before the push"],
     ["pushed:1", "after the push, before the landed SHA"],
@@ -2850,7 +3289,6 @@ kase("Case 20: every kill point in a landing leaves a retry that polls or refuse
   for (const [point, where] of points) {
     fixture(`c20-${point.replace(/[^a-z0-9]/g, "")}`);
     writeAwaitStub();
-    writePrefixList('["apps/", "integrations/", "packages/"]');
     write(join(F.WT1, "apps/x/y.ts"), "code\n");
     const first = point === "polled:1" ? {} : failing;
     let r = land(1, ["killed"], { merge: true, extra: { ...first, LAND_TEST_KILL_AT: point } });
@@ -2866,7 +3304,6 @@ kase("Case 20: every kill point in a landing leaves a retry that polls or refuse
   // what it was, and the next close pushes and polls as usual.
   fixture("c20-pushfail");
   writeAwaitStub();
-  writePrefixList('["apps/"]');
   write(join(F.WT1, "apps/x/y.ts"), "code\n");
   const PUSHURL = g(F.CODE, "remote", "get-url", "origin");
   gDo(F.CODE, "remote", "set-url", "--push", "origin", join(F.S, "origins/gone.git"));
@@ -2980,8 +3417,8 @@ kase("Case 22: every landing checks the harness home links, relinks drift, never
     "(b) …and prints one relinked line and one kept-file line",
     linkLines(r.out).join("\n"),
     [
-      "  harness-links: relinked ~/.grok/config.toml -> /the/target",
-      `  harness-links: the file that stood there is kept at ${F.HOME_DIR}/.grok/config.toml.pre-link — inspect it`,
+      "- harness-links: relinked ~/.grok/config.toml -> /the/target",
+      `- harness-links: the file that stood there is kept at ${F.HOME_DIR}/.grok/config.toml.pre-link — inspect it`,
     ].join("\n"),
   );
 
@@ -2996,12 +3433,12 @@ kase("Case 22: every landing checks the harness home links, relinks drift, never
   has(
     "(c) …and names what was not fixed",
     r.out,
-    `  harness-links: NOT FIXED — refusing to relink ${F.HOME_DIR}/.grok/config.toml — it is a real directory with files in it.`,
+    `- harness-links: NOT FIXED — refusing to relink ${F.HOME_DIR}/.grok/config.toml — it is a real directory with files in it.`,
   );
   has(
     "(c) …and how to see the details",
     r.out,
-    `  harness-links: details: node --experimental-strip-types ${join(F.CODE, HL_CHECK_REL)}`,
+    `- harness-links: details: node --experimental-strip-types ${join(F.CODE, HL_CHECK_REL)}`,
   );
 
   // (d) The check is missing from the shared checkout: a warning, then the close.
@@ -3015,7 +3452,7 @@ kase("Case 22: every landing checks the harness home links, relinks drift, never
   is(
     "(d) …and warns, naming the check",
     linkLines(r.out).join("\n"),
-    `  harness-links: WARNING not checked — no checkout this thread landed holds ${HL_CHECK_REL}`,
+    `- harness-links: WARNING not checked — no checkout this thread landed holds ${HL_CHECK_REL}`,
   );
 
   // (e) The check crashes: a warning carrying its error, then the close.
@@ -3029,6 +3466,913 @@ kase("Case 22: every landing checks the harness home links, relinks drift, never
   is(
     "(e) …and warns with the error it threw",
     linkLines(r.out).join("\n"),
-    "  harness-links: WARNING the check failed (exit 1): TypeError: the links check blew up — links not checked",
+    "- harness-links: WARNING the check failed (exit 1): TypeError: the links check blew up — links not checked",
   );
+});
+
+// ── Case 23 ───────────────────────────────────────────────────────────────
+//
+// A HELD CLOSE PRINTS NO LAST LINE UNTIL IT IS RELEASED. A close that changed
+// something live lands with --hold: it pushes and waits for the deploy, then
+// stops before its last line so the live checks run while the session is still
+// open. Whatever they find is fixed and landed again, or asked; --release
+// re-proves everything against a fresh trunk and only then prints the report
+// and the line — so a finding from the live checks is never asked below a
+// close's last line.
+
+kase("Case 23: a held close prints its last line only on release", () => {
+  fixture("c23");
+  write(join(F.WT1, "one.txt"), "one\n");
+  let r = land(1, ["ship the page", "--hold"], { merge: true });
+  is("a held landing exits 4", r.rc, "4");
+  has("…says it is held and how to release it", r.out, "HELD: landed and deployed");
+  hasnt("…prints no report", r.out, "**Shipped:**");
+  hasnt("…and never the safe-to-close line", r.out, "loses nothing");
+  is("…the change is on origin", onMain(F.CODE, "one.txt"), "yes");
+  ok("…no closed marker is written", !existsSync(threadFile(TID1, "closed")), "closed marker written while held");
+  is("…so the auto-close gate says it is held, not closed", land(1, ["--gate"]).out, "held");
+
+  // A plain --check while held runs the checks but keeps the hold.
+  r = land(1, ["--check"], { merge: true });
+  is("a --check while held exits 4", r.rc, "4");
+  hasnt("…prints no line", r.out, "loses nothing");
+  ok("…keeps the hold", existsSync(threadFile(TID1, "held")), "--check cleared the hold");
+  ok("…and writes no closed marker", !existsSync(threadFile(TID1, "closed")), "--check closed a held close");
+
+  // The live checks find something: a fix left uncommitted refuses the release.
+  write(join(F.WT1, "fix.txt"), "fix\n");
+  r = land(1, ["--release"], { merge: true });
+  is("a release over an unlanded fix is NOT CLOSED", r.rc, "3");
+  has("…naming the worktree", r.out, `NOT CLOSED: uncommitted changes left in ${F.WT1}`);
+  hasnt("…and never prints the line", r.out, "loses nothing");
+
+  // The fix is landed, held again; the release reports the first subject.
+  r = land(1, ["fix what the live check found", "--hold"], { merge: true });
+  is("the fix lands held", r.rc, "4");
+  is("…and is on origin", onMain(F.CODE, "fix.txt"), "yes");
+  r = land(1, ["--release"], { merge: true });
+  is("the release passes", r.rc, "0");
+  has("…reports what the close shipped", r.out, "**Shipped:** ship the page");
+  const tip = sh("git", ["--git-dir", join(F.S, `origins/land-${PID}-c23-code.git`), "rev-parse", "main"]).out;
+  is(
+    "…and ends on the line, from a fresh fetch",
+    lastLine(r.out),
+    `origin/main is at ${tip} — closing this tab loses nothing.`,
+  );
+  ok("…writing the closed marker", existsSync(threadFile(TID1, "closed")), "no closed marker after release");
+  ok("…and clearing the hold", !existsSync(threadFile(TID1, "held")), "held marker left after release");
+
+  r = land(1, ["--release"], { merge: true });
+  is("a release with nothing held is NOT CLOSED", r.rc, "3");
+  has("…saying so", r.out, "NOT CLOSED: nothing is held");
+});
+
+// ── Case 24 ───────────────────────────────────────────────────────────────
+//
+// THE CLOSE REFUSES WITHOUT ITS PREREQUISITES. Verify
+// had to have passed on the content every worktree holds now, and the thread
+// has to have a journal entry — one opened on a product repo too. Each was a
+// SKILL.md sentence the model had to remember; land.ts now asks.
+
+kase("Case 24: no verify, a stale verify, or no journal is NOT CLOSED", () => {
+  // (a) A skill changed, an entry written, verify never run.
+  fixture("c24a");
+  write(join(F.WT1, ".agents/skills/foo/notes.md"), "notes\n");
+  entry(jf(1, "never verified"), "never-verified", "verify was never run");
+  const before = g(F.CODE, "rev-parse", "origin/main");
+  let r = land(1, ["thread one"], { merge: true, bare: true });
+  is("(a) a close verify never ran on exits 3", r.rc, "3");
+  has("(a) …saying verify never ran on the worktree", r.out, `verify: ${F.WT1}: verify never ran on this worktree`);
+  has(
+    "(a) …and refusing with what to run",
+    r.out,
+    "NOT CLOSED: verify has not passed on this worktree as it is now — run verify.ts",
+  );
+  gOk(F.CODE, "fetch", "-q", "origin");
+  is("(a) …and nothing reaches main", g(F.CODE, "rev-parse", "origin/main"), before);
+  is(
+    "(a) …nor is anything committed in the worktree",
+    g(F.WT1, "log", "--oneline", "origin/main..HEAD").split("\n").filter(Boolean).length,
+    "0",
+  );
+
+  // (b) Verify passed, then a skill script changed.
+  is("(b) verify passes", verify(1).rc, 0);
+  write(join(F.WT1, ".agents/skills/foo/scripts/x.ts"), "export {};\n");
+  r = land(1, ["thread one"], { merge: true, bare: true });
+  is("(b) an edit after verify passed exits 3", r.rc, "3");
+  has("(b) …listing the edited path", r.out, `changed since verify passed: .agents/skills/foo/scripts/x.ts`);
+
+  // (c) Verify again; afterwards only the records the close writes move.
+  is("(c) verify passes again", verify(1).rc, 0);
+  write(join(F.WT1, "knowledge/notes/x.md"), "a fact\n");
+  write(join(F.WT1, "projects/demo/p/README.md"), "# a project readme\n");
+  entry(cat(threadFile(TID1, "journal")), "never-verified", "the entry, written after verify");
+  r = land(1, ["thread one"], { merge: true, bare: true });
+  is("(c) journal, knowledge and project README edits after verify still land", r.rc, "0");
+  is("(c) …with the script on main", onMain(F.CODE, ".agents/skills/foo/scripts/x.ts"), "yes");
+
+  // (d) A verify run that failed.
+  fixture("c24d");
+  write(join(F.WT1, ".agents/skills/foo/scripts/red.test.sh"), "exit 1\n");
+  entry(jf(1, "red verify"), "red-verify", "verify failed");
+  ok("(d) verify fails", verify(1).rc !== 0, "verify passed over a red suite");
+  r = land(1, ["thread one"], { merge: true, bare: true });
+  is("(d) a close whose last verify failed exits 3", r.rc, "3");
+  has("(d) …saying the last run failed", r.out, `verify: ${F.WT1}: the last run failed`);
+
+  // (e) A thread whose only work is in a product repo, with no journal entry.
+  fixture("c24e");
+  const SAT = writeRoot(1, F.PROD).out;
+  write(join(SAT, "prod.md"), "prod\n");
+  is("(e) verify passes", verify(1).rc, 0);
+  const prodBefore = g(F.PROD, "rev-parse", "origin/main");
+  r = land(1, ["thread one"], { merge: true, bare: true });
+  is("(e) a product-only thread with no journal exits 3", r.rc, "3");
+  has("(e) …saying what to run", r.out, "NOT CLOSED: no journal entry for this thread — run journal-file.ts");
+  gOk(F.PROD, "fetch", "-q", "origin");
+  is("(e) …and nothing is pushed", g(F.PROD, "rev-parse", "origin/main"), prodBefore);
+  hasnt("(e) …and no proof line is printed", r.out, "loses nothing");
+
+  // (f) verify.ts itself is missing: refused, never read as a pass.
+  fixture("c24f");
+  write(join(F.WT1, "one.txt"), "one\n");
+  const NOROOT = join(F.S, "noverify");
+  const NOVERIFY = join(NOROOT, ".agents/skills/close/scripts");
+  cpSync(HERE, NOVERIFY, { recursive: true });
+  copyScripts(NOROOT);
+  rmSync(join(NOVERIFY, "verify.ts"), { force: true });
+  r = land(1, ["thread one"], { merge: true, script: join(NOVERIFY, "land.ts") });
+  is("(f) a missing verify.ts exits 3", r.rc, "3");
+  has("(f) …naming the script it wanted", r.out, `NOT CLOSED: verify check missing: ${NOVERIFY}/verify.ts`);
+});
+
+// ── Case 24r ──────────────────────────────────────────────────────────────
+//
+// IMPLEMENTATION SOURCE LANDS ONLY ON A REVIEW OF WHAT IS PUSHED
+//. A thread whose report carries a coverage block
+// is refused without a receipt; with one, the trunk merge can still move a
+// dependency the review relied on, and the push is refused naming it — nothing
+// reaches main, and the merge stays for the remaining review allowance.
+const AUDIT_TS = join(HERE, "../../implement-audit/scripts/audit-dedupe.ts");
+function receipt(rounds: string, ...args: string[]): Res {
+  return sh(process.execPath, ["--experimental-strip-types", AUDIT_TS, ...args], {
+    cwd: F.WT1,
+    env: { ...envOf(1, F.WT1), CODE_REVIEW_LOOP_ID: TID1, CODE_REVIEW_ROUND_STATE_DIR: rounds },
+    merge: true,
+  });
+}
+function approveReceipt(report: string, base = "HEAD"): void {
+  const rounds = join(F.S, "rounds");
+  const b = receipt(
+    rounds,
+    "begin",
+    "--repo",
+    F.WT1,
+    "--tree",
+    "t",
+    "--mode",
+    "range",
+    "--bucket",
+    "build",
+    "--base",
+    base,
+    "--scope",
+    ".agents/skills/foo",
+    "--report",
+    report,
+  );
+  if (!b.out.includes("RECEIPT=review")) throw new Error(`receipt begin: ${b.out}`);
+  const res = join(F.S, "result.json");
+  write(
+    res,
+    JSON.stringify({
+      vendor: "grok/grok-4",
+      findings: [],
+      coverage: ["E1", "D1"].map((id) => ({ id, status: "checked", evidence: ["read"] })),
+    }),
+  );
+  const f = receipt(rounds, "finish", "--repo", F.WT1, "--rc", "0", "--result", res);
+  if (!f.out.includes("APPROVED=1")) throw new Error(`receipt finish: ${f.out}`);
+}
+
+kase("Case 24r: implementation source lands only on a review receipt of what is pushed", () => {
+  fixture("c24r");
+  write(join(F.CODE, ".agents/skills/foo/dep.ts"), "export const dep = 1;\n");
+  commitOnTrunk("a dependency");
+  gDo(F.WT1, "fetch", "-q", "origin");
+  gDo(F.WT1, "reset", "-q", "--hard", "origin/main");
+  write(join(F.WT1, ".agents/skills/foo/x.ts"), "export const x = 2;\n");
+  const REPORT = join(F.WT1, "projects/demo/p/specs/001-x/report.md");
+  write(
+    REPORT,
+    `# r\n<!-- review-coverage:v1 -->\n${JSON.stringify({
+      base: "HEAD",
+      scope: ".agents/skills/foo",
+      entryPoints: [{ id: "E1", path: ".agents/skills/foo/x.ts" }],
+      dependencies: [{ id: "D1", path: ".agents/skills/foo/dep.ts", why: "x reads it" }],
+      claims: [],
+    })}\n<!-- /review-coverage -->\n`,
+  );
+  entry(jf(1, "reviewed"), "reviewed", "a reviewed change");
+
+  // (a) No receipt.
+  let r = land(1, ["thread one"], { merge: true });
+  is("(a) implementation work with no receipt exits 3", r.rc, "3");
+  has(
+    "(a) …naming the unreviewed source",
+    r.out,
+    `review: ${F.WT1}: no review receipt for implementation source (.agents/skills/foo/x.ts)`,
+  );
+  has("(a) …through the verify gate", r.out, "NOT CLOSED: verify has not passed");
+
+  // (b) A receipt, then the trunk moves the dependency it relied on.
+  approveReceipt(REPORT);
+  write(join(F.CODE, ".agents/skills/foo/dep.ts"), "export const dep = 2;\n");
+  commitOnTrunk("another session moves the dependency");
+  const before = g(F.CODE, "rev-parse", "origin/main");
+  r = land(1, ["thread one"], { merge: true });
+  is("(b) a merge that moves covered content exits 3", r.rc, "3");
+  has("(b) …naming the moved dependency", r.out, `review: ${F.WT1}: changed since the review: .agents/skills/foo/dep.ts`);
+  has("(b) …and the recovery", r.out, "the independent review no longer covers what");
+  gOk(F.CODE, "fetch", "-q", "origin");
+  is("(b) …and nothing reaches main", g(F.CODE, "rev-parse", "origin/main"), before);
+
+  // (c) The merged content reviewed (from where the branch now leaves the
+  // trunk, as validate.ts passes --base): it lands.
+  approveReceipt(REPORT, g(F.WT1, "merge-base", "HEAD", "origin/main"));
+  r = land(1, ["thread one"], { merge: true });
+  is("(c) a receipt of the merged content lands", r.rc, "0");
+  is("(c) …with the change on main", onMain(F.CODE, ".agents/skills/foo/x.ts"), "yes");
+});
+
+// ── Case 25 ───────────────────────────────────────────────────────────────
+//
+// A FINISHED SPEC'S ROW CLOSES ITSELF. A push writing a report
+// `complete` sets every row naming that spec `done` before the gates read the
+// table, and again on the merged tree; `closed:` and `absorbed by` rows, rows
+// already done, and rows of a spec another session's report finished are left
+// alone. The model used to run `roadmap.ts --set <ID> done` itself (§ 2).
+
+/** A project on the trunk with the given rows and a spec folder per row, both worktrees reset to it. */
+function seedRows(...rows: string[]): void {
+  write(join(F.CODE, RMP, "ROADMAP.md"), lines(...tableHead(), ...rows));
+  for (const m of rows.join("\n").matchAll(/specs\/(\d{3}-[a-z]+)\//g))
+    write(join(F.CODE, RMP, `specs/${m[1]}/spec.md`), "# spec\n");
+  write(
+    join(F.CODE, RMP, "README.md"),
+    '---\nproject: rows\nstatus: active\nnext: "R1: first"\n---\n\n# Project: rows\n',
+  );
+  commitOnTrunk("roadmap");
+  for (const wt of [F.WT1, F.WT2]) {
+    gDo(wt, "fetch", "-q", "origin");
+    gDo(wt, "reset", "-q", "--hard", "origin/main");
+  }
+}
+const complete = (extra = ""): string =>
+  `---\nspec: x\nspec-status: complete\n---\n\n# Implementation Report\n${extra}`;
+/** `R1=done R2=planned …` from origin/main's table. */
+function mainRows(): string {
+  gOk(F.CODE, "fetch", "-q", "origin");
+  return g(F.CODE, "show", `origin/main:${RMP}/ROADMAP.md`)
+    .split("\n")
+    .filter((l) => l.startsWith("| R"))
+    .map((l) => {
+      const f = l.split("|");
+      return `${(f[1] ?? "").trim()}=${(f[4] ?? "").trim()}`;
+    })
+    .join(" ");
+}
+
+kase("Case 25: a finished spec's row is set done by the close", () => {
+  // (a) One push finishing three specs, rows of every kind.
+  fixture("c25a");
+  seedRows(
+    "| R1 | first | — | in-progress | `specs/001-first/` |",
+    "| R2 | second | — | closed: dropped | `specs/002-second/` |",
+    "| R3 | third | — | absorbed by R1 | `specs/003-third/` |",
+    "| R4 | fourth | — | planned | `specs/004-fourth/` |",
+    "| R5 | again | — | in-progress | `specs/001-first/` |",
+  );
+  for (const s of ["001-first", "002-second", "003-third"]) write(join(F.WT1, RMP, `specs/${s}/report.md`), complete());
+  let r = land(1, ["finish R1"], { merge: true });
+  is("(a) the close lands", r.rc, "0");
+  is(
+    "(a) R1 and R5 (the same spec) are done; closed:, absorbed by and planned rows are untouched",
+    mainRows(),
+    "R1=done R2=closed: dropped R3=absorbed by R1 R4=planned R5=done",
+  );
+  has("(a) …saying which row it set", r.out, `roadmap: ${RMP} R1 set done — specs/001-first reads complete`);
+  is(
+    "(a) …and next: is re-derived in the same landing",
+    nextLine(g(F.CODE, "show", `origin/main:${RMP}/README.md`)),
+    '"R4: fourth"',
+  );
+
+  // (b) A row already done: no write, no extra commit.
+  write(join(F.WT1, RMP, "specs/001-first/report.md"), complete("\nA later note.\n"));
+  r = land(1, ["note on R1"], { merge: true });
+  is("(b) a report edit on a done row lands", r.rc, "0");
+  hasnt("(b) …setting nothing", r.out, "set done");
+
+  // (c) A partial report is not promoted, and the partial gate refuses it.
+  fixture("c25c");
+  seedRows("| R1 | first | — | in-progress | `specs/001-first/` |", "| R2 | second | — | planned | — |");
+  write(join(F.WT1, RMP, "specs/001-first/report.md"), "---\nspec: x\nspec-status: partial\n---\n");
+  r = land(1, ["half of R1"], { merge: true });
+  is("(c) a partial report is NOT CLOSED", r.rc, "3");
+  has("(c) …by the partial gate", r.out, "reads partial");
+  has("(c) …and its row stays in-progress", cat(join(F.WT1, RMP, "ROADMAP.md")), "| R1 | first | — | in-progress |");
+
+  // (d) The trunk merge brings another session's complete report for R2,
+  // landed without its row: this push's promotion leaves R2 alone.
+  fixture("c25d");
+  seedRows(
+    "| R1 | first | — | in-progress | `specs/001-first/` |",
+    "| R2 | second | — | in-progress | `specs/002-second/` |",
+    "| R3 | third | — | planned | — |",
+  );
+  write(join(F.CODE, RMP, "specs/002-second/report.md"), complete());
+  commitOnTrunk("another session's report");
+  write(join(F.WT1, RMP, "specs/001-first/report.md"), complete());
+  r = land(1, ["finish R1"], { merge: true });
+  is("(d) the close lands over the merge", r.rc, "0");
+  is("(d) only this push's row is done", mainRows(), "R1=done R2=in-progress R3=planned");
+
+  // (e) The trunk merge brings a row naming THIS push's finished spec.
+  fixture("c25e");
+  seedRows("| R1 | first | — | done | `specs/001-first/` |");
+  write(join(F.WT1, RMP, "specs/006-new/spec.md"), "# spec\n");
+  write(join(F.WT1, RMP, "specs/006-new/report.md"), complete());
+  sedLines(join(F.CODE, RMP, "ROADMAP.md"), /^(\| R1 .*)$/, "$1\n| R6 | new | — | planned | `specs/006-new/` |");
+  commitOnTrunk("a row for the new spec");
+  r = land(1, ["finish the new spec"], { merge: true });
+  is("(e) the close lands", r.rc, "0");
+  is("(e) the merged-in row naming this push's spec is done", mainRows(), "R1=done R6=done");
+  is(
+    "(e) …both files committed on the merged tree",
+    filesInCommit(F.CODE, "finish the new spec (finished rows set done on the merged table)"),
+    `${RMP}/README.md ${RMP}/ROADMAP.md `,
+  );
+
+  // (f) A table roadmap.ts cannot read: promotion skips it, the re-derive refuses.
+  fixture("c25f");
+  seedRows("| R1 | first | — | in-progress | `specs/001-first/` |");
+  write(
+    join(F.WT1, RMP, "ROADMAP.md"),
+    lines(
+      ...tableHead(),
+      "| R1 | first | — | in-progress | `specs/001-first/` |",
+      "| R2 | second | — | planned | sideways |",
+    ),
+  );
+  write(join(F.WT1, RMP, "specs/001-first/report.md"), complete());
+  r = land(1, ["finish R1"], { merge: true });
+  is("(f) a malformed table is NOT CLOSED", r.rc, "3");
+  hasnt("(f) …and no row was set", r.out, "set done");
+});
+
+// ── Case 26 ───────────────────────────────────────────────────────────────
+//
+// THE RECORD CARRIES WHAT THE SCRIPTS FOUND. The audit lines of every
+// spec the push changed are quoted in the journal entry without the model
+// copying them; the harness-link lines are in the report on landing and on
+// release; and the report block is saved to the thread's state before the
+// close is marked closed.
+
+kase("Case 26: audit lines, harness links and the saved report", () => {
+  // (a) A spec with both audit lines: both quoted under **Changes:**.
+  fixture("c26a");
+  seedRows("| R1 | first | — | in-progress | `specs/001-first/` |");
+  write(join(F.WT1, RMP, "specs/001-first/plan.md"), "# plan\n\n- spec-audit: codex round-1; spirit MATCH\n");
+  write(
+    join(F.WT1, RMP, "specs/001-first/report.md"),
+    complete("\n**implement-audit:** `round-1; clean`\n| 4. implement-audit | ✅ |\n"),
+  );
+  const J = jf(1, "audit lines");
+  write(
+    J,
+    "---\ndate: 2026-09-13\ntime: 20:15\nslug: audit-lines\ntags: []\n---\n\n### audit-lines\n**Action:** shipped\n\nFinished R1.\n\n**Changes:**\n- built R1\n",
+  );
+  let r = land(1, ["finish R1"], { merge: true });
+  is("(a) the close lands", r.rc, "0");
+  const landed = g(F.CODE, "show", `origin/main:journal/2026-09-13/${basename(J)}`);
+  has(
+    "(a) the spec-audit line is quoted under Changes, after what was there",
+    landed,
+    "**Changes:**\n- built R1\n- spec-audit: codex round-1; spirit MATCH\n- **implement-audit:** `round-1; clean`",
+  );
+  hasnt("(a) …and the table row is not taken for a line", landed, "| 4. implement-audit");
+
+  // (b) Already quoted, with other spacing: not written twice.
+  fixture("c26b");
+  seedRows("| R1 | first | — | in-progress | `specs/001-first/` |");
+  write(join(F.WT1, RMP, "specs/001-first/plan.md"), "# plan\n\n- spec-audit: codex round-1; spirit MATCH\n");
+  write(join(F.WT1, RMP, "specs/001-first/report.md"), complete());
+  const J2 = jf(1, "quoted");
+  write(
+    J2,
+    "---\ndate: 2026-09-13\ntime: 20:15\nslug: quoted\ntags: []\n---\n\n### quoted\n**Action:** shipped\n\nFinished R1.\n\n**Changes:**\n-  spec-audit:   codex round-1;  spirit MATCH\n",
+  );
+  r = land(1, ["finish R1"], { merge: true });
+  is("(b) the close lands", r.rc, "0");
+  is(
+    "(b) …with the line quoted once",
+    String((g(F.CODE, "show", `origin/main:journal/2026-09-13/${basename(J2)}`).match(/spec-audit:/g) ?? []).length),
+    "1",
+  );
+
+  // (c) A spec with no audit line: nothing written, nothing refused.
+  fixture("c26c");
+  seedRows("| R1 | first | — | in-progress | `specs/001-first/` |");
+  write(join(F.WT1, RMP, "specs/001-first/report.md"), complete());
+  r = land(1, ["finish R1"], { merge: true });
+  is("(c) a spec with no audit line lands", r.rc, "0");
+  hasnt("(c) …quoting nothing", r.out, "audit line(s)");
+
+  // (d) The report block is saved before the close is marked closed, and the
+  // reader's delivered mark is cleared with it.
+  write(threadFile(TID1, "report-delivered"), "");
+  write(join(F.WT1, "two.txt"), "two\n");
+  r = land(1, ["second landing"], { merge: true });
+  is("(d) the close lands", r.rc, "0");
+  const saved = isFile(threadFile(TID1, "report")) ? cat(threadFile(TID1, "report")) : "no saved report";
+  is("(d) the saved report is the printed block", r.out.slice(r.out.indexOf("**Shipped:**")), saved);
+  ok("(d) …ending on the proof line", saved.endsWith("closing this tab loses nothing."), saved);
+  ok("(d) …and the delivered mark is cleared", !existsSync(threadFile(TID1, "report-delivered")), "still there");
+
+  // (e) A held landing that relinked a drifted home link: the release's report
+  // carries the line, under **Harness links:**, above the proof line.
+  fixture("c26e");
+  write(join(F.CODE, HL_CHECK_REL), HL_STUB);
+  commitOnTrunk("the links check stub");
+  write(join(F.WT1, "one.txt"), "one\n");
+  r = land(1, ["drift, held", "--hold"], { merge: true, extra: { HL_STUB_MODE: "drift" } });
+  is("(e) the held landing exits 4", r.rc, "4");
+  hasnt("(e) …printing no harness line before the report", r.out, "harness-links:");
+  r = land(1, ["--release"], { merge: true });
+  is("(e) the release passes", r.rc, "0");
+  has(
+    "(e) …and its report carries the relinked line",
+    r.out,
+    "**Harness links:**\n\n- harness-links: relinked ~/.grok/config.toml -> /the/target",
+  );
+  ok(
+    "(e) …above the proof line",
+    r.out.indexOf("**Harness links:**") < r.out.indexOf("loses nothing"),
+    "the harness links came after the proof line",
+  );
+  ok("(e) …and the lines are gone once the close is done", !existsSync(threadFile(TID1, "harness-links")), "kept");
+
+  // (f) A release whose report cannot be saved is NOT CLOSED, hold intact.
+  fixture("c26f");
+  write(join(F.WT1, "one.txt"), "one\n");
+  is("(f) the held landing exits 4", land(1, ["held", "--hold"], { merge: true }).rc, "4");
+  write(join(threadFile(TID1, "report"), "in-the-way"), "a directory where the report goes\n");
+  r = land(1, ["--release"], { merge: true });
+  is("(f) a release that cannot save its report exits 3", r.rc, "3");
+  has("(f) …saying so", r.out, `NOT CLOSED: could not save the report to ${threadFile(TID1, "report")}`);
+  hasnt("(f) …printing no proof line", r.out, "loses nothing");
+  ok("(f) …the hold is kept", existsSync(threadFile(TID1, "held")), "the hold was cleared");
+  ok("(f) …no closed marker is written", !existsSync(threadFile(TID1, "closed")), "closed was written");
+  rmSync(threadFile(TID1, "report"), { recursive: true, force: true });
+  r = land(1, ["--release"], { merge: true });
+  is("(f) the retried release passes", r.rc, "0");
+
+  // (g) A landing whose report cannot be saved, then a --check: the check
+  // prints its line but does not mark closed what has no report.
+  fixture("c26g");
+  write(join(F.WT1, "one.txt"), "one\n");
+  write(join(threadFile(TID1, "report"), "in-the-way"), "a directory where the report goes\n");
+  r = land(1, ["thread one"], { merge: true });
+  is("(g) a landing that cannot save its report exits 3", r.rc, "3");
+  r = land(1, ["--check"], { merge: true });
+  is("(g) a --check after it passes its checks", r.rc, "0");
+  has("(g) …saying it marks nothing closed", r.out, "closed: not marked — no report of this close is saved");
+  ok("(g) …and no closed marker is written", !existsSync(threadFile(TID1, "closed")), "--check closed it");
+  rmSync(threadFile(TID1, "report"), { recursive: true, force: true });
+  r = land(1, ["thread one"], { merge: true });
+  is("(g) landing again saves the report and closes", r.rc, "0");
+  ok("(g) …with the closed marker", existsSync(threadFile(TID1, "closed")), "no closed marker");
+
+  // (h) The trunk changes the audit line of a spec this push also changed:
+  // the merged verdict is quoted too, and committed before the push.
+  fixture("c26h");
+  seedRows("| R1 | first | — | in-progress | `specs/001-first/` |");
+  write(join(F.CODE, RMP, "specs/001-first/plan.md"), "# plan\n\n- spec-audit: codex round-1; spirit MATCH\n");
+  commitOnTrunk("plan, audited");
+  gDo(F.WT1, "fetch", "-q", "origin");
+  gDo(F.WT1, "reset", "-q", "--hard", "origin/main");
+  write(join(F.WT1, RMP, "specs/001-first/report.md"), complete());
+  write(join(F.CODE, RMP, "specs/001-first/plan.md"), "# plan\n\n- spec-audit: codex round-2; spirit MATCH\n");
+  commitOnTrunk("plan, re-audited");
+  r = land(1, ["finish R1"], { merge: true });
+  is("(h) the close lands over the merge", r.rc, "0");
+  const entryOnMain = g(F.CODE, "show", `origin/main:${relative(F.WT1, cat(threadFile(TID1, "journal")))}`);
+  has("(h) the verdict this branch saw is quoted", entryOnMain, "- spec-audit: codex round-1; spirit MATCH");
+  has("(h) …and the merged one too", entryOnMain, "- spec-audit: codex round-2; spirit MATCH");
+});
+
+// ── Case 27 ───────────────────────────────────────────────────────────────
+//
+// LIVE CHECKS ARE OWED, RUN AND PROVED BEFORE A HELD CLOSE IS RELEASED.
+// A spec's tasks.md declares its live checks in a `live-checks` block; the push
+// that writes the spec `complete` owes them, holds whatever flag it was given,
+// and --release runs each command check itself and accepts an evidence check
+// only from a record taken on the deployment live now. What is live is each
+// repo's trunk on its bare origin, read for real, or a stubbed answer from a
+// file (LIVE_CHECKS_TEST_SOURCES) where a case needs the live commit to differ.
+
+const liveStub = (): string => join(F.S, "live.json");
+const LIVE_ENV = (): Record<string, string> => ({
+  LIVE_CHECKS_TEST_SOURCES: liveStub(),
+  LAND_LIVE_CHECK_TIMEOUT: "2",
+});
+function liveLand(args: string[], extra: Record<string, string> = {}, bare = false): Res {
+  return land(1, args, { merge: true, extra: { ...LIVE_ENV(), ...extra }, bare });
+}
+/** What the stub calls live, per target; a target it does not name is read for real. */
+function stubLive(answers: Record<string, unknown>): void {
+  write(liveStub(), JSON.stringify(answers));
+}
+/** The commit live on the workbench target, as the stub answers it. */
+function deployed(sha: string): void {
+  stubLive({ workbench: sha });
+}
+function originTip(repo: "code" | "prod"): string {
+  return sh("git", ["--git-dir", join(F.S, `origins/land-${PID}-${basename(F.S)}-${repo}.git`), "rev-parse", "main"])
+    .out;
+}
+/** A spec of the rows project, finished in thread one's worktree, with these tasks. */
+function finishSpec(spec: string, tasks: string): void {
+  write(join(F.WT1, RMP, `specs/${spec}/tasks.md`), tasks);
+  write(join(F.WT1, RMP, `specs/${spec}/report.md`), complete());
+}
+const liveBlock = (...ls: string[]): string => `# Tasks\n\n\`\`\`live-checks\n${ls.join("\n")}\n\`\`\`\n`;
+const owedKeys = (): string =>
+  isFile(threadFile(TID1, "live-owed"))
+    ? (JSON.parse(cat(threadFile(TID1, "live-owed"))) as { key: string }[]).map((o) => o.key).join(" ")
+    : "none";
+const owedCommit = (key: string): string =>
+  (JSON.parse(cat(threadFile(TID1, "live-owed"))) as { key: string; commit: string }[]).find((o) => o.key === key)
+    ?.commit ?? "unbound";
+
+kase("Case 27: live checks are owed, run and proved before a held close is released", () => {
+  // (a) Workbench checks: owed and held without --hold, never cleared by a
+  // landing, refused until each passes on what is live, then released.
+  fixture("c27a");
+  seedRows(
+    "| R1 | first | — | in-progress | `specs/001-first/` |",
+    "| R2 | second | — | planned | `specs/002-second/` |",
+  );
+  finishSpec(
+    "001-first",
+    liveBlock(
+      `home | workbench | command | test -f "$LIVE_CHECKS_TEST_SOURCES.ok"`,
+      "shot | workbench | evidence | the page shows one",
+    ),
+  );
+  let r = liveLand(["ship R1"]);
+  is("(a) a landing that owes live checks holds without --hold", r.rc, "4");
+  has(
+    "(a) …listing the command check",
+    r.out,
+    'owed: rows/001-first/home — command on workbench: test -f "$LIVE_CHECKS_TEST_SOURCES.ok"',
+  );
+  has("(a) …and how to record the evidence one", r.out, "land.ts --live-start rows/001-first/shot; capture it;");
+  has("(a) …ending on HELD", lastLine(r.out), "HELD: landed and deployed");
+  const tip1 = originTip("code");
+  is("(a) …each owed check bound to the commit it landed", owedCommit("rows/001-first/home"), tip1);
+  const gate = land(1, ["--gate"]).out;
+  is("(a) --gate says held", gate.split("\n")[0] ?? "", "held");
+  has("(a) …with the owed checks", gate, "owed: rows/001-first/shot");
+  is("(a) --check while held exits 4", liveLand(["--check"]).rc, "4");
+
+  write(join(F.WT1, "two.txt"), "two\n");
+  r = liveLand(["a plain landing"]);
+  is("(a) an ordinary landing while held is refused", r.rc, "3");
+  has("(a) …saying so", r.out, "NOT CLOSED: a hold is open — land with --hold, or --release");
+  is("(a) …and the hold is intact", cat(threadFile(TID1, "held")), "ship R1");
+  is("(a) …nothing of it was pushed", onMain(F.CODE, "two.txt"), "no");
+  rmSync(join(F.WT1, "two.txt"));
+
+  deployed(tip1);
+  r = liveLand(["--release"]);
+  is("(a) a release with a failing command and no evidence is refused", r.rc, "3");
+  has("(a) …the command's failure named", r.out, "live check rows/001-first/home failed (exit 1)");
+  has(
+    "(a) …the missing evidence named, with how to record it",
+    r.out,
+    "live check rows/001-first/shot has no evidence — land.ts --live-start rows/001-first/shot",
+  );
+  hasnt("(a) …and no proof line", r.out, "loses nothing");
+  ok("(a) …the hold is kept", isFile(threadFile(TID1, "held")), "hold cleared");
+
+  const shot = join(F.S, "shot.png");
+  write(shot, "png\n");
+  r = liveLand(["--live-pass", "rows/001-first/nope", shot, "--saw", "x"]);
+  has(
+    "(a) --live-pass of an id not owed is refused, naming the owed",
+    r.out,
+    "rows/001-first/nope is not an owed live check — owed: rows/001-first/home, rows/001-first/shot",
+  );
+  has(
+    "(a) --live-start of a command check is refused",
+    liveLand(["--live-start", "rows/001-first/home"]).out,
+    "is a command check",
+  );
+  r = liveLand(["--live-pass", "rows/001-first/shot", shot, "--saw", "one"]);
+  has("(a) --live-pass with no --live-start is refused", r.out, "rows/001-first/shot has no --live-start");
+  is("(a) --live-start records what is live", liveLand(["--live-start", "rows/001-first/shot"]).rc, "0");
+  has(
+    "(a) --live-pass of a missing file is refused",
+    liveLand(["--live-pass", "rows/001-first/shot", join(F.S, "none.png"), "--saw", "one"]).out,
+    "is missing or empty",
+  );
+  has(
+    "(a) --live-pass without --saw is refused",
+    liveLand(["--live-pass", "rows/001-first/shot", shot, "--saw", " "]).out,
+    '--saw "<what the evidence shows>" is required',
+  );
+  deployed("e".repeat(40));
+  r = liveLand(["--live-pass", "rows/001-first/shot", shot, "--saw", "one"]);
+  is("(a) a capture after the revision moved is refused", r.rc, "3");
+  has("(a) …as void", r.out, "workbench changed since --live-start");
+  deployed(tip1);
+  liveLand(["--live-start", "rows/001-first/shot"]);
+  is(
+    "(a) a capture on the same revision is recorded",
+    liveLand(["--live-pass", "rows/001-first/shot", shot, "--saw", "one is shown"]).rc,
+    "0",
+  );
+
+  // A fix landed --hold whose spec declares its own `home`: three owed, two keys named home.
+  // Its check imports a package only the repo's own checkout resolves — here an
+  // ignored node_modules inside it, as a shared node_modules in a parent folder
+  // serves every checkout under it. The run tree, made elsewhere, must resolve
+  // it the same way, or it fails on "Cannot find package".
+  write(join(F.CODE, "node_modules/live-dep/package.json"), '{"name":"live-dep","type":"module","main":"index.js"}\n');
+  write(join(F.CODE, "node_modules/live-dep/index.js"), "export default 1;\n");
+  appendFileSync(join(F.CODE, ".git/info/exclude"), "node_modules/\n");
+  finishSpec(
+    "002-second",
+    liveBlock(`home | workbench | command | node --input-type=module -e 'await import("live-dep")'`),
+  );
+  r = liveLand(["fix what the live check found", "--hold"]);
+  is("(a) the fix lands held", r.rc, "4");
+  is(
+    "(a) …and three checks are owed, home under each spec",
+    owedKeys(),
+    "rows/001-first/home rows/001-first/shot rows/002-second/home",
+  );
+  const tip2 = originTip("code");
+  deployed(tip2);
+  write(`${liveStub()}.ok`, "ok\n");
+  r = liveLand(["--release"]);
+  is("(a) evidence taken before the fix deployed is void at release", r.rc, "3");
+  has("(a) …saying so", r.out, "NOT CLOSED: live check rows/001-first/shot: its evidence was taken on");
+  liveLand(["--live-start", "rows/001-first/shot"]);
+  liveLand(["--live-pass", "rows/001-first/shot", shot, "--saw", "one is shown"]);
+  r = liveLand(["--release"]);
+  is("(a) every check passed on what is live: released", r.rc, "0");
+  has("(a) …reporting the first held subject", r.out, "**Shipped:** ship R1");
+  has(
+    "(a) …each command check that passed",
+    r.out,
+    '- rows/001-first/home — `test -f "$LIVE_CHECKS_TEST_SOURCES.ok"` passed on workbench at',
+  );
+  has(
+    "(a) …each expectation beside what was seen",
+    r.out,
+    "- rows/001-first/shot — expected: the page shows one — saw: one is shown ([",
+  );
+  has("(a) …and ends on the proof line", lastLine(r.out), "closing this tab loses nothing.");
+  ok(
+    "(a) …the hold and the owed checks are gone",
+    !isFile(threadFile(TID1, "held")) && !isFile(threadFile(TID1, "live-owed")),
+    "left",
+  );
+
+  // (b) A check on another repo, declared in workbench, binds at that repo's
+  // push, and release reads that repo live: not containing, unreadable,
+  // moving mid-check, hanging, a relative command, then released. The repo
+  // is named as GitHub names it, so both origins get GitHub names (the stub
+  // waiter answers their push checks).
+  fixture("c27b");
+  writeAwaitStub();
+  const T = `repo:test/${basename(F.PROD)}`;
+  seedRows("| R1 | first | — | in-progress | `specs/001-first/` |");
+  finishSpec(
+    "001-first",
+    liveBlock(
+      `api | ${T} | command | if [ -f "$LIVE_CHECKS_TEST_SOURCES.flip" ]; then cp "$LIVE_CHECKS_TEST_SOURCES.flip" "$LIVE_CHECKS_TEST_SOURCES"; fi`,
+      `slow | ${T} | command | if [ -f "$LIVE_CHECKS_TEST_SOURCES.hang" ]; then sleep 30; fi`,
+      `rel | ${T} | command | test -f ./.agents/skills/close/scripts/land.ts`,
+      `fresh | ${T} | command | test ! -e ./dirt.txt`,
+    ),
+  );
+  r = liveLand(["ship the other repo's check"]);
+  is("(b) a check on a repo this thread lands nothing in is refused", r.rc, "3");
+  has(
+    "(b) …before the push, saying there is nothing to check there",
+    r.out,
+    `owes a live check on ${T}, which builds from test/${basename(F.PROD)} — this thread lands nothing there`,
+  );
+  is("(b) …so nothing was pushed", onMain(F.CODE, `${RMP}/specs/001-first/tasks.md`), "no");
+  const SAT = writeRoot(1, F.PROD).out;
+  write(join(SAT, "page.md"), "page\n");
+  r = liveLand(["ship the other repo's check"]);
+  is("(b) with that repo landed second, it holds", r.rc, "4");
+  const prodTip = originTip("prod");
+  is("(b) …the check bound at that repo's push", owedCommit("rows/001-first/api"), prodTip);
+
+  const prodSeed = g(F.PROD, "rev-parse", "origin/main~1");
+  stubLive({ [T]: prodSeed });
+  r = liveLand(["--release"]);
+  is("(b) a live repo older than the landing is refused", r.rc, "3");
+  has("(b) …one NOT CLOSED line for the four checks it fails", r.out, "NOT CLOSED: 4 live checks not proved");
+  has(
+    "(b) …as not containing it",
+    r.out,
+    `live check rows/001-first/api: the live ${T} does not contain ${prodTip.slice(0, 12)}`,
+  );
+  stubLive({ [T]: "c".repeat(40) });
+  has(
+    "(b) a live commit the repo does not have is refused",
+    liveLand(["--release"]).out,
+    "which " + F.PROD + " does not have",
+  );
+  stubLive({ [T]: { throw: "origin 503" } });
+  has(
+    "(b) an unreadable revision is refused, naming why",
+    liveLand(["--release"]).out,
+    `cannot read the live revision of ${T}: origin 503`,
+  );
+  stubLive({ [T]: prodTip });
+  write(`${liveStub()}.flip`, JSON.stringify({ [T]: prodTip.slice(0, 12) }));
+  r = liveLand(["--release"]);
+  is("(b) a deploy landing during the checks is refused", r.rc, "3");
+  has("(b) …saying the repo changed", r.out, `the live ${T} changed during the checks`);
+  rmSync(`${liveStub()}.flip`);
+  stubLive({ [T]: prodTip });
+  write(`${liveStub()}.hang`, "");
+  r = liveLand(["--release"]);
+  has(
+    "(b) a command that hangs is killed and failed",
+    r.out,
+    "live check rows/001-first/slow failed: killed after 2 s",
+  );
+  rmSync(`${liveStub()}.hang`);
+  write(join(F.CODE, "dirt.txt"), "left in the shared checkout\n");
+  r = liveLand(["--release"]);
+  is("(b) with every check passing it releases — the relative command ran in the declaring repo", r.rc, "0");
+  has("(b) …the command saw the landed tree, not the shared checkout", r.out, "- rows/001-first/fresh — ");
+  has(
+    "(b) …listing it",
+    r.out,
+    `- rows/001-first/rel — \`test -f ./.agents/skills/close/scripts/land.ts\` passed on ${T} at`,
+  );
+
+  // (c) A malformed block is refused before the push; an empty one owes
+  // nothing; an interrupted push leaves its obligations for the re-run.
+  fixture("c27c");
+  seedRows(
+    "| R1 | first | — | in-progress | `specs/001-first/` |",
+    "| R2 | second | — | planned | `specs/002-second/` |",
+  );
+  finishSpec("001-first", liveBlock("home | workbench | command"));
+  r = liveLand(["ship R1"]);
+  is("(c) a malformed block is refused", r.rc, "3");
+  has(
+    "(c) …naming the file and line",
+    r.out,
+    `NOT CLOSED: the live-checks block in ${RMP}/specs/001-first/tasks.md is malformed — line 4: 3 field(s)`,
+  );
+  is("(c) …before the push", onMain(F.CODE, `${RMP}/specs/001-first/report.md`), "no");
+  finishSpec("001-first", liveBlock("w | repo:acme/elsewhere | command | true"));
+  r = liveLand(["ship R1"]);
+  is("(c) a check on a repo no ledger checkout is refused", r.rc, "3");
+  has(
+    "(c) …before the push, naming the repo",
+    r.out,
+    "owes a live check on repo:acme/elsewhere, which builds from acme/elsewhere — this thread lands nothing there",
+  );
+  finishSpec("001-first", "# Tasks\n\n```live-checks\n```\n");
+  r = liveLand(["ship R1"]);
+  is("(c) an empty block owes nothing and closes", r.rc, "0");
+  has(
+    "(c) …with a warning naming the spec",
+    r.out,
+    `live-checks: ${RMP}/specs/001-first/tasks.md:3: an empty live-checks block`,
+  );
+  hasnt("(c) …and no hold", r.out, "HELD:");
+
+  finishSpec("002-second", liveBlock("ping | workbench | command | true"));
+  r = liveLand(["ship R2"], { LAND_TEST_KILL_AT: "pushed:1" });
+  isnt("(c) a close killed after its push does not finish", r.rc, "0");
+  is("(c) …and its owed check is on disk", owedKeys(), "rows/002-second/ping");
+  r = liveLand(["ship R2"], { LAND_TEST_KILL_AT: "landings-done:1" });
+  isnt("(c) a close killed after its deploy, before it holds, does not finish", r.rc, "0");
+  r = liveLand(["--check"]);
+  is("(c) …and a --check after it is NOT CLOSED", r.rc, "3");
+  has(
+    "(c) …saying the landing must run again",
+    r.out,
+    "live checks are owed but the landing that owes them did not finish",
+  );
+  hasnt("(c) …never printing the proof line", r.out, "loses nothing");
+  is("(c) …and --gate lets the close run again", land(1, ["--gate"]).out, "not-fired");
+  r = liveLand(["ship R2"]);
+  is("(c) the re-run holds on it", r.rc, "4");
+  has("(c) …listing it", r.out, "owed: rows/002-second/ping");
+  deployed(originTip("code"));
+  is("(c) …and releases once it passes", liveLand(["--release"]).rc, "0");
+
+  // (d) A push that edits a report already `complete` on the trunk does not
+  // write it complete, so it owes none of that spec's checks: they were owed,
+  // and proved, by the close that finished it. One that turns a `partial`
+  // report `complete` still owes them — otherwise a typo fix in a finished
+  // report is refused for checks on a repo it never touched.
+  fixture("c27d");
+  seedRows("| R1 | first | — | done | `specs/001-first/` |", "| R2 | second | — | in-progress | `specs/002-second/` |");
+  write(join(F.CODE, RMP, "specs/001-first/tasks.md"), liveBlock("home | repo:acme/elsewhere | command | true"));
+  // Finished in spec-state.ts's own words, not only `complete`.
+  write(join(F.CODE, RMP, "specs/001-first/report.md"), '---\nspec: x\nspec-status: "Shipped"\n---\n');
+  write(join(F.CODE, RMP, "specs/002-second/tasks.md"), liveBlock("ping | workbench | command | true"));
+  write(join(F.CODE, RMP, "specs/002-second/report.md"), "---\nspec: x\nspec-status: partial\n---\n");
+  commitOnTrunk("R1 finished, R2 part-built");
+  gDo(F.WT1, "fetch", "-q", "origin");
+  gDo(F.WT1, "reset", "-q", "--hard", "origin/main");
+  write(
+    join(F.WT1, RMP, "specs/001-first/report.md"),
+    '---\nspec: x\nspec-status: "Shipped"\n---\n\nA repaired paragraph.\n',
+  );
+  r = liveLand(["repair R1's report"]);
+  is("(d) editing a report already complete on the trunk owes nothing and closes", r.rc, "0");
+  hasnt("(d) …naming none of its checks", r.out, "001-first/home");
+  hasnt("(d) …and no hold", r.out, "HELD:");
+  is("(d) …with nothing on disk owed", owedKeys(), "none");
+  write(
+    join(F.WT1, RMP, "specs/001-first/tasks.md"),
+    liveBlock("home | repo:acme/elsewhere | command | true", "broken | workbench | command"),
+  );
+  r = liveLand(["break R1's block"]);
+  is("(d) a malformed line added to a finished spec's block is refused", r.rc, "3");
+  has("(d) …naming the line", r.out, `the live-checks block in ${RMP}/specs/001-first/tasks.md is malformed`);
+  write(join(F.WT1, RMP, "specs/001-first/tasks.md"), liveBlock("home | repo:acme/elsewhere | command | true"));
+  // A folder with no spec.md is not a spec (spec-state.ts), so its block owes nothing.
+  write(join(F.WT1, RMP, "specs/003-loose/tasks.md"), liveBlock("loose | workbench | command | false"));
+  write(join(F.WT1, RMP, "specs/003-loose/report.md"), complete());
+  r = liveLand(["a report-only folder"]);
+  is("(d) a report-only folder's block owes nothing", r.rc, "0");
+  hasnt("(d) …and is not listed", r.out, "003-loose/loose");
+  write(join(F.WT1, RMP, "specs/002-second/report.md"), complete());
+  r = liveLand(["finish R2"]);
+  is("(d) turning a partial report complete still owes its checks", r.rc, "4");
+  has("(d) …listing them", r.out, "owed: rows/002-second/ping");
+  // Held, the trunk already holds R2's complete report from this close's own
+  // push; a corrected check must still replace the one it owes.
+  write(join(F.WT1, RMP, "specs/002-second/tasks.md"), liveBlock("ping | workbench | command | false"));
+  r = liveLand(["fix R2's check", "--hold"]);
+  is("(d) a held re-landing that corrects an owed check holds again", r.rc, "4");
+  is(
+    "(d) …owing the corrected command, not the old one",
+    (JSON.parse(cat(threadFile(TID1, "live-owed"))) as { key: string; body: string }[]).find(
+      (o) => o.key === "rows/002-second/ping",
+    )?.body ?? "none",
+    "false",
+  );
+  // Emptied, then restored: the restored check is owed again.
+  write(join(F.WT1, RMP, "specs/002-second/tasks.md"), "# Tasks\n\n```live-checks\n```\n");
+  liveLand(["drop R2's check", "--hold"]);
+  is("(d) a held re-landing that empties the block owes nothing for it", owedKeys(), "");
+  write(join(F.WT1, RMP, "specs/002-second/tasks.md"), liveBlock("ping | workbench | command | false"));
+  liveLand(["restore R2's check", "--hold"]);
+  is("(d) …and one that restores it owes it again", owedKeys(), "rows/002-second/ping");
+  // An obligation the declaration no longer says (left by a push that failed
+  // after recording it) is put back in step with the block on the next landing.
+  const owedFile = threadFile(TID1, "live-owed");
+  const stale = (JSON.parse(cat(owedFile)) as { key: string; body: string }[]).map((o) =>
+    o.key === "rows/002-second/ping" ? { ...o, body: "exit 9" } : o,
+  );
+  write(owedFile, JSON.stringify(stale));
+  write(join(F.WT1, "note.txt"), "an unrelated change\n");
+  liveLand(["an unrelated change", "--hold"]);
+  is(
+    "(d) a stale owed check is replaced by what the block declares",
+    (JSON.parse(cat(owedFile)) as { key: string; body: string }[]).find((o) => o.key === "rows/002-second/ping")
+      ?.body ?? "none",
+    "false",
+  );
+  // An obligation for a spec that is no longer there at all is cleared.
+  write(
+    owedFile,
+    JSON.stringify([
+      ...(JSON.parse(cat(owedFile)) as object[]),
+      { ...(JSON.parse(cat(owedFile)) as object[])[0], key: "rows/004-gone/x", spec: `${RMP}/specs/004-gone`, id: "x" },
+    ]),
+  );
+  write(join(F.WT1, "note.txt"), "another unrelated change\n");
+  liveLand(["another unrelated change", "--hold"]);
+  is("(d) an owed check whose spec is gone is cleared", owedKeys(), "rows/002-second/ping");
 });

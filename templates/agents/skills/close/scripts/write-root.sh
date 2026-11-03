@@ -229,9 +229,8 @@ fi
 # the wrong branch or none.
 #
 # The SHARED column is the real checkout, not the worktree itself: it is what
-# `land.ts` fast-forwards, and it is where `land.ts` looks for
-# `.agents/deployable-prefixes.json` to decide whether this repo's pushes
-# deploy at all.
+# `land.ts` fast-forwards, and whose origin names the GitHub repo `land.ts`
+# asks about the push's checks.
 T3_WT="$(node --experimental-strip-types "${THREAD}" --worktree 2>/dev/null || true)"
 if [ -n "${T3_WT}" ] && [ -d "${T3_WT}" ]; then
   T3_SHARED="$(canonical_shared "${T3_WT}" || true)"

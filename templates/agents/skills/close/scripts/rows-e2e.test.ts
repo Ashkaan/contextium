@@ -247,6 +247,7 @@ time: "${name.slice(0, 2)}:${name.slice(2, 4)}"
 slug: row-r${n}
 project: demo/2026-01-01_rows-demo
 tags: []
+open_items: none
 ---
 
 ### row-r${n}
@@ -258,8 +259,13 @@ tags: []
   assert.equal(check.rc, 0, `session ${session}'s journal entry fails its check: ${check.out}`);
 }
 
-const land = (session: string, wt: string, subject: string) =>
-  ts(`${C}/land.ts`, [subject], { cwd: wt, env: as(session), merge: true });
+// The close runs verify.ts first: land.ts refuses a thread whose last verify
+// pass does not cover the tree it is about to commit.
+const land = (session: string, wt: string, subject: string) => {
+  const v = ts(`${C}/verify.ts`, [], { cwd: wt, env: as(session), merge: true });
+  assert.equal(v.rc, 0, `session ${session}'s verify passes:\n${v.out}`);
+  return ts(`${C}/land.ts`, [subject], { cwd: wt, env: as(session), merge: true });
+};
 
 test("each session builds its row and closes; the second lands with no hand step", { skip }, () => {
   build(WT1, 1, "001-first");

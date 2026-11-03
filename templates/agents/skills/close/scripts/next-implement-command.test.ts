@@ -19,9 +19,18 @@ const GEN = join(dirname(fileURLToPath(import.meta.url)), "next-implement-comman
 const TMP = mkdtempSync(join(tmpdir(), "next-implement-command-test-"));
 after(() => rmSync(TMP, { recursive: true, force: true }));
 
+// No real T3 database: which rows other open threads are building comes from
+// the NEXT_IMPLEMENT_ROWS_TAKEN stub below, never from this machine's threads.
+const ENV: Record<string, string | undefined> = { ...process.env, T3CODE_HOME: join(TMP, "no-t3") };
+delete ENV.NEXT_IMPLEMENT_ROWS_TAKEN;
+
 /** The generator's stdout, `$(…)`-trimmed. */
-function gen(d: string): string {
-  const r = spawnSync(process.execPath, ["--no-warnings", "--experimental-strip-types", GEN, d], { encoding: "utf8", timeout: 60_000 });
+function gen(d: string, env: Record<string, string> = {}): string {
+  const r = spawnSync(process.execPath, ["--no-warnings", "--experimental-strip-types", GEN, d], {
+    encoding: "utf8",
+    env: { ...ENV, ...env },
+    timeout: 60_000,
+  });
   return r.stdout.replace(/\n+$/, "");
 }
 const touch = (p: string, body = ""): void => writeFileSync(p, body);
@@ -104,6 +113,21 @@ test("monitor-bare-date", () => {
 test("monitor-no-date", () => {
   const d = mkproj("2026-05-07_observe-nodate", "monitor");
   assert.equal(gen(d), "# observe-nodate — work complete, monitor window open (monitoring-until not set)");
+});
+
+// 6d. monitor with planned rows waiting behind the watch → never "work complete"
+//     (a project with planned rows behind a meeting would read as closed).
+test("monitor-with-waiting-rows", () => {
+  const d = mkproj("2026-05-08_observe-waiting", "monitor");
+  appendFileSync(join(d, "README.md"), "monitoring-until: 2026-10-30 — R2: the meeting\n");
+  writeFileSync(
+    join(d, "ROADMAP.md"),
+    "# Roadmap: t\n\n| ID | Sub-feature | Intent | Scope boundary | Depends on | Status | Sub-spec |\n|----|-------------|--------|----------------|-----------|--------|----------|\n| R1 | a | i | s | R2 | planned | manual |\n| R2 | the meeting | i | s | — | blocked: 2026-10-30 the meeting | — |\n| R3 | c | i | s | R2 | planned | manual |\n",
+  );
+  assert.equal(
+    gen(d),
+    "# observe-waiting — 2 planned rows wait on the watch, monitoring until 2026-10-30: R2: the meeting",
+  );
 });
 
 // ── ROADMAP.md projects ─────────────────────────────────────────────
@@ -237,5 +261,43 @@ test("rm-ignores-shard-table", () => {
 test("rm-status-first", () => {
   const d = mkproj("2026-09-11_rm-mon", "monitor");
   mkroadmap(d, "| R1 | a | i | s | — | planned | — |");
-  assert.equal(gen(d), "# rm-mon — work complete, monitor window open (monitoring-until not set)");
+  assert.equal(gen(d), "# rm-mon — 1 planned row waits on the watch, monitor window open (monitoring-until not set)");
+});
+
+// ── A row another open thread is building ─────────────────────────────────
+// Pasting a printed /implement line for a row a live thread already builds would
+// start it twice; the line is replaced by one naming that thread.
+function takenStub(name: string, lines: string[], code = 0): Record<string, string> {
+  const path = join(TMP, `rows-taken-${name}.ts`);
+  writeFileSync(
+    path,
+    `process.stdout.write(${JSON.stringify(lines.map((l) => `${l}\n`).join(""))});\nprocess.exit(${code});\n`,
+  );
+  return { NEXT_IMPLEMENT_ROWS_TAKEN: path };
+}
+
+test("rm-held-rows-are-named-not-printed", () => {
+  const d = mkproj("2026-09-12_rm-held", "active");
+  mkroadmap(
+    d,
+    "| R2 | b | i | s | — | planned | `specs/002-b/` |",
+    "| R3 | c | i | s | — | planned | `specs/003-c/` |",
+  );
+  spec(d, "002-b");
+  spec(d, "003-c");
+  assert.equal(
+    gen(d, takenStub("mixed", ["R2\tBuilding R2\tt-1\t/w/1"])),
+    '/implement rm-held r3\n# R2 is being built in thread "Building R2"',
+    "mixed: the free row's command, the held row named",
+  );
+  assert.equal(
+    gen(d, takenStub("all", ["R2\tFirst\tt-1\t/w/1", "R2\tSecond\tt-2\t/w/2", "R3\tThird\tt-3\t/w/3"])),
+    '# R2 is being built in thread "First"\n# R2 is being built in thread "Second"\n# R3 is being built in thread "Third"',
+    "held only: no command, and no /project either",
+  );
+  assert.equal(
+    gen(d, takenStub("crash", ["R2\tBuilding R2\tt-1\t/w/1"], 4)),
+    "/implement rm-held r2\n/implement rm-held r3",
+    "a crashed helper prints as without the check",
+  );
 });

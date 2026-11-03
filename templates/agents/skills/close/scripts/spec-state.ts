@@ -85,6 +85,18 @@ function isCompleteClaim(s: string): boolean {
   return /^(COMPLETE|SHIPPED|DONE)($|[^A-Z])/.test(v);
 }
 
+/** A report's frontmatter `spec-status:`, from its first 20 lines, or "". */
+function reportStatus(head: string[]): string {
+  return (head[0] ?? "") === "---" ? frontmatterValue(head, "spec-status") : "";
+}
+
+/** Does this report text claim its spec complete? THE RULE above, for a
+ *  report that is not on disk (land.ts reads one at the trunk's base). */
+export function reportClaimsComplete(text: string): boolean {
+  const status = reportStatus(text.split("\n").slice(0, 20));
+  return status !== "" && isCompleteClaim(status);
+}
+
 async function main(): Promise<void> {
   const argv = process.argv.slice(2);
   if (argv.length !== 1) {
@@ -131,9 +143,7 @@ async function main(): Promise<void> {
       EVID.set(fs, "no report");
       continue;
     }
-    let status = "";
-    const head = headLines(rf, 20);
-    if ((head[0] ?? "") === "---") status = frontmatterValue(head, "spec-status");
+    const status = reportStatus(headLines(rf, 20));
     if (status !== "" && isCompleteClaim(status)) {
       STATE.set(fs, "complete");
       EVID.set(fs, `frontmatter: ${fs}/report.md`);

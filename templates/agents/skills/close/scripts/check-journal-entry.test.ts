@@ -120,7 +120,11 @@ function assertBody(name: string, expect: "pass" | "block", body: string, ...nee
   test(`${name} ${expect === "pass" ? "passed" : "blocked"}`, () => {
     mkdirSync(join(TMP, name), { recursive: true });
     const path = join(TMP, name, "1200-a-session.md");
-    writeFileSync(path, `${FM}\n${body}\n`);
+    // F9 binds sessions started from 2026-10-18 07:30; its cases start then.
+    const fm = name.startsWith("f9-")
+      ? FM.replace("date: 2026-09-23", "date: 2026-10-18").replace('time: "12:00"', 'time: "07:30"')
+      : FM;
+    writeFileSync(path, `${fm}\n${body}\n`);
     const r = check([path]);
     if (expect === "pass") {
       assert.equal(r.rc, 0, `${name} — expected PASS, got BLOCK:\n${r.out}`);
@@ -474,7 +478,7 @@ assertBody(
   "f7-link-only",
   "pass",
   `**Decisions:**
-- [0002-project-file-templates](../../projects/web/2026-01-10_checkout-flow/decisions/0002-project-file-templates.md)`,
+- [0001-example-decision](../../projects/web/2026-01-10_checkout-flow/decisions/0001-example-decision.md)`,
 );
 
 assertBody(
@@ -555,6 +559,186 @@ assertBody(
 
 **Lessons:**
 - nothing under Decisions is fine`,
+);
+
+// ─── F9: a Blocked bullet is an act or a wait, never an open decision ───
+//
+// A close can land with "waiting on the user's go-ahead for an infrastructure
+// change" under Blocked; the auto-close gate says a question is asked and the
+// run halts (auto-close-gate.md precondition (iii)), so that bullet refuses.
+
+assertBody(
+  "f9-act",
+  "pass",
+  `**Blocked:**
+- act: send the drafted reply to the vendor on EXAMPLE-001`,
+);
+
+assertBody(
+  "f9-wait",
+  "pass",
+  `**Blocked:**
+- wait: the supplier's quotes, requested 2026-10-05`,
+);
+
+assertBody(
+  "f9-untyped",
+  "block",
+  `**Blocked:**
+- The reply to the vendor waits on the user to send it.`,
+  "F9",
+  "1200-a-session.md:14",
+  "act:",
+);
+
+assertBody(
+  "f9-decide",
+  "block",
+  `**Blocked:**
+- decide: one dashboard dispatch per push, or a GitHub spending limit`,
+  "F9",
+  "open decision",
+  "halt",
+);
+
+assertBody(
+  "f9-go-ahead-in-an-act",
+  "block",
+  `**Blocked:**
+- act: switching the build cache to a new host touches the deploy path; waiting on the user's go-ahead for an infrastructure change.`,
+  "F9",
+  "go-ahead",
+);
+
+assertBody(
+  "f9-whether-in-a-wait",
+  "block",
+  `**Blocked:**
+- wait: whether to send another reminder to the old mailing list`,
+  "F9",
+  "whether",
+);
+
+assertBody(
+  "f9-question-mark",
+  "block",
+  `**Blocked:**
+- act: keep the threshold and label more samples, or move it?`,
+  "F9",
+);
+
+assertBody(
+  "f9-one-bad-of-three",
+  "block",
+  `**Blocked:**
+- act: press Send on the R2 newsletter
+- R3: the user decides whether every subscriber gets the newsletter.
+- wait: the client signing the proposal`,
+  "F9",
+  ":15",
+);
+
+assertBody(
+  "f9-wait-on-someone-elses-answer",
+  "pass",
+  `**Blocked:**
+- wait: the vendor's answer on the failing webhook, asked on EXAMPLE-001`,
+);
+
+assertBody(
+  "f9-user-approval-in-an-act",
+  "block",
+  `**Blocked:**
+- act: the user approves turning on the stricter spam filter for the support inbox`,
+  "F9",
+  "approves",
+);
+
+// Review round 1 of the F9 change: three more shapes.
+assertBody(
+  "f9-user-ok",
+  "block",
+  `**Blocked:**
+- wait: infrastructure work needs the user’s OK`,
+  "F9",
+  "OK",
+);
+
+assertBody(
+  "f9-pick-between",
+  "block",
+  `**Blocked:**
+- act: the user picks between a larger email plan and a shorter mailing list`,
+  "F9",
+  "picks",
+);
+
+assertBody(
+  "f9-vendor-sign-off-and-a-url",
+  "pass",
+  `**Blocked:**
+- wait: the vendor's sign-off on the design, sent 2026-10-17
+- act: open https://dash.cloudflare.com/?to=/:account/workers and press Retry build`,
+);
+
+assertBody(
+  "f9-vendor-approval",
+  "pass",
+  `**Blocked:**
+- wait: the vendor's approval of the API quota increase, due 2026-10-24`,
+);
+
+assertBody(
+  "f9-inline-on-the-label-line",
+  "block",
+  `**Blocked:** - wait: whether to send another reminder`,
+  "F9",
+  "whether",
+);
+
+// An act is the user's own, so its decision words need no name; and a
+// code span holding a URL does not swallow the prose after it.
+assertBody(
+  "f9-imperative-decide-in-an-act",
+  "block",
+  `**Blocked:**
+- act: decide between a larger email plan and a shorter mailing list`,
+  "F9",
+  "decide",
+);
+
+assertBody(
+  "f9-url-in-a-code-span",
+  "block",
+  "**Blocked:**\n- wait: open `https://example.com/` after the user decides between `Pro` and `Free`",
+  "F9",
+  "decides",
+);
+
+// A session started before F9 landed keeps its old shape: FM is 2026-09-23, and
+// an entry started at 06:00 the morning F9 began was written under the old rule.
+test("a session started at 06:00 on the day F9 landed passes untyped", () => {
+  mkdirSync(join(TMP, "f9-before-0730"), { recursive: true });
+  const path = join(TMP, "f9-before-0730", "0600-a-session.md");
+  const fm = FM.replace("date: 2026-09-23", "date: 2026-10-18").replace('time: "12:00"', 'time: "06:00"');
+  writeFileSync(path, `${fm}\n**Blocked:**\n- the test device's reset button needs a physical press — the user's hands.\n`);
+  const r = check([path]);
+  assert.equal(r.rc, 0, r.out);
+});
+
+// An entry written before F9 keeps its old shape (FM is dated 2026-09-23).
+assertBody(
+  "before-f9-untyped-blocked",
+  "pass",
+  `**Blocked:**
+- R3: the user decides whether every subscriber gets the newsletter.`,
+);
+
+assertBody(
+  "f9-empty-blocked",
+  "pass",
+  `**Blocked:**
+`,
 );
 
 assertBody(
@@ -861,6 +1045,20 @@ test("default-path fails when a staged journal cannot be read from the index", (
   assert.match(r.out, /journal\/2026-08-03\/0000-day\.md/, "…and the failure names the file");
 });
 
+// A name git C-quotes without -z ("caf\303\251") failed the journal-path
+// pattern, so a staged corrupt journal with an accent in its slug was never
+// scanned and the gate passed.
+test("default-path blocks a staged corrupt journal whose name git would quote", () => {
+  const dir = join(TMP, "repo-quoted");
+  setupRepo(dir);
+  mkdirSync(join(dir, "journal/2026-08-03"), { recursive: true });
+  copyFileSync(join(TMP, "second-frontmatter-block/0000-day.md"), join(dir, "journal/2026-08-03/0900-café.md"));
+  git("-C", dir, "add", "journal/2026-08-03/0900-café.md");
+  const r = check([], { cwd: dir });
+  assert.notEqual(r.rc, 0, "a staged corrupt journal/2026-08-03/0900-café.md passed unscanned");
+  assert.match(r.out, /0900-café\.md/, "…and the block names the file as it is on disk");
+});
+
 test("default-path passed clean staged journal", () => {
   const dir = join(TMP, "repo-clean");
   setupRepo(dir);
@@ -934,4 +1132,214 @@ test("invoked through a symlink, the script still runs", () => {
   const out = `${r.stdout ?? ""}${r.stderr ?? ""}`;
   assert.equal(r.status, 1, `through a symlink: exit ${r.status}, output '${out}'`);
   assert.match(out, /no 'date:' key/);
+});
+
+// ─── F10: an entry states that nothing is left to ask ──────────────────
+//
+// A close can hold four items for the user, write them into its report as
+// "waiting on the user" and into the journal as a `rejected:` line, then ask
+// them below the close's last line. F9 and check-roadmap-decisions read only the two places a
+// question had been parked before; prose anywhere else escaped. F10 makes the
+// sweep an assertion every entry carries.
+
+function f10(name: string, fmExtra: string | null, date = "2026-10-19", time = "15:11") {
+  mkdirSync(join(TMP, name), { recursive: true });
+  const path = join(TMP, name, "1200-a-session.md");
+  const fm = FM.replace("date: 2026-09-23", `date: ${date}`)
+    .replace('time: "12:00"', `time: "${time}"`)
+    .replace("project: null\n", `project: null\n${fmExtra === null ? "" : `${fmExtra}\n`}`);
+  writeFileSync(path, fm);
+  return check([path]);
+}
+
+test("f10: open_items: none passes", () => {
+  const r = f10("f10-none", "open_items: none");
+  assert.equal(r.rc, 0, r.out);
+});
+
+test("f10: a missing open_items blocks, naming the rule and the halt", () => {
+  const r = f10("f10-missing", null);
+  assert.notEqual(r.rc, 0);
+  assert.ok(r.out.includes("F10"), r.out);
+  assert.ok(r.out.includes("open_items"), r.out);
+  assert.ok(r.out.includes("halt"), r.out);
+});
+
+test("f10: an open_items listing anything blocks", () => {
+  const r = f10("f10-listed", 'open_items: "4 asked in the reply"');
+  assert.notEqual(r.rc, 0);
+  assert.ok(r.out.includes("F10"), r.out);
+  assert.ok(r.out.includes("4 asked in the reply"), r.out);
+});
+
+test("f10: an entry started before F10 landed keeps its shape", () => {
+  const r = f10("f10-before", null, "2026-10-19", "15:10");
+  assert.equal(r.rc, 0, r.out);
+});
+
+// ─── F11: no line leaves something waiting on the user's answer ─────────
+// F10 is an assertion; F11 reads the entry for the parked question itself,
+// wherever it was written (the round-1 review of F10, 2026-10-19).
+
+function f11(name: string, body: string) {
+  mkdirSync(join(TMP, name), { recursive: true });
+  const path = join(TMP, name, "1200-a-session.md");
+  const fm = FM.replace("date: 2026-09-23", "date: 2026-10-19")
+    .replace('time: "12:00"', 'time: "15:11"')
+    .replace("project: null\n", "project: null\nopen_items: none\n");
+  writeFileSync(path, `${fm}\n${body}\n`);
+  return check([path]);
+}
+
+// ─── F12: nothing under Blocked waits on the user ───────────────────────
+// A close means the work is done: a step for the user's hands keeps the
+// session open, so no `- act:` rides a close, and a
+// `- wait:` is a check set for a future date or it is not a wait.
+
+function f12(name: string, body: string, date = "2026-12-01", time = "12:00") {
+  mkdirSync(join(TMP, name), { recursive: true });
+  const path = join(TMP, name, "1200-a-session.md");
+  const fm = FM.replace("date: 2026-09-23", `date: ${date}`)
+    .replace('time: "12:00"', `time: "${time}"`)
+    .replace("project: null\n", "project: null\nopen_items: none\n");
+  writeFileSync(path, `${fm}\n${body}\n`);
+  return check([path]);
+}
+
+test("f12: an act for the user blocks, and says the session stays open", () => {
+  const r = f12("f12-act", "**Blocked:**\n- act: send the drafted reply to the client");
+  assert.notEqual(r.rc, 0);
+  assert.ok(r.out.includes("F12") && r.out.includes("stays open until they have done it"), r.out);
+});
+
+test("f12: a wait needs a date on or after the entry's", () => {
+  for (const [name, line, needle] of [
+    ["f12-undated", "- wait: the vendor's reply", "no date"],
+    ["f12-past", "- wait: 2026-10-01 the vendor's reply", "already past"],
+    ["f12-code-span", "- wait: see `2099-01-01`", "no date"],
+    ["f12-not-a-day", "- wait: 2099-99-99 x", "no date"],
+    ["f12-long-digits", "- wait: 2099-01-010 x", "no date"],
+    ["f12-names-user", "- wait: 2099-01-01 the user sends the drafted reply", "waits on them"],
+  ] as const) {
+    const r = f12(name, `**Blocked:**\n${line}`);
+    assert.notEqual(r.rc, 0, name);
+    assert.ok(r.out.includes("F12") && r.out.includes(needle), `${name}: ${r.out}`);
+  }
+});
+
+test("f12: a wait dated the entry's own day, or later, passes", () => {
+  for (const [name, line] of [
+    ["f12-same-day", "- wait: 2026-12-01 the vendor's quote"],
+    ["f12-later", "- wait: the vendor's quote, due 2027-01-15"],
+  ] as const) {
+    const r = f12(name, `**Blocked:**\n${line}`);
+    assert.equal(r.rc, 0, `${name}: ${r.out}`);
+  }
+});
+
+test("f12: an untyped bullet is offered only the wait shape", () => {
+  const r = f12("f12-untyped", "**Blocked:**\n- the vendor");
+  assert.notEqual(r.rc, 0);
+  assert.ok(r.out.includes("- wait: <YYYY-MM-DD>"), r.out);
+  assert.ok(!r.out.includes("- act:"), r.out);
+});
+
+test("f12: no Blocked section passes", () => {
+  const r = f12("f12-none", "**Changes:**\n- a change");
+  assert.equal(r.rc, 0, r.out);
+});
+
+test("f12: an entry started before F12 keeps F9's act line", () => {
+  const r = f12("f12-before", "**Blocked:**\n- act: send the drafted reply to the client", "2026-10-20", "12:00");
+  assert.equal(r.rc, 0, r.out);
+});
+
+test("f12: the Next and F11 messages no longer offer an act line", () => {
+  const next = f12("f12-next", "**Next:**\n- something");
+  assert.ok(next.out.includes("F6") && !next.out.includes("- act:") && !next.out.includes("**Blocked:**"), next.out);
+  const parked = f12("f12-parked", "**Findings:**\n- waiting on the user for the colour palette");
+  assert.ok(parked.out.includes("F11") && !parked.out.includes("- act:"), parked.out);
+});
+
+test("f11: a rejected: line parked on the user blocks", () => {
+  const r = f11(
+    "f11-rejected",
+    "**Decisions:**\n- rejected: the footer fix — waiting for the user to decide whether to widen it",
+  );
+  assert.notEqual(r.rc, 0);
+  assert.ok(r.out.includes("F11") && r.out.includes("waiting for the user"), r.out);
+});
+
+test("f11: a Findings line parked on the user blocks", () => {
+  const r = f11("f11-findings", "**Findings:**\n- the changelog runs long; the user to decide — `wc -c`");
+  assert.notEqual(r.rc, 0);
+  assert.ok(r.out.includes("F11"), r.out);
+});
+
+test("f11: the user's own words under Corrections, and an act under Blocked, pass", () => {
+  const r = f11(
+    "f11-ok",
+    '**Corrections:**\n- "stop waiting on the user for that"\n\n**Blocked:**\n- act: send the drafted reply to the client',
+  );
+  assert.equal(r.rc, 0, r.out);
+});
+
+test("f11: wording on the label line itself blocks", () => {
+  const r = f11("f11-inline", "**Changes:** waiting on the user to decide the footer");
+  assert.notEqual(r.rc, 0);
+  assert.ok(r.out.includes("F11"), r.out);
+});
+
+test("f9: a Blocked wait worded as waiting on the user blocks", () => {
+  const r = f11("f9-parked-wait", "**Blocked:**\n- wait: the user to confirm the vendor");
+  assert.notEqual(r.rc, 0);
+  assert.ok(r.out.includes("F9") && r.out.includes("confirm"), r.out);
+});
+
+test("f9: an act worded as waiting on the user to do it passes", () => {
+  const r = f11("f9-act-waiting", "**Blocked:**\n- act: waiting on the user to send the drafted message");
+  assert.equal(r.rc, 0, r.out);
+});
+
+test("f9: an act that is really the user's decision blocks", () => {
+  const r = f11("f9-act-confirm", "**Blocked:**\n- act: the user to confirm the vendor");
+  assert.notEqual(r.rc, 0);
+  assert.ok(r.out.includes("F9") && r.out.includes("confirm"), r.out);
+});
+
+test("f9: an act that waits for the user's ruling blocks", () => {
+  const r = f11("f9-act-rules", "**Blocked:**\n- act: wait until the user rules on the vendor");
+  assert.notEqual(r.rc, 0);
+  assert.ok(r.out.includes("F9"), r.out);
+});
+
+test("f9: an act that is a Confirm click passes", () => {
+  const r = f11("f9-act-click-confirm", "**Blocked:**\n- act: click Confirm in the email verification screen");
+  assert.equal(r.rc, 0, r.out);
+});
+
+test("f9: an act to confirm which option is a decision", () => {
+  const r = f11("f9-act-confirm-which", "**Blocked:**\n- act: confirm which vendor to use");
+  assert.notEqual(r.rc, 0);
+  assert.ok(r.out.includes("F9"), r.out);
+});
+
+test("f9: an act to confirm a choice blocks, without naming the user", () => {
+  const r = f11("f9-act-confirm-bare", "**Blocked:**\n- act: confirm the vendor");
+  assert.notEqual(r.rc, 0);
+  assert.ok(r.out.includes("F9"), r.out);
+});
+
+// "confirm" and the parked-wait wording reached Blocked with F10, so an entry
+// started before F10 landed is read with F9's words alone.
+test("f9: before F10 landed, an act to confirm and a wait on the user keep F9's words", () => {
+  mkdirSync(join(TMP, "f9-pre-f10"), { recursive: true });
+  const path = join(TMP, "f9-pre-f10", "1200-a-session.md");
+  const fm = FM.replace("date: 2026-09-23", "date: 2026-10-19").replace('time: "12:00"', 'time: "15:10"');
+  writeFileSync(
+    path,
+    `${fm}\n**Blocked:**\n- act: the user confirms the old staging site is switched off\n- wait: the user to confirm the vendor\n`,
+  );
+  const r = check([path]);
+  assert.equal(r.rc, 0, r.out);
 });

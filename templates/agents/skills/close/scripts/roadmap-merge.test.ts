@@ -286,14 +286,14 @@ test("a README whose status both sides re-derived merges", () => {
   fm("rs.b", 'status: monitor\nmonitoring-until: "2026-10-20 — R3: watch"\n', "Body, edited by theirs.");
   writeFileSync(
     join(TMP, "rs.a"),
-    readFileSync(join(TMP, "rs.a"), "utf8").replace("description: d\n", 'description: d\nblocked-on: "R2: him"\n'),
+    readFileSync(join(TMP, "rs.a"), "utf8").replace("description: d\n", 'description: d\nblocked-on: "R2: the vendor"\n'),
   );
   const rc = driver(join(TMP, "rs.o"), join(TMP, "rs.a"), join(TMP, "rs.b"), "projects/x/README.md");
   const out = readFileSync(join(TMP, "rs.a"), "utf8");
   assert.equal(rc, 0, "a README whose status both sides re-derived merges");
   assert.equal(
     out,
-    '---\nproject: demo\nstatus: blocked\ndescription: d\nblocked-on: "R2: him"\n---\n\n# Project\n\nBody, edited by theirs.\n',
+    '---\nproject: demo\nstatus: blocked\ndescription: d\nblocked-on: "R2: the vendor"\n---\n\n# Project\n\nBody, edited by theirs.\n',
     "…keeping ours' status and companion, dropping theirs' window, taking theirs' body",
   );
 });
@@ -302,13 +302,13 @@ test("a README's multi-line derived entry is set aside whole", () => {
   const fm = (name: string, lines: string): void =>
     writeFileSync(join(TMP, name), `---\nproject: demo\n${lines}description: d\n---\n\n# Project\n\nBody.\n`);
   fm("rm.o", 'status: active\nnext: "R1: first"\n');
-  fm("rm.a", 'status: blocked\nblocked-on: "R2: him"\n');
+  fm("rm.a", 'status: blocked\nblocked-on: "R2: the vendor"\n');
   fm("rm.b", 'status: monitor\nmonitoring-until: "2026-10-20 — R3:\n  the first send"\n');
   const rc = driver(join(TMP, "rm.o"), join(TMP, "rm.a"), join(TMP, "rm.b"), "projects/x/README.md");
   assert.equal(rc, 0, "a README whose theirs carried a two-line window merges");
   assert.equal(
     readFileSync(join(TMP, "rm.a"), "utf8"),
-    '---\nproject: demo\nstatus: blocked\nblocked-on: "R2: him"\ndescription: d\n---\n\n# Project\n\nBody.\n',
+    '---\nproject: demo\nstatus: blocked\nblocked-on: "R2: the vendor"\ndescription: d\n---\n\n# Project\n\nBody.\n',
     "…keeping ours, with no orphaned continuation line of theirs' window",
   );
   fm("rn.o", 'status: active\nnext: "R1: first"\n');

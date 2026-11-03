@@ -144,6 +144,9 @@ app("health/red-check", "exit 1", "true");
 app("tools/bare", "-", "-");
 app("tools/test-only", "-", "true");
 app("health/untouched", "true", "true");
+// An app whose only changes below are under names git C-quotes without -z.
+app("health/quoted", "true", "true");
+writeFileSync(join(WT, "apps/health/quoted/src/café.ts"), "// code\n");
 
 // `integrations/` and `packages/` hold shared code the importer pass reads, and
 // `.agents/skills/` is here so this worktree answers the prove-check that finds
@@ -205,6 +208,22 @@ test("an untracked file counts as a change", () => {
   has("an untracked file brings its app into scope", OUT, "tools/test-only");
   has("an app missing one half is unverified, not failed", OUT, "unverified tools/test-only — no check script");
   is("…and that does not fail the close", String(RC), "0");
+});
+
+// A name git C-quotes without -z ("apps/health/quoted/src/tab\there.ts", with
+// the quotes) split to a first field of `"apps`, so its app was never
+// verified. Each read is asked on its own: an untracked file, then an
+// uncommitted edit of a tracked one.
+test("a file named with a tab or an accent still brings its app into scope", () => {
+  const tabbed = join(WT, "apps/health/quoted/src/tab\there.ts");
+  writeFileSync(tabbed, "// new\n");
+  go();
+  has("an untracked tab-named file brings its app into scope", OUT, "ok health/quoted");
+  rmSync(tabbed);
+  appendFileSync(join(WT, "apps/health/quoted/src/café.ts"), "// edited\n");
+  go();
+  has("an edit to café.ts brings its app into scope", OUT, "ok health/quoted");
+  git("-C", WT, "checkout", "-q", "--", "apps/health/quoted/src/café.ts");
 });
 
 test("a committed change counts too, via origin/main...HEAD", () => {
@@ -300,8 +319,8 @@ test("a git read that fails halts rather than shrinking the verify set", () => {
   mkdirSync(bin, { recursive: true });
   const realGit = spawnSync("bash", ["-c", "command -v git"], { encoding: "utf8" }).stdout.trim();
   for (const [name, match] of [
-    ["diff", '*" diff HEAD --name-only "*'],
-    ["ls-files", '*" ls-files --others "*'],
+    ["diff", '*" diff -z HEAD --name-only "*'],
+    ["ls-files", '*" ls-files -z --others "*'],
   ] as const) {
     writeFileSync(
       join(bin, "git"),
@@ -367,9 +386,9 @@ test("a session confined to shared code verifies the apps that import it", () =>
     '{ "name": "green", "scripts": { "check": "true", "test": "true" } }\n',
   );
   // Two importers of one shared file, one non-importer.
-  mkdirSync(join(CLEAN, "integrations/komodo"), { recursive: true });
-  writeFileSync(join(CLEAN, "integrations/komodo/komodo.ts"), "export const x = 1;\n");
-  const imp = 'import { x } from "../../../../integrations/komodo/komodo.ts";\n';
+  mkdirSync(join(CLEAN, "integrations/ticketing"), { recursive: true });
+  writeFileSync(join(CLEAN, "integrations/ticketing/ticketing.ts"), "export const x = 1;\n");
+  const imp = 'import { x } from "../../../../integrations/ticketing/ticketing.ts";\n';
   writeFileSync(join(CLEAN, "apps/health/green/src/uses.ts"), imp);
   writeFileSync(join(CLEAN, "apps/tools/test-only/src/uses.ts"), imp);
   commitPush(CLEAN, "wiring");
@@ -378,7 +397,7 @@ test("a session confined to shared code verifies the apps that import it", () =>
   writeFileSync(CLEDGER, row(CLEAN, join(TMP, "cshared"), `t3/${TID}`));
 
   // Now change ONLY the shared file.
-  appendFileSync(join(CLEAN, "integrations/komodo/komodo.ts"), "export const y = 2;\n");
+  appendFileSync(join(CLEAN, "integrations/ticketing/ticketing.ts"), "export const y = 2;\n");
 
   go();
   is("a shared-only change exits 0 when its importers are green", String(RC), "0");
@@ -397,7 +416,7 @@ test("a red importer fails the close", () => {
     '{ "name": "green", "scripts": { "check": "exit 1", "test": "true" } }\n',
   );
   commitPush(CLEAN, "red");
-  appendFileSync(join(CLEAN, "integrations/komodo/komodo.ts"), "export const z = 3;\n");
+  appendFileSync(join(CLEAN, "integrations/ticketing/ticketing.ts"), "export const z = 3;\n");
   go();
   is("a broken importer fails the close", String(RC), "1");
   has("naming the app and half", OUT, "FAIL health/green check");
@@ -409,7 +428,7 @@ test("a red importer fails the close", () => {
 });
 
 test("past the cap the importers are named, not run", () => {
-  appendFileSync(join(CLEAN, "integrations/komodo/komodo.ts"), "export const w = 4;\n");
+  appendFileSync(join(CLEAN, "integrations/ticketing/ticketing.ts"), "export const w = 4;\n");
   go({ VERIFY_IMPORTER_CAP: "1" });
   is("past the cap the close still exits 0", String(RC), "0");
   has("the apps are named rather than run", OUT, "past the cap");
@@ -539,6 +558,47 @@ function sk(rel: string): void {
 
 const LOG = (name: string): string => join(LEDGER_DIR, "verify", name);
 const SLOW = `30.${String(process.pid).padStart(7, "0")}`;
+
+// ── A shared package that owns a suite is verified the same way ─────────
+//
+// A `packages/<name>` folder can own a suite (contract tests another repo is
+// held to), and without a rule for `packages/` a package's own tests run on
+// no close.
+
+test("a package that owns a suite is verified in pass 1, one without is silent", () => {
+  writeFileSync(CLEDGER, row(CLEAN, join(TMP, "cshared"), `t3/${TID}`));
+  mkdirSync(join(CLEAN, "packages/pkgsuite"), { recursive: true });
+  mkdirSync(join(CLEAN, "packages/pkgbare"), { recursive: true });
+  writeFileSync(
+    join(CLEAN, "packages/pkgsuite/package.json"),
+    '{ "name": "pkgsuite", "scripts": { "check": "true", "test": "true" } }\n',
+  );
+  writeFileSync(join(CLEAN, "packages/pkgsuite/lib.ts"), "export const a = 1;\n");
+  writeFileSync(join(CLEAN, "packages/pkgbare/lib.ts"), "export const b = 1;\n");
+  commitPush(CLEAN, "packages");
+
+  appendFileSync(join(CLEAN, "apps/health/green/src/index.ts"), "// touched for packages\n");
+  appendFileSync(join(CLEAN, "packages/pkgsuite/lib.ts"), "export const a2 = 2;\n");
+  appendFileSync(join(CLEAN, "packages/pkgbare/lib.ts"), "export const b2 = 2;\n");
+  go();
+  is("an app plus two packages exits 0 when green", String(RC), "0");
+  has("the package that declares a test is verified", OUT, "ok packages/pkgsuite");
+  hasnt("a package with no package.json is silent", OUT, "packages/pkgbare");
+
+  writeFileSync(
+    join(CLEAN, "packages/pkgsuite/package.json"),
+    '{ "name": "pkgsuite", "scripts": { "check": "true", "test": "exit 1" } }\n',
+  );
+  go();
+  is("a red package test fails the close", String(RC), "1");
+  has("naming the package and the half", OUT, "FAIL packages/pkgsuite test");
+  writeFileSync(
+    join(CLEAN, "packages/pkgsuite/package.json"),
+    '{ "name": "pkgsuite", "scripts": { "check": "true", "test": "true" } }\n',
+  );
+  commitPush(CLEAN, "green packages");
+  copyFileSync(join(TMP, "ledger.bak"), CLEDGER);
+});
 
 test("the skills tree: fixture", () => {
   git("clone", "-q", BARE, WBCLEAN);
@@ -691,6 +751,46 @@ test("node:test suites", () => {
     `rerun: cd ${WBCLEAN} && node --experimental-strip-types .agents/skills/run.ts tsred/scripts/bad.test.ts`,
   );
   rmSync(join(SK, "tsred/scratch.md"), { force: true });
+});
+
+// A project's own code is its own unit, or a project's suites run on no
+// close. Only a `.ts` change selects it; a project's records move nothing a
+// test reads.
+test("a project's own code runs its node:test suites", () => {
+  spawnSync("git", ["-C", WBCLEAN, "checkout", "-q", "--", "."], { stdio: "ignore" });
+  const P = join(WBCLEAN, "projects/ai/2026-01-01_demo");
+  mkdirSync(join(P, "scripts"), { recursive: true });
+  writeFileSync(join(P, "scripts/x.ts"), "export const x = 1;\n");
+  writeFileSync(join(P, "scripts/x.test.ts"), 'import { test } from "node:test";\ntest("green", () => {});\n');
+  go();
+  is("a project whose suites pass exits 0", String(RC), "0");
+  has("and is reported ok", OUT, "ok projects/ai/2026-01-01_demo");
+
+  writeFileSync(
+    join(P, "scripts/x.test.ts"),
+    'import { test } from "node:test";\ntest("red", () => { throw new Error("project suite ran"); });\n',
+  );
+  go();
+  is("a red project suite fails the close", String(RC), "1");
+  has(
+    "naming the project and the suite, with the rerun line",
+    OUT,
+    `FAIL projects/ai/2026-01-01_demo projects/ai/2026-01-01_demo/scripts/x.test.ts — rerun: cd ${WBCLEAN} && node --test`,
+  );
+  hasnt("and a failing project is not also reported ok", OUT, "ok projects/ai/2026-01-01_demo");
+
+  writeFileSync(join(P, "scripts/x.test.ts"), 'import { test } from "node:test";\ntest("green", () => {});\n');
+  git("-C", WBCLEAN, "add", "--", "projects");
+  git("-C", WBCLEAN, "commit", "-q", "-m", "demo project");
+  git("-C", WBCLEAN, "push", "-q", "origin", "main");
+  writeFileSync(join(P, "cases.json"), "[]\n");
+  go();
+  has("a fixture a suite reads selects the project", OUT, "ok projects/ai/2026-01-01_demo");
+  rmSync(join(P, "cases.json"), { force: true });
+  writeFileSync(join(P, "README.md"), "# demo\n");
+  go();
+  hasnt("a project's records alone run nothing", OUT, "projects/ai/2026-01-01_demo");
+  rmSync(join(P, "README.md"), { force: true });
 });
 
 test("a red bash suite", () => {
@@ -984,6 +1084,28 @@ test("the backstop", () => {
   rmSync(join(WB_SHARED, ".agents/skills/alpha/scratch.md"), { force: true });
   rmSync(join(SK, "alpha/scratch.md"), { force: true });
 
+  // The same, at a path git C-quotes. Read without -z, the worktree's own
+  // `".agents/skills/alpha/caf\303\251.md"` mapped to no skill unit, so alpha's suites
+  // never ran and the shared copy was waved through as another session's.
+  writeFileSync(join(SK, "alpha/café.md"), "// touched\n");
+  copyFileSync(join(SK, "alpha/café.md"), join(WB_SHARED, ".agents/skills/alpha/café.md"));
+  go();
+  has("an edit to alpha/café.md verifies alpha", OUT, "ok .agents/skills/alpha");
+  is("…and the owned shared copy does not halt", String(RC), "0");
+  hasnt("…and is not reported as stray", OUT, "does not account for");
+  rmSync(join(WB_SHARED, ".agents/skills/alpha/café.md"), { force: true });
+  rmSync(join(SK, "alpha/café.md"), { force: true });
+
+  // A rename both trees made. Under -z porcelain prints the new path and then
+  // the old one as a record of its own; read as an `XY path` row, the old one
+  // would be a stray that does not exist.
+  git("-C", WBCLEAN, "mv", ".agents/skills/gamma/README.md", ".agents/skills/gamma/RENAMED.md");
+  git("-C", WB_SHARED, "mv", ".agents/skills/gamma/README.md", ".agents/skills/gamma/RENAMED.md");
+  go();
+  is("a rename this worktree accounts for does not halt", String(RC), "0");
+  hasnt("and neither of its paths is reported as stray", OUT, "does not account for");
+  for (const repo of [WBCLEAN, WB_SHARED]) git("-C", repo, "mv", ".agents/skills/gamma/RENAMED.md", ".agents/skills/gamma/README.md");
+
   // A DIFFERENT edit at a path the worktree also changed is still stray: the
   // worktree's version is what lands, and nothing will ever land the shared one.
   writeFileSync(join(SK, "alpha/scratch.md"), "// worktree version\n");
@@ -1124,4 +1246,349 @@ test("invoked through a symlink, the script still runs", () => {
   const out = `${r.stdout ?? ""}${r.stderr ?? ""}`;
   assert.equal(r.status, 0, `through a symlink: exit ${r.status}, output '${out}'`);
   assert.match(out, /nothing to verify/);
+});
+
+// A PRODUCT repo's worktree (no apps/) runs its own check and test, from its
+// root, when anything in it moved: a product repo whose push builds without
+// testing is tested here or nowhere.
+test("a product repo's worktree runs its own check and test", () => {
+  // Earlier cases rewrite the ledger; this one names its own two rows.
+  writeFileSync(LEDGER, row(WT, join(TMP, "shared"), `t3/${TID}`) + row(PRODWT, join(TMP, "prodshared"), `t3/${TID}`));
+  writeFileSync(join(PRODWT, "src/feature.ts"), "export const f = 1;\n");
+  go();
+  hasnt("a moved product worktree with no package.json is silent", OUT, "prodshared");
+
+  writeFileSync(join(PRODWT, "package.json"), '{ "name": "prod", "scripts": { "check": "true", "test": "true" } }\n');
+  go();
+  has("a green product repo is reported ok, by its repo's name", OUT, "ok prodshared");
+
+  writeFileSync(join(PRODWT, "package.json"), '{ "name": "prod", "scripts": { "check": "true", "test": "exit 1" } }\n');
+  go();
+  is("a red product test fails the close", String(RC), "1");
+  has("naming the repo and the half", OUT, "FAIL prodshared test");
+  has("with the rerun command in the product worktree", OUT, `rerun: cd ${PRODWT}/. && ${RUNNER_CMD} test`);
+
+  rmSync(join(PRODWT, "package.json"));
+  rmSync(join(PRODWT, "src/feature.ts"));
+});
+
+// ── The record and --stamped ──────────────────────────────────────────────
+//
+// land.ts refuses to commit unless the last verify passed on the content every
+// worktree holds now. Its own fixture and thread, so the
+// shared one above is not disturbed: a workbench-shaped worktree whose ledger
+// row names a real shared checkout, for the backstop case.
+test("the record and --stamped", () => {
+  const R = join(TMP, "stamp");
+  const RHOME = join(R, "home");
+  const RTID = "abcdabcd-1111-2222-3333-777777777777";
+  const RSTATE = join(RHOME, ".cache/workbench/threads", RTID);
+  const RECORD = join(RSTATE, "verified");
+  const RBARE = join(R, "origin.git");
+  const RSHARED = join(R, "shared");
+  const RWT = join(R, "wt");
+  mkdirSync(RSTATE, { recursive: true });
+  git("init", "-q", "--bare", "-b", "main", RBARE);
+  git("init", "-q", "-b", "main", RSHARED);
+  git("-C", RSHARED, "config", "user.email", "t@example.com");
+  git("-C", RSHARED, "config", "user.name", "tester");
+  const put = (rel: string, text: string, root = RWT): void => {
+    mkdirSync(dirname(join(root, rel)), { recursive: true });
+    writeFileSync(join(root, rel), text);
+  };
+  put("apps/health/rapp/package.json", '{ "name": "rapp", "scripts": { "check": "true", "test": "true" } }\n', RSHARED);
+  put("apps/health/rapp/src/index.ts", "// code\n", RSHARED);
+  put("apps/health/rimp/package.json", '{ "name": "rimp", "scripts": { "check": "true", "test": "true" } }\n', RSHARED);
+  put("apps/health/rimp/src/index.ts", 'import "../../../../integrations/rint/x.ts";\n', RSHARED);
+  put("integrations/rint/x.ts", "export const x = 1;\n", RSHARED);
+  put("packages/.keep", "\n", RSHARED);
+  put(".agents/skills/alpha/README.md", "# alpha\n", RSHARED);
+  git("-C", RSHARED, "add", "-A");
+  git("-C", RSHARED, "commit", "-q", "-m", "seed");
+  git("-C", RSHARED, "remote", "add", "origin", RBARE);
+  git("-C", RSHARED, "push", "-q", "-u", "origin", "main");
+  git("-C", RSHARED, "worktree", "add", "-q", "-b", "t3code/stamp", RWT, "main");
+  writeFileSync(join(RSTATE, "worktrees"), row(RWT, RSHARED, "t3code/stamp"));
+
+  const env: Env = { HOME: RHOME, WORKBENCH_THREAD_ID: RTID, VERIFY_RUNNER: RUNNER_CMD };
+  const verify = (): Run => runWith(env);
+  const stamp = (): Run => {
+    const r = spawnSync(process.execPath, ["--experimental-strip-types", SCRIPT, "--stamped"], {
+      encoding: "utf8",
+      env: { ...process.env, ...env },
+    });
+    return { OUT: `${r.stdout ?? ""}${r.stderr ?? ""}`.replace(/\n+$/, ""), RC: r.status ?? -1 };
+  };
+
+  let s = stamp();
+  is("nothing changed at all: --stamped exits 0", String(s.RC), "0");
+  ok("…with no record needed", !existsSync(RECORD));
+
+  put("apps/health/rapp/src/index.ts", "// edited\n");
+  s = stamp();
+  is("a change verify never saw is not stamped", String(s.RC), "1");
+  has("…and says verify never ran", s.OUT, `verify: ${RWT}: verify never ran on this worktree`);
+
+  let v = verify();
+  is("verify passes", String(v.RC), "0");
+  const rec = JSON.parse(readFileSync(RECORD, "utf8"));
+  is("the record reads pass", rec.result, "pass");
+  is("…with one entry per worktree, keyed by its repo", Object.keys(rec.repos).join(","), RSHARED);
+  ok("…holding a digest of the changed path", typeof rec.repos[RSHARED]["apps/health/rapp/src/index.ts"] === "string");
+  s = stamp();
+  is("--stamped exits 0 right after a pass", String(s.RC), "0");
+
+  put("apps/health/rapp/src/index.ts", "// edited again\n");
+  s = stamp();
+  is("an edit after the pass is not stamped", String(s.RC), "1");
+  has(
+    "…and the changed path is named",
+    s.OUT,
+    `verify: ${RWT}: changed since verify passed: apps/health/rapp/src/index.ts`,
+  );
+
+  put("apps/health/rapp/src/other.ts", "// new\n");
+  s = stamp();
+  has("a new untracked file is named too", s.OUT, "apps/health/rapp/src/other.ts");
+  rmSync(join(RWT, "apps/health/rapp/src/other.ts"));
+
+  v = verify();
+  is("verify passes again", String(v.RC), "0");
+  put("journal/2026-10-23/0900-x.md", "entry\n");
+  put("knowledge/notes/x.md", "fact\n");
+  put("projects/ai/2026-01-01_p/README.md", "readme\n");
+  put("projects/ai/2026-01-01_p/ROADMAP.md", "roadmap\n");
+  s = stamp();
+  is("the records /close writes after verify do not stale it", String(s.RC), "0");
+  put("projects/ai/2026-01-01_p/specs/001-x/spec.md", "spec\n");
+  s = stamp();
+  is("a spec written after verify does", String(s.RC), "1");
+  rmSync(join(RWT, "projects"), { recursive: true, force: true });
+  rmSync(join(RWT, "journal"), { recursive: true, force: true });
+  rmSync(join(RWT, "knowledge"), { recursive: true, force: true });
+
+  // The importer fallback: only an integration moved, so its importing app ran.
+  git("-C", RWT, "checkout", "-q", "--", "apps");
+  put("integrations/rint/x.ts", "export const x = 2;\n");
+  v = verify();
+  has("an integration-only change verifies its importer", v.OUT, "ok health/rimp");
+  is("…and passes", String(stamp().RC), "0");
+  put("integrations/rint/x.ts", "export const x = 3;\n");
+  s = stamp();
+  is("an integration edited after its importer passed is refused", String(s.RC), "1");
+  has("…naming the integration", s.OUT, "integrations/rint/x.ts");
+  git("-C", RWT, "checkout", "-q", "--", "integrations");
+
+  // A unit with no suites is unverified, which is not a failure.
+  put(".agents/skills/alpha/notes.md", "notes\n");
+  v = verify();
+  has("a skill folder with no suites is unverified", v.OUT, "unverified .agents/skills/alpha — no test suites");
+  is("…the record still reads pass", JSON.parse(readFileSync(RECORD, "utf8")).result, "pass");
+
+  // Every unit ok, but the shared-checkout backstop failed.
+  put(".agents/skills/stray.md", "stray\n", RSHARED);
+  v = verify();
+  is("the backstop fails the run", String(v.RC), "1");
+  is("…so the record reads fail", JSON.parse(readFileSync(RECORD, "utf8")).result, "fail");
+  s = stamp();
+  is("a failed run is not stamped", String(s.RC), "1");
+  has("…and says the last run failed", s.OUT, `verify: ${RWT}: the last run failed`);
+  rmSync(join(RSHARED, ".agents/skills/stray.md"));
+
+  // A red test half.
+  put("apps/health/rapp/package.json", '{ "name": "rapp", "scripts": { "check": "true", "test": "exit 1" } }\n');
+  v = verify();
+  is("a red app fails the run", String(v.RC), "1");
+  has("…and --stamped says so", stamp().OUT, "the last run failed");
+  git("-C", RWT, "checkout", "-q", "--", "apps");
+
+  // A run that halted before its end leaves `incomplete`, never the pass the
+  // run before it wrote: here the changed-file listing fails mid-run.
+  is("a green run first", String(verify().RC), "0");
+  const bin = join(R, "failgit-bin");
+  mkdirSync(bin, { recursive: true });
+  const realGit = spawnSync("bash", ["-c", "command -v git"], { encoding: "utf8" }).stdout.trim();
+  writeFileSync(
+    join(bin, "git"),
+    `#!/usr/bin/env bash\ncase " $* " in *" ls-files -z --others "*) echo "fatal: index file corrupt" >&2; exit 128 ;; esac\nexec "${realGit}" "$@"\n`,
+    { mode: 0o755 },
+  );
+  v = runWith({ ...env, PATH: `${bin}:${process.env.PATH ?? ""}` });
+  ok(`then a run that halts (got ${v.RC})`, v.RC !== 0);
+  is("…leaves the record incomplete", JSON.parse(readFileSync(RECORD, "utf8")).result, "incomplete");
+  has("…which is not stamped", stamp().OUT, "the last run did not finish");
+
+  // Back to nothing changed: no stamp is needed whatever the record says.
+  rmSync(join(RWT, ".agents/skills/alpha/notes.md"));
+  is("a worktree back at the trunk needs no stamp", String(stamp().RC), "0");
+
+  // A COMMITTED change, with origin/main not yet a local ref (origin/HEAD
+  // names it; only a fetch creates it): verify fetches it, as land.ts does,
+  // rather than seeing only the uncommitted half of the thread's work.
+  put("apps/health/rapp/src/committed.ts", "// committed\n");
+  git("-C", RWT, "add", "apps");
+  git("-C", RWT, "commit", "-q", "-m", "committed early");
+  git("-C", RSHARED, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main");
+  git("-C", RSHARED, "update-ref", "-d", "refs/remotes/origin/main");
+  v = verify();
+  has("a committed change is verified with the trunk ref absent", v.OUT, "ok health/rapp");
+  ok(
+    "…and is in the record",
+    "apps/health/rapp/src/committed.ts" in JSON.parse(readFileSync(RECORD, "utf8")).repos[RSHARED],
+  );
+});
+
+// ── The review receipt at verification ──────────────────────────────────────
+//
+// Implementation source lands only on an independent review of the content as
+// it is now. The receipt is made the way validate.ts makes it — audit-dedupe.ts
+// begin, the reviewer's framed result, finish — with a written result standing
+// in for the vendor. A thread with no implementation work closes as before.
+test("the review receipt at verification", () => {
+  const R = join(TMP, "receipt");
+  const RHOME = join(R, "home");
+  const RTID = "cdcdcdcd-1111-2222-3333-888888888888";
+  const RSTATE = join(RHOME, ".cache/workbench/threads", RTID);
+  const RBARE = join(R, "origin.git");
+  const RSHARED = join(R, "shared");
+  const RWT = join(R, "wt");
+  const AUDIT = join(dirname(SCRIPT), "../../implement-audit/scripts/audit-dedupe.ts");
+  mkdirSync(RSTATE, { recursive: true });
+  git("init", "-q", "--bare", "-b", "main", RBARE);
+  git("init", "-q", "-b", "main", RSHARED);
+  git("-C", RSHARED, "config", "user.email", "t@example.com");
+  git("-C", RSHARED, "config", "user.name", "tester");
+  const put = (rel: string, text: string, root = RWT): void => {
+    mkdirSync(dirname(join(root, rel)), { recursive: true });
+    writeFileSync(join(root, rel), text);
+  };
+  put(".agents/skills/demo/x.ts", "export const x = 1;\n", RSHARED);
+  put("projects/ai/p/README.md", "# p\n", RSHARED);
+  put("apps/.keep", "\n", RSHARED);
+  put("integrations/.keep", "\n", RSHARED);
+  put("packages/.keep", "\n", RSHARED);
+  git("-C", RSHARED, "add", "-A");
+  git("-C", RSHARED, "commit", "-q", "-m", "seed");
+  git("-C", RSHARED, "remote", "add", "origin", RBARE);
+  git("-C", RSHARED, "push", "-q", "-u", "origin", "main");
+  git("-C", RSHARED, "worktree", "add", "-q", "-b", "t3code/receipt", RWT, "main");
+  writeFileSync(join(RSTATE, "worktrees"), row(RWT, RSHARED, "t3code/receipt"));
+  const env: Env = { HOME: RHOME, WORKBENCH_THREAD_ID: RTID, VERIFY_RUNNER: RUNNER_CMD };
+  const both = (r: ReturnType<typeof spawnSync>): Run => ({
+    OUT: `${r.stdout ?? ""}${r.stderr ?? ""}`.replace(/\n+$/, ""),
+    RC: r.status ?? -1,
+  });
+  const stamp = (): Run =>
+    both(
+      spawnSync(process.execPath, ["--experimental-strip-types", SCRIPT, "--stamped"], {
+        encoding: "utf8",
+        env: { ...process.env, ...env },
+      }),
+    );
+  const audit = (...args: string[]): Run =>
+    both(
+      spawnSync(process.execPath, ["--experimental-strip-types", AUDIT, ...args], {
+        encoding: "utf8",
+        env: { ...process.env, HOME: RHOME, CODE_REVIEW_LOOP_ID: RTID, CODE_REVIEW_ROUND_STATE_DIR: join(R, "rounds") },
+      }),
+    );
+  const REPORT = join(RWT, "projects/ai/p/specs/001-x/report.md");
+  const block = JSON.stringify({
+    base: "HEAD",
+    scope: ".agents/skills/demo",
+    entryPoints: [{ id: "E1", path: ".agents/skills/demo/x.ts" }],
+    dependencies: [],
+    claims: [{ id: "C1", claim: "x is 2", inapplicable: "a constant" }],
+  });
+  const report = (): void =>
+    put(
+      "projects/ai/p/specs/001-x/report.md",
+      `# r\n<!-- review-coverage:v1 -->\n${block}\n<!-- /review-coverage -->\n`,
+    );
+
+  put(".agents/skills/demo/x.ts", "export const x = 2;\n");
+  let v = runWith(env);
+  is("an ad-hoc change with no implementation work verifies as before", String(v.RC), "0");
+  hasnt("…with no review line", v.OUT, "review:");
+
+  report();
+  v = runWith(env);
+  is("a report carrying a coverage block, and no receipt, fails", String(v.RC), "1");
+  has(
+    "…naming the unreviewed source",
+    v.OUT,
+    `FAIL review: ${RWT}: no review receipt for implementation source (.agents/skills/demo/x.ts)`,
+  );
+
+  const begin = audit(
+    "begin",
+    "--repo",
+    RWT,
+    "--tree",
+    "t0",
+    "--mode",
+    "range",
+    "--bucket",
+    "build",
+    "--base",
+    "HEAD",
+    "--scope",
+    ".agents/skills/demo",
+    "--report",
+    REPORT,
+  );
+  is("the attempt is recorded", String(begin.RC), "0");
+  has("…and the review is asked for", begin.OUT, "RECEIPT=review");
+  v = runWith(env);
+  is("an attempt with no result is not a review", String(v.RC), "1");
+  has("…and says so", v.OUT, "the last review attempt did not complete");
+  const result = join(R, "result.json");
+  writeFileSync(
+    result,
+    JSON.stringify({
+      vendor: "grok/grok-4",
+      findings: ["[nit] tidy"],
+      coverage: [
+        { id: "E1", status: "checked", evidence: ["x.ts:1"] },
+        { id: "C1", status: "checked", evidence: ["read"] },
+      ],
+    }),
+  );
+  const fin = audit("finish", "--repo", RWT, "--rc", "0", "--result", result);
+  has("a clean framed result approves", fin.OUT, "APPROVED=1");
+  v = runWith(env);
+  is("verify passes on the reviewed content", String(v.RC), "0");
+  has("…and names the receipt", v.OUT, `ok review: ${RWT}: receipt from grok/grok-4 covers this content`);
+  is("--stamped agrees", String(stamp().RC), "0");
+
+  put("journal/2026-11-03/0900-x.md", "entry\n");
+  is("a record written afterwards does not stale the receipt", String(stamp().RC), "0");
+
+  put(".agents/skills/demo/x.ts", "export const x = 3;\n");
+  let s = stamp();
+  is("a source edit after the review is refused", String(s.RC), "1");
+  has("…naming it", s.OUT, `verify: review: ${RWT}: changed since the review: .agents/skills/demo/x.ts`);
+  put(".agents/skills/demo/x.ts", "export const x = 2;\n");
+  is("restoring the reviewed bytes recovers", String(stamp().RC), "0");
+
+  rmSync(REPORT);
+  s = stamp();
+  is("deleting the report does not drop the obligation", String(s.RC), "1");
+  has("…it names the missing report", s.OUT, "is missing");
+  report();
+  const state = join(RSTATE, "review.json");
+  const saved = readFileSync(state, "utf8");
+  rmSync(state);
+  s = stamp();
+  is("deleting the receipt state, with the report present, still refuses", String(s.RC), "1");
+  has("…as no receipt", s.OUT, "no review receipt for implementation source");
+  writeFileSync(state, "{not json");
+  s = stamp();
+  is("unreadable state refuses rather than reading as no review", String(s.RC), "1");
+  has("…and says it is unreadable", s.OUT, "could not be read");
+  writeFileSync(state, saved);
+  is("the restored state passes again", String(stamp().RC), "0");
+
+  const reviewer = JSON.parse(saved).repos[realpathSync(RWT)].receipt.reviewer;
+  is("the receipt records the answering reviewer", reviewer, "grok/grok-4");
 });

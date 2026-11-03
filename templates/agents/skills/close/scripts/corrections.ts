@@ -92,60 +92,17 @@
 // Exit: 0 ok (rows on stdout; none is a normal outcome) · 2 no thread, no db,
 // or bad usage (including a window bound that is not a date)
 
-import { spawnSync } from "node:child_process";
 import { statSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
+import { spawnSync } from "node:child_process";
 import { dirname, join, resolve } from "node:path";
 import type { DatabaseSync, SQLOutputValue } from "node:sqlite";
 import { fileURLToPath } from "node:url";
 import { exit, runToExit } from "../../../packages/cli-exit/cli-exit.ts";
-import { legacyViews, t3Database } from "./t3-db.ts";
+import { currentThread, legacyViews, loadSqlite, mainTables, t3Database } from "./t3-db.ts";
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
-const THREAD = join(SCRIPT_DIR, "thread.ts");
 const TRANSCRIPTS = join(SCRIPT_DIR, "transcripts.ts");
-
-// Node 22 and 24 print `ExperimentalWarning: SQLite is an experimental feature`
-// on stderr when node:sqlite loads, and callers read this program as `2>&1` —
-// a reader may parse window mode's stdout as JSON. The bash
-// original ran its reader with `--disable-warning=ExperimentalWarning`; a
-// program started as `node corrections.ts` cannot pass itself that flag, so
-// node:sqlite is loaded only after this filter drops that one warning and hands
-// every other warning to the listeners Node installed.
-function silenceSqliteWarning(): void {
-  const listeners = process.listeners("warning");
-  process.removeAllListeners("warning");
-  process.on("warning", (w) => {
-    if (w.name === "ExperimentalWarning" && /\bSQLite\b/.test(w.message)) return;
-    for (const l of listeners) l.call(process, w);
-  });
-}
-
-// node:sqlite, loaded in this process. Node 22.5–22.12 have it only behind
-// --experimental-sqlite, which a program started as `node corrections.ts`
-// cannot pass itself; there it runs itself once more with the flag, same
-// arguments, same environment, and exits as that run does. Every later Node
-// loads it unflagged, so this is the only path on them.
-async function loadSqlite(): Promise<typeof import("node:sqlite")> {
-  silenceSqliteWarning();
-  try {
-    return await import("node:sqlite");
-  } catch (e) {
-    if (process.execArgv.includes("--experimental-sqlite")) throw e;
-    const r = spawnSync(
-      process.execPath,
-      [
-        "--experimental-sqlite",
-        "--disable-warning=ExperimentalWarning",
-        ...process.execArgv,
-        fileURLToPath(import.meta.url),
-        ...process.argv.slice(2),
-      ],
-      { stdio: "inherit" },
-    );
-    return exit(r.status ?? 2);
-  }
-}
 
 function die(message: string): never {
   process.stderr.write(`corrections: ${message}\n`);
@@ -218,6 +175,13 @@ function commentsIn(text: string): string[] {
 const COMMAND = /^[/$][a-zA-Z][a-zA-Z0-9_-]*$/;
 const SLUG_ARG = /^[A-Za-z0-9._/@=+-]+$/;
 
+// A turn that only says to go on — a bare `continue`, a harness's "Continue
+// where you left off." after a restart — carries no correction whoever typed
+// it, and an automation that resumes threads types one into each. Exact
+// phrases only, for the same reason as above: "continue, but drop the third tile"
+// is a correction and is kept.
+const BARE_CONTINUE = /^(continue|continue where you left off)[.!]?$/i;
+
 function isInvocationOnly(line: string): boolean {
   const tokens = line.trim().split(/\s+/);
   if (!COMMAND.test(tokens[0] ?? "")) return false;
@@ -235,9 +199,17 @@ function said(db: DatabaseSync, tid: string | null): Entry[] {
   const scope = tid === null ? "" : "thread_id = ? and ";
   const scoped = tid === null ? [] : [tid];
 
+  // Only what the user typed in the app: a script that sends through T3 sends as
+  // "server", and T3 marks those "user" too. A row with no source predates the
+  // field and is the user's. The legacy
+  // file has no `source` column at all, and nothing on it was sent by a script.
+  const hasSource =
+    db.prepare("select 1 from pragma_table_info('projection_thread_messages') where name = 'source'").get() !==
+    undefined;
+  const typed = hasSource ? "and (source is null or source in ('web', 'mobile')) " : "";
   const rows: Row[] = db
     .prepare(
-      `select thread_id, text, created_at from projection_thread_messages where ${scope}role = ? order by created_at`,
+      `select thread_id, text, created_at from projection_thread_messages where ${scope}role = ? ${typed}order by created_at`,
     )
     .all(...scoped, "user");
 
@@ -284,7 +256,7 @@ function said(db: DatabaseSync, tid: string | null): Entry[] {
         .filter((line) => line !== ""),
     ];
     if (kept.length === 0) continue;
-    if (kept.length === 1 && isInvocationOnly(kept[0] ?? "")) continue;
+    if (kept.length === 1 && (isInvocationOnly(kept[0] ?? "") || BARE_CONTINUE.test(kept[0] ?? ""))) continue;
     out.push({ thread_id: str(row.thread_id), created_at: row.created_at ?? null, kept });
   }
 
@@ -462,19 +434,9 @@ async function main(): Promise<void> {
   }
 
   if (mode === "thread" && TID === "") {
-    const r = spawnSync(process.execPath, ["--experimental-strip-types", THREAD, "--id"], {
-      encoding: "utf8",
-      stdio: ["inherit", "pipe", "pipe"],
-    });
-    // The id is stdout alone: a Node 22.x writes a type-stripping warning to
-    // stderr on every run, and merged in it named a thread that does not exist.
-    // stderr is read only for the refusal, by thread.ts's own `thread: ` line.
-    if (r.status !== 0) {
-      const err = (r.stderr ?? "").split("\n").filter((l) => l !== "");
-      const why = err.filter((l) => l.startsWith("thread: ")).pop() ?? err.pop() ?? `thread.ts exited ${r.status}`;
-      die(why.replace(/^thread: /, ""));
-    }
-    TID = (r.stdout ?? "").replace(/\n+$/, "");
+    const thread = currentThread();
+    if ("error" in thread) die(thread.error);
+    TID = thread.id;
 
     // Not a thread the T3 database knows (or no T3 at all): the harness's own
     // transcript is the record. An explicit --thread, or the WORKBENCH_THREAD_ID
@@ -482,7 +444,7 @@ async function main(): Promise<void> {
     // cannot be read is reported below, not routed around.
     let known = (process.env.WORKBENCH_THREAD_ID ?? "") !== "";
     if (!known && isFileAt(DB)) {
-      const sqlite = await loadSqlite();
+      const sqlite = await loadSqlite(fileURLToPath(import.meta.url));
       try {
         const probe = new sqlite.DatabaseSync(DB, { readOnly: true });
         for (const t of ["projection_threads", "projection_thread_messages"]) {
@@ -507,7 +469,7 @@ async function main(): Promise<void> {
 
   if (!isFileAt(DB)) die(`no T3 database at ${DB}`);
 
-  const sqlite = await loadSqlite();
+  const sqlite = await loadSqlite(fileURLToPath(import.meta.url));
   let db: DatabaseSync;
   try {
     db = new sqlite.DatabaseSync(DB, { readOnly: true });
@@ -515,7 +477,7 @@ async function main(): Promise<void> {
     return die(`cannot read ${DB}: ${e instanceof Error ? e.message : String(e)}`);
   }
   // On the v2 file, the legacy table names this script queries become views over live data.
-  const views = legacyViews(DB);
+  const views = legacyViews(DB, mainTables(db));
   if (views !== "") db.exec(views);
 
   if (mode === "thread") threadMode(db, TID, FULL);

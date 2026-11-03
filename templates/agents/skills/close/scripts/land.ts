@@ -44,27 +44,79 @@
 //   land.ts --check              — the checks only; land nothing
 //   land.ts --verbose            — also print each repo's SHA
 //   land.ts --gate               — `fired` / `not-fired`, for the auto-close gate
+//   land.ts "<subject>" --hold   — land and wait for the deploy, then stop
+//                                  before the report: the live checks run now
+//   land.ts --release            — the checks again, every owed live check
+//                                  proved on what is live, then the held report
+//   land.ts --live-start <spec>/<id>                    — an evidence check:
+//                                  record what is live before the capture
+//   land.ts --live-pass <spec>/<id> <file> --saw "<…>"  — record the capture,
+//                                  refused if what is live moved since the start
+//
+// WHAT IT DOES THAT THE MODEL WOULD OTHERWISE HAVE TO REMEMBER. It
+// refuses a thread with no journal entry or with no verify pass on the content
+// it is about to land; sets a finished spec's row `done` before its gates;
+// quotes the changed specs' audit lines in the journal entry; prints the
+// harness-link lines in the report; and saves the report block in the
+// thread's state (`report`) before it marks the close closed.
+//
+// THE HOLD. A close that changed something live can only be checked live after
+// its push deploys, and without a hold that means after the last line: what
+// the live checks found has nowhere to go but a question below it. Held, the
+// landing does everything but write the closed marker and print the report;
+// the live checks run with the session still open, a fix lands with --hold
+// again, a question is asked and the session stops; --release re-proves every
+// landing against a fresh trunk and prints the report under the FIRST held
+// subject, then the line.
+//
+// WHEN TO HOLD IS THIS SCRIPT'S. A spec declares its
+// live checks in a `live-checks` block of its tasks.md (the form is
+// live-checks.ts's). Before the push that writes such a spec `complete`, the
+// checks are written to `live-owed`, each bound to the commit its target's repo
+// lands; after the deploy the landing holds whether or not --hold was passed.
+// --release runs every command check itself, accepts an evidence check only
+// from a --live-pass record taken on the deployment live now, and reads each
+// target again after the checks: until all of that passes it is NOT CLOSED
+// and the hold stays. A landing without --hold while held is refused, and no
+// time ends a hold. Left to the model, the hold was entered when it chose, the
+// release read no live result, and an ordinary landing cleared it.
 //
 // Env:
 //   WORKBENCH_THREAD_ID, T3CODE_HOME — read by thread.ts.
 //   LAND_PUSH_RETRIES, LAND_PUSH_SLEEP — 3 and 5s. The test suite shortens the
 //                                        sleep; nothing in production sets them.
+//   LAND_LIVE_CHECK_TIMEOUT — 120 (seconds a command check may run). The suite
+//                                        shortens it.
+//   LAND_GH — the gh binary the push check looks for (default `gh`); the
+//                                        suite points it at a stand-in, or at
+//                                        nothing to test a machine without one.
+//   LIVE_CHECKS_TEST_SOURCES — live-checks.ts's seam; the suite's stubbed
+//                                        live answers.
 //
 // THE CHECKS run before each commit, from the ledger worktree that holds
 // `.agents/checks/` (the workbench's): decision records, integration manifests
 // (when that checker exists), script tests, skill manifests, secrets and
-// standards citations.
+// standards citations — and, in the workbench worktree, its own
+// check-roadmap-decisions.ts over the projects it changes.
 //
-// THE DEPLOY CHECK is off unless the repo carries `.agents/deployable-prefixes.json`
-// (a JSON array of path prefixes whose push deploys something). With it, a
-// landing that touched one of those paths runs `.agents/deploy/await-deploy-run.sh
-// --sha <sha>` from the repo, which must confirm a deploy run started for it.
+// THE PUSH CHECK waits, for every repo and every push, on everything GitHub
+// reports on the pushed commit — workflow runs, hosted builds, a deployer's
+// commit status — through await-push-checks.ts, which asks with the `gh` CLI.
+// A repo whose origin is not on GitHub, or a machine without `gh`, closes
+// saying so (pollDeploy).
 //
 // peers:
-//   .agents/skills/close/scripts/tests/land-cases.ts  (the suite; land.test.ts, land.gates.test.ts
-//                                             and land.rows.test.ts each run a range)
+//   .agents/skills/close/scripts/tests/land-cases.ts  (the suite; each of the eight
+//                                             land*.test.ts files runs a range)
+//   .agents/skills/close/scripts/verify.ts       (its --stamped, before the first commit:
+//                                         verify passed on the content landing now)
+//   .agents/skills/close/scripts/spec-state.ts, roadmap.ts (a finished spec's row set done)
 //   .agents/skills/close/scripts/roadmap-merge.ts   (ROADMAP.md merges row by row)
+//   .agents/skills/close/scripts/check-roadmap-decisions.ts (run before each commit;
+//                                         refuses a row or report left open)
 //   .agents/skills/close/scripts/write-root.sh   (writes the ledger)
+//   .agents/skills/close/scripts/await-push-checks.ts (run per landed repo: its push's checks)
+//   .agents/skills/close/scripts/live-checks.ts  (the live-checks form, and what is live)
 //   .agents/skills/close/scripts/lock.sh         (the per-repo lock)
 //   .agents/checks/check-decision-records.ts     (run before each commit)
 //   .agents/checks/check-integration-manifest.ts (run before each commit, when present)
@@ -73,12 +125,12 @@
 //                                                 worktree that holds it)
 //   .agents/checks/check-secrets.ts              (run before each commit, when present)
 //   .agents/checks/check-standards-refs.ts       (run before each commit, when present)
-//   .agents/deploy/await-deploy-run.sh           (polled, per repo, on landing — opt-in)
 //   .agents/checks/check-harness-config-links.ts (run after each landing, from the
 //                                                 shared checkout; `--fix` on drift,
 //                                                 never refuses)
 //
 // Exit: 0 landed and checked (the line on stdout) · 2 no thread · 3 NOT CLOSED
+//       · 4 landed and held (no line until --release)
 
 import { type ChildProcess, type SpawnSyncOptions, spawn, spawnSync } from "node:child_process";
 import {
@@ -87,16 +139,21 @@ import {
   existsSync,
   mkdirSync,
   openSync,
+  readdirSync,
   readFileSync,
   realpathSync,
   renameSync,
   rmSync,
   statSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
-import { basename, dirname, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Exit, exit, runToExit } from "../../../packages/cli-exit/cli-exit.ts";
+import { contains, liveRevision, parseLiveChecks, type Revision, sourceRepo } from "./live-checks.ts";
+import { listRows } from "./roadmap.ts";
+import { reportClaimsComplete } from "./spec-state.ts";
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const THREAD = `${SCRIPT_DIR}/thread.ts`;
@@ -104,6 +161,12 @@ const WRITE_ROOT = `${SCRIPT_DIR}/write-root.sh`;
 const LOCK_SH = `${SCRIPT_DIR}/lock.sh`;
 const TRUNK_TS = `${SCRIPT_DIR}/trunk.ts`;
 const NEXT_COMMAND = `${SCRIPT_DIR}/next-implement-command.ts`;
+const PROJECT_STATUS = `${SCRIPT_DIR}/project-status.ts`;
+const PUSH_CHECKS = `${SCRIPT_DIR}/await-push-checks.ts`;
+const VERIFY = `${SCRIPT_DIR}/verify.ts`;
+const AUDIT = `${SCRIPT_DIR}/../../implement-audit/scripts/audit-dedupe.ts`;
+const SPEC_STATE = `${SCRIPT_DIR}/spec-state.ts`;
+const ROADMAP_TS = `${SCRIPT_DIR}/roadmap.ts`;
 
 // ── Process helpers ────────────────────────────────────────────────────────
 
@@ -293,14 +356,18 @@ function warn(line: string): void {
 // because the check names the main checkout by `git rev-parse` from where it
 // stands. The lines it prints (`fixed: <link> -> <target>`, `kept the displaced
 // file at <path>`, `Error: …`) are check-harness-config-links.ts's.
+//
+// Each line it emits is kept in the thread's state (`harness-links`) and
+// printed in the final report under **Harness links:** — on a held landing
+// too, whose report only --release prints, when nothing runs the check again.
 const HL_CHECK_REL = ".agents/checks/check-harness-config-links.ts";
 
-function harnessLinks(ledgerLines: string[]): void {
+function harnessLinks(ledgerLines: string[], emit: (line: string) => void): void {
   try {
     const shared = [...new Set(ledgerLines.map((l) => tabFields(l, 3)[1] ?? "").filter((s) => s !== ""))];
     const home = shared.find((s) => isFile(`${s}/${HL_CHECK_REL}`));
     if (!home) {
-      say(`  harness-links: WARNING not checked — no checkout this thread landed holds ${HL_CHECK_REL}`);
+      emit(`  harness-links: WARNING not checked — no checkout this thread landed holds ${HL_CHECK_REL}`);
       return;
     }
     const check = `${home}/${HL_CHECK_REL}`;
@@ -318,11 +385,11 @@ function harnessLinks(ledgerLines: string[]): void {
     const kept: string[] = [];
     for (const l of chomp(fix.stdout).split("\n")) {
       const f = /^fixed: (.+?) -> (.+)$/.exec(l);
-      if (f) say(`  harness-links: relinked ${tilde(f[1] ?? "")} -> ${f[2] ?? ""}`);
+      if (f) emit(`  harness-links: relinked ${tilde(f[1] ?? "")} -> ${f[2] ?? ""}`);
       const k = /^kept the displaced file at (.+)$/.exec(l);
       if (k) kept.push(k[1] ?? "");
     }
-    for (const p of kept) say(`  harness-links: the file that stood there is kept at ${p} — inspect it`);
+    for (const p of kept) emit(`  harness-links: the file that stood there is kept at ${p} — inspect it`);
     if (fix.ok) return;
     const errLines = chomp(fix.stderr)
       .split("\n")
@@ -331,16 +398,16 @@ function harnessLinks(ledgerLines: string[]): void {
     // else that exits non-zero is the program failing, not a finding.
     if (fix.stderr.includes("Relink with: ")) {
       for (const e of errLines.filter((l) => l.startsWith("Error: ")))
-        say(`  harness-links: NOT FIXED — ${e.slice("Error: ".length)}`);
-      say(`  harness-links: details: node --experimental-strip-types ${check}`);
+        emit(`  harness-links: NOT FIXED — ${e.slice("Error: ".length)}`);
+      emit(`  harness-links: details: node --experimental-strip-types ${check}`);
       return;
     }
     // A crash's stderr ends with a stack and `Node.js v…`; its error line is the news.
     const why = [...errLines].reverse().find((l) => /^[A-Za-z]*Error\b/.test(l)) ?? lastLine(fix.stderr, "no message");
-    say(`  harness-links: WARNING the check failed (exit ${fix.status}): ${why} — links not checked`);
+    emit(`  harness-links: WARNING the check failed (exit ${fix.status}): ${why} — links not checked`);
   } catch (e) {
     if (e instanceof Exit) throw e;
-    say(`  harness-links: WARNING the check could not run: ${e instanceof Error ? e.message : String(e)}`);
+    emit(`  harness-links: WARNING the check could not run: ${e instanceof Error ? e.message : String(e)}`);
   }
 }
 
@@ -362,16 +429,48 @@ async function main(): Promise<void> {
 
   let MODE = "land";
   let VERBOSE = 0;
+  let HOLD = false;
   let SUBJECT = "";
-  for (const a of process.argv.slice(2)) {
+  let LIVE_KEY = "";
+  let LIVE_FILE = "";
+  let SAW: string | null = null;
+  const USAGE =
+    'usage: land.ts "<subject>" [--hold] | --release | --check [--verbose] | --gate | --live-start <spec>/<id> | --live-pass <spec>/<id> <file> --saw "<what it shows>"';
+  const argv = process.argv.slice(2);
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i] ?? "";
     if (a === "--check") MODE = "check";
     else if (a === "--gate") MODE = "gate";
+    else if (a === "--release") MODE = "release";
+    else if (a === "--hold") HOLD = true;
     else if (a === "--verbose") VERBOSE = 1;
+    else if (a === "--live-start") {
+      MODE = "live-start";
+      LIVE_KEY = argv[++i] ?? "";
+    } else if (a === "--live-pass") {
+      MODE = "live-pass";
+      LIVE_KEY = argv[++i] ?? "";
+      LIVE_FILE = argv[++i] ?? "";
+    } else if (a === "--saw") SAW = argv[++i] ?? "";
     else if (a.startsWith("-")) {
-      warn('usage: land.ts "<subject>" | --check [--verbose] | --gate');
+      warn(USAGE);
       exit(2);
     } else SUBJECT = a;
   }
+  if (HOLD && MODE !== "land") {
+    warn("usage: --hold goes with a landing, not with --check, --gate or --release");
+    exit(2);
+  }
+  if ((MODE === "live-start" && !LIVE_KEY) || (MODE === "live-pass" && (!LIVE_KEY || !LIVE_FILE))) {
+    warn(USAGE);
+    exit(2);
+  }
+  if (SAW !== null && MODE !== "live-pass") {
+    warn("usage: --saw goes with --live-pass");
+    exit(2);
+  }
+  // A release prints the report a landing would; it lands nothing.
+  const REPORTS = MODE === "land" || MODE === "release";
 
   // The id is thread.ts's STDOUT alone. Its stderr carries Node 22.x's
   // ExperimentalWarning (type stripping, node:sqlite) as well as its refusal,
@@ -396,7 +495,141 @@ async function main(): Promise<void> {
   const DEPLOY_LOG = `${STATE}/deploy.log`;
   const DEPLOY_OWED = `${STATE}/deploy-owed`;
   const NEXT_REF = `${STATE}/next`;
+  const STATUS_REF = `${STATE}/project-status`;
+  const HELD = `${STATE}/held`;
+  // The harness-link lines of this close's landings, and the final report
+  // block as printed — saved before the closed marker, so a reader of the state
+  // (an end-of-turn check) finds the block any close that finished printed.
+  // `report-delivered` is that reader's own mark, cleared with each new block.
+  const HARNESS_REF = `${STATE}/harness-links`;
+  const REPORT_REF = `${STATE}/report`;
+  const REPORT_DELIVERED = `${STATE}/report-delivered`;
+  // The live checks this close owes (written before the push), what
+  // proved each one, and the evidence files --live-pass copied.
+  const LIVE_OWED = `${STATE}/live-owed`;
+  const LIVE_PASSED = `${STATE}/live-passed`;
+  // Kept across closes: a delivered report links the files in it.
+  const LIVE_DIR = `${STATE}/live`;
   mkdirSync(STATE, { recursive: true });
+
+  // ── The live checks' state ───────────────────────────────────────────────
+  //
+  // `live-owed` is a JSON list, one entry per check: the spec that declared it,
+  // the repo whose commit the target serves, and that commit once the repo's
+  // landing in this close is about to push it ("" until then). `live-passed`
+  // maps a key to what proved it: an evidence check's start and pass
+  // revisions, file and statement; a command check's last result.
+  type Owed = {
+    key: string;
+    spec: string;
+    id: string;
+    target: string;
+    kind: "command" | "evidence";
+    body: string;
+    declRepo: string;
+    repo: string;
+    commit: string;
+  };
+  type Passed = {
+    key: string;
+    startRevision?: Revision;
+    revision?: Revision;
+    file?: string;
+    saw?: string;
+    result?: { exit: number; tail: string };
+    time: string;
+  };
+  const readJson = <T>(p: string, empty: T): T => {
+    if (!isFile(p)) return empty;
+    try {
+      return JSON.parse(readFileSync(p, "utf8")) as T;
+    } catch {
+      notClosed(`${p} is not JSON — the live-check state is damaged; inspect it, then re-run`);
+    }
+  };
+  const readLiveOwed = (): Owed[] => readJson<Owed[]>(LIVE_OWED, []);
+  const writeLiveOwed = (o: Owed[]): void => writeAtomic(LIVE_OWED, `${JSON.stringify(o, null, 2)}\n`);
+  const readPassed = (): Record<string, Passed> => readJson<Record<string, Passed>>(LIVE_PASSED, {});
+  const writePassed = (p: Record<string, Passed>): void => writeAtomic(LIVE_PASSED, `${JSON.stringify(p, null, 2)}\n`);
+  const short = (s: string): string => (/^[0-9a-f]{40}$/.test(s) ? s.slice(0, 12) : s);
+  const owedLines = (): string[] =>
+    readLiveOwed().map((o) =>
+      o.kind === "command"
+        ? `  owed: ${o.key} — command on ${o.target}: ${o.body} (land.ts --release runs it)`
+        : `  owed: ${o.key} — evidence on ${o.target}: ${o.body} (land.ts --live-start ${o.key}; capture it; land.ts --live-pass ${o.key} <file> --saw "<what it shows>")`,
+    );
+  // What is live on <target>, served from the checkout <repo> (live-checks.ts).
+  const readLive = async (target: string, repo: string): Promise<Revision> => {
+    try {
+      return await liveRevision(target, repo);
+    } catch (e) {
+      if (e instanceof Exit) throw e;
+      throw new Error(`cannot read the live revision of ${target}: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  };
+
+  // ── An evidence check, recorded in two steps ─────────────────────────────
+  //
+  // The revision is read BEFORE the capture and again after it: a deploy that
+  // lands in between makes the capture a picture of something no longer live,
+  // so it is refused and retaken. The file is copied into the thread's state,
+  // and the statement of what it shows is kept beside the declared
+  // expectation, which the release's report prints together.
+  if (MODE === "live-start" || MODE === "live-pass") {
+    const owed = readLiveOwed();
+    const o = owed.find((x) => x.key === LIVE_KEY);
+    if (!o) notClosed(`${LIVE_KEY} is not an owed live check — owed: ${owed.map((x) => x.key).join(", ") || "none"}`);
+    if (o.kind !== "evidence") notClosed(`${LIVE_KEY} is a command check — land.ts --release runs it`);
+    const passed = readPassed();
+    if (MODE === "live-start") {
+      let rev: Revision;
+      try {
+        rev = await readLive(o.target, o.repo);
+      } catch (e) {
+        notClosed(e instanceof Error ? e.message : String(e));
+      }
+      passed[LIVE_KEY] = { key: LIVE_KEY, startRevision: rev, time: new Date().toISOString() };
+      writePassed(passed);
+      say(
+        `live-start: ${LIVE_KEY} — ${o.target} is at ${short(rev.deploymentId)}; capture it now, then land.ts --live-pass ${LIVE_KEY} <file> --saw "<what it shows>"`,
+      );
+      exit(0);
+    }
+    if (!nonEmpty(LIVE_FILE) || !isFile(LIVE_FILE)) notClosed(`${LIVE_FILE} is missing or empty — nothing to record`);
+    if (!SAW?.trim()) notClosed(`--saw "<what the evidence shows>" is required — say what the capture shows`);
+    const start = passed[LIVE_KEY]?.startRevision;
+    if (!start)
+      notClosed(
+        `${LIVE_KEY} has no --live-start — run land.ts --live-start ${LIVE_KEY} before capturing, then capture again`,
+      );
+    let rev: Revision;
+    try {
+      rev = await readLive(o.target, o.repo);
+    } catch (e) {
+      notClosed(e instanceof Error ? e.message : String(e));
+    }
+    if (rev.deploymentId !== start.deploymentId) {
+      delete passed[LIVE_KEY];
+      writePassed(passed);
+      notClosed(
+        `${o.target} changed since --live-start (${short(start.deploymentId)} → ${short(rev.deploymentId)}), so the capture is void — land.ts --live-start ${LIVE_KEY}, capture again, then --live-pass`,
+      );
+    }
+    mkdirSync(LIVE_DIR, { recursive: true });
+    const dest = `${LIVE_DIR}/${new Date().toISOString().replace(/[:.]/g, "-")}-${LIVE_KEY.replace(/\//g, "__")}-${basename(LIVE_FILE)}`;
+    writeFileSync(dest, readFileSync(LIVE_FILE));
+    passed[LIVE_KEY] = {
+      key: LIVE_KEY,
+      startRevision: start,
+      revision: rev,
+      file: dest,
+      saw: SAW.trim(),
+      time: new Date().toISOString(),
+    };
+    writePassed(passed);
+    say(`live-pass: ${LIVE_KEY} recorded on ${o.target} at ${short(rev.deploymentId)} — ${dest}`);
+    exit(0);
+  }
 
   // ── The auto-close gate ──────────────────────────────────────────────────
   //
@@ -412,6 +645,14 @@ async function main(): Promise<void> {
   // any worktree has something in it again — which is the same condition the
   // third check below tests, and needs no key.
   if (MODE === "gate") {
+    // A held close is neither closed nor a close to dispatch again: it is
+    // waiting on its live checks and --release. Said with what it owes,
+    // for as long as it is held — nothing time-based ends a hold.
+    if (isFile(HELD)) {
+      say("held");
+      for (const l of owedLines()) say(l);
+      exit(0);
+    }
     if (!isFile(CLOSED) || !isFile(LEDGER)) {
       say("not-fired");
       exit(0);
@@ -452,8 +693,10 @@ async function main(): Promise<void> {
   // report deployments completed before the failure. Once a close succeeded,
   // carrying that log into later work falsely attributes old deployments to the
   // new close.
-  if (MODE === "land" && isFile(CLOSED)) {
+  if (MODE === "land" && isFile(CLOSED) && !isFile(HELD)) {
     writeAtomic(DEPLOY_LOG, "");
+    rmSync(HARNESS_REF, { force: true });
+    rmSync(REPORT_REF, { recursive: true, force: true });
     rmSync(CLOSED, { force: true });
   }
 
@@ -470,6 +713,16 @@ async function main(): Promise<void> {
   }
 
   if (!isFile(LEDGER)) die("this thread owns no worktrees — nothing to land");
+  // The report names what the close shipped: the subject of the FIRST held
+  // landing, which a later --hold landing (a fix the live checks found) keeps.
+  if (MODE === "release") {
+    if (!isFile(HELD)) notClosed("nothing is held — land with --hold first");
+    SUBJECT = firstLine(HELD);
+  }
+  // A HOLD IS NEVER CLEARED BY A LANDING. Otherwise a landing without --hold
+  // writes `closed` over an open hold, and the live checks it was waiting for
+  // are never proved.
+  if (MODE === "land" && !HOLD && isFile(HELD)) notClosed("a hold is open — land with --hold, or --release");
   if (MODE !== "check" && !SUBJECT) die("a commit subject is required");
 
   // THE WORKTREE THAT HOLDS THE JOURNAL is told from the others by the journal
@@ -514,6 +767,7 @@ async function main(): Promise<void> {
   // capture, two parallel row closes would print `/implement` for the row the
   // other session had just landed.
   let NEXT_OUTPUT = "";
+  let STATUS_LINE = "";
   let PROJECT_REL = "";
   // STDOUT ONLY is the Next block: merged in, as the bash `2>&1` did, Node
   // 22.x's ExperimentalWarning printed as a prose line of the report. stderr
@@ -523,8 +777,14 @@ async function main(): Promise<void> {
     NEXT_OUTPUT = chomp(r.stdout);
     if (!r.ok) notClosed(`could not derive next action: ${lastLine(r.stderr, NEXT_OUTPUT)}`);
     writeAtomic(NEXT_REF, `${NEXT_OUTPUT}\n`);
+    // The report's **Project:** sentence, captured beside Next for the same
+    // reason. It describes and gates nothing: a failure leaves the line out.
+    const st = run(process.execPath, nodeArgs(PROJECT_STATUS, [projectPath]), { out: "pipe", err: "pipe" });
+    STATUS_LINE = st.ok ? chomp(st.stdout) : "";
+    writeAtomic(STATUS_REF, `${STATUS_LINE}\n`);
   };
   if (isFile(NEXT_REF)) NEXT_OUTPUT = chomp(readFileSync(NEXT_REF, "utf8"));
+  if (isFile(STATUS_REF)) STATUS_LINE = chomp(readFileSync(STATUS_REF, "utf8"));
   if (isFile(JOURNAL_REF)) {
     const JOURNAL_PATH = firstLine(JOURNAL_REF);
     if (isFile(JOURNAL_PATH)) {
@@ -603,45 +863,92 @@ async function main(): Promise<void> {
   const setOwed = (shared: string, sha: string): void =>
     writeAtomic(DEPLOY_OWED, `${owedWithout(shared)}${shared}\t${sha}\n`, "owed-replace");
 
-  // pollDeploy <shared> <sha> [<worktree>] — ask the repo's poller whether the
-  // push at <sha> started a run that completed, log its line, and settle the
-  // obligation: a good run clears it, anything else is NOT CLOSED with the
-  // obligation kept for the retry. The obligation is already on disk: landOne
-  // records it before it pushes. The poller is the repo's own
-  // `.agents/deploy/await-deploy-run.sh`, and the copy that runs is the landing
-  // worktree's — the tree that holds the landed commit, never the shared
-  // checkout's working tree, which is advanced only when it is clean and on the
-  // trunk. Only an owed deploy retried after that worktree vanished (or one
-  // without it) falls back to the shared checkout's copy. A repo
-  // that opted in with no poller to confirm the deploy is NOT CLOSED too — an
-  // opt-in nobody can check is the silent case again. It runs IN the checkout
-  // that supplies it: a poller asks git or gh about its repo from where it
-  // stands, and started in the caller's directory a satellite's poller asked
-  // about the thread's own repo instead.
-  const AWAIT_REL = ".agents/deploy/await-deploy-run.sh";
-  const LIST_REL = ".agents/deployable-prefixes.json";
-  const pollDeploy = (shared: string, sha: string, wt: string | null = null): void => {
-    const FROM = wt !== null && wt !== "" && isFile(`${wt}/${AWAIT_REL}`) ? wt : shared;
-    const AWAIT = `${FROM}/${AWAIT_REL}`;
-    if (!isFile(AWAIT))
-      notClosed(`deploy: ${shared} carries ${LIST_REL} but no ${AWAIT_REL} to confirm the deploy of ${sha}`);
-    const logFd = openSync(DEPLOY_LOG, "a");
-    let r: Run;
-    try {
-      r = run("bash", [AWAIT, "--sha", sha], { cwd: FROM, out: "pipe", err: logFd });
-    } finally {
-      closeSync(logFd);
+  // THE REPO GITHUB IS ASKED ABOUT: owner/name off <shared>'s configured
+  // origin URL, or null when that is not on GitHub. Read from the config, not
+  // `git remote get-url`, which expands `insteadOf`: a rewrite changes how
+  // the repo is reached, never which repo it is. Unset is null (`git config`
+  // exit 1); any other failure is a read that did not happen, never "no repo".
+  // An SSH origin may name a host alias from ~/.ssh/config rather than
+  // github.com (`git@github-work:owner/repo` for a second account), so its
+  // host is what `ssh -G` says it connects to — read from the local config, no
+  // connection made.
+  const githubRepoOf = (shared: string): string | null => {
+    const r = git(shared, ["config", "--get", "remote.origin.url"]);
+    if (r.status === 1) return null;
+    if (!r.ok) notClosed(`could not read the origin of ${shared} — git config failed; re-run`);
+    const url = chomp(r.stdout);
+    const m =
+      url.match(/^([a-z+]+):\/\/(?:[^@/]+@)?([^/:]+)(?::\d+)?\/([^/]+\/[^/]+?)(?:\.git)?\/?$/) ??
+      url.match(/^()(?:[^@/:]+@)?([^/:]+):([^/]+\/[^/]+?)(?:\.git)?\/?$/);
+    if (!m) return null;
+    const [, scheme, host = "", repo = null] = m;
+    if (host === "github.com") return repo;
+    if (scheme !== "" && scheme !== "ssh") return null;
+    const ssh = run("ssh", ["-G", host], { out: "pipe" });
+    if (!ssh.ok) notClosed(`could not resolve ${host}, the origin host of ${shared} — ssh -G failed; re-run`);
+    return /^hostname github\.com$/m.test(ssh.stdout) ? repo : null;
+  };
+
+  // Whether the `gh` CLI is on PATH (LAND_GH names another binary to look
+  // for, the suite's seam): await-push-checks.ts asks GitHub through it.
+  // Asked once per run.
+  let GH_PRESENT: boolean | undefined;
+  const ghPresent = (): boolean => {
+    if (GH_PRESENT === undefined) {
+      const r = spawnSync(process.env.LAND_GH || "gh", ["--version"], { stdio: "ignore" });
+      GH_PRESENT = !(r.error && (r.error as NodeJS.ErrnoException).code === "ENOENT");
     }
-    const DEPLOY_LINE = chomp(r.stdout);
-    if (DEPLOY_LINE) appendFileSync(DEPLOY_LOG, `${DEPLOY_LINE}\n`);
-    if (!r.ok) {
-      notClosed(
-        `${DEPLOY_LINE || `deploy: could not read the run for ${sha}`} — ${shared} is on origin but nothing deployed it`,
-      );
+    return GH_PRESENT;
+  };
+
+  // pollDeploy <shared> <sha> — wait for everything GitHub reports on the push
+  // at <sha>: every check run and commit status, to completion, whatever
+  // started it — a GitHub Actions workflow, a hosted build (Cloudflare Pages or
+  // Workers Builds, Vercel, Netlify), a deployer's commit status. One reader
+  // for all of them: a poller per kind of deploy calls anything it does not
+  // know "nothing to wait for", and a failed build of that kind closes green.
+  // `await-push-checks.ts` says what passing means; its exit 3 is "this repo
+  // reports nothing, and nothing was expected", which settles the obligation
+  // with its line. Anything else that is not 0 is NOT CLOSED with the
+  // obligation kept, and the retry polls the same SHA again. It is land's own
+  // sibling that runs, asked about the repo by name, so nothing of the landed
+  // tree is needed — an owed SHA whose worktree is gone is polled the same way.
+  //
+  // A REPO NOT ON GITHUB, OR NO `gh` ON THIS MACHINE, settles with a line
+  // saying so: there is nothing this can ask, and an install without `gh`
+  // still closes. A `gh` that is present but cannot read the checks (signed
+  // out, no access) is a failed read, and NOT CLOSED.
+  const pollDeploy = (shared: string, sha: string): void => {
+    const repo = githubRepoOf(shared);
+    let LINES: string;
+    let r: Run | null = null;
+    if (repo === null) {
+      LINES = `no deploy reported for ${shared} — its origin is not on GitHub`;
+    } else if (!ghPresent()) {
+      LINES = `no push checks read for ${repo} — the gh CLI is not installed (install it and run gh auth login to have the close wait on them)`;
+    } else {
+      const logFd = openSync(DEPLOY_LOG, "a");
+      try {
+        r = run(process.execPath, nodeArgs(PUSH_CHECKS, ["--repo", repo, "--sha", sha]), {
+          cwd: shared,
+          out: "pipe",
+          err: logFd,
+        });
+      } finally {
+        closeSync(logFd);
+      }
+      LINES = chomp(r.stdout);
+    }
+    if (LINES) appendFileSync(DEPLOY_LOG, `${LINES}\n`);
+    if (r !== null && !r.ok && r.status !== 3) {
+      const lines = LINES.split("\n").filter(Boolean);
+      const last = lines.pop() ?? `could not read the checks of ${sha}`;
+      for (const l of lines) say(`  ${l}`);
+      notClosed(`${last} — ${shared} is on origin but its deploy did not succeed`);
     }
     killPoint("polled");
     clearOwed(shared);
-    say(`  ${DEPLOY_LINE}`);
+    for (const l of LINES.split("\n")) if (l) say(`  ${l}`);
   };
 
   // The journal path recorded by journal-file.ts, as a repo-relative path. Taken
@@ -712,11 +1019,12 @@ async function main(): Promise<void> {
   // since <base>. `*.test.*` files count, and DELETED paths count: removing a
   // script's only test is exactly the change the checker must see (the same reasoning as
   // changedSkillTree below), and a deleted script whose test survives is the
-  // checker's to judge, not this predicate's to wave through. Read as the bash
-  // read it, through a process substitution whose failures were not checked.
+  // checker's to judge, not this predicate's to wave through. Read through
+  // changedPaths, which stops the close when git fails: read unchecked, a
+  // failed listing would be "no script changed" and an untracked script would
+  // land with no checker run.
   const changedScripts = (wt: string, base: string): boolean => {
-    const all = `${git(wt, ["diff", "-z", "--name-only", "--no-renames", base]).stdout}${git(wt, ["ls-files", "-z", "--others", "--exclude-standard"]).stdout}`;
-    for (const p of all.split("\0").slice(0, -1)) {
+    for (const p of changedPaths(wt, base)) {
       if (/^\.agents\/.*\.(sh|ts|mjs|js|cjs|py)$/s.test(p) && !`/${p}/`.includes("/node_modules/")) return true;
     }
     return false;
@@ -750,6 +1058,10 @@ async function main(): Promise<void> {
     }
     return false;
   };
+
+  // The workbench gate's question: any path under projects/, where a ROADMAP.md
+  // row or a spec report a close leaves open can live.
+  const touchesProjects = (paths: string[]): boolean => paths.some((p) => p.startsWith("projects/"));
 
   // refuseOnCheck <checker> <worktree> <base> <what> — run one pre-commit
   // checker over what <worktree> changed since <base>, and refuse the close with
@@ -901,69 +1213,6 @@ async function main(): Promise<void> {
     }
   };
 
-  // releasePartialRows <worktree> <trunk ref> — a row whose report this push
-  // writes as `partial` goes back from `in-progress` to `planned`. `/implement`
-  // flips a row `in-progress` and the close moves it on only to `done`, so a row
-  // built over several landings sat `in-progress` between them with no thread on
-  // it, and a dispatcher that starts only `planned` rows never started the next
-  // landing. Only
-  // a report in THIS push counts: an `in-progress` row whose report it does not
-  // touch belongs to a thread still working it. A `blocked:` row is left alone.
-  // Committed here so resyncNext, which reads base..HEAD, sees the table move.
-  const releasePartialRows = (wt: string, base: string): void => {
-    const d = git(wt, ["diff", "--name-only", base, "HEAD", "--", "projects/*/specs/*/report.md"], { err: "inherit" });
-    if (!d.ok) notClosed(`could not list the reports this push changes in ${wt}`);
-    const touched = new Map<string, Set<string>>();
-    for (const p of chomp(d.stdout).split("\n")) {
-      const m = /^(projects\/[^/]+\/[^/]+)\/(specs\/[^/]+)\/report\.md$/.exec(p);
-      if (!m || !isFile(`${wt}/${p}`)) continue;
-      const set = touched.get(m[1]) ?? new Set<string>();
-      set.add(m[2]);
-      touched.set(m[1], set);
-    }
-    const changed: string[] = [];
-    for (const [dir, specs] of [...touched].sort()) {
-      if (!isFile(`${wt}/${dir}/ROADMAP.md`)) continue;
-      const read = (script: string, ...args: string[]): string[] => {
-        const r = run(process.execPath, nodeArgs(`${SCRIPT_DIR}/${script}`, [`${wt}/${dir}`, ...args]), {
-          out: "pipe",
-          err: "pipe",
-        });
-        if (!r.ok) {
-          const why = chomp(r.stderr).split("\n");
-          notClosed(`${script} failed for ${dir}: ${why[why.length - 1]} — fix it in ${wt}, then re-run`);
-        }
-        return chomp(r.stdout)
-          .split("\n")
-          .filter((l) => l !== "");
-      };
-      const partial = new Set(
-        read("spec-state.ts")
-          .map((l) => l.split("\t"))
-          .filter((f) => f[1] === "partial" && specs.has(f[0] ?? ""))
-          .map((f) => f[0]),
-      );
-      if (partial.size === 0) continue;
-      const ids = read("roadmap.ts")
-        .map((l) => l.split("\t"))
-        .filter((f) => f[1] === "in-progress" && partial.has((f[3] ?? "").replace(/\/$/, "")))
-        .map((f) => f[0] ?? "");
-      for (const id of ids) {
-        read("roadmap.ts", "--set", id, "planned");
-        say(`  roadmap: ${dir} ${id} back to planned — this push's report for it is partial`);
-      }
-      if (ids.length > 0) changed.push(`${dir}/ROADMAP.md`);
-    }
-    if (changed.length === 0) return;
-    if (
-      !git(wt, ["add", "--", ...changed], { out: "inherit", err: "inherit" }).ok ||
-      !git(wt, ["commit", "-q", "-m", `${SUBJECT} (partial rows back to planned)`], { out: "inherit", err: "inherit" })
-        .ok
-    ) {
-      notClosed(`could not commit the released rows in ${wt}`);
-    }
-  };
-
   // resyncNext <worktree> <trunk ref> — re-derive `status:` and `next:` for every project whose
   // ROADMAP.md OR README.md this push changes against the trunk. That is the
   // whole invariant: a push never changes a project's table or README without the
@@ -976,19 +1225,70 @@ async function main(): Promise<void> {
   // left to merge must not push past it. Re-deriving a `next:` that is already
   // right changes nothing. A project whose re-derive fails stops the close:
   // pushing would ship a README whose `next:` names the wrong row.
+  // dependents <worktree> <project dirs> — every project under projects/ whose
+  // ROADMAP.md names, in Depends on, one of `dirs` (`<slug> <ID>`, or
+  // `<domain>/<slug> <ID>`). Read through roadmap.ts's listRows, the cell's one
+  // parser; a table that does not read is skipped here and refused by its own
+  // re-derive when its files change.
+  const dependents = (wt: string, dirs: string[]): string[] => {
+    const named = new Set<string>();
+    for (const dir of dirs) {
+      const m = /(?:^|\/)projects\/([^/]+)\/[0-9]{4}-[0-9]{2}-[0-9]{2}_([^/]+)$/.exec(dir);
+      if (m?.[1] && m[2]) named.add(m[2]).add(`${m[1]}/${m[2]}`);
+    }
+    if (named.size === 0) return [];
+    const found: string[] = [];
+    let domains: string[] = [];
+    try {
+      domains = readdirSync(`${wt}/projects`);
+    } catch {
+      return [];
+    }
+    for (const domain of domains) {
+      let folders: string[] = [];
+      try {
+        folders = readdirSync(`${wt}/projects/${domain}`);
+      } catch {
+        continue;
+      }
+      for (const folder of folders) {
+        const table = `${wt}/projects/${domain}/${folder}/ROADMAP.md`;
+        if (!isFile(table)) continue;
+        // Only the cells are wanted, so nothing is resolved here.
+        const { deps } = listRows(table, undefined, { projectsRoot: null });
+        if (deps.some((row) => row.some((x) => x.project !== "" && named.has(x.project))))
+          found.push(`projects/${domain}/${folder}`);
+      }
+    }
+    return found;
+  };
+
   const resyncNext = (wt: string, base: string): void => {
     // Read first and checked: a diff that fails must not read as "nothing to
-    // re-derive" and let the push through.
-    const d = git(wt, ["diff", "--name-only", base, "HEAD", "--", "*ROADMAP.md", "*README.md"], { err: "inherit" });
+    // re-derive" and let the push through. NUL-separated: without -z git
+    // C-quotes a folder with an accent, and the quoted path matches nothing.
+    // A changed spec report names its project too: promotion edits the
+    // table of a project whose only other change may be that report.
+    const d = git(
+      wt,
+      ["diff", "-z", "--name-only", base, "HEAD", "--", "*ROADMAP.md", "*README.md", "*/specs/*/report.md"],
+      {
+        err: "inherit",
+      },
+    );
     if (!d.ok) notClosed(`could not list the projects this push changes in ${wt}`);
     const dirs = [
       ...new Set(
-        chomp(d.stdout)
-          .split("\n")
+        d.stdout
+          .split("\0")
           .filter((p) => p !== "")
-          .map((p) => dirname(p)),
+          .map((p) => /^(.*)\/specs\/[^/]+\/report\.md$/.exec(p)?.[1] ?? dirname(p)),
       ),
-    ].sort();
+    ];
+    // A project whose Depends on names one of these waits on it: finishing
+    // the row it waits on changes its status too, though none of its files moved.
+    for (const dep of dependents(wt, dirs)) if (!dirs.includes(dep)) dirs.push(dep);
+    dirs.sort();
     const changed: string[] = [];
     for (const dir of dirs) {
       // Only a project with a table has a next: to derive — and a table this push
@@ -1021,6 +1321,528 @@ async function main(): Promise<void> {
     ) {
       notClosed(`could not commit the re-derived next: in ${wt}`);
     }
+  };
+
+  // ── Bookkeeping the close does itself, so no step depends on memory ───────
+
+  // The spec reports <wt> changes since <base>, grouped by project: projects
+  // relative path → the spec names (`specs/NNN-name`) whose report.md moved.
+  const changedReports = (wt: string, base: string): Map<string, Set<string>> => {
+    const by = new Map<string, Set<string>>();
+    for (const p of changedPaths(wt, base)) {
+      const m = /^(projects\/[^/]+\/[^/]+)\/(specs\/[^/]+)\/report\.md$/.exec(p);
+      if (!m?.[1] || !m[2] || !isFile(`${wt}/${p}`)) continue;
+      by.set(m[1], (by.get(m[1]) ?? new Set()).add(m[2]));
+    }
+    return by;
+  };
+
+  // promoteFinishedRows <worktree> <base> — set `done` every row whose Sub-spec
+  // names a spec this push's report makes `complete`, and re-derive that
+  // project's README; returns the files it changed. As a command in SKILL.md
+  // § 2 the model had to remember, a close that forgot was refused by the
+  // roadmap gate for an `in-progress` row whose work was finished. Only
+  // reports this push changed: a row another session owns is
+  // never judged, here or in check-roadmap-decisions.ts. `closed:` and
+  // `absorbed by` rows stopped on purpose and are left as they are. The two
+  // readers are the table's and the spec state's own, spawned as the roadmap
+  // gate spawns them. A table roadmap.ts cannot read is skipped: the re-derive
+  // in resyncNext refuses the close over it.
+  // completeSpecs <worktree> <base> — each changed project's specs whose
+  // report this push changes and spec-state.ts reads `complete`, sorted by
+  // project. Promotion and the live checks both ask it.
+  const completeSpecs = (wt: string, base: string): [string, Set<string>][] => {
+    const out: [string, Set<string>][] = [];
+    for (const [proj, names] of [...changedReports(wt, base)].sort(([a], [b]) => a.localeCompare(b))) {
+      const dir = `${wt}/${proj}`;
+      if (!isFile(SPEC_STATE)) notClosed(`spec-state.ts missing: ${SPEC_STATE}`);
+      const st = run(process.execPath, nodeArgs(SPEC_STATE, [dir]), { out: "pipe", err: "pipe" });
+      if (!st.ok) notClosed(`spec-state.ts could not read ${proj}: ${lastLine(st.stderr, `exit ${st.status}`)}`);
+      const complete = new Set(
+        chomp(st.stdout)
+          .split("\n")
+          .map((l) => l.split("\t"))
+          .filter(([name, state]) => name && state === "complete" && names.has(name))
+          .map(([name]) => name ?? ""),
+      );
+      if (complete.size > 0) out.push([proj, complete]);
+    }
+    return out;
+  };
+
+  const promoteFinishedRows = (wt: string, base: string): string[] => {
+    const touched: string[] = [];
+    for (const [proj, complete] of completeSpecs(wt, base)) {
+      const dir = `${wt}/${proj}`;
+      if (!isFile(`${dir}/ROADMAP.md`)) continue;
+      const table = run(process.execPath, nodeArgs(ROADMAP_TS, [dir]), { out: "pipe", err: "pipe" });
+      if (!table.ok) continue;
+      let set = 0;
+      for (const line of chomp(table.stdout).split("\n")) {
+        const [id = "", status = "", , sub = ""] = line.split("\t");
+        if (!id || !complete.has(sub) || /^(done$|closed:|absorbed by )/i.test(status)) continue;
+        const r = run(process.execPath, nodeArgs(ROADMAP_TS, [dir, "--set", id, "done"]), { out: "pipe", err: "pipe" });
+        if (!r.ok)
+          notClosed(`could not set ${id} done in ${proj}/ROADMAP.md: ${lastLine(r.stderr, `exit ${r.status}`)}`);
+        say(`  roadmap: ${proj} ${id} set done — ${sub} reads complete`);
+        set += 1;
+      }
+      if (set === 0) continue;
+      const sync = run(process.execPath, nodeArgs(ROADMAP_TS, [dir, "--sync-next"]), { out: "pipe", err: "pipe" });
+      if (!sync.ok)
+        notClosed(
+          `next: could not be re-derived for ${proj}: ${lastLine(sync.stderr, `exit ${sync.status}`)} — fix the table in ${wt}, then re-run`,
+        );
+      touched.push(`${proj}/ROADMAP.md`, `${proj}/README.md`);
+    }
+    return touched;
+  };
+
+  // quoteAuditLines <worktree> <base> — put each `spec-audit:` line of a changed
+  // spec's plan.md, and each `implement-audit:` line of its report.md, under the
+  // journal entry's **Changes:**, unless the entry already quotes it (spacing
+  // aside). These lines are records the close's entry cites, never gates: a
+  // trailer that gated a commit would refuse work for a missing line rather
+  // than for a defect, so nothing here refuses an entry or a spec without one. Returns
+  // the entry's path when it wrote to it.
+  const quoteAuditLines = (wt: string, base: string): string | null => {
+    const JREL = journalRel();
+    if (JREL === null || !isFile(`${wt}/${JREL}`)) return null;
+    const specs = new Set<string>();
+    for (const p of changedPaths(wt, base)) {
+      const m = /^(projects\/[^/]+\/[^/]+\/specs\/[^/]+)\//.exec(p);
+      if (m?.[1]) specs.add(m[1]);
+    }
+    const lineOf = (file: string, keep: (l: string) => boolean): string[] =>
+      isFile(file)
+        ? readFileSync(file, "utf8")
+            .split("\n")
+            .filter(keep)
+            .map((l) => l.trim())
+        : [];
+    const flat = (s: string): string => s.replace(/\s+/g, " ").trim();
+    let text = readFileSync(`${wt}/${JREL}`, "utf8");
+    const add: string[] = [];
+    for (const spec of [...specs].sort()) {
+      const found = [
+        ...lineOf(`${wt}/${spec}/plan.md`, (l) => l.startsWith("- spec-audit:")),
+        ...lineOf(`${wt}/${spec}/report.md`, (l) => /^[\s>*`-]*implement-audit:/.test(l)),
+      ];
+      for (const l of found) {
+        const body = l.startsWith("- ") ? l.slice(2) : l;
+        if (flat(text).includes(flat(body)) || add.some((a) => flat(a) === flat(`- ${body}`))) continue;
+        add.push(`- ${body}`);
+      }
+    }
+    if (add.length === 0) return null;
+    const ls = text.split("\n");
+    const head = ls.findIndex((l) => /^\*\*Changes:\*\*/.test(l));
+    if (head === -1) {
+      // No section: one is made, before the next one the schema puts after it
+      // (or at the end); the schema check that runs next judges the result.
+      const next = ls.findIndex((l) => /^\*\*Findings:\*\*/.test(l));
+      const block = ["**Changes:**", ...add, ""];
+      if (next === -1) ls.push("", ...block);
+      else ls.splice(next, 0, ...block);
+    } else {
+      let end = ls.findIndex((l, i) => i > head && /^\*\*[A-Za-z][A-Za-z ]*:\*\*/.test(l));
+      if (end === -1) end = ls.length;
+      let at = head + 1;
+      for (let i = head + 1; i < end; i++) if ((ls[i] ?? "").trim() !== "") at = i + 1;
+      ls.splice(at, 0, ...add);
+    }
+    text = ls.join("\n");
+    writeFileSync(`${wt}/${JREL}`, text);
+    say(`  journal: quoted ${add.length} audit line(s) under **Changes:** in ${JREL}`);
+    return JREL;
+  };
+
+  // ── The live checks a push owes ──────────────────────────────────────────
+
+  // The repo whose landed commit <target> serves, as its shared checkout in
+  // the ledger. `workbench` is the declaring spec's own repo; `repo:<owner>/<name>`
+  // is the ledger checkout whose GitHub origin is that repo. A target whose
+  // repo this thread lands nothing in has no commit to check, and is refused
+  // before the push.
+  const targetRepo = async (target: string, declShared: string, where: string): Promise<string> => {
+    if (target === "workbench") return declShared;
+    const ledgerShared = LEDGER_LINES.map((l) => (tabFields(l, 3)[1] ?? "").replace(/\/+$/, "")).filter(Boolean);
+    let repo = "";
+    try {
+      repo = sourceRepo(target);
+    } catch (e) {
+      notClosed(`${where}: cannot tell which repo ${target} serves: ${e instanceof Error ? e.message : String(e)}`);
+    }
+    const hit = ledgerShared.find((s) => githubRepoOf(s)?.toLowerCase() === repo.toLowerCase());
+    if (!hit)
+      notClosed(`${where} owes a live check on ${target}, which builds from ${repo} — this thread lands nothing there`);
+    return hit;
+  };
+
+  // What each repo landed IN THIS RUN, for binding an obligation collected
+  // after its repo already landed (the ledger's order is not the specs').
+  const LANDED_NOW = new Map<string, string>();
+
+  // bindLive <shared> <sha> <overwrite> — give the obligations whose target is
+  // served by <shared> the commit it lands. Before each push, overwriting: the
+  // newest landing of the repo is what must be live. On a re-run's early
+  // return, only those still unbound.
+  const bindLive = (shared: string, sha: string, overwrite: boolean): void => {
+    const owed = readLiveOwed();
+    let moved = false;
+    for (const o of owed) {
+      if (o.repo !== shared.replace(/\/+$/, "") || o.commit === sha || (o.commit && !overwrite)) continue;
+      o.commit = sha;
+      moved = true;
+    }
+    if (moved) writeLiveOwed(owed);
+  };
+
+  // wasComplete <worktree> <base> <report> — did the report already claim its
+  // spec complete at <base>, by spec-state.ts's own rule, which also needs the
+  // folder's spec.md? Absent there, or unreadable, is not complete.
+  const wasComplete = (wt: string, base: string, report: string): boolean => {
+    if (!git(wt, ["cat-file", "-e", `${base}:${dirname(report)}/spec.md`]).ok) return false;
+    const r = git(wt, ["show", `${base}:${report}`]);
+    return r.ok && reportClaimsComplete(r.stdout);
+  };
+
+  // checksMoved <worktree> <base> <spec> — does the spec's live-checks block
+  // now declare other checks than it did at <base>? Prose around the block is
+  // not a change; a block added, emptied or edited is, and so is one that no
+  // longer parses, so collectLive refuses it rather than dropping the line.
+  const checksMoved = (wt: string, base: string, spec: string): boolean => {
+    const rel = `${spec}/tasks.md`;
+    const was = git(wt, ["show", `${base}:${rel}`]);
+    const now = isFile(`${wt}/${rel}`) ? readFileSync(`${wt}/${rel}`, "utf8") : "";
+    if (parseLiveChecks(now).errors.length > 0) return true;
+    const decl = (t: string): string =>
+      JSON.stringify(parseLiveChecks(t).checks.map((c) => [c.id, c.target, c.kind, c.body]));
+    return decl(was.ok ? was.stdout : "") !== decl(now);
+  };
+
+  // collectLive <worktree> <shared> <base> — the checks of every spec this
+  // push writes `complete`, written to `live-owed` before the push. A spec
+  // collected again replaces its obligations and loses its pass records; other
+  // specs' stay. A malformed block is refused here, before anything is pushed.
+  const collectLive = async (wt: string, shared: string, base: string): Promise<void> => {
+    const specs = completeSpecs(wt, base);
+    // A complete spec whose live-checks block this push changes is collected
+    // too, whether or not its report moved: held, the trunk already holds the
+    // report from this close's own push, and a corrected, emptied or restored
+    // block must replace what is owed.
+    for (const p of changedPaths(wt, base)) {
+      const m = /^(projects\/[^/]+\/[^/]+)\/(specs\/[^/]+)\/tasks\.md$/.exec(p);
+      if (!m?.[1] || !m[2] || !checksMoved(wt, base, `${m[1]}/${m[2]}`)) continue;
+      const report = `${wt}/${m[1]}/${m[2]}/report.md`;
+      if (!isFile(`${wt}/${m[1]}/${m[2]}/spec.md`) || !isFile(report)) continue;
+      if (!reportClaimsComplete(readFileSync(report, "utf8"))) continue;
+      const entry = specs.find(([proj]) => proj === m[1]);
+      if (entry) entry[1].add(m[2]);
+      else specs.push([m[1], new Set([m[2]])]);
+    }
+    // And a spec this repo's close already owes whose block now declares other
+    // checks than the ones owed, changed or not since <base>: a push that failed
+    // after recording them, and was then undone, leaves obligations the
+    // declaration no longer says.
+    const declRepo = shared.replace(/\/+$/, "");
+    const owedBy = new Map<string, string[]>();
+    for (const o of readLiveOwed()) {
+      if (o.declRepo !== declRepo) continue;
+      owedBy.set(o.spec, [...(owedBy.get(o.spec) ?? []), JSON.stringify([o.id, o.target, o.kind, o.body])]);
+    }
+    for (const [spec, held] of owedBy) {
+      const m = /^(projects\/[^/]+\/[^/]+)\/(specs\/[^/]+)$/.exec(spec);
+      const rel = `${wt}/${spec}/tasks.md`;
+      if (!m?.[1] || !m[2]) continue;
+      // A tasks.md no longer there declares nothing, so what it owed is cleared.
+      const declared = parseLiveChecks(isFile(rel) ? readFileSync(rel, "utf8") : "").checks.map((c) =>
+        JSON.stringify([c.id, c.target, c.kind, c.body]),
+      );
+      if ([...declared].sort().join("\n") === [...held].sort().join("\n")) continue;
+      const entry = specs.find(([proj]) => proj === m[1]);
+      if (entry) entry[1].add(m[2]);
+      else specs.push([m[1], new Set([m[2]])]);
+    }
+    if (specs.length === 0) return;
+    let owed = readLiveOwed();
+    const passed = readPassed();
+    let changed = false;
+    const declShared = shared.replace(/\/+$/, "");
+    for (const [proj, names] of specs) {
+      for (const spec of [...names].sort()) {
+        // A report already `complete` at the base is not written complete by
+        // this push, only edited: its checks were owed, and proved, by the close
+        // that finished it, and may serve a repo this thread lands nothing in —
+        // otherwise a typo fix in a finished report is refused for checks on a
+        // repo it never touched. Not skipped: a spec this close already owes,
+        // and one whose live-checks block this push changes.
+        const owedHere = owed.some((o) => o.spec === `${proj}/${spec}`);
+        if (
+          !owedHere &&
+          !checksMoved(wt, base, `${proj}/${spec}`) &&
+          wasComplete(wt, base, `${proj}/${spec}/report.md`)
+        )
+          continue;
+        const rel = `${proj}/${spec}/tasks.md`;
+        // The key names the project too: projects reuse spec names (`001-main`).
+        const name = `${basename(proj).replace(/^\d{4}-\d{2}-\d{2}_/, "")}/${spec.replace(/^specs\//, "")}`;
+        const before = owed.length;
+        owed = owed.filter((o) => o.spec !== `${proj}/${spec}`);
+        if (owed.length !== before) changed = true;
+        for (const k of Object.keys(passed)) {
+          if (!k.startsWith(`${name}/`)) continue;
+          delete passed[k];
+          changed = true;
+        }
+        if (!isFile(`${wt}/${rel}`)) continue;
+        const p = parseLiveChecks(readFileSync(`${wt}/${rel}`, "utf8"));
+        for (const w of p.warnings) say(`  live-checks: ${rel}:${w}`);
+        if (p.errors.length > 0) {
+          for (const e of p.errors) warn(`  ${rel}:${e}`);
+          notClosed(`the live-checks block in ${rel} is malformed — line ${p.errors[0]}`);
+        }
+        for (const c of p.checks) {
+          const key = `${name}/${c.id}`;
+          if (owed.some((o) => o.key === key)) notClosed(`two specs declare the live check ${key} — rename one`);
+          const repo = await targetRepo(c.target, declShared, `${rel}:${c.line}`);
+          owed.push({
+            key,
+            spec: `${proj}/${spec}`,
+            id: c.id,
+            target: c.target,
+            kind: c.kind,
+            body: c.body,
+            declRepo: declShared,
+            repo,
+            commit: LANDED_NOW.get(repo) ?? "",
+          });
+          changed = true;
+        }
+      }
+    }
+    if (!changed) return;
+    writePassed(passed);
+    writeLiveOwed(owed);
+  };
+
+  // proveLive — --release's proof. Returns the report's lines; any
+  // failure is one stderr line per check and NOT CLOSED, the hold kept.
+  // runTree <repo> — a clean, detached checkout of the commit <repo> last
+  // landed, under the thread state, where its command checks run. Not the
+  // shared checkout: a landing leaves that behind or dirty when another
+  // session holds it, and a check read from it can be older than what deployed.
+  // A tree left by a release that stopped is removed before a new one is made.
+  const RUN_TREES = new Map<string, string>();
+  // timeout(1) where it exists (GNU coreutils), else gtimeout (coreutils on
+  // macOS through Homebrew), else null. Asked once per run.
+  let TIMEOUT_BIN: string | null | undefined;
+  const timeoutBin = (): string | null => {
+    if (TIMEOUT_BIN !== undefined) return TIMEOUT_BIN;
+    TIMEOUT_BIN = null;
+    for (const b of ["timeout", "gtimeout"]) {
+      if (spawnSync(b, ["--version"], { stdio: "ignore" }).status === 0) {
+        TIMEOUT_BIN = b;
+        break;
+      }
+    }
+    return TIMEOUT_BIN;
+  };
+  const runTree = (repo: string, fallback: string): string => {
+    const hit = RUN_TREES.get(repo);
+    if (hit) return hit;
+    const sha = landedShaFor(repo) ?? fallback;
+    const dir = `${STATE}/live-run/${basename(repo)}`;
+    git(repo, ["worktree", "remove", "--force", dir]);
+    rmSync(dir, { recursive: true, force: true });
+    git(repo, ["worktree", "prune"]);
+    mkdirSync(dirname(dir), { recursive: true });
+    if (!sha || !git(repo, ["worktree", "add", "-q", "--detach", dir, sha]).ok)
+      notClosed(
+        `could not check out ${short(sha)} of ${repo} to run its live checks — git worktree add failed; re-run`,
+      );
+    // A check imports packages the way the repo's own checkout resolves them: from
+    // the nearest node_modules at or above it (a shared one in a parent folder
+    // of every checkout included). The run tree sits under the thread state,
+    // above which there is none, so it gets a link to that one. Without it no
+    // TypeScript check that imports a package could pass ("Cannot find package").
+    for (let up = resolve(repo); ; up = dirname(up)) {
+      if (existsSync(join(up, "node_modules"))) {
+        symlinkSync(join(up, "node_modules"), join(dir, "node_modules"));
+        break;
+      }
+      if (dirname(up) === up) break;
+    }
+    RUN_TREES.set(repo, dir);
+    return dir;
+  };
+  const dropRunTrees = (): void => {
+    for (const [repo, dir] of RUN_TREES) {
+      git(repo, ["worktree", "remove", "--force", dir]);
+      rmSync(dir, { recursive: true, force: true });
+      git(repo, ["worktree", "prune"]);
+    }
+    RUN_TREES.clear();
+  };
+
+  const proveLive = async (): Promise<string[]> => {
+    const owed = readLiveOwed();
+    if (owed.length === 0) return [];
+    const passed = readPassed();
+    const fails: string[] = [];
+    const lines: string[] = [];
+    const targets = [...new Set(owed.filter((o) => o.commit).map((o) => o.target))];
+    // The checkout a target is read from: the repo its obligations bind to.
+    const repoOf = (t: string): string => owed.find((o) => o.target === t && o.commit)?.repo ?? "";
+    const before = new Map<string, Revision | null>();
+    for (const t of targets) {
+      try {
+        before.set(t, await readLive(t, repoOf(t)));
+      } catch (e) {
+        before.set(t, null);
+        fails.push(`live check(s) on ${t}: ${e instanceof Error ? e.message : String(e)}`);
+      }
+    }
+    const timeout = Number(process.env.LAND_LIVE_CHECK_TIMEOUT || "120");
+    const seen = new Map<string, ReturnType<typeof contains>>();
+    for (const o of owed) {
+      if (!o.commit) {
+        fails.push(
+          `live check ${o.key}: ${o.repo} has not landed in this close, so ${o.target} has no commit to check`,
+        );
+        continue;
+      }
+      const rev = before.get(o.target);
+      if (!rev) continue;
+      if (rev.sourceCommit === null) {
+        fails.push(
+          `live check ${o.key}: cannot tell which commit is live on ${o.target} (deployment ${rev.deploymentId})`,
+        );
+        continue;
+      }
+      const ck = `${o.repo}\t${o.commit}\t${rev.sourceCommit}`;
+      const has = seen.get(ck) ?? contains(o.repo, o.commit, rev.sourceCommit);
+      seen.set(ck, has);
+      if (has === "not") {
+        fails.push(
+          `live check ${o.key}: the live ${o.target} does not contain ${short(o.commit)} (it serves ${short(rev.sourceCommit)})`,
+        );
+        continue;
+      }
+      if (has === "unreadable") {
+        fails.push(
+          `live check ${o.key}: the live ${o.target} serves ${short(rev.sourceCommit)}, which ${o.repo} does not have`,
+        );
+        continue;
+      }
+      const at = `${o.target} at ${short(rev.deploymentId)}`;
+      if (o.kind === "command") {
+        // Through timeout(1), which signals the whole process group of the command:
+        // a child the command started (a sleep, a server) would otherwise keep
+        // the output pipes open past the kill. Its 124 is the timeout. Stock
+        // macOS has no timeout(1): there coreutils' gtimeout, else bash alone
+        // under this call's own limit, which kills bash but not a child of it.
+        const script = ["bash", "-c", `set -euo pipefail\n${o.body}`];
+        const tbin = timeoutBin();
+        const argv = tbin === null ? script : [tbin, "-k", "5", String(timeout), ...script];
+        const r = spawnSync(argv[0] ?? "bash", argv.slice(1), {
+          cwd: runTree(o.declRepo, o.repo === o.declRepo ? o.commit : ""),
+          env: process.env,
+          encoding: "utf8",
+          stdio: ["ignore", "pipe", "pipe"],
+          timeout: (tbin === null ? timeout : timeout + 30) * 1000,
+          killSignal: "SIGKILL",
+          maxBuffer: 64 * 1024 * 1024,
+        });
+        const tail = chomp(`${r.stdout ?? ""}${r.stderr ?? ""}`)
+          .split("\n")
+          .slice(-20)
+          .join("\n");
+        const timedOut = r.error !== undefined || r.signal !== null || r.status === 124 || r.status === 137;
+        const code = timedOut ? -1 : (r.status ?? 1);
+        passed[o.key] = { key: o.key, revision: rev, result: { exit: code, tail }, time: new Date().toISOString() };
+        if (code !== 0) {
+          for (const l of tail.split("\n").filter(Boolean)) warn(`    ${l}`);
+          fails.push(
+            timedOut
+              ? `live check ${o.key} failed: killed after ${timeout} s`
+              : `live check ${o.key} failed (exit ${code}): ${lastLine(tail, "no output")}`,
+          );
+          continue;
+        }
+        lines.push(`${o.key} — \`${o.body}\` passed on ${at}`);
+        continue;
+      }
+      const rec = passed[o.key];
+      if (!rec?.revision || !rec.file) {
+        fails.push(
+          `live check ${o.key} has no evidence — land.ts --live-start ${o.key}; capture it; land.ts --live-pass ${o.key} <file> --saw "<what it shows>"`,
+        );
+        continue;
+      }
+      if (rec.revision.deploymentId !== rev.deploymentId) {
+        fails.push(
+          `live check ${o.key}: its evidence was taken on ${short(rec.revision.deploymentId)} and ${short(rev.deploymentId)} is live now — the record is void; --live-start ${o.key}, capture again, --live-pass`,
+        );
+        continue;
+      }
+      lines.push(
+        `${o.key} — expected: ${o.body} — saw: ${rec.saw ?? ""} ([${basename(rec.file)}](<${rec.file}>)) on ${at}`,
+      );
+    }
+    dropRunTrees();
+    writePassed(passed);
+    // What was checked must still be what is live.
+    for (const t of targets) {
+      const a = before.get(t);
+      if (!a) continue;
+      try {
+        const b = await readLive(t, repoOf(t));
+        if (b.deploymentId !== a.deploymentId)
+          fails.push(
+            `the live ${t} changed during the checks (${short(a.deploymentId)} → ${short(b.deploymentId)}) — run land.ts --release again`,
+          );
+      } catch (e) {
+        fails.push(`live check(s) on ${t}: ${e instanceof Error ? e.message : String(e)}`);
+      }
+    }
+    if (fails.length > 0) {
+      for (const f of fails) warn(`  ${f}`);
+      notClosed(fails.length === 1 ? (fails[0] ?? "") : `${fails.length} live checks not proved — ${fails[0]}`);
+    }
+    return lines;
+  };
+
+  // requireVerified — VERIFY RAN, ON THIS CONTENT. § 1 of the close was a step
+  // the model had to remember, and nothing here checked it: every `verify` in
+  // this file was a comment. verify.ts records what it passed on, and its
+  // --stamped answers whether that is still what every worktree holds; the
+  // records the close writes after it (journal, project README and ROADMAP,
+  // the rows promoted above) do not count. Asked once, at the first commit or
+  // push of the run — after the gates, which refuse on their own terms first —
+  // and a missing or crashing verify.ts is refused, never read as a pass.
+  let VERIFIED = false;
+  const requireVerified = (): void => {
+    if (VERIFIED) return;
+    if (!isFile(VERIFY)) notClosed(`verify check missing: ${VERIFY}`);
+    // The thread is named, not looked up again: it is this run's own.
+    const stamp = run(process.execPath, nodeArgs(VERIFY, ["--stamped"]), {
+      out: "pipe",
+      err: "pipe",
+      env: { ...process.env, WORKBENCH_THREAD_ID: TID },
+    });
+    const why = chomp(stamp.stderr)
+      .split("\n")
+      .filter((l) => l.startsWith("verify: "));
+    if (stamp.status === 1 && why.length > 0) {
+      for (const l of why) say(`  ${l}`);
+      notClosed("verify has not passed on this worktree as it is now — run verify.ts, then close again");
+    }
+    if (!stamp.ok) {
+      const said = lastLine(chomp(`${stamp.stdout}\n${stamp.stderr}`), "no message");
+      notClosed(`verify check could not run (exit ${stamp.status}): ${said}`);
+    }
+    VERIFIED = true;
   };
 
   // ONE LOCK PER REPO, the same one write-root.sh takes and any automated
@@ -1074,9 +1896,13 @@ async function main(): Promise<void> {
     // An obligation is never dropped. A worktree that vanished before it was
     // landed took uncommitted or unpushed work with it, and the close must say so
     // rather than quietly closing without it.
+    const SHARED_KEY = SHARED.replace(/\/+$/, "");
     if (!isDir(WT)) {
-      if (landedShaFor(SHARED) !== null) {
-        if (OWED_SHA !== null) pollDeploy(SHARED, OWED_SHA, null);
+      const gone = landedShaFor(SHARED);
+      if (gone !== null) {
+        if (OWED_SHA !== null) pollDeploy(SHARED, OWED_SHA);
+        LANDED_NOW.set(SHARED_KEY, gone);
+        bindLive(SHARED, gone, false);
         return;
       }
       notClosed(`worktree missing before landing: ${WT}`);
@@ -1094,7 +1920,9 @@ async function main(): Promise<void> {
         // A DEFERRED satellite landed on an earlier run that then failed before
         // the end, so its removal never happened. Queue it again, or the retry
         // that succeeds leaves it and its branch on disk under the proof line.
-        if (OWED_SHA !== null) pollDeploy(SHARED, OWED_SHA, WT);
+        if (OWED_SHA !== null) pollDeploy(SHARED, OWED_SHA);
+        LANDED_NOW.set(SHARED_KEY, PREV);
+        bindLive(SHARED, PREV, false);
         if ((T3_WORKTREE || NO_OWN_WORKTREE) && WT !== T3_WORKTREE && removalIsDeferred(WT)) {
           DEFERRED_REMOVALS.push([WT, SHARED, BRANCH]);
         }
@@ -1113,10 +1941,33 @@ async function main(): Promise<void> {
     // them resolved and commit `<<<<<<<` straight to the trunk — the close
     // would then print the safe-to-close line over a corrupted tree. The conflict
     // test covers the retry as well as the first run for this reason.
-    const UNMERGED = chomp(git(WT, ["diff", "--name-only", "--diff-filter=U"]).stdout);
-    if (UNMERGED) {
-      notClosed(`unresolved conflict in ${WT}: ${UNMERGED.replace(/\n/g, " ")}— resolve it, then re-run`);
+    const um = git(WT, ["diff", "-z", "--name-only", "--diff-filter=U"]);
+    if (!um.ok) notClosed(`could not list the unmerged paths in ${WT} — git diff failed; re-run`);
+    const UNMERGED = um.stdout.split("\0").filter((p) => p !== "");
+    if (UNMERGED.length > 0) {
+      notClosed(`unresolved conflict in ${WT}: ${UNMERGED.join(" ")} — resolve it, then re-run`);
     }
+
+    // WHERE THIS BRANCH LEFT THE TRUNK, which every gate below and the audit
+    // lines measure "changed" from. The trunk is resolved and FETCHED here,
+    // ahead of them, rather than after the commit where the merge below first
+    // needs it: `trunk.ts` can name a trunk from origin/HEAD before
+    // `origin/<trunk>` exists locally, and only the fetch creates it. Measuring
+    // from a ref that is not there would refuse every close.
+    const trunk = trunkOf(SHARED);
+    if (trunk === null)
+      notClosed(`no trunk branch in ${SHARED} (origin/HEAD unset and no origin/main or origin/master)`);
+    const TRUNK = trunk;
+    if (!git(WT, ["fetch", "-q", "origin", TRUNK], { out: "inherit" }).ok)
+      notClosed(`could not fetch origin/${TRUNK} for ${SHARED}`);
+    const mb = git(WT, ["merge-base", "HEAD", `origin/${TRUNK}`]);
+    if (!mb.ok)
+      notClosed(`git merge-base HEAD origin/${TRUNK} failed in ${WT}, so its decision records cannot be scoped`);
+    const DR_BASE = chomp(mb.stdout);
+
+    // The audit lines of every spec this push changed go into the entry before
+    // the schema check reads it: written, never required.
+    if (holdsJournal(WT)) quoteAuditLines(WT, DR_BASE);
 
     // THE JOURNAL ENTRY GATE. This is the last point before an entry is committed:
     // front matter a reader cannot parse makes the session invisible to anything
@@ -1131,7 +1982,8 @@ async function main(): Promise<void> {
     // refuses to copy. An entry about to be committed
     // with no checker on disk is a close that cannot say it checked.
     const FM_CHECK = `${SCRIPT_DIR}/check-journal-entry.ts`;
-    if (holdsJournal(WT)) {
+    const journalGate = (): void => {
+      if (!holdsJournal(WT)) return;
       const JREL = journalRel();
       if (JREL !== null && isFile(`${WT}/${JREL}`)) {
         if (!isFile(FM_CHECK)) notClosed(`journal check missing: ${FM_CHECK}`);
@@ -1143,7 +1995,8 @@ async function main(): Promise<void> {
         });
         if (!r.ok) notClosed(`journal entry fails the schema: ${WT}/${JREL}`);
       }
-    }
+    };
+    journalGate();
 
     // THE DECISION-RECORD GATE: check-decision-records.ts, over the records this
     // worktree changed. Before the commit for the same reason as the journal gate
@@ -1170,21 +2023,6 @@ async function main(): Promise<void> {
     //
     // Every path through this block falls through to the staging below. A
     // `return` here leaves landOne with nothing committed.
-    //
-    // The trunk is resolved and FETCHED here, ahead of the gate, rather than after
-    // the commit where the merge below first needs it: `trunk.ts` can name a trunk
-    // from origin/HEAD before `origin/<trunk>` exists locally, and only the fetch
-    // creates it. Measuring from a ref that is not there would refuse every close.
-    const trunk = trunkOf(SHARED);
-    if (trunk === null)
-      notClosed(`no trunk branch in ${SHARED} (origin/HEAD unset and no origin/main or origin/master)`);
-    const TRUNK = trunk;
-    if (!git(WT, ["fetch", "-q", "origin", TRUNK], { out: "inherit" }).ok)
-      notClosed(`could not fetch origin/${TRUNK} for ${SHARED}`);
-    const mb = git(WT, ["merge-base", "HEAD", `origin/${TRUNK}`]);
-    if (!mb.ok)
-      notClosed(`git merge-base HEAD origin/${TRUNK} failed in ${WT}, so its decision records cannot be scoped`);
-    const DR_BASE = chomp(mb.stdout);
     if (DR_CHECK) {
       refuseOnCheck(DR_CHECK, WT, DR_BASE, "decision record");
     } else if (changedDecisionRecords(WT, DR_BASE)) {
@@ -1233,11 +2071,98 @@ async function main(): Promise<void> {
       );
     }
 
+    // THE WORKBENCH GATE: check-roadmap-decisions.ts, over the projects this
+    // worktree changed — a ROADMAP row or a spec report left open refuses the
+    // close (auto-close-gate.md precondition (iii) says what "open" means).
+    // Workbench only: the checker is the worktree's OWN copy, like the
+    // skill-manifest gate's, and a worktree of any other repo is never run
+    // against it. A workbench worktree with a project change and no checker is
+    // refused, never skipped.
+    //
+    // It runs twice: here, over the branch, and after the trunk merge below
+    // when it brought commits in, because two branches that each pass can fail
+    // together (one adds a row that depends on a row the other closes).
+    const IS_WORKBENCH = isFile(`${WT}/.agents/skills/close/scripts/land.ts`);
+    const workbenchGates = (base: string): void => {
+      if (!IS_WORKBENCH) return;
+      const paths = changedPaths(WT, base);
+      const gates: Array<[string, (p: string[]) => boolean, string]> = [
+        [".agents/skills/close/scripts/check-roadmap-decisions.ts", touchesProjects, "something left open in a roadmap or report"],
+      ];
+      for (const [rel, touches, what] of gates) {
+        if (!touches(paths)) continue;
+        if (!isFile(`${WT}/${rel}`)) {
+          notClosed(
+            `${what} inputs changed in ${WT}, but ${WT} holds no ${rel} — merge origin/${TRUNK} into the branch, then close again`,
+          );
+        }
+        refuseOnCheck(`${WT}/${rel}`, WT, base, what);
+      }
+    };
+    // A finished spec's row is `done` before the gates read it, so the roadmap
+    // gate sees what lands rather than refusing an `in-progress` row. The edits
+    // ride the commit below.
+    promoteFinishedRows(WT, DR_BASE);
+    workbenchGates(DR_BASE);
+
+    // THE MERGED TREE, CHECKED BY EACH APP THE BRANCH TOUCHED. verify.ts ran
+    // those apps' own `check` on the branch, before the trunk was merged in; a
+    // trunk change can pass alone and fail beside this one: a shared builder
+    // gains an argument on one branch while another adds a caller of it, each
+    // type-checks, and the merged tree does not. So after a merge that brought
+    // commits in, each workbench app the branch changed runs its own `check`
+    // (not its tests — verify.ts ran those, and the type-check is what a merge
+    // breaks without a conflict) over the merged tree, and a failure refuses
+    // the push — on the attempt that merged and on every retry until the tree
+    // passes.
+    const mergedAppChecks = (base: string): void => {
+      if (!IS_WORKBENCH) return;
+      // Each changed file's app is the nearest folder under apps/ holding a
+      // package.json, as verify.ts finds it.
+      const apps = new Set<string>();
+      for (const p of changedPaths(WT, base)) {
+        if (!p.startsWith("apps/")) continue;
+        for (let dir = dirname(p); dir.startsWith("apps/"); dir = dirname(dir)) {
+          if (isFile(`${WT}/${dir}/package.json`)) {
+            apps.add(dir);
+            break;
+          }
+        }
+      }
+      for (const app of [...apps].sort()) {
+        const pkg = `${WT}/${app}/package.json`;
+        let check: unknown;
+        try {
+          check = (JSON.parse(readFileSync(pkg, "utf8")) as { scripts?: Record<string, unknown> }).scripts?.check;
+        } catch {
+          notClosed(`${pkg} is not JSON, so ${app}'s check cannot run on the merged tree`);
+        }
+        if (typeof check !== "string") continue;
+        const r = run("npm", ["run", "--silent", "check"], {
+          cwd: `${WT}/${app}`,
+          env: { ...process.env, PWD: `${WT}/${app}` },
+          out: "pipe",
+          err: "pipe",
+        });
+        if (r.ok) continue;
+        const lines = chomp(`${r.stdout}\n${r.stderr}`)
+          .split("\n")
+          .filter((l) => l.trim() !== "");
+        process.stderr.write(lines.map((l) => `  ${l}\n`).join(""));
+        const first = lines.find((l) => /\berror\b/i.test(l)) ?? lines[0] ?? `npm run check exited ${r.status}`;
+        notClosed(`${app}'s check fails on the merged tree in ${WT}: ${first.trim()}`);
+      }
+    };
+
+
     // THE SECRETS GATE: check-secrets.ts over what this worktree changed, for
     // every repo, from the workbench worktree that holds the checks. A credential
     // committed is a credential leaked, whichever repo it lands in.
     if (SEC_CHECK) refuseOnCheck(SEC_CHECK, WT, DR_BASE, "secret scan");
 
+    // Verify passed on this content (requireVerified), asked after the gates,
+    // which refuse on their own terms first, and before anything is staged.
+    requireVerified();
     const DIRTY = wtStatus(WT) !== "";
     if (DIRTY && !git(WT, ["add", "-A"], { out: "inherit", err: "inherit" }).ok) notClosed(`could not stage ${WT}`);
 
@@ -1315,13 +2240,86 @@ async function main(): Promise<void> {
       if (!git(WT, ["merge", "-q", "--no-edit", `origin/${TRUNK}`], { out: "inherit" }).ok) {
         notClosed(`conflict in ${WT}`);
       }
+      // The merged tree is what the push publishes, and the trunk's commits
+      // are new to it: the workbench gates again, measured from the new merge
+      // base. A refusal leaves the merge committed here, unpushed; the re-run
+      // finds the trunk already merged and judges the same tree before its
+      // commit.
+      const mb2 = git(WT, ["merge-base", "HEAD", `origin/${TRUNK}`]);
+      if (!mb2.ok) notClosed(`git merge-base HEAD origin/${TRUNK} failed in ${WT} after the merge`);
+      // Promotion again, on the merged tree: the trunk can bring a row naming
+      // this push's finished spec. Measured from the new merge base, the
+      // reports are still this push's alone — another session's, merged in,
+      // are not, and its rows are never touched.
+      const promoted = promoteFinishedRows(WT, chomp(mb2.stdout));
+      if (promoted.length > 0) {
+        if (
+          !git(WT, ["add", "--", ...promoted], { out: "inherit", err: "inherit" }).ok ||
+          !git(WT, ["commit", "-q", "-m", `${SUBJECT} (finished rows set done on the merged table)`], {
+            out: "inherit",
+            err: "inherit",
+          }).ok
+        ) {
+          notClosed(`could not commit the rows set done on the merged table in ${WT}`);
+        }
+      }
+      // The audit lines again, from the merged specs: the trunk can have
+      // changed a verdict in a spec this push also changed. The entry is
+      // judged again before it is committed.
+      const quoted = holdsJournal(WT) ? quoteAuditLines(WT, chomp(mb2.stdout)) : null;
+      if (quoted !== null) {
+        journalGate();
+        if (
+          !git(WT, ["add", "--", quoted], { out: "inherit", err: "inherit" }).ok ||
+          !git(WT, ["commit", "-q", "-m", `${SUBJECT} (audit lines quoted from the merged specs)`], {
+            out: "inherit",
+            err: "inherit",
+          }).ok
+        ) {
+          notClosed(`could not commit the audit lines quoted from the merged specs in ${WT}`);
+        }
+      }
+      workbenchGates(chomp(mb2.stdout));
+    }
+    // On every attempt whose branch holds a trunk merge not yet pushed — the one
+    // just made, or one a refused attempt left committed — so a retry of a
+    // refusal is judged again rather than pushed.
+    const unpushedMerges = git(WT, ["rev-list", "--merges", `origin/${TRUNK}..HEAD`]);
+    if (!unpushedMerges.ok)
+      notClosed(`could not list the merges ${WT} holds past origin/${TRUNK} — git failed; re-run`);
+    if (chomp(unpushedMerges.stdout) !== "") {
+      const mb3 = git(WT, ["merge-base", "HEAD", `origin/${TRUNK}`]);
+      if (!mb3.ok) notClosed(`git merge-base HEAD origin/${TRUNK} failed in ${WT} before the push`);
+      mergedAppChecks(chomp(mb3.stdout));
     }
     // Every attempt, not only the one that merged: a re-run after a failed
     // re-derive finds trunk already merged, and must not push past it.
-    releasePartialRows(WT, `origin/${TRUNK}`);
     resyncNext(WT, `origin/${TRUNK}`);
     // The Next line, from the project as it is about to land (see PROJECT_REL).
     if (PROJECT_REL && holdsJournal(WT)) deriveNext(`${WT}/${PROJECT_REL}`);
+
+    // THE REVIEW RECEIPT, OF WHAT IS ABOUT TO BE PUSHED. verify.ts asked it
+    // before the first commit; the trunk merge above
+    // can move the covered content since — another session's edit to a file
+    // this branch changed, or to a caller or instruction its review depended on.
+    // The same reader asks again of the tree the push publishes. A stale
+    // receipt is not reviewed here: the close stops, names the moved paths, and
+    // leaves the merge and the receipt in place, so the remaining review
+    // allowance (validate.ts --phase review --since) or restoring the reviewed
+    // bytes recovers it. Nothing here resets an allowance or opens a new owner.
+    if (!isFile(AUDIT)) notClosed(`review receipt reader missing: ${AUDIT}`);
+    const receipt = run(process.execPath, nodeArgs(AUDIT, ["check", "--owner", TID, WT]), { out: "pipe", err: "pipe" });
+    if (!receipt.ok) {
+      const why = chomp(receipt.stderr)
+        .split("\n")
+        .filter((l) => l.startsWith("review: "));
+      for (const l of why) say(`  ${l}`);
+      notClosed(
+        why.length > 0
+          ? `the independent review no longer covers what ${WT} would push — review the change within the remaining allowance, or restore the reviewed content, then close again`
+          : `the review receipt check could not run (exit ${receipt.status}): ${lastLine(chomp(receipt.stderr), "no message")}`,
+      );
+    }
 
     // NOTHING TO PUSH IS NOT A FAILED PUSH. A thread's own worktree is in the
     // ledger whether or not the session wrote to it, and a satellite is opened
@@ -1338,8 +2336,8 @@ async function main(): Promise<void> {
     //
     // It skips the push ONLY. The satellite removal and the final all-clear below
     // still run, so a no-work worktree is cleaned up exactly like any other.
-    // Where the trunk stood before this push, for the owed-run rule below: the
-    // landed diff is `TRUNK_BEFORE..SHA`, and it is what the deployer saw.
+    // Where the trunk stood before this push: HEAD already there is nothing to
+    // push.
     //
     // Both SHAs are read CHECKED. Read unchecked, two failed reads would be two
     // empty strings, compare equal, and a committed change would be reported as
@@ -1353,46 +2351,17 @@ async function main(): Promise<void> {
     const TRUNK_BEFORE = revParse(`origin/${TRUNK}`);
     const SHA = revParse("HEAD", "inherit");
 
-    // Decided HERE, from the range about to be pushed, BEFORE the push (the
-    // reasoning is at the deploy check below): "poll" (a run is owed), "no"
-    // (the paths deploy nothing), or "none" (this repo has not opted in: the
-    // landed commit carries no .agents/deployable-prefixes.json).
-    let DEPLOY: "poll" | "no" | "none" = "none";
-    const list = git(WT, ["show", `${SHA}:${LIST_REL}`]);
-    if (list.ok) {
-      DEPLOY = "poll";
-      if (TRUNK_BEFORE) {
-        const diff = git(WT, ["diff", "--name-only", TRUNK_BEFORE, SHA]);
-        const touched = diff.ok ? git(WT, ["log", "--format=", "--name-only", `${TRUNK_BEFORE}..${SHA}`]) : diff;
-        if (diff.ok && touched.ok) {
-          let DECISION = "poll";
-          let prefixes: unknown;
-          try {
-            prefixes = JSON.parse(chomp(list.stdout));
-          } catch {
-            prefixes = undefined;
-          }
-          if (
-            Array.isArray(prefixes) &&
-            prefixes.length > 0 &&
-            prefixes.every((p: unknown) => typeof p === "string" && p.length > 0)
-          ) {
-            const xs = prefixes as string[];
-            const paths = `${chomp(diff.stdout)}\n${chomp(touched.stdout)}\n`.split("\n").filter(Boolean);
-            DECISION = paths.some((p) => xs.some((x) => p.startsWith(x))) ? "owed" : "not-owed";
-          }
-          if (DECISION === "not-owed") DEPLOY = "no";
-        }
-      }
-    }
-
+    // EVERY PUSH IS OWED A CHECK, decided by `pollDeploy`: everything GitHub
+    // reports on the pushed commit, to completion, which a repo that reports
+    // nothing, and is expected to report nothing, settles at once.
+    //
     // THE ORDER IS THE PROOF: record the obligation for the SHA about to be
     // pushed, push, record the landed SHA, poll, clear. A kill anywhere leaves a
     // retry that polls or refuses. Before the push, the obligation names an
     // unpushed SHA, and the retry pushes that SHA again and re-records it.
     // After the push and before the landed SHA, the retry finds HEAD already on
-    // origin, sees an empty diff and calls its own push "not owed", but the
-    // obligation on disk is polled all the same. After the landed SHA, the
+    // origin and has nothing to push, but the obligation on disk is polled all
+    // the same. After the landed SHA, the
     // early returns poll it. After a good poll and before the clear, the retry
     // polls a run that already completed. Recorded after the push instead, a
     // kill in that gap would let a retry close unpolled.
@@ -1400,18 +2369,25 @@ async function main(): Promise<void> {
     // A push owed a run takes over an earlier obligation when it descends from
     // that SHA, because its completed run deploys that SHA's tree too. One that
     // does not descend cannot take it over, so the old SHA is proved first.
-    let OWED_BEFORE: string | null = null;
-    if (DEPLOY === "poll") {
-      if (
-        OWED_SHA !== null &&
-        OWED_SHA !== SHA &&
-        !git(WT, ["merge-base", "--is-ancestor", OWED_SHA, SHA], { out: "ignore" }).ok
-      ) {
-        pollDeploy(SHARED, OWED_SHA, WT);
-      }
-      OWED_BEFORE = owedShaFor(SHARED);
-      setOwed(SHARED, SHA);
+    if (
+      OWED_SHA !== null &&
+      OWED_SHA !== SHA &&
+      !git(WT, ["merge-base", "--is-ancestor", OWED_SHA, SHA], { out: "ignore" }).ok
+    ) {
+      pollDeploy(SHARED, OWED_SHA);
     }
+    // THE LIVE CHECKS THIS PUSH OWES, written before it like the deploy
+    // obligation below, so an interrupted push is retried with them. Measured
+    // from the trunk this branch now contains: what the push itself changes.
+    // Then every obligation this repo serves is bound to the SHA about to be
+    // pushed, and any collected for a repo already landed in this run to the
+    // SHA that repo landed.
+    await collectLive(WT, SHARED, TRUNK_BEFORE);
+    for (const [s, sha] of LANDED_NOW) bindLive(s, sha, false);
+    bindLive(SHARED, SHA, true);
+    LANDED_NOW.set(SHARED_KEY, SHA);
+    const OWED_BEFORE = owedShaFor(SHARED);
+    setOwed(SHARED, SHA);
 
     if (SHA === TRUNK_BEFORE) {
       say(`  ${SHARED}: nothing to push (already at origin/${TRUNK})`);
@@ -1425,10 +2401,8 @@ async function main(): Promise<void> {
           // back to what it was, because nothing was pushed to owe a run. A kill
           // before that leaves the unpushed SHA owed, which the retry pushes and
           // re-records, or refuses on.
-          if (DEPLOY === "poll") {
-            if (OWED_BEFORE === null) clearOwed(SHARED);
-            else setOwed(SHARED, OWED_BEFORE);
-          }
+          if (OWED_BEFORE === null) clearOwed(SHARED);
+          else setOwed(SHARED, OWED_BEFORE);
           notClosed(`push of ${SHARED} failed`);
         }
         attempt += 1;
@@ -1473,41 +2447,18 @@ async function main(): Promise<void> {
 
     // ── Check that the push deployed — do NOT deploy ──────────────────────
     //
-    // OFF UNLESS THE REPO OPTS IN. A repo whose push deploys something (a CI
-    // workflow, a webhook) says so by carrying `.agents/deployable-prefixes.json`:
-    // a JSON array of the path prefixes whose change a push deploys. Without it
-    // there is nothing to check, and this block is skipped.
+    // The push is the deployer and this script only CHECKS. A merger that
+    // deployed would deploy the shared checkout, which another session may hold
+    // dirty; the push deploys the landed commit. But a push-triggered deploy can
+    // be lost silently — a workflow that never starts, a runner that is gone, a
+    // build that fails — and silence looks exactly like success. So a landing
+    // whose checks do not start where they did before, or fail, is NOT CLOSED.
     //
-    // With it, the push is the deployer and this script only CHECKS. A merger
-    // that deployed would deploy the shared checkout, which another session may
-    // hold dirty; the push deploys the landed commit. But a push-triggered deploy
-    // can be lost silently — a dropped webhook, a runner that is down — and
-    // silence looks exactly like success. So a landing that starts no deploy run
-    // is NOT CLOSED. The check is the repo's own `.agents/deploy/await-deploy-run.sh
-    // --sha <sha>`: it prints one line and exits 0 when a deploy of that commit
-    // completed. Opting in without it is NOT CLOSED too (pollDeploy).
-    //
-    // AND ONLY FOR A PUSH THAT CAN DEPLOY SOMETHING. A close that wrote only its
-    // journal would otherwise wait on a run nothing starts. The list is read out
-    // of the LANDED commit, never the shared checkout's working tree, and the
-    // check runs only when the landed paths match. THE PATHS ARE THE DEPLOYER'S
-    // PATHS: the union of every commit's files in the pushed range (`git log
-    // --name-only`), which is what a push event carries, plus the net diff. A file
-    // added in one commit and deleted in the next is in that union and starts a
-    // run, while the net diff alone would call the landing not owed. The list is
-    // JSON-parsed, not grepped; a prefix matches at the start of a path and
-    // nowhere else. Anything this cannot read — unparseable JSON, no range —
-    // checks, rather than skips: skipping on an unknown is the one way a
-    // deployed-nothing close ships stale under a green report.
-    if (DEPLOY === "no") {
-      const NOT_OWED = "deploy: not owed (no deployable path)";
-      appendFileSync(DEPLOY_LOG, `${NOT_OWED}\n`);
-      say(`  ${NOT_OWED}`);
-    }
-    if (DEPLOY === "poll") pollDeploy(SHARED, SHA, WT);
-    // A push that starts no run cannot stand in for one an earlier push still
-    // owes, so that SHA is polled again (and refused if its poller is gone).
-    else if (OWED_SHA !== null) pollDeploy(SHARED, OWED_SHA, WT);
+    // FOR EVERY REPO, AND EVERY PUSH OF IT. Every repo is asked what GitHub saw
+    // start (`pollDeploy`); a journal-only close waits for its push's checks
+    // like any other, because the workflows decide from their own diff what to
+    // run, and a list here of which paths deploy would drift from theirs.
+    pollDeploy(SHARED, SHA);
 
     // ── Remove the satellite, never the harness's own worktree ────────────
     // The harness made that one (T3's thread worktree, a `claude -w` one),
@@ -1592,12 +2543,39 @@ async function main(): Promise<void> {
   }
 
   if (MODE === "land") {
+    // ── A prerequisite, before anything is committed ──────────────────────
+    //
+    // The other one, verify, is asked at the first commit (requireVerified).
+    //
+    // A JOURNAL ENTRY, for every thread — one opened on a product repo too.
+    // Without one a thread would land anyway, and its last line would quote
+    // whichever repo landed last; SKILL.md says every session gets an entry.
+    const JPATH = isFile(JOURNAL_REF) ? firstLine(JOURNAL_REF) : "";
+    const JHELD = LEDGER_LINES.some((l) => {
+      const [jwt = ""] = tabFields(l, 3);
+      return jwt !== "" && JPATH.startsWith(`${jwt}/journal/`);
+    });
+    if (!JPATH || !JHELD || !isFile(JPATH)) {
+      notClosed(
+        `no journal entry for this thread${JPATH ? ` (${JPATH} is in no worktree this thread owns)` : ""} — run journal-file.ts`,
+      );
+    }
+
     for (const line of LEDGER_LINES) {
       const [WT = "", SHARED = "", BRANCH = ""] = tabFields(line, 3);
       if (!WT) continue;
       await landOne(WT, SHARED, BRANCH);
     }
-    harnessLinks(LEDGER_LINES);
+    killPoint("landings-done");
+    // Kept for the report, which prints them: appended within one close, so a
+    // second held landing whose check finds the links already fixed does not
+    // erase what the first one did.
+    const kept = isFile(HARNESS_REF) ? readLines(readFileSync(HARNESS_REF, "utf8")) : [];
+    harnessLinks(LEDGER_LINES, (l) => {
+      const line = l.trim();
+      if (!kept.includes(line)) kept.push(line);
+    });
+    if (kept.length > 0) writeAtomic(HARNESS_REF, kept.map((l) => `${l}\n`).join(""));
   }
 
   // ── The three checks ─────────────────────────────────────────────────────
@@ -1614,10 +2592,8 @@ async function main(): Promise<void> {
     if (oshared) notClosed(`the deploy of ${osha} to ${oshared} was never proved — re-run the close`);
   }
 
-  let LAST_SHA = "";
   let JOURNAL_MAIN_SHA = "";
   let JOURNAL_TRUNK = "";
-  let LAST_TRUNK = "";
   let JOURNAL_LANDED = "";
 
   const landedRows = readLines(readFileSync(LANDED, "utf8"));
@@ -1656,8 +2632,6 @@ async function main(): Promise<void> {
       notClosed(`${SHA} is not on origin/${CHK_TRUNK} in ${SHARED}`);
     }
     const MAIN_SHA = chomp(git(SHARED, ["rev-parse", `origin/${CHK_TRUNK}`], { err: "inherit" }).stdout);
-    LAST_SHA = MAIN_SHA;
-    LAST_TRUNK = CHK_TRUNK;
     if (JOURNAL_SHARED && SHARED === JOURNAL_SHARED) {
       JOURNAL_MAIN_SHA = MAIN_SHA;
       // The trunk the REPORT line names. It is the journal repo's, because that
@@ -1670,10 +2644,14 @@ async function main(): Promise<void> {
 
   // The journal is checked by PATH, not by "a journal was written": a close that
   // renamed the file around a collision has to prove the renamed one landed.
+  // A thread with no entry is not closed in any mode: the last line
+  // quotes the SHA of the repo the entry landed in, and there is no other.
   const REL = journalRel();
-  if (REL !== null) {
+  if (REL === null) notClosed("no journal entry for this thread — run journal-file.ts");
+  {
     if (!JOURNAL_SHARED) notClosed(`${REL} is in no worktree this thread owns, so nothing landed it`);
-    if (landedShaFor(JOURNAL_SHARED) !== null) {
+    if (landedShaFor(JOURNAL_SHARED) === null) notClosed(`${REL} has not landed — run land.ts`);
+    {
       const jt = trunkOf(JOURNAL_SHARED);
       if (jt === null) notClosed(`no trunk branch in ${JOURNAL_SHARED} to check the journal against`);
       if (!git(JOURNAL_SHARED, ["cat-file", "-e", `origin/${jt}:${REL}`], { out: "inherit" }).ok) {
@@ -1719,7 +2697,134 @@ async function main(): Promise<void> {
   // The marker is what the auto-close gate reads (--gate, above), and it is
   // written HERE rather than when the journal is written: a journal written before a failed Land would otherwise suppress the
   // re-run that lands it.
-  writeAtomic(CLOSED, "");
+  //
+  // HELD is landed, deployed and checked, but not closed: no marker, no report,
+  // no line, while the live checks run with the session open. A landing that
+  // owes live checks holds whether or not --hold was passed. A --check
+  // while held keeps the hold; only a --release whose live checks all pass
+  // ends it.
+  const STAYS_HELD = HOLD || (MODE === "land" && readLiveOwed().length > 0) || (MODE === "check" && isFile(HELD));
+  // Owed checks with no hold written: a landing that stopped after its push
+  // and before it held. Not closed, and not held either, since --release
+  // needs the hold the landing writes: the landing is what runs again.
+  if (MODE === "check" && !isFile(HELD) && readLiveOwed().length > 0)
+    notClosed(
+      'live checks are owed but the landing that owes them did not finish — run land.ts "<subject>" again, which holds on them',
+    );
+  const LIVE_REPORT = MODE === "release" ? await proveLive() : [];
+
+  // This is the final-response block. It is generated here so /close copies one
+  // complete artifact instead of manually reconstructing fields and dropping a
+  // deterministic result. Deployment diagnostics stay above it; the proof line
+  // remains last and retains its existing machine-earned meaning.
+  //
+  // Each field is its own paragraph: lines separated by a single newline are
+  // one paragraph in Markdown, which would run Shipped, Journal and Next
+  // together on one line.
+  //
+  // BUILT FIRST, SAVED BEFORE THE MARKER, PRINTED LAST. The block goes
+  // to the thread's state before `closed` is written or `held` removed, so a
+  // close that reads as finished always has its report on disk, and one whose
+  // save failed is NOT CLOSED with its hold and its retry state intact.
+  let BLOCK = "";
+  const put = (s: string): void => {
+    BLOCK += s;
+  };
+  const putLine = (s: string): void => put(`${s}\n`);
+  if (REPORTS && !STAYS_HELD) {
+    putLine(`**Shipped:** ${SUBJECT}`);
+    if (JOURNAL_LANDED) {
+      putLine("");
+      putLine(`**Journal:** [${JOURNAL_LANDED.slice(JOURNAL_LANDED.lastIndexOf("/") + 1)}](<${JOURNAL_LANDED}>)`);
+    }
+    // With the **Project:** sentence printed, next-implement-command's own
+    // status comment (`# <slug> — …`, `# <slug> is blocked — …`) says the same
+    // thing in the script's words and is dropped. Its other comments (a manual
+    // row, a blocked row) stay.
+    let nextLines = NEXT_OUTPUT.split("\n").filter((l) => l !== "");
+    if (STATUS_LINE) {
+      putLine("");
+      putLine(`**Project:** ${STATUS_LINE}`);
+      const slug = STATUS_LINE.split(" ")[0] ?? "";
+      nextLines = nextLines.filter((l) => !l.startsWith(`# ${slug} — `) && !l.startsWith(`# ${slug} is blocked — `));
+    }
+    // THE HANDOFF IS FRESH CONTEXT. Nothing starts a row on its own: each
+    // `/implement <slug> <row>` is for the user to run in a NEW session (a new
+    // thread, tab or terminal), where the build starts from its spec rather
+    // than from this session's context. Each command is its own fenced block,
+    // so each has its own copy button: rows printed together can run in
+    // parallel sessions, and one multi-line block would paste them as one
+    // prompt. A `#` comment is a prose list item. NEXT_OUTPUT itself is
+    // unchanged: it stays machine-readable, one command or comment per line.
+    if (nextLines.length > 0) {
+      putLine("");
+      putLine("**Next:**");
+      if (nextLines.some((l) => l.startsWith("/implement "))) {
+        putLine("");
+        putLine("Run each `/implement` in a fresh session, one per row; rows listed together can run in parallel.");
+      }
+      for (const l of nextLines) {
+        if (l.startsWith("/")) put(`\n\`\`\`\n${l}\n\`\`\`\n`);
+        else if (l.startsWith("# ")) put(`\n- ${l.slice(2)}\n`);
+        else put(`\n${l}\n`);
+      }
+    }
+    // What the harness-link check did on this close's landings, a list item
+    // each, so the session inspects every `.pre-link` file a line names.
+    const links = isFile(HARNESS_REF) ? readLines(readFileSync(HARNESS_REF, "utf8")).filter((l) => l !== "") : [];
+    if (links.length > 0) {
+      putLine("");
+      putLine("**Harness links:**");
+      putLine("");
+      for (const l of links) putLine(`- ${l}`);
+    }
+    // What --release proved live: each command check that passed, and
+    // each evidence check's declared expectation beside what the capture shows.
+    if (LIVE_REPORT.length > 0) {
+      putLine("");
+      putLine("**Live checks:**");
+      putLine("");
+      for (const l of LIVE_REPORT) putLine(`- ${l}`);
+    }
+    putLine("");
+  }
+
+  // The SHA of the repo the journal landed in — workbench, the repo every
+  // journal close pushes. A thread with no entry is refused above, so there is
+  // always one. The trunk
+  // is named from the same repo, so the sentence and the SHA always describe
+  // the same ref: `origin/main` on every repo here, `origin/master` on a
+  // `master` repo rather than a reassuring line about a branch the SHA is not on.
+  if (!JOURNAL_MAIN_SHA) notClosed(`${REL} landed in ${JOURNAL_SHARED}, but its trunk could not be read to prove it`);
+  if (!STAYS_HELD)
+    putLine(`origin/${JOURNAL_TRUNK || "main"} is at ${JOURNAL_MAIN_SHA} — closing this tab loses nothing.`);
+
+  // A --check lands nothing and prints no report, so it marks a close closed
+  // only when a landing of this window already saved one: after a landing
+  // whose save failed, it must not close what has no report.
+  if (STAYS_HELD) {
+    if (MODE === "land" && !isFile(HELD)) writeAtomic(HELD, `${SUBJECT}\n`);
+  } else if (MODE === "check" && !isFile(REPORT_REF)) {
+    say('  closed: not marked — no report of this close is saved; land.ts "<subject>" saves it');
+  } else {
+    if (REPORTS) {
+      try {
+        writeAtomic(REPORT_REF, BLOCK);
+        rmSync(REPORT_DELIVERED, { force: true });
+      } catch (e) {
+        if (e instanceof Exit) throw e;
+        rmSync(`${REPORT_REF}.tmp.${process.pid}`, { force: true });
+        notClosed(
+          `could not save the report to ${REPORT_REF}: ${e instanceof Error ? e.message : String(e)} — nothing is marked closed; re-run`,
+        );
+      }
+      rmSync(HARNESS_REF, { force: true });
+    }
+    writeAtomic(CLOSED, "");
+    rmSync(HELD, { force: true });
+    rmSync(LIVE_OWED, { force: true });
+    rmSync(LIVE_PASSED, { force: true });
+  }
 
   // ── Last of all: the worktree these scripts are running from ────────────
   //
@@ -1727,7 +2832,7 @@ async function main(): Promise<void> {
   // so nothing left to do needs a sibling script. Only git below.
   for (const [dwt, dshared, dbranch] of DEFERRED_REMOVALS) removeWorktree(dwt, dshared, dbranch);
 
-  if (nonEmpty(DEPLOY_LOG) && MODE === "land") {
+  if (nonEmpty(DEPLOY_LOG) && REPORTS) {
     say("");
     say("Deploy:");
     const log = readFileSync(DEPLOY_LOG, "utf8");
@@ -1737,43 +2842,15 @@ async function main(): Promise<void> {
     say("");
   }
 
-  // This is the final-response block. It is generated here so /close copies one
-  // complete artifact instead of manually reconstructing fields and dropping a
-  // deterministic result. Deployment diagnostics stay above it; the proof line
-  // remains last and retains its existing machine-earned meaning.
-  if (MODE === "land") {
-    say(`**Shipped:** ${SUBJECT}`);
-    if (JOURNAL_LANDED) {
-      say(`**Journal:** [${JOURNAL_LANDED.slice(JOURNAL_LANDED.lastIndexOf("/") + 1)}](<${JOURNAL_LANDED}>)`);
-    }
-    // Every command gets its OWN fenced block, so each one has its own copy
-    // button: a close on a ROADMAP project can print several `/implement` rows
-    // that run in parallel, and one multi-line block would paste them as one
-    // prompt. A `#` comment line is prose — escaped so a renderer does not turn
-    // it into a heading — and anything else is printed as it came.
-    if (NEXT_OUTPUT) {
-      say("**Next:**");
-      for (const l of NEXT_OUTPUT.split("\n")) {
-        if (l === "") continue;
-        if (l.startsWith("/")) process.stdout.write(`\n\`\`\`\n${l}\n\`\`\`\n`);
-        else if (l.startsWith("#")) process.stdout.write(`\n\\${l}\n`);
-        else process.stdout.write(`\n${l}\n`);
-      }
-    }
-    say("");
+  if (STAYS_HELD) {
+    for (const l of owedLines()) say(l);
+    say(
+      "HELD: landed and deployed. Run the live checks now; land a fix with --hold again, ask what only the user can answer and stop. When they pass: land.ts --release",
+    );
+    return exit(4);
   }
 
-  // The SHA of the repo the journal landed in, when there is one — workbench,
-  // the repo every journal close pushes. Otherwise the last repo landed, so a
-  // thread that never wrote a record still gets a checkable line.
-  // The trunk is named from whichever repo supplied the SHA, so the sentence and
-  // the SHA always describe the same ref. On every repo here that prints
-  // `origin/main`; on a `master` repo it prints `origin/master` rather than a
-  // reassuring line about a branch the SHA is not on.
-  const [REPORT_SHA, REPORT_TRUNK] = JOURNAL_MAIN_SHA
-    ? [JOURNAL_MAIN_SHA, JOURNAL_TRUNK || "main"]
-    : [LAST_SHA, LAST_TRUNK || "main"];
-  say(`origin/${REPORT_TRUNK} is at ${REPORT_SHA} — closing this tab loses nothing.`);
+  process.stdout.write(BLOCK);
 }
 
 if (process.argv[1] && realpathSync(resolve(process.argv[1])) === realpathSync(fileURLToPath(import.meta.url))) {
