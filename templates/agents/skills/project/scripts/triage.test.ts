@@ -298,3 +298,20 @@ test("whose move: the owner's first name from git config, pronouns, and nobody e
   assert.equal(noName["w-name"], "others", "a one-letter user.name names nobody");
   assert.equal(noName["w-pronoun"], "you", "pronouns still count without a name");
 });
+
+// A first name with letters outside ASCII is matched at Unicode word
+// boundaries: ASCII \b never matched "Élodie", and matched "Ana" inside
+// "Anaïs" (Contextium v9.2.0 review).
+test("whose move: an accented first name is the owner's, and a longer name holding it is not", () => {
+  const root = repo((rt, commit) => {
+    project(rt, "w-accent", { status: "blocked", "blocked-on": '"R1: x"' }, [["R1", "a", "—", "blocked: Élodie approves the copy", "manual"]]);
+    project(rt, "w-holds", { status: "blocked", "blocked-on": '"R1: x"' }, [["R1", "a", "—", "blocked: Anaïs replies", "manual"]]);
+    commit("2026-10-01");
+  });
+  git(root, ["config", "user.name", "Élodie Martin"]);
+  const accent = Object.fromEntries(rowsOf(run(root, "blocked").out).map((r) => [r[1], r[4]]));
+  assert.equal(accent["w-accent"], "you", "an accented first name names the owner");
+  git(root, ["config", "user.name", "Ana Lima"]);
+  const holds = Object.fromEntries(rowsOf(run(root, "blocked").out).map((r) => [r[1], r[4]]));
+  assert.equal(holds["w-holds"], "others", "Ana is not inside Anaïs");
+});

@@ -419,6 +419,23 @@ describe("await-push-checks: an empty commit", () => {
     assert.match(r.out, /whose triggers this cannot read/);
   });
 
+  // GitHub reads workflow YAML with anchors, aliases and tags; this reader
+  // parses none of them, so an `on:` holding one is unknown, never "absent"
+  // (Contextium v9.2.0 review: `on: &events [push]` was read as no push).
+  for (const [label, workflow] of [
+    ["an anchored flow list", "on: &events [push]\n"],
+    ["an alias", "x: &events [push]\non: *events\n"],
+    ["a tagged flow list", "on: !!seq [push]\n"],
+    ["a merge key", "base: &base\n  push:\non:\n  <<: *base\n"],
+    ["an anchored block-list item", "on:\n  - &p push\n"],
+  ] as const) {
+    it(`an \`on:\` holding ${label} expects a run: exit 1`, async () => {
+      const r = await waiter(actionsAncestor(workflow, ["src/app.ts"]));
+      assert.equal(r.code, 1, r.out + r.err);
+      assert.match(r.out, /whose triggers this cannot read/);
+    });
+  }
+
   const ignoreDocs = 'on:\n  push:\n    branches: [main]\n    paths-ignore: ["docs/**", README.md]\n';
   const onlySrc = "on:\n  push:\n    branches: [main]\n    paths:\n      - 'src/**' # the app\njobs:\n  build: {}\n";
 

@@ -220,6 +220,12 @@ export function paginate(list: string[], size = PAGE_CHARS): string[] {
   const pages: string[] = [];
   let current = "";
   const MARK = "[… continued]\n";
+  // A continuation piece must hold the marker and at least two code units
+  // (one is given back when it would end on half a surrogate pair); a smaller
+  // page never advances, and looped until memory ran out.
+  if (!Number.isInteger(size) || size < MARK.length + 2) {
+    throw new RangeError(`page size ${size} is below the minimum ${MARK.length + 2}`);
+  }
   const pieces: string[] = [];
   for (const b of list) {
     if (b.length <= size) {

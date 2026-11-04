@@ -296,11 +296,16 @@ function listChangedPaths(wt: string): string[] {
 // holding a package.json, returned without `apps/` — `<name>` in a flat layout,
 // `<domain>/<name>` in a grouped one. With no manifest above the path the app
 // is still one (it runs its own `*.test.ts` suites, or is `unverified`), told
-// by layout: `<name>` when `apps/<name>/` holds a file of its own or a folder an
-// app is made of (src/, tests/ — APP_PARTS), else `<domain>/<name>`. A flat app of
-// src/ and tests/ alone holds folders only, and read as a domain its suites
-// under tests/ never ran. Nothing for a file directly under `apps/`.
+// by layout: `<name>` when `apps/<name>/` holds what an app is made of — a code
+// file of its own (APP_CODE) or one of an app's folders (src/, tests/ —
+// APP_PARTS) — else `<domain>/<name>`. A flat app of src/ and tests/ alone holds
+// folders only, and read as a domain its suites under tests/ never ran. A
+// domain's own README or config file is not app structure: read as one, any
+// such file made a grouped domain a flat app, and apps/ops/dispatcher/index.ts
+// ran under "ops" (Contextium v9.2.0 review). Nothing for a file directly
+// under `apps/`.
 const APP_PARTS = new Set(["src", "lib", "test", "tests", "evals", "scripts"]);
+const APP_CODE = /\.(?:ts|tsx|mts|cts|js|jsx|mjs|cjs)$/;
 function appOf(wt: string, rel: string): string[] {
   const f = rel.split("/");
   if (f[0] !== "apps") return [];
@@ -314,7 +319,7 @@ function appOf(wt: string, rel: string): string[] {
   if (f.length >= 4) {
     try {
       grouped = !readdirSync(top, { withFileTypes: true }).some(
-        (e) => (e.isFile() && !e.name.startsWith(".")) || (e.isDirectory() && APP_PARTS.has(e.name)),
+        (e) => (e.isFile() && APP_CODE.test(e.name)) || (e.isDirectory() && APP_PARTS.has(e.name)),
       );
     } catch {
       grouped = true; // a removed domain folder: its app went with it
@@ -437,12 +442,34 @@ function runLogged(argv: string[], cwd: string, log: string): number {
 // silence. A path that names no folder is a deleted unit (the deletion is the
 // intent) or a file directly under `apps/<domain>/`: nothing to run, nothing
 // to say.
+// Whether verifyUnit runs a unit's own `*.test.ts` files rather than its
+// manifest's halves: with no package.json, or one declaring neither check nor
+// test. A manifest that declares a half (or cannot be parsed) is run by its
+// scripts instead, and its `*.test.ts` files run only if its test script runs
+// them. One predicate, so a caller deciding whether a unit's suite covers a
+// change asks the same question verifyUnit answers.
+function runsOwnSuites(dir: string): boolean {
+  const pkg = `${dir}/package.json`;
+  return !isFile(pkg) || (hasScript(pkg, "check") === 1 && hasScript(pkg, "test") === 1);
+}
+
+// Whether verifyUnit runs tests for this unit at all: its own `*.test.ts`
+// files under runsOwnSuites, else a declared (or unparseable, which fails) test
+// script. A check-only manifest runs no test, whatever files sit beside it.
+function unitRunsTests(dir: string): boolean {
+  if (runsOwnSuites(dir)) {
+    const found = findSuites(dir, false, "*.test.ts");
+    return found.rc === 0 && found.suites.length > 0;
+  }
+  return hasScript(`${dir}/package.json`, "test") !== 1;
+}
+
 async function verifyUnit(logs: string, wt: string, rel: string, app: string, note = ""): Promise<void> {
   const dir = `${wt}/${rel}`;
   const pkg = `${dir}/package.json`;
   if (!isDir(dir)) return;
   const manifest = isFile(pkg);
-  if (!manifest || (hasScript(pkg, "check") === 1 && hasScript(pkg, "test") === 1)) {
+  if (runsOwnSuites(dir)) {
     const r = await runNodeSuites(logs, SUITE_TIMEOUT, wt, rel === "." ? wt : dir, app);
     if (r === "ok") say(`ok ${app}${note}`);
     else if (r === "none" && manifest) say(`unverified ${app} — no check or test script`);
@@ -1163,18 +1190,10 @@ async function main(): Promise<void> {
         // The app pass 1 verifies this file under (appOf).
         const [app] = appOf(wt, p);
         if (app === undefined) return false;
-        const dir = `${wt}/apps/${app}`;
-        const pkg = `${dir}/package.json`;
-        // A manifest that declares a test is a suite, and so is a broken one,
-        // since the app pass reports it. One that declares a check alone runs
-        // only that. With no manifest, or one declaring neither half, the
-        // app's own *.test.ts files are what the app pass runs.
-        if (isFile(pkg)) {
-          if (hasScript(pkg, "test") !== 1) return true;
-          if (hasScript(pkg, "check") !== 1) return false;
-        }
-        const found = findSuites(dir, false, "*.test.ts");
-        return found.rc === 0 && found.suites.length > 0;
+        // The app pass's own criteria: a declared (or broken) test script, or
+        // the app's *.test.ts files when it declares neither half. A
+        // check-only manifest runs no test, so its test files cover nothing.
+        return unitRunsTests(`${wt}/apps/${app}`);
       };
       if (!moved.some((p) => !ownSuite(p))) continue;
     }

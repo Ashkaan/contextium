@@ -4090,9 +4090,10 @@ kase("Case 26: audit lines, harness links and the saved report", () => {
 // only from a record taken on the deployment live now. What is live is each
 // repo's trunk on its bare origin, read for real, or a stubbed answer from a
 // file (LIVE_CHECKS_TEST_SOURCES) where a case needs the live commit to differ.
-// A stubbed target also records no deployment (`<target>#deployment`: null):
-// an origin with a GitHub name is read as GitHub, through `insteadOf` or an SSH
-// alias alike, and this fixture has no deployments for gh to list.
+// A stubbed target also records no deployment (`<target>#deployment`: null)
+// and no check still running on its trunk (`<target>#pending`: []): an origin
+// with a GitHub name is read as GitHub, through `insteadOf` or an SSH alias
+// alike, and this fixture has no deployments or checks for gh to list.
 
 const liveStub = (): string => join(F.S, "live.json");
 const LIVE_ENV = (): Record<string, string> => ({
@@ -4102,10 +4103,15 @@ const LIVE_ENV = (): Record<string, string> => ({
 function liveLand(args: string[], extra: Record<string, string> = {}, bare = false): Res {
   return land(1, args, { merge: true, extra: { ...LIVE_ENV(), ...extra }, bare });
 }
-/** <answers> with no deployment recorded for each target it names, unless it says otherwise. */
+/** <answers> with no deployment recorded, and nothing still building the trunk,
+ *  for each target it names, unless it says otherwise. */
 function noDeploy(answers: Record<string, unknown>): Record<string, unknown> {
   const out: Record<string, unknown> = { ...answers };
-  for (const k of Object.keys(answers)) if (!k.includes("#") && !(`${k}#deployment` in out)) out[`${k}#deployment`] = null;
+  for (const k of Object.keys(answers)) {
+    if (k.includes("#")) continue;
+    if (!(`${k}#deployment` in out)) out[`${k}#deployment`] = null;
+    if (!(`${k}#pending` in out)) out[`${k}#pending`] = [];
+  }
   return out;
 }
 /** What the stub calls live, per target; a target it does not name is read for real. */
@@ -4283,7 +4289,7 @@ kase("Case 27: live checks are owed, run and proved before a held close is relea
     "001-first",
     liveBlock(
       `api | ${T} | command | if [ -f "$LIVE_CHECKS_TEST_SOURCES.flip" ]; then cp "$LIVE_CHECKS_TEST_SOURCES.flip" "$LIVE_CHECKS_TEST_SOURCES"; fi`,
-      `slow | ${T} | command | if [ -f "$LIVE_CHECKS_TEST_SOURCES.hang" ]; then sleep 30; fi`,
+      `slow | ${T} | command | if [ -f "$LIVE_CHECKS_TEST_SOURCES.hang" ]; then sleep 30 & echo $! > "$LIVE_CHECKS_TEST_SOURCES.pid"; wait; fi`,
       `rel | ${T} | command | test -f ./.agents/skills/close/scripts/land.ts`,
       `fresh | ${T} | command | test ! -e ./dirt.txt`,
     ),
@@ -4339,7 +4345,31 @@ kase("Case 27: live checks are owed, run and proved before a held close is relea
     r.out,
     "live check rows/001-first/slow failed: killed after 2 s",
   );
+  const alive = (): boolean => {
+    const pid = Number(readFileSync(`${liveStub()}.pid`, "utf8").trim());
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  is("(b) …and the child it started is killed with it", String(alive()), "false");
+  // With no timeout(1) or gtimeout (stock macOS), the fallback still ends the
+  // command's whole process group: it killed only bash, and the sleep it
+  // started outlived the check (Contextium v9.2.0 review).
+  rmSync(`${liveStub()}.pid`, { force: true });
+  const t0 = Date.now();
+  r = liveLand(["--release"], { LAND_TIMEOUT_BINS: "" });
+  has(
+    "(b) with no timeout program, a command that hangs is killed and failed",
+    r.out,
+    "live check rows/001-first/slow failed: killed after 2 s",
+  );
+  is("(b) …and with no timeout program the child is killed too", String(alive()), "false");
+  is("(b) …within the limit, not when the child ends", String(Date.now() - t0 < 25_000), "true");
   rmSync(`${liveStub()}.hang`);
+  rmSync(`${liveStub()}.pid`, { force: true });
   write(join(F.CODE, "dirt.txt"), "left in the shared checkout\n");
   r = liveLand(["--release"]);
   is("(b) with every check passing it releases — the relative command ran in the declaring repo", r.rc, "0");

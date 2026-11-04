@@ -457,27 +457,55 @@ test("an open blocker stands until a round reviews a change to its file, and the
 
 // A path with a space was read as naming no file, so its blocker closed on any
 // round that changed anything, an unrelated file included (Contextium v9.2.0
-// review).
-test("a blocker whose path holds a space stands until a round reviews a change to that file", () => {
-  const d = repo("blkspace");
-  const env = owner("blkspace");
-  writeFileSync(join(d, ".agents/skills/demo/my file.ts"), "export const m = 1;\n");
+// review); so was one with a colon, which the review pack also carries
+// (`src/x:y é.ts`, second v9.2.0 review).
+for (const [tag, name] of [
+  ["blkspace", "my file.ts"],
+  ["blkcolon", "x:y é.ts"],
+] as const) {
+  test(`a blocker whose path is '${name}' stands until a round reviews a change to that file`, () => {
+    const d = repo(tag);
+    const env = owner(tag);
+    writeFileSync(join(d, ".agents/skills/demo", name), "export const m = 1;\n");
+    const t0 = snap(d);
+    assert.match(begin(env, d).out, /RECEIPT=review/);
+    const blocker = `[must-fix] .agents/skills/demo/${name}:12: wrong — fix — breaks`;
+    assert.equal(
+      run(env, "finish", "--repo", d, "--rc", "0", "--result", result(`${tag}0`, [blocker])).out,
+      "APPROVED=0",
+    );
+    writeFileSync(join(d, ".agents/skills/demo/b.ts"), "export const b = 2;\n");
+    begin(env, d, "since", ["--since", t0]);
+    const f1 = run(env, "finish", "--repo", d, "--rc", "0", "--result", result(`${tag}1`, []));
+    assert.equal(f1.out, "APPROVED=0", `a clean round over b.ts does not close a blocker in '${name}'`);
+    assert.match(f1.err, /1 must-fix\/should-fix finding\(s\) unresolved/);
+    const t1 = snap(d);
+    writeFileSync(join(d, ".agents/skills/demo", name), "export const m = 2;\n");
+    begin(env, d, "since", ["--since", t1]);
+    assert.equal(
+      run(env, "finish", "--repo", d, "--rc", "0", "--result", result(`${tag}2`, [])).out,
+      "APPROVED=1",
+      `a round that reviewed the fix to '${name}' and did not re-report it closes it`,
+    );
+  });
+}
+
+// The control: prose that starts with a word and a colon names no file, even
+// when a located path follows, so its blocker closes on a round that changed
+// something rather than waiting on a file called "Note: …".
+test("a blocker that opens with prose and a colon names no file", () => {
+  const d = repo("blkprose");
+  const env = owner("blkprose");
   const t0 = snap(d);
   assert.match(begin(env, d).out, /RECEIPT=review/);
-  const blocker = "[must-fix] .agents/skills/demo/my file.ts:12: wrong — fix — breaks";
-  assert.equal(run(env, "finish", "--repo", d, "--rc", "0", "--result", result("bs0", [blocker])).out, "APPROVED=0");
+  const blocker = "[must-fix] Note: .agents/skills/demo/a.ts:3 is wrong — fix — breaks";
+  assert.equal(run(env, "finish", "--repo", d, "--rc", "0", "--result", result("bp0", [blocker])).out, "APPROVED=0");
   writeFileSync(join(d, ".agents/skills/demo/b.ts"), "export const b = 2;\n");
   begin(env, d, "since", ["--since", t0]);
-  const f1 = run(env, "finish", "--repo", d, "--rc", "0", "--result", result("bs1", []));
-  assert.equal(f1.out, "APPROVED=0", "a clean round over b.ts does not close a blocker in 'my file.ts'");
-  assert.match(f1.err, /1 must-fix\/should-fix finding\(s\) unresolved/);
-  const t1 = snap(d);
-  writeFileSync(join(d, ".agents/skills/demo/my file.ts"), "export const m = 2;\n");
-  begin(env, d, "since", ["--since", t1]);
   assert.equal(
-    run(env, "finish", "--repo", d, "--rc", "0", "--result", result("bs2", [])).out,
+    run(env, "finish", "--repo", d, "--rc", "0", "--result", result("bp1", [])).out,
     "APPROVED=1",
-    "a round that reviewed the fix to 'my file.ts' and did not re-report it closes it",
+    "a round that changed something closes a blocker naming no file",
   );
 });
 
@@ -772,6 +800,57 @@ test("no independent vendor: pending, then the fresh-context fallback is recorde
   assert.equal(c.rc, 0, c.err);
   assert.match(c.out, /NOT independent/);
   assert.match(begin(env, d).out, /NOTE: .*NOT independent/, "reuse says so too");
+});
+
+// The reviewer's numbered format puts its title before the file. Kept as it
+// came, the finding named no file, so a later round that changed only b.ts
+// cleared a blocker against a.ts and approved (Contextium v9.2.0 review). And
+// a round built on a fallback-reviewed base is not independent either: the
+// base it inherits was read by the fresh-context reviewer.
+test("a fallback's numbered finding names its file, and a follow-up keeps NOT independent", () => {
+  const d = repo("fallback-file");
+  const env = owner("fallback-file");
+  writeFileSync(join(d, ".agents/skills/demo/a.ts"), "export const a = 2;\n");
+  const t0 = snap(d);
+  assert.match(begin(env, d).out, /RECEIPT=review/);
+  run(env, "finish", "--repo", d, "--rc", "3");
+  const reply = join(TMP, "fallback-file.txt");
+  writeFileSync(
+    reply,
+    "1. **bad**: `.agents/skills/demo/a.ts:1` — wrong — verdict: **fix-now** — failure: breaks — fix it\n",
+  );
+  let f = run(env, "finish", "--repo", d, "--fallback", reply);
+  assert.equal(f.out, "APPROVED=0", f.err);
+  writeFileSync(join(d, ".agents/skills/demo/b.ts"), "export const b = 2;\n");
+  begin(env, d, "since", ["--since", t0]);
+  f = run(env, "finish", "--repo", d, "--rc", "0", "--result", result("fallback-file-1", []));
+  assert.equal(f.out, "APPROVED=0", "a round over b.ts alone does not clear the fallback's blocker in a.ts");
+  assert.match(f.err, /1 must-fix\/should-fix finding\(s\) unresolved/);
+  const t1 = snap(d);
+  writeFileSync(join(d, ".agents/skills/demo/a.ts"), "export const a = 3;\n");
+  begin(env, d, "since", ["--since", t1]);
+  f = run(env, "finish", "--repo", d, "--rc", "0", "--result", result("fallback-file-2", []));
+  assert.equal(f.out, "APPROVED=1", f.err);
+  const st = run(env, "status", "--repo", d);
+  assert.match(st.out, /NOT independent/, "a follow-up on a fallback-reviewed base is still NOT independent");
+  assert.match(run({}, "check", "--owner", "fallback-file", d).out, /NOT independent/);
+});
+
+// The installer links AGENTS.md to .agents/AGENTS.md, so the file a change
+// actually edits is .agents/AGENTS.md: it is an instruction file, reviewed like
+// the root one (Contextium v9.2.0 review).
+test("check: the installed .agents/AGENTS.md is implementation source, like the root AGENTS.md", () => {
+  for (const file of [".agents/AGENTS.md", "AGENTS.md"]) {
+    const name = `agents-md-${file.startsWith(".") ? "installed" : "root"}`;
+    const d = repo(name);
+    writeFileSync(join(d, file), "rules\n");
+    const report = join(d, "projects/p/specs/001-x/report.md");
+    mkdirSync(dirname(report), { recursive: true });
+    writeFileSync(report, "<!-- review-coverage:v1 -->\n{}\n<!-- /review-coverage -->\n");
+    const c = run({}, "check", "--owner", name, d);
+    assert.equal(c.rc, 1, `${file} needs a receipt: ${c.out}${c.err}`);
+    assert.match(c.err, new RegExp(`no review receipt for implementation source \\(${file.replaceAll(".", "\\.")}\\)`));
+  }
 });
 
 test("a fallback frame naming one item twice is refused, never the last entry wins", () => {

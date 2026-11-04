@@ -674,6 +674,29 @@ test("a flat app with no manifest and only folders runs its own suites", () => {
   copyFileSync(join(TMP, "ledger.bak"), CLEDGER);
 });
 
+// A grouped domain may carry a README or a config file of its own. Reading any
+// file at the domain level as a flat app made apps/ops/dispatcher/index.ts the
+// app "ops", whose suites were not the dispatcher's (Contextium v9.2.0
+// review). A domain is flat only when it holds what an app is made of: a code
+// file of its own or one of its folders (src/, tests/ …).
+test("a grouped domain holding a README and a config file keeps its apps apart", () => {
+  writeFileSync(CLEDGER, row(CLEAN, join(TMP, "cshared"), `t3/${TID}`));
+  const D = join(CLEAN, "apps/ops");
+  mkdirSync(join(D, "dispatcher"), { recursive: true });
+  writeFileSync(join(D, "README.md"), "# ops\n");
+  writeFileSync(join(D, "tsconfig.json"), "{}\n");
+  writeFileSync(join(D, "dispatcher/index.ts"), "export const d = 1;\n");
+  writeFileSync(
+    join(D, "dispatcher/main.test.ts"),
+    'import { test } from "node:test";\ntest("red", () => { throw new Error("grouped suite ran"); });\n',
+  );
+  go();
+  is("its red suite fails the close", String(RC), "1");
+  has("naming the grouped app and its suite", OUT, "FAIL ops/dispatcher apps/ops/dispatcher/main.test.ts");
+  rmSync(D, { recursive: true, force: true });
+  copyFileSync(join(TMP, "ledger.bak"), CLEDGER);
+});
+
 test("the skills tree: fixture", () => {
   git("clone", "-q", BARE, WBCLEAN);
   git("-C", WBCLEAN, "config", "user.email", "t@example.com");
@@ -1417,6 +1440,19 @@ test("a product repo with apps/ runs its root check and test when a root file mo
   has("…naming the repo and the half", OUT, "FAIL prodshared test");
   git("-C", PRODWT, "checkout", "-q", "--", "apps");
   git("-C", PRODWT, "rm", "-q", "-r", "apps/web/site/tool");
+  // A check-only manifest beside *.test.ts files: the app pass runs only its
+  // check script, so those files are no suite of the app's own and the root
+  // suite must still run.
+  writeFileSync(join(PRODWT, "apps/web/site/package.json"), '{ "name": "site", "scripts": { "check": "true" } }\n');
+  writeFileSync(join(PRODWT, "apps/web/site/a.test.ts"), 'import { test } from "node:test";\ntest("a", () => {});\n');
+  git("-C", PRODWT, "add", "apps/web/site");
+  git("-C", PRODWT, "commit", "-q", "-m", "a check-only app with test files");
+  writeFileSync(join(PRODWT, "apps/web/site/index.ts"), "w\n");
+  go();
+  is("a check-only app with test files leaves the root suite to run", String(RC), "1");
+  has("…naming the repo and the half", OUT, "FAIL prodshared test");
+  git("-C", PRODWT, "checkout", "-q", "--", "apps");
+  git("-C", PRODWT, "rm", "-q", "apps/web/site/a.test.ts");
   git("-C", PRODWT, "rm", "-q", "apps/web/site/package.json");
   git("-C", PRODWT, "commit", "-q", "-m", "no app manifest");
   git("-C", PRODWT, "rm", "-q", "package.json");

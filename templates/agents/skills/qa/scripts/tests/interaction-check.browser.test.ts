@@ -640,6 +640,53 @@ describe("CF-Access + act-as from stdin", { skip: SKIP }, () => {
   });
 });
 
+// The button-finding page is closed with its hold armed even when its load
+// fails: an HTTP error there jumped to the cleanup, which closed the page
+// unarmed, and a page that saves on its way out sent that save (Contextium
+// v9.2.0 review). This server answers the first two loads of / (the blank and
+// cut-off checks) and fails every later one — first the button-finding load —
+// with an error page that saves on pagehide.
+describe("an error page met while finding buttons", { skip: SKIP }, () => {
+  let http: Server | undefined;
+  let port = 0;
+  let loads = 0;
+  const posts: string[] = [];
+  const page = (h1: string) =>
+    `<!doctype html><h1>${h1}</h1><button>Save</button><script>addEventListener('pagehide',()=>{fetch('/api/err-save',{method:'POST',keepalive:true,body:'x'});navigator.sendBeacon('/api/err-beacon','x')})</script>`;
+  before(async () => {
+    http = createHttpServer((q, r) => {
+      if (q.method !== "GET") {
+        posts.push(`${q.method} ${q.url}`);
+        r.writeHead(204);
+        r.end();
+        return;
+      }
+      if (q.url !== "/") {
+        r.writeHead(404);
+        r.end();
+        return;
+      }
+      loads++;
+      r.writeHead(loads <= 2 ? 200 : 500, { "content-type": "text/html" });
+      r.end(page(loads <= 2 ? "Editor" : "Server error"));
+    });
+    await new Promise<void>((res) => http?.listen(0, "127.0.0.1", () => res()));
+    const a = http.address();
+    port = typeof a === "object" && a !== null ? a.port : 0;
+  });
+  after(() => http?.close());
+  test("is unloadable, and its save on the way out never reaches the server", async () => {
+    const r = await check("/", `http://127.0.0.1:${port}`);
+    assert.equal(r.rc, 1, r.out);
+    assert.match(r.out, /INTERACTION \/ unloadable HTTP 500/);
+    // Blank, cut-off, button-finding (the first 500), then the covered check.
+    assert.equal(loads, 4, `the button-finding load was the first that failed (${loads} loads)`);
+    // A beacon is delivered after the page goes; give it time to land.
+    await new Promise((res) => setTimeout(res, 1_000));
+    assert.deepEqual(posts, [], `a write reached the server: ${posts.join(" ")}`);
+  });
+});
+
 // Read after every case above ran: the pages POST on every click.
 describe("no write the check holds ever reaches the server", { skip: SKIP }, () => {
   test("no POST reached the server", () =>

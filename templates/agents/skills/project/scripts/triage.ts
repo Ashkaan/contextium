@@ -93,7 +93,11 @@ export const days = (n: number) => `${n} ${n === 1 ? "day" : "days"}`;
  *  user", "the owner", or `owner`, the owner's first name ("" for none). */
 export function names(text: string, owner = ""): boolean {
   if (/\b(you|your|me|my|the user|the owner)\b/i.test(text)) return true;
-  return owner !== "" && new RegExp(`\\b${owner.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "i").test(text);
+  // Unicode word boundaries: ASCII \b reads an accented letter as a
+  // non-word character, so "Élodie" never matched and "Ana" matched inside
+  // "Anaïs" (open-decision.ts reads the name the same way).
+  const name = owner.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return owner !== "" && new RegExp(`(?<![\\p{L}\\p{N}_])${name}(?![\\p{L}\\p{N}_])`, "iu").test(text);
 }
 
 /** The owner's first name: the first word of `git config user.name` in the

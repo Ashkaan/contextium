@@ -234,3 +234,34 @@ test("splitting a long message never cuts a character in two", () => {
   assert.ok(!all.includes("\uFFFD"), "no half character is printed");
   assert.equal([...all.matchAll(/\u{1F600}/gu)].length, 90000, "every emoji arrives whole");
 });
+
+// A page too small to hold a continuation marker and one character never
+// advanced: paginate(["abcdef"], 1) and paginate(["a"], 0) looped forever
+// (Contextium v9.2.0 review). It refuses such a size before splitting. Run in
+// a child with a timeout, so the old loop fails this test instead of hanging it.
+test("an unsupported page size is refused, never looped on", () => {
+  for (const [list, size] of [
+    [["abcdef"], 1],
+    [["a"], 0],
+    [["abcdef"], 15],
+    [["a"], Number.NaN],
+  ] as const) {
+    const code = `import { paginate } from ${JSON.stringify(SCRIPT)}; paginate(${JSON.stringify(list)}, ${String(size)});`;
+    const r = spawnSync(process.execPath, ["--experimental-strip-types", "--input-type=module", "-e", code], {
+      encoding: "utf8",
+      env: { ...process.env, HOME: join(TMP, "home") },
+      timeout: 10_000,
+    });
+    assert.equal(r.signal, null, `paginate(${JSON.stringify(list)}, ${size}) returned, not looped`);
+    assert.notEqual(r.status, 0, `paginate(${JSON.stringify(list)}, ${size}) is refused`);
+    assert.match(r.stderr, /RangeError: page size/);
+  }
+  // The smallest supported size still splits and loses nothing.
+  const ok = `import { paginate } from ${JSON.stringify(SCRIPT)}; process.stdout.write(paginate(["abcdef"], 16).join("|"));`;
+  const r = spawnSync(process.execPath, ["--experimental-strip-types", "--input-type=module", "-e", ok], {
+    encoding: "utf8",
+    timeout: 10_000,
+  });
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(r.stdout.replaceAll("[… continued]\n", "").replaceAll("|", ""), "abcdef");
+});

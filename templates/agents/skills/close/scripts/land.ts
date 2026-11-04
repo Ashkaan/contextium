@@ -1646,12 +1646,35 @@ async function main(): Promise<void> {
   // A tree left by a release that stopped is removed before a new one is made.
   const RUN_TREES = new Map<string, string>();
   // timeout(1) where it exists (GNU coreutils), else gtimeout (coreutils on
-  // macOS through Homebrew), else null. Asked once per run.
+  // macOS through Homebrew), else null. Asked once per run. LAND_TIMEOUT_BINS
+  // (space-separated) replaces the candidates — the suite's seam for a host
+  // with neither.
   let TIMEOUT_BIN: string | null | undefined;
+  // timeout -k 5 <secs> <cmd…> where neither timeout program exists, run as
+  // `node -e GROUP_LIMIT <secs> <cmd…>`: the command leads a process group of
+  // its own, and at the limit the whole group is signalled, so a child it
+  // started dies with it and the output pipes close.
+  const GROUP_LIMIT = `const { spawn } = require("node:child_process");
+const [secs, cmd, ...args] = process.argv.slice(1);
+const c = spawn(cmd, args, { stdio: "inherit", detached: true });
+let timedOut = false;
+const group = (sig) => { try { process.kill(-c.pid, sig); } catch {} };
+const t = setTimeout(() => {
+  timedOut = true;
+  group("SIGTERM");
+  setTimeout(() => group("SIGKILL"), 5000).unref();
+}, Number(secs) * 1000);
+c.on("error", () => process.exit(127));
+c.on("exit", (code, sig) => {
+  clearTimeout(t);
+  if (timedOut) { group("SIGKILL"); process.exit(124); }
+  process.exit(code ?? (sig ? 128 : 1));
+});`;
   const timeoutBin = (): string | null => {
     if (TIMEOUT_BIN !== undefined) return TIMEOUT_BIN;
     TIMEOUT_BIN = null;
-    for (const b of ["timeout", "gtimeout"]) {
+    const candidates = process.env.LAND_TIMEOUT_BINS ?? "timeout gtimeout";
+    for (const b of candidates.split(/\s+/).filter(Boolean)) {
       if (spawnSync(b, ["--version"], { stdio: "ignore" }).status === 0) {
         TIMEOUT_BIN = b;
         break;
@@ -1751,17 +1774,23 @@ async function main(): Promise<void> {
         // Through timeout(1), which signals the whole process group of the command:
         // a child the command started (a sleep, a server) would otherwise keep
         // the output pipes open past the kill. Its 124 is the timeout. Stock
-        // macOS has no timeout(1): there coreutils' gtimeout, else bash alone
-        // under this call's own limit, which kills bash but not a child of it.
+        // macOS has no timeout(1): there coreutils' gtimeout, else GROUP_LIMIT, a
+        // Node supervisor that does the same — bash in a process group of its
+        // own, TERM to the group at the limit, KILL five seconds later, exit 124.
+        // Under this call's own limit alone, bash was killed and a child it
+        // started outlived the check (Contextium v9.2.0 review).
         const script = ["bash", "-c", `set -euo pipefail\n${o.body}`];
         const tbin = timeoutBin();
-        const argv = tbin === null ? script : [tbin, "-k", "5", String(timeout), ...script];
+        const argv =
+          tbin === null
+            ? [process.execPath, "-e", GROUP_LIMIT, String(timeout), ...script]
+            : [tbin, "-k", "5", String(timeout), ...script];
         const r = spawnSync(argv[0] ?? "bash", argv.slice(1), {
           cwd: runTree(o.declRepo, o.repo === o.declRepo ? o.commit : ""),
           env: process.env,
           encoding: "utf8",
           stdio: ["ignore", "pipe", "pipe"],
-          timeout: (tbin === null ? timeout : timeout + 30) * 1000,
+          timeout: (timeout + 30) * 1000,
           killSignal: "SIGKILL",
           maxBuffer: 64 * 1024 * 1024,
         });

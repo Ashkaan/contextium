@@ -98,6 +98,14 @@ test("no-codes-file halts (5)", { skip }, () => {
 test("no-codes names the review-chain fallback", { skip }, () =>
   assert.match(run(["verify", "--codes", CODES, "--response", BLIND]).out, /review\/policy-review\.ts/),
 );
+// A render-only pass writes no manifest, so the fallback reviews the list of
+// PNGs the pass stamped, made first (Contextium v9.2.0 review).
+test("the fallback makes and passes the PNG list, never a manifest", { skip }, () => {
+  const out = run(["verify", "--codes", CODES, "--response", BLIND]).out;
+  assert.doesNotMatch(out, /manifest\.json/);
+  assert.match(out, /find <run-dir> -maxdepth 1 -name '\*\.png' \| sort > <shots\.txt>/);
+  assert.match(out, /adversarial-review \\\n\s+<shots\.txt> <brief\.txt>/);
+});
 
 // ── boundary: 0 shots ──
 test("zero-shot dir halts (4)", { skip }, () => {

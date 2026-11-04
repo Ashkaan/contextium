@@ -334,6 +334,21 @@ function pushFilter(yml: string): Filter {
   // YAML 1.1 reads a bare `on` key as true, so a workflow may spell it either way.
   const onAt = lines.findIndex((l) => /^(?:on|"on"|'on'|true)\s*:(?:\s|$)/.test(l));
   if (onAt < 0) return triggers;
+  // An anchor (&x), alias (*x), merge key (<<) or tag (!x) anywhere in the
+  // on: block changes what it means in ways this reader does not follow
+  // (GitHub's YAML parser supports them): on: &events [push] is a push
+  // trigger. Quoted text is blanked first, so a quoted '**.md' glob is text.
+  const onLines = [lines[onAt] ?? ""];
+  for (const l of lines.slice(onAt + 1)) {
+    if (skip(l)) continue;
+    if (indentOf(l) === 0) break;
+    onLines.push(l);
+  }
+  const nodeProp = /(?:^|:\s|-\s|[[{,])\s*[&*!]|^\s*<<\s*:/;
+  for (const l of onLines) {
+    const bare = l.replace(/"(?:[^"\\]|\\.)*"|'(?:[^']|'')*'/g, '""').replace(/(^|\s)#.*$/, "");
+    if (nodeProp.test(bare)) return triggers;
+  }
   const onRest = value((lines[onAt] ?? "").replace(/^[^:]*:/, ""));
   if (onRest.startsWith("[")) {
     if (!onRest.endsWith("]")) return triggers;

@@ -30,7 +30,6 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
-import { DatabaseSync } from "node:sqlite";
 import { after, test } from "node:test";
 import { fileURLToPath } from "node:url";
 
@@ -836,14 +835,29 @@ function heldElsewhere(lib: string): { home: string; other: string } {
   writeFileSync(road, readFileSync(road, "utf8").replace("| R1 | a | — | planned |", "| R1 | a | — | in-progress |"));
   const home = mktemp();
   mkdirSync(join(home, "userdata"));
-  const db = new DatabaseSync(join(home, "userdata/statev2.sqlite"));
-  db.exec(
-    "create table orchestration_v2_projection_threads (thread_id TEXT, title TEXT, created_at TEXT, deleted_at TEXT, payload_json TEXT);",
+  // Written by a child Node, as the sibling suites do (corrections.test.ts):
+  // node:sqlite loads unflagged only from Node 22.13, this suite runs on 22.6
+  // too, and a running test cannot give itself --experimental-sqlite. Every
+  // caller — the named-row refusal and the bare slug's detect-stage path — reads
+  // this one fixture.
+  const r = spawnSync(
+    process.execPath,
+    [
+      "--experimental-sqlite",
+      "--disable-warning=ExperimentalWarning",
+      "-e",
+      `const { DatabaseSync } = require("node:sqlite");
+const [path, payload] = process.argv.slice(1);
+const db = new DatabaseSync(path);
+db.exec("create table orchestration_v2_projection_threads (thread_id TEXT, title TEXT, created_at TEXT, deleted_at TEXT, payload_json TEXT);");
+db.prepare("insert into orchestration_v2_projection_threads values ('t-other', 'Building R1', '1', null, ?)").run(payload);
+db.close();`,
+      join(home, "userdata/statev2.sqlite"),
+      JSON.stringify({ archivedAt: null, settledAt: null, worktreePath: other, lineage: '{"parentThreadId":null}' }),
+    ],
+    { encoding: "utf8" },
   );
-  db.prepare("insert into orchestration_v2_projection_threads values ('t-other', 'Building R1', '1', null, ?)").run(
-    JSON.stringify({ archivedAt: null, settledAt: null, worktreePath: other, lineage: '{"parentThreadId":null}' }),
-  );
-  db.close();
+  if (r.status !== 0) throw new Error(`fixture T3 database: ${r.stderr}`);
   return { home, other };
 }
 

@@ -582,6 +582,11 @@ async function main(): Promise<void> {
       findings.push(`INTERACTION ${route} unloadable ${firstLine(err)}`);
     } finally {
       await release();
+      // Armed on every way out, as the other checks' pages are: a load that
+      // fails jumps here before the arming above. Measured 2026-11-04, a
+      // context close ran no unload handler (12 of 12), so this holds a save
+      // only if a browser ever does run one there.
+      if (!page.isClosed()) await armHold(page);
       await ctx.close();
     }
   }

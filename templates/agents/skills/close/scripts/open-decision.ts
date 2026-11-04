@@ -44,20 +44,29 @@ function ownerName(): string {
   return /^\p{L}{2,}$/u.test(first) ? first : "";
 }
 const OWNER = ownerName();
+// Word boundaries that know letters outside ASCII: `\b` reads "é" as a
+// non-word character, so "pending José's answer" never matched the name José,
+// and "Ana" matched inside "Anaïs" (Contextium v9.2.0 review). Every pattern
+// that holds the name uses these and the `u` flag.
+const B0 = String.raw`(?<![\p{L}\p{N}_])`;
+const B1 = String.raw`(?![\p{L}\p{N}_])`;
 const WHO = String.raw`(?:the\s+(?:user|owner)|you${OWNER ? `|${OWNER}` : ""})`;
-const USER = new RegExp(String.raw`\bthe\s+(?:user|owner)\b|\byour?\b${OWNER ? String.raw`|\b${OWNER}\b` : ""}`, "i");
+const USER = new RegExp(
+  String.raw`${B0}the\s+(?:user|owner)${B1}|${B0}your?${B1}${OWNER ? `|${B0}${OWNER}${B1}` : ""}`,
+  "iu",
+);
 
 /** A line that leaves something WAITING on the user: "waiting on the user",
  *  "pending the user's call", "the user to decide", "until you answer". Read
  *  over every line a close writes, not only the two places a question had been
  *  parked before: a report can park a question as "waiting on the user" and
  *  close. History ("the user chose …") and other people's waits do not match. */
-const WAITING_ON_USER = String.raw`\b(?:wait(?:s|ing)?\s+(?:on|for)|pending|awaiting|held\s+for)\s+${WHO}\b`;
+const WAITING_ON_USER = String.raw`${B0}(?:wait(?:s|ing)?\s+(?:on|for)|pending|awaiting|held\s+for)\s+${WHO}${B1}`;
 /** The half that is a ruling, not a deed: true of an `act:` line too, where
  *  "waiting on the user to send it" is fine and "until the user rules" is not. */
-const FOR_USER_RULING = String.raw`\b${WHO}\s+to\s+(?:decide|choose|rule\s+on|confirm|approve|pick|answer)\b|\buntil\s+${WHO}\s+(?:decides?|chooses?|answers?|rules?|confirms?|approves?|picks?)\b`;
-const PARKED = new RegExp(`${WAITING_ON_USER}|${FOR_USER_RULING}`, "gi");
-const RULING = new RegExp(FOR_USER_RULING, "gi");
+const FOR_USER_RULING = String.raw`${B0}${WHO}\s+to\s+(?:decide|choose|rule\s+on|confirm|approve|pick|answer)${B1}|${B0}until\s+${WHO}\s+(?:decides?|chooses?|answers?|rules?|confirms?|approves?|picks?)${B1}`;
+const PARKED = new RegExp(`${WAITING_ON_USER}|${FOR_USER_RULING}`, "giu");
+const RULING = new RegExp(FOR_USER_RULING, "giu");
 
 /** "No longer waiting on the user", "nothing is waiting on you", "was waiting
  *  on the user": a wait that is over, or one told as history. */

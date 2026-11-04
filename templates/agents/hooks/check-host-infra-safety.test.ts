@@ -187,6 +187,11 @@ const EXPLOITS: [string, string][] = [
   ["awk getline from a command", 'ssh nas "sudo awk \'BEGIN{\\"id\\" | getline x}\'"'],
   ["awk getline from a command across a line continuation", 'ssh nas "sudo awk \'BEGIN{\\"id\\" |\\\ngetline x}\'"'],
   ["awk program file", "ssh nas 'sudo awk -f /tmp/prog /tmp/input'"],
+  ["awk indirect system call", 'ssh nas "sudo awk \'BEGIN{f=\\"system\\"; @f(\\"touch /tmp/rule-proof\\")}\'"'],
+  [
+    "awk indirect call with a space before the parenthesis",
+    'ssh nas "sudo awk \'BEGIN{f=\\"system\\"; @f (\\"touch /tmp/rule-proof\\")}\'"',
+  ],
   ["sed in place after -n", "ssh nas 'sudo sed -n -i s/a/b/ /tmp/input'"],
   ["sed write command", "ssh nas \"sudo sed -n 'w /tmp/rule-proof' /tmp/input\""],
   ["sed execute command", "ssh nas \"sudo sed -n '1e touch /tmp/rule-proof' /tmp/input\""],
@@ -218,6 +223,10 @@ const EXPLOITS: [string, string][] = [
   ["container sort output", "ssh nas 'sudo docker exec sample sort -o /tmp/rule-proof /tmp/input'"],
   ["container date setter", "ssh nas 'sudo docker exec sample date -s 2000-01-01'"],
   ["container awk system call", "ssh nas 'sudo docker exec sample awk BEGIN{system(\"true\")}'"],
+  [
+    "container awk indirect system call",
+    'ssh nas "sudo docker exec sample awk \'BEGIN{f=\\"system\\"; @f(\\"true\\")}\'"',
+  ],
   ["container wrapped command", "ssh nas 'sudo docker exec sample timeout 5 touch /tmp/rule-proof'"],
   ["container nested docker mutation", "ssh nas 'sudo docker exec sample docker restart other'"],
 ];

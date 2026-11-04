@@ -129,6 +129,17 @@ describe("the owner's first name", () => {
     assert.equal(inRepo("Sam Rivera", 'm.namesUser("waits on Rivera")'), "false");
   });
 
+  // A name with letters outside ASCII passed the name check but not ASCII
+  // word boundaries: "pending José's answer" read as no wait, and a name
+  // starting with an accented letter never matched (Contextium v9.2.0 review).
+  it("names the user by an accented name, at Unicode word boundaries", () => {
+    assert.equal(inRepo("José Núñez", 'm.parkedOnUser("pending José\'s answer")'), '"pending José"');
+    assert.equal(inRepo("José Núñez", 'm.namesUser("waits on José\'s reply")'), "true");
+    assert.equal(inRepo("Élodie Martin", 'm.namesUser("waits on Élodie")'), "true");
+    assert.equal(inRepo("Élodie Martin", 'm.parkedOnUser("until Élodie decides")'), '"until Élodie decides"');
+    assert.equal(inRepo("Ana Lima", 'm.namesUser("waits on Anaïs")'), "false", "a longer name holding it is not the user");
+  });
+
   it("reads no name when user.name is unset or not a word", () => {
     assert.equal(inRepo(null, 'm.namesUser("waits on Sam")'), "false");
     assert.equal(inRepo("x", 'm.namesUser("waits on x")'), "false");

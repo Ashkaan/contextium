@@ -23,8 +23,11 @@ thing outside it may need a step: a deploy poller of your own (below).
   are no longer read: make your deploy a GitHub workflow, and the close waits on it.
 - **Live checks.** A spec's `tasks.md` can declare checks only the deployed thing can answer (a
   `live-checks` block naming `workbench` or `repo:<owner>/<name>`); the close holds until each one
-  has run against what is live: the newest deployment GitHub records as successful, else the
-  remote's trunk. A capture taken before a newer deployment lands is refused.
+  has run against what is live: the production deployment GitHub most recently marked successful
+  (after a rollback, the one rolled back to), else the remote's trunk once every check GitHub reports
+  on it has finished — while a check still runs, the close refuses and asks to be re-run after it. A
+  remote not on GitHub reports no builds, so there the trunk is taken as live unconfirmed. A capture
+  taken before a newer deployment lands is refused.
 - **The planning close prints the next step.** `/project` and `/spec` never build. Their close prints
   `/implement <slug> <row>` for each row ready to build, in its own block; run each in a fresh
   session. Under T3 Code, `/implement` refuses a row another open thread is already building.

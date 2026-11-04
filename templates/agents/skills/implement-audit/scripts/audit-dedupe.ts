@@ -552,12 +552,15 @@ export function isRecord(p: string): boolean {
 
 /**
  * The plan's backstop: a changed path that needs an independent review to land.
- * In a workbench the instructions count too: AGENTS.md, and the skills and
+ * In a workbench the instructions count too: AGENTS.md (and .agents/AGENTS.md,
+ * which the root one links to), and the skills and
  * agents under .agents/ that tell a model what to do.
  */
 export function needsReview(p: string, workbench: boolean): boolean {
   if (!workbench) return !isRecord(p) && !p.endsWith(".md");
-  if (p === "AGENTS.md") return true;
+  // The installer links AGENTS.md to .agents/AGENTS.md, so a change edits
+  // the installed file: both spellings are the working agreement.
+  if (p === "AGENTS.md" || p === ".agents/AGENTS.md") return true;
   // A project's own scripts run in layer-2 like an app's code, so they are
   // reviewed like it; the project's records stay records.
   if (/^projects\//.test(p) && /\.(?:ts|tsx|mts|cts|js|mjs|cjs|sh|py)$/.test(p)) return true;
@@ -707,14 +710,17 @@ const GAP_WORDS: Record<string, string> = {
 };
 
 /** The file a triage line names first (`[must-fix] a.ts:12: …`), or null.
- *  The whole path before the location delimiter, spaces included
- *  (`src/my file.ts:12:`): a path cut at its space named no file, and its
- *  blocker closed on any round that changed anything (Contextium v9.2.0
- *  review). A path never holds a colon, so prose ending in one (`Note: …`)
- *  is not read as a file. */
+ *  The whole path before its line location, spaces and colons included
+ *  (`src/my file.ts:12:`, `src/x:y é.ts:12:`): a path cut at its space or
+ *  colon named no file, and its blocker closed on any round that changed
+ *  anything (Contextium v9.2.0 reviews). A path followed by `:<line>` may hold
+ *  colons but never a colon followed by a space, so prose (`Note: … a.ts:12`)
+ *  is not read as a file; one with no line holds no colon at all. */
 export function findingFile(line: string): string | null {
-  const m = line.replace(/^\[[a-z-]+\]\s*/, "").match(/^([^:\s][^:]*?\.[A-Za-z0-9]+)(?::\d+(?:-\d+)?)?:/);
-  return m?.[1] ?? null;
+  const body = line.replace(/^\[[a-z-]+\]\s*/, "");
+  const located = body.match(/^(\S(?:(?!:\s).)*?\.[A-Za-z0-9]+):\d+(?:-\d+)?(?=[:\s,;]|$)/);
+  if (located) return located[1] ?? null;
+  return body.match(/^([^:\s][^:]*?\.[A-Za-z0-9]+):/)?.[1] ?? null;
 }
 
 /** Why a receipt does not describe this content, or [] when it does. */
@@ -952,6 +958,20 @@ function summary(r: Receipt): string {
 }
 
 /**
+ * A numbered finding (`**title**: \`a.ts:12\` — nature — …`) as a triage line's
+ * tail, file first (`a.ts:12: **title** — nature — …`), so findingFile reads
+ * the file it names. Kept title-first, the finding named no file, and a later
+ * round that changed only another file cleared it (Contextium v9.2.0 review).
+ * A line with no backticked path is returned as it came.
+ */
+function fileFirst(l: string): string {
+  const loc = /`([^`\s][^`]*?\.[A-Za-z0-9]+(?::\d+(?:-\d+)?)?)`/.exec(l);
+  if (!loc) return l;
+  const rest = `${l.slice(0, loc.index)}${l.slice(loc.index + loc[0].length)}`.replace(/^(\*\*[^*]*\*\*)\s*:\s*(?=—|$)/, "$1 ");
+  return `${loc[1]}: ${rest.trim()}`;
+}
+
+/**
  * The fresh-context fallback reviewer's reply, read into the shape a framed
  * vendor result has. Three spellings, so its output can be saved as it is: the
  * BEGIN_REVIEW_V1 frame (findings + coverage), triage lines with NO_FINDINGS,
@@ -1005,7 +1025,7 @@ export function parseFallbackReply(text: string): { findings: string[]; coverage
     else if (l === "NO_FINDINGS" || l.startsWith("Zero findings.")) clean = true;
     else {
       const m = /verdict: \*\*(fix-now|deferred-batch-[0-9]+|speculative|out-of-scope)\*\*/.exec(l);
-      if (m) findings.push(`${m[1] === "fix-now" ? "[must-fix]" : m[1]?.startsWith("deferred") ? "[should-fix]" : "[nit]"} ${l.replace(/^[0-9]+\.\s*/, "")}`);
+      if (m) findings.push(`${m[1] === "fix-now" ? "[must-fix]" : m[1]?.startsWith("deferred") ? "[should-fix]" : "[nit]"} ${fileFirst(l.replace(/^[0-9]+\.\s*/, ""))}`);
     }
   }
   if (findings.length === 0 && !clean) return { error: "it holds no finding line and no NO_FINDINGS — the fallback review did NOT happen" };
@@ -1417,6 +1437,10 @@ async function main(): Promise<void> {
             const file = findingFile(b);
             if (file ? !delta.has(file) : delta.size === 0) r.blocking.push(b);
           }
+          // The base this round builds on was read by the fresh-context
+          // fallback: what the round inherits is NOT independent, as one such
+          // piece makes a whole piece set (pieceSet).
+          if (prev.independent === false) r.independent = false;
         }
       }
       r.gaps = gaps;

@@ -122,14 +122,17 @@ async function main(): Promise<void> {
     // cannot return the codes, so this same gate catches it.
     process.stderr.write(`
   ROUTE AROUND IT — run the review through the review chain instead of a
-  subagent whose image Read is dead. The brief names the PNG paths to open:
+  subagent whose image Read is dead. The artifact is the list of PNGs the
+  pass stamped (a render-only pass writes no manifest); the brief names the
+  same PNG paths to open:
 
+    find <run-dir> -maxdepth 1 -name '*.png' | sort > <shots.txt>
     POLICY_CHAIN_AUTHOR_VENDORS=<all writer providers> \\
     POLICY_CHAIN_GROK_TOOLS=read_file \\
     POLICY_CHAIN_VALIDATOR=.agents/skills/qa/scripts/sight-validate.ts \\
     QA_SIGHT_CODES=<codes> \\
     node --experimental-strip-types .agents/skills/review/policy-review.ts adversarial-review \\
-      <run-dir>/manifest.json <brief.txt>   > <response>.txt
+      <shots.txt> <brief.txt>   > <response>.txt
 
   The authors are every provider that wrote the pages or their fixes (in T3
   Code also POLICY_CHAIN_AUTHOR_THREAD_ID, the writing thread). read_file lets

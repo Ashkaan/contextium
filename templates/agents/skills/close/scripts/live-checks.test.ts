@@ -287,9 +287,9 @@ test("a GitHub origin: the newest successful production deployment, past one bui
       { id: 12, sha: D, environment: "Production" },
       { id: 11, sha: C, environment: "production" },
     ],
-    [statuses(13)]: [{ state: "success" }],
+    [statuses(13)]: [{ state: "success", created_at: "2026-11-01T00:00:00Z" }],
     [statuses(12)]: [{ state: "in_progress" }],
-    [statuses(11)]: [{ state: "success" }],
+    [statuses(11)]: [{ state: "success", created_at: "2026-11-01T00:00:00Z" }],
   });
   const r = sut(["revision", "workbench", onGithub()], env);
   assert.equal(r.rc, 0, r.err);
@@ -300,7 +300,7 @@ test("a success on the second page of history is found; forced colour does not b
   const failed = Array.from({ length: 100 }, (_, i) => ({ id: 200 - i, sha: D, production_environment: true }));
   const answers: Record<string, unknown> = { [`${DEPS}1`]: failed, [`${DEPS}2`]: [{ id: 50, sha: C, environment: "github-pages" }] };
   for (const d of failed) answers[statuses(d.id)] = [{ state: "failure" }];
-  answers[statuses(50)] = [{ state: "success" }];
+  answers[statuses(50)] = [{ state: "success", created_at: "2026-11-01T00:00:00Z" }];
   const env = { ...ghStub(answers), FORCE_COLOR: "1", CLICOLOR_FORCE: "1" };
   const r = sut(["revision", "workbench", onGithub()], env);
   assert.equal(r.rc, 0, r.err);
@@ -322,7 +322,7 @@ test("production deployments none of which succeeded are a failure, never the tr
 });
 
 test("a history with only previews leaves the trunk live; a malformed status is a failure", () => {
-  const previews = ghStub({ [`${DEPS}1`]: [{ id: 9, sha: D, environment: "Preview" }], [statuses(9)]: [{ state: "success" }] });
+  const previews = ghStub({ [`${DEPS}1`]: [{ id: 9, sha: D, environment: "Preview" }], [statuses(9)]: [{ state: "success", created_at: "2026-11-01T00:00:00Z" }] });
   const repo = onGithub();
   const p = sut(["revision", "workbench", repo], previews);
   assert.equal(p.rc, 1, "no production deployment: the trunk is read, here an unreachable GitHub origin");
@@ -361,7 +361,7 @@ function sshStub(hosts: Record<string, string>): string {
 }
 const DEPLOYED = {
   [DEPS + "1"]: [{ id: 11, sha: C, environment: "production" }],
-  [statuses(11)]: [{ state: "success" }],
+  [statuses(11)]: [{ state: "success", created_at: "2026-11-01T00:00:00Z" }],
 };
 
 test("an SSH host alias for github.com is read as GitHub, the way land.ts reads it", () => {
@@ -413,4 +413,77 @@ test("a history longer than the reading limit with no production success is a fa
   const r = sut(["revision", "workbench", onGithub()], ghStub(answers));
   assert.equal(r.rc, 1, r.out);
   assert.match(r.err, /older deployment history is unread/);
+});
+
+// GitHub marks earlier successes inactive only outside production
+// (auto_inactive, "Create a deployment status"), so several production
+// deployments can all read success. The one serving is the one whose success
+// came last: putting an older deployment back (a rollback) gives it the newest
+// success, and the newer deployment it replaced is no longer what serves
+// (Contextium v9.2.0 review).
+test("a rollback to an older production deployment is what is live, not the newer one it replaced", () => {
+  const env = ghStub({
+    [`${DEPS}1`]: [
+      { id: 12, sha: D, environment: "production" },
+      { id: 11, sha: C, environment: "production" },
+    ],
+    [statuses(12)]: [{ state: "success", created_at: "2026-11-01T10:00:00Z" }],
+    [statuses(11)]: [{ state: "success", created_at: "2026-11-02T10:00:00Z" }],
+  });
+  const r = sut(["revision", "workbench", onGithub()], env);
+  assert.equal(r.rc, 0, r.err);
+  assert.deepEqual(JSON.parse(r.out), { deploymentId: "deployment 11", sourceCommit: C });
+  const inactive = ghStub({
+    [`${DEPS}1`]: [
+      { id: 12, sha: D, environment: "production" },
+      { id: 11, sha: C, environment: "production" },
+    ],
+    [statuses(12)]: [{ state: "inactive", created_at: "2026-11-02T10:00:00Z" }],
+    [statuses(11)]: [{ state: "success", created_at: "2026-11-01T10:00:00Z" }],
+  });
+  assert.equal(JSON.parse(sut(["revision", "workbench", onGithub()], inactive).out).sourceCommit, C, "an inactive one is not live");
+  const undated = ghStub({
+    [`${DEPS}1`]: [{ id: 11, sha: C, environment: "production" }],
+    [statuses(11)]: [{ state: "success" }],
+  });
+  const u = sut(["revision", "workbench", onGithub()], undated);
+  assert.equal(u.rc, 1, "a success with no time cannot be ordered");
+  assert.match(u.err, /a malformed status/);
+});
+
+// With no deployment recorded, the trunk is what is live only once nothing is
+// still building it: trunk B, whose deploy check is running, while the site
+// still serves A, was returned as live and a capture of A was labelled B
+// (Contextium v9.2.0 review). The read refuses until the checks finish.
+const checkRuns = (sha: string) => `repos/acme/site/commits/${sha}/check-runs?per_page=100&page=1`;
+const combined = (sha: string) => `repos/acme/site/commits/${sha}/status`;
+test("no deployment recorded: a trunk still building is not live; once its checks finish, it is", () => {
+  const repo = onGithub();
+  const B = "b".repeat(40);
+  const seam = stub({ "workbench#deployment": null, workbench: B });
+  const building = ghStub({
+    [checkRuns(B)]: { total_count: 1, check_runs: [{ name: "deploy", status: "in_progress" }] },
+    [combined(B)]: { state: "pending", statuses: [] },
+  });
+  const r = sut(["revision", "workbench", repo], { ...seam, ...building });
+  assert.equal(r.rc, 1, r.out);
+  assert.equal(r.out, "");
+  assert.match(r.err, /still building.*deploy/);
+  const statusBuilding = ghStub({
+    [checkRuns(B)]: { total_count: 0, check_runs: [] },
+    [combined(B)]: { state: "pending", statuses: [{ context: "pages", state: "pending" }] },
+  });
+  const sb = sut(["revision", "workbench", repo], { ...seam, ...statusBuilding });
+  assert.equal(sb.rc, 1, sb.out);
+  assert.match(sb.err, /still building.*pages/);
+  const settled = ghStub({
+    [checkRuns(B)]: { total_count: 1, check_runs: [{ name: "deploy", status: "completed" }] },
+    [combined(B)]: { state: "pending", statuses: [] },
+  });
+  const ok = sut(["revision", "workbench", repo], { ...seam, ...settled });
+  assert.equal(ok.rc, 0, ok.err);
+  assert.deepEqual(JSON.parse(ok.out), { deploymentId: B, sourceCommit: B });
+  const unreadable = sut(["revision", "workbench", repo], { ...seam, ...ghStub({}) });
+  assert.equal(unreadable.rc, 1, "checks that cannot be read are a failure, never live");
+  assert.match(unreadable.err, /check-runs/);
 });

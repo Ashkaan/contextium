@@ -228,6 +228,10 @@ git(R1, "commit", "-qm", "init");
   makeAstro(join(RC, "apps/a"));
   put(join(RC, "apps/a/AGENTS.md"), "# a\n");
   put(join(RC, "apps/b/src/pages/guide.astro"), 'import { Content } from "../../../a/AGENTS.md";\n<Content />\n');
+  // Vite's resource query: the page imports the README's text as a string.
+  makeAstro(join(RC, "apps/c"));
+  put(join(RC, "apps/c/README.md"), "# c\n");
+  put(join(RC, "apps/c/src/pages/raw.astro"), 'import readme from "../../README.md?raw";\n<pre>{readme}</pre>\n');
   git(RC, "add", "-A");
   git(RC, "commit", "-qm", "init");
   const own = run(["--repo", RC, "README.md"]);
@@ -236,6 +240,8 @@ git(R1, "commit", "-qm", "init");
   const other = run(["--repo", RC, "apps/a/AGENTS.md"]);
   test("an app doc another app's page imports makes the importing app the target", () =>
     assert.equal(other.out, join(RC, "apps/b")));
+  const raw = run(["--repo", RC, "apps/c/README.md"]);
+  test("a README imported with a ?raw query makes its app a target", () => assert.equal(raw.out, join(RC, "apps/c")));
   const unread = run(["--repo", RC, "DESIGN.md"]);
   test("a sibling doc no page imports is still not a target", () => assert.equal(unread.out, ""));
 }

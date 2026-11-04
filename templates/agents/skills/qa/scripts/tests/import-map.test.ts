@@ -49,6 +49,7 @@ put(
     'const m = await import("../../../packages/ui/index")',
     '// the prose says "from the import" here',
     'import c from "./card"',
+    'import t from "./template.html?raw"',
     "",
   ].join("\n"),
 );
@@ -78,6 +79,7 @@ test("a bare spec resolves against the repo root", () => has("zod\tapps/web/src/
 test("a .css import keeps its extension", () => has("apps/web/src/styles.css\tapps/web/src/page.ts"));
 test("an untracked importer counts", () => has("packages/ui/button\tapps/web/src/untracked.ts"));
 test("an import after a quoted 'from' in a comment", () => has("apps/web/src/card\tapps/web/src/page.ts"));
+test("a resource query is not part of the target", () => has("apps/web/src/template.html\tapps/web/src/page.ts"));
 test("an absolute spec is skipped", () => lacks("abs/path"));
 test("a spec outside the repo is skipped", () => lacks("outside"));
 test("a gitignored file is not an importer", () => lacks("ignored/x.ts"));
