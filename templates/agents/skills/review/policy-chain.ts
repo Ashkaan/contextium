@@ -850,10 +850,22 @@ function walk(
 
     writeFileSync(out, "");
     writeFileSync(`${tmp}/slot.err`, "");
-    const rc =
-      vendor === "codex"
-        ? runCodex(bin, promptFile, out, secs, pin, tmp)
-        : runGrok(bin, promptFile, out, secs, pin, tmp, sink);
+    // The vendor CLI runs its harness's end-of-turn hooks in the caller's
+    // worktree; this marker tells .agents/skills/close/scripts/end-of-turn.ts the turn
+    // is a reviewer's, not the session's (otherwise a SPEC audit's answer
+    // comes back as "run /close"). Set for the slot only, restored after it.
+    const priorSlot = process.env.WORKBENCH_REVIEW_SLOT;
+    process.env.WORKBENCH_REVIEW_SLOT = vendor;
+    let rc: number;
+    try {
+      rc =
+        vendor === "codex"
+          ? runCodex(bin, promptFile, out, secs, pin, tmp)
+          : runGrok(bin, promptFile, out, secs, pin, tmp, sink);
+    } finally {
+      if (priorSlot === undefined) delete process.env.WORKBENCH_REVIEW_SLOT;
+      else process.env.WORKBENCH_REVIEW_SLOT = priorSlot;
+    }
 
     if (rc === 0) {
       // The shape test, between "the CLI exited 0" and "this slot answered" —

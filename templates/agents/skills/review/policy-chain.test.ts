@@ -133,6 +133,7 @@ mkstub(`${TMP}/say-codex.sh`, 'echo "[must-fix] from codex"');
 mkstub(`${TMP}/say-grok.sh`, 'printf "{\\"text\\":\\"[must-fix] from grok\\"}\\n"');
 mkstub(`${TMP}/record-args.sh`, `printf '%s\\n' "$@" > '${TMP}/argv.txt'; echo '{"text":"ok"}'`);
 mkstub(`${TMP}/no-trailing-newline.sh`, 'printf "[nit] last line with no newline"');
+mkstub(`${TMP}/say-slot.sh`, 'echo "[must-fix] slot=$WORKBENCH_REVIEW_SLOT"');
 mkstub(`${TMP}/echo-prompt-bytes.sh`, "wc -c < /dev/stdin");
 
 process.env.POLICY_JSON = POLICY;
@@ -345,6 +346,12 @@ test("2 — a one-slot row exhausts with no 'trying next slot'", () => {
   rcIs("2 one-slot exhaustion", 1, r.rc);
   lacks("2 no next-slot line on a one-slot row", "trying next slot", r.err);
   has("2 exhaustion is named", "every vendor in the 'one-slot' chain failed", r.err);
+});
+
+test("the vendor CLI runs with WORKBENCH_REVIEW_SLOT naming it, so the session's end-of-turn hook lets its reply through", () => {
+  const r = run("adversarial-review", PROMPT, { CODEX_BIN: `${TMP}/say-slot.sh`, WORKBENCH_REVIEW_SLOT: "" });
+  assert.equal(r.rc, 0, r.err);
+  assert.equal(r.out, "[must-fix] slot=codex");
 });
 
 test("3 — empty prompt file, before any vendor is invoked", () => {

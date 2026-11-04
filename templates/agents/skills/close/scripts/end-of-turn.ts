@@ -305,6 +305,13 @@ async function hook(h: string | undefined): Promise<void> {
     const o = parse(readFileSync(0, "utf8"));
     harness = senderOf(harness, o);
     if (!covered().includes(harness)) process.exit(0);
+    // A reviewer the review chain spawned (.agents/skills/review/policy-chain.ts sets
+    // WORKBENCH_REVIEW_SLOT) runs in the session's worktree but is not the
+    // session's turn: refusing it turned a SPEC audit's answer into "run
+    // /close".
+    if (process.env.WORKBENCH_REVIEW_SLOT) {
+      throw new Allow(`a review-chain ${process.env.WORKBENCH_REVIEW_SLOT} subprocess, not a session turn`);
+    }
     const turn = readTurn(harness, o);
     if (!existsSync(turn.cwd)) throw new Allow(`cwd ${turn.cwd} does not exist`);
     const tid = threadOf(turn.cwd);

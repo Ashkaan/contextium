@@ -69,7 +69,7 @@ interface Thread {
   file: (name: string) => string;
   put: (name: string, body?: string) => void;
   /** End a turn: run the check on a payload. */
-  end: (p: unknown, opts?: { harness?: string | null; covered?: string; tid?: string | null }) => Run;
+  end: (p: unknown, opts?: { harness?: string | null; covered?: string; tid?: string | null; slot?: string }) => Run;
   pause: (q: string) => Run;
 }
 interface Run {
@@ -82,15 +82,17 @@ function thread(): Thread {
   const tid = randomUUID();
   const state = join(HOME, ".cache", "workbench", "threads", tid);
   mkdirSync(state, { recursive: true });
-  const env = (o: { covered?: string; tid?: string | null } = {}) => {
+  const env = (o: { covered?: string; tid?: string | null; slot?: string } = {}) => {
     const e: NodeJS.ProcessEnv = { ...process.env, HOME };
+    if (o.slot !== undefined) e.WORKBENCH_REVIEW_SLOT = o.slot;
+    else delete e.WORKBENCH_REVIEW_SLOT;
     if (o.tid !== null) e.WORKBENCH_THREAD_ID = o.tid ?? tid;
     else delete e.WORKBENCH_THREAD_ID;
     if (o.covered !== undefined) e.END_OF_TURN_TEST_COVERED = o.covered;
     else delete e.END_OF_TURN_TEST_COVERED;
     return e;
   };
-  const exec = (args: string[], input: string, o: { covered?: string; tid?: string | null } = {}): Run => {
+  const exec = (args: string[], input: string, o: { covered?: string; tid?: string | null; slot?: string } = {}): Run => {
     const r = spawnSync(process.execPath, ["--experimental-strip-types", SCRIPT, ...args], {
       input,
       encoding: "utf8",
@@ -251,6 +253,20 @@ test("closed with a dirty worktree: refused every turn until a new close lands i
   assert.equal(t.end(payload("claude", "More work.")).code, 2, "the second cycle is refused too");
   land(wt);
   assert.equal(t.end(payload("claude", "Landed again.")).code, 0);
+});
+
+test("a review-chain vendor running in a closed thread's worktree is allowed and logged, never told to close", () => {
+  const t = thread();
+  const wt = worktree();
+  ledger(t, wt);
+  closed(t);
+  t.put("report-delivered");
+  writeFileSync(join(wt, "spec.md"), "a spec under review\n");
+  assert.equal(t.end(payload("codex", "F1: the spec misses a case.")).code, 2, "a session turn is still refused");
+  const r = t.end(payload("codex", "F1: the spec misses a case."), { harness: "codex", slot: "codex" });
+  assert.equal(r.code, 0, r.stderr);
+  assert.doesNotMatch(r.stderr, UNLANDED);
+  assert.match(stateLog(t) + globalLog(), /review-chain codex subprocess/);
 });
 
 test("closed with a commit not pushed: refused", () => {
