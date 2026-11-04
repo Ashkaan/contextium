@@ -24,10 +24,11 @@ thing outside it may need a step: a deploy poller of your own (below).
 - **Live checks.** A spec's `tasks.md` can declare checks only the deployed thing can answer (a
   `live-checks` block naming `workbench` or `repo:<owner>/<name>`); the close holds until each one
   has run against what is live: the production deployment GitHub most recently marked successful
-  (after a rollback, the one rolled back to), else the remote's trunk once every check GitHub reports
-  on it has finished — while a check still runs, the close refuses and asks to be re-run after it. A
-  remote not on GitHub reports no builds, so there the trunk is taken as live unconfirmed. A capture
-  taken before a newer deployment lands is refused.
+  (after a rollback, the one rolled back to). A capture taken before a newer deployment lands is
+  refused. Command checks, which the close runs itself on `--release`, work in any repo. Eyes-only
+  evidence checks need a repo whose deploys GitHub records as production deployments: where nothing
+  records which commit serves (a remote not on GitHub, or no successful production deployment), the
+  close says it cannot tell and refuses the evidence check rather than guess from the trunk.
 - **The planning close prints the next step.** `/project` and `/spec` never build. Their close prints
   `/implement <slug> <row>` for each row ready to build, in its own block; run each in a fresh
   session. Under T3 Code, `/implement` refuses a row another open thread is already building.

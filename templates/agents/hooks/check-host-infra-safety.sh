@@ -219,6 +219,8 @@
 #   block: ssh nas "sudo zpool status -x; sudo systemctl restart docker" 2>&1
 #   block: ssh nas "sudo docker exec garage /garage bucket info backups" 2>&1
 #   block: ssh nas "sudo awk 'BEGIN{f=\"system\"; @f(\"touch /tmp/rule-proof\")}'"
+#   block: ssh nas "sudo awk 'BEGIN{f=\"system\"; @ f(\"touch /tmp/rule-proof\")}'"
+#   block: ssh nas "sudo awk '@ load \"readdir\"; BEGIN{print 1}'"
 # (d) systemctl --user enable on a ~/.config/systemd/user/ unit
 #   block: systemctl --user enable definitely-not-installed.timer
 #   block: sudo systemctl enable nightly-report.timer
@@ -925,11 +927,12 @@ readonly_sudo_cmd() {
       [[ "$a" =~ ^-[filE]|^--(file|include|load|exec) ]] && return 1
     done
     # gawk's indirect call (`f="system"; @f("cmd")`) names its function in a
-    # string the scan cannot follow, so any `@name(` is treated as a write.
+    # string the scan cannot follow, so any `@name(` is treated as a write;
+    # gawk takes blanks after the @ (`@ f(`, `@ load`), so the scan does too.
     # A backslash-newline joins two lines of the program, so the scan reads it
     # joined: `| \<newline> getline` is still a command piped into getline.
     local joined="${full//$'\\\n'/ }"
-    grep -qE 'system[[:space:]]*\(|\|[[:space:]]*getline|\|&|@(load|include)|@[A-Za-z_][A-Za-z0-9_]*[[:space:]]*\(|printf?[^;}]*[|>]' <<<"$joined" && return 1
+    grep -qE 'system[[:space:]]*\(|\|[[:space:]]*getline|\|&|@[[:space:]]*(load|include)|@[[:space:]]*[A-Za-z_][A-Za-z0-9_]*[[:space:]]*\(|printf?[^;}]*[|>]' <<<"$joined" && return 1
     return 0
   fi
 

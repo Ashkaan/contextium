@@ -458,10 +458,14 @@ test("an open blocker stands until a round reviews a change to its file, and the
 // A path with a space was read as naming no file, so its blocker closed on any
 // round that changed anything, an unrelated file included (Contextium v9.2.0
 // review); so was one with a colon, which the review pack also carries
-// (`src/x:y é.ts`, second v9.2.0 review).
+// (`src/x:y é.ts`, second v9.2.0 review). A path with no extension
+// (`Makefile`) or holding a colon and a space (`x: y é.ts`) is found by the
+// changed path the line names before its `:<line>` (third v9.2.0 review).
 for (const [tag, name] of [
   ["blkspace", "my file.ts"],
   ["blkcolon", "x:y é.ts"],
+  ["blkmake", "Makefile"],
+  ["blkcolonsp", "x: y é.ts"],
 ] as const) {
   test(`a blocker whose path is '${name}' stands until a round reviews a change to that file`, () => {
     const d = repo(tag);
@@ -834,6 +838,32 @@ test("a fallback's numbered finding names its file, and a follow-up keeps NOT in
   const st = run(env, "status", "--repo", d);
   assert.match(st.out, /NOT independent/, "a follow-up on a fallback-reviewed base is still NOT independent");
   assert.match(run({}, "check", "--owner", "fallback-file", d).out, /NOT independent/);
+});
+
+// A title that mentions another file before the finding's location: the
+// first backticked name was taken, so the blocker in a.ts was bound to b.ts and
+// a round that changed only b.ts cleared it (third v9.2.0 review). The
+// location — the path followed by `:<line>` — is the file.
+test("a fallback finding whose title names another file is bound to its location", () => {
+  const d = repo("fallback-title");
+  const env = owner("fallback-title");
+  writeFileSync(join(d, ".agents/skills/demo/a.ts"), "export const a = 2;\n");
+  const t0 = snap(d);
+  assert.match(begin(env, d).out, /RECEIPT=review/);
+  run(env, "finish", "--repo", d, "--rc", "3");
+  const reply = join(TMP, "fallback-title.txt");
+  writeFileSync(
+    reply,
+    "1. **`.agents/skills/demo/b.ts` callers break**: `.agents/skills/demo/a.ts:12` — wrong — verdict: **fix-now** — failure: breaks — fix it\n",
+  );
+  assert.equal(run(env, "finish", "--repo", d, "--fallback", reply).out, "APPROVED=0");
+  writeFileSync(join(d, ".agents/skills/demo/b.ts"), "export const b = 2;\n");
+  const b1 = begin(env, d, "since", ["--since", t0]);
+  const items = JSON.parse(readFileSync(b1.out.match(/ITEMS_FILE=(.*)/)?.[1] ?? "", "utf8"));
+  assert.match(items.openFindings[0] ?? "", /^\[must-fix\] \.agents\/skills\/demo\/a\.ts:12: /, "the location leads the line");
+  const f = run(env, "finish", "--repo", d, "--rc", "0", "--result", result("fallback-title-1", []));
+  assert.equal(f.out, "APPROVED=0", "a round over b.ts alone does not clear the blocker located in a.ts");
+  assert.match(f.err, /1 must-fix\/should-fix finding\(s\) unresolved/);
 });
 
 // The installer links AGENTS.md to .agents/AGENTS.md, so the file a change

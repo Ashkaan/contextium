@@ -192,6 +192,14 @@ const EXPLOITS: [string, string][] = [
     "awk indirect call with a space before the parenthesis",
     'ssh nas "sudo awk \'BEGIN{f=\\"system\\"; @f (\\"touch /tmp/rule-proof\\")}\'"',
   ],
+  [
+    "awk indirect call with a space after the at sign",
+    'ssh nas "sudo awk \'BEGIN{f=\\"system\\"; @ f(\\"touch /tmp/rule-proof\\")}\'"',
+  ],
+  [
+    "awk extension load with a space after the at sign",
+    'ssh nas "sudo awk \'@ load \\"readdir\\"; BEGIN{print 1}\'"',
+  ],
   ["sed in place after -n", "ssh nas 'sudo sed -n -i s/a/b/ /tmp/input'"],
   ["sed write command", "ssh nas \"sudo sed -n 'w /tmp/rule-proof' /tmp/input\""],
   ["sed execute command", "ssh nas \"sudo sed -n '1e touch /tmp/rule-proof' /tmp/input\""],

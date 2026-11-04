@@ -158,44 +158,35 @@ function checkout(commits: number): { repo: string; tips: string[] } {
   return { repo, tips };
 }
 
-test("workbench: the trunk as origin holds it now, not the local checkout's", () => {
-  const { repo, tips } = checkout(2);
-  const tip = tips[1] ?? "";
-  assert.deepEqual(JSON.parse(sut(["revision", "workbench", repo]).out), { deploymentId: tip, sourceCommit: tip });
-  spawnSync("git", ["-C", repo, "reset", "-q", "--hard", tips[0] ?? ""]);
-  assert.equal(JSON.parse(sut(["revision", "workbench", repo]).out).sourceCommit, tip, "a local reset moves nothing live");
-  const r = sut(["revision", "repo:acme/site", repo]);
-  assert.equal(JSON.parse(r.out).sourceCommit, tip, "a repo: target reads its checkout the same way");
-});
-
-test("an origin with no trunk, an unreachable origin, or no repo dir is a failure, never a revision", () => {
-  const { repo } = checkout(0);
-  const empty = sut(["revision", "workbench", repo]);
-  assert.equal(empty.rc, 1);
-  assert.equal(empty.out, "");
-  const gone = checkout(1).repo;
-  spawnSync("git", ["-C", gone, "remote", "set-url", "origin", join(tmp, "no-such-origin.git")]);
-  const r = sut(["revision", "workbench", gone]);
-  assert.equal(r.rc, 1);
-  assert.match(r.err, /ls-remote origin failed/);
+// No reader can tell on an origin GitHub does not host: what is live is
+// "cannot tell" (sourceCommit null), never the trunk, which a deploy may still
+// be building or may have failed to ship.
+test("an origin not on GitHub: cannot tell which commit is live, never the trunk", () => {
+  const { repo } = checkout(2);
+  const r = sut(["revision", "workbench", repo]);
+  assert.equal(r.rc, 0, r.err);
+  const rev = JSON.parse(r.out) as { deploymentId: string; sourceCommit: string | null };
+  assert.equal(rev.sourceCommit, null);
+  assert.match(rev.deploymentId, /^none — .*not on GitHub/);
   assert.equal(sut(["revision", "workbench"]).rc, 2, "no repo dir is a usage error");
 });
 
 test("the seam: a named target is answered from the file, an unnamed one read for real", () => {
-  const { repo, tips } = checkout(1);
-  assert.equal(JSON.parse(sut(["revision", "workbench", repo], stub({ workbench: A })).out).sourceCommit, A);
-  assert.equal(
-    JSON.parse(sut(["revision", "workbench", repo], stub({ "repo:acme/site": A })).out).sourceCommit,
-    tips[0],
-  );
-  for (const v of [null, "", "<html>"]) {
+  const { repo } = checkout(1);
+  const dep = JSON.parse(sut(["revision", "workbench", repo], stub({ workbench: { id: "7", sha: A } })).out);
+  assert.deepEqual(dep, { deploymentId: "deployment 7", sourceCommit: A });
+  const none = JSON.parse(sut(["revision", "workbench", repo], stub({ workbench: null })).out);
+  assert.equal(none.sourceCommit, null, "none recorded: cannot tell");
+  const real = JSON.parse(sut(["revision", "workbench", repo], stub({ "repo:acme/site": { id: "7", sha: A } })).out);
+  assert.match(real.deploymentId, /not on GitHub/, "an unnamed target is read for real");
+  for (const v of ["", "<html>", { id: "7", sha: "<html>" }]) {
     const r = sut(["revision", "workbench", repo], stub({ workbench: v }));
     assert.equal(r.rc, 1, `workbench ${JSON.stringify(v)}`);
     assert.equal(r.out, "");
   }
-  const t = sut(["revision", "workbench", repo], stub({ workbench: { throw: "origin 503" } }));
+  const t = sut(["revision", "workbench", repo], stub({ workbench: { throw: "gh 503" } }));
   assert.equal(t.rc, 1);
-  assert.match(t.err, /live-checks: origin 503/);
+  assert.match(t.err, /live-checks: gh 503/);
 });
 
 test("targets: workbench and repo:<owner>/<name>; anything else is refused at parse", () => {
@@ -241,19 +232,11 @@ test("contains: a descendant contains, an unrelated or older commit does not, an
 });
 
 // ── A recorded deployment is what is live ─────────────────────────────────
-// When GitHub records deployments for the repo, the newest one whose latest
-// status is success is what serves: a push still building does not count, and
-// a capture taken before it deploys names the old deployment, which a release
-// after it refuses. With none recorded, the trunk is what is live.
-
-test("the seam: a recorded deployment answers ahead of the trunk", () => {
-  const { repo, tips } = checkout(1);
-  const B = "b".repeat(40);
-  const dep = JSON.parse(sut(["revision", "workbench", repo], stub({ "workbench#deployment": { id: "7", sha: B } })).out);
-  assert.deepEqual(dep, { deploymentId: "deployment 7", sourceCommit: B });
-  const none = JSON.parse(sut(["revision", "workbench", repo], stub({ "workbench#deployment": null })).out);
-  assert.equal(none.sourceCommit, tips[0], "no recorded deployment: the trunk is live");
-});
+// When GitHub records production deployments for the repo, the one whose
+// latest status is success and came last is what serves: a push still
+// building, or one whose deploy failed, does not count, and a capture taken
+// before a deploy lands names the old deployment, which a release after it
+// refuses.
 
 /** A gh on PATH that answers the deployments API from <answers> (exact path →
  *  JSON), wrapping it in ANSI when colour is forced, as the real gh does. */
@@ -307,33 +290,53 @@ test("a success on the second page of history is found; forced colour does not b
   assert.deepEqual(JSON.parse(r.out), { deploymentId: "deployment 50", sourceCommit: C });
 });
 
-test("production deployments none of which succeeded are a failure, never the trunk", () => {
-  const env = ghStub({
+// A deploy that completed and failed is not live: its latest status is
+// failure, and an older success is what still serves; with no success at all,
+// nothing can be named.
+test("a failed latest status is not counted: an older success serves, and with none it cannot tell", () => {
+  const failedNewest = ghStub({
     [`${DEPS}1`]: [
       { id: 12, sha: D, environment: "production" },
       { id: 11, sha: C, environment: "production" },
     ],
-    [statuses(12)]: [{ state: "pending" }],
+    [statuses(12)]: [{ state: "failure", created_at: "2026-11-02T00:00:00Z" }],
+    [statuses(11)]: [{ state: "success", created_at: "2026-11-01T00:00:00Z" }],
+  });
+  const r = sut(["revision", "workbench", onGithub()], failedNewest);
+  assert.equal(r.rc, 0, r.err);
+  assert.deepEqual(JSON.parse(r.out), { deploymentId: "deployment 11", sourceCommit: C });
+  const noneOk = ghStub({
+    [`${DEPS}1`]: [
+      { id: 12, sha: D, environment: "production" },
+      { id: 11, sha: C, environment: "production" },
+    ],
+    [statuses(12)]: [{ state: "error", created_at: "2026-11-02T00:00:00Z" }],
     [statuses(11)]: [],
   });
-  const r = sut(["revision", "workbench", onGithub()], env);
-  assert.equal(r.rc, 1);
-  assert.match(r.err, /2 production deployment\(s\).*none succeeded/);
+  const n = sut(["revision", "workbench", onGithub()], noneOk);
+  assert.equal(n.rc, 0, n.err);
+  const rev = JSON.parse(n.out) as { deploymentId: string; sourceCommit: string | null };
+  assert.equal(rev.sourceCommit, null);
+  assert.match(rev.deploymentId, /no production deployment whose latest status is success/);
 });
 
-test("a history with only previews leaves the trunk live; a malformed status is a failure", () => {
-  const previews = ghStub({ [`${DEPS}1`]: [{ id: 9, sha: D, environment: "Preview" }], [statuses(9)]: [{ state: "success", created_at: "2026-11-01T00:00:00Z" }] });
+test("no deployments, or only previews: cannot tell; a malformed status is a failure", () => {
   const repo = onGithub();
-  const p = sut(["revision", "workbench", repo], previews);
-  assert.equal(p.rc, 1, "no production deployment: the trunk is read, here an unreachable GitHub origin");
-  assert.match(p.err, /ls-remote origin failed/);
+  for (const answers of [
+    { [`${DEPS}1`]: [] },
+    { [`${DEPS}1`]: [{ id: 9, sha: D, environment: "Preview" }], [statuses(9)]: [{ state: "success", created_at: "2026-11-01T00:00:00Z" }] },
+  ]) {
+    const r = sut(["revision", "workbench", repo], ghStub(answers));
+    assert.equal(r.rc, 0, r.err);
+    assert.equal(JSON.parse(r.out).sourceCommit, null);
+  }
   const bad = ghStub({ [`${DEPS}1`]: [{ id: 9, sha: D, environment: "production" }], [statuses(9)]: [{ status: "ok" }] });
   const m = sut(["revision", "workbench", repo], bad);
   assert.equal(m.rc, 1);
   assert.match(m.err, /a malformed status/);
 });
 
-test("a GitHub origin whose deployments cannot be read, or with no gh, is a failure, never the trunk", () => {
+test("a GitHub origin whose deployments cannot be read, or with no gh, is a failure, never 'cannot tell'", () => {
   const repo = onGithub();
   const r = sut(["revision", "workbench", repo], ghStub({}));
   assert.equal(r.rc, 1);
@@ -384,8 +387,8 @@ test("the configured origin decides, not the URL an insteadOf rewrite reaches it
   assert.deepEqual(JSON.parse(r.out), { deploymentId: "deployment 11", sourceCommit: C });
 });
 
-test("an alias for another host is not GitHub: the trunk is live and gh is never asked", () => {
-  const { repo, tips } = checkout(1);
+test("an alias for another host is not GitHub: cannot tell, and gh is never asked", () => {
+  const { repo } = checkout(1);
   const reach = spawnSync("git", ["-C", repo, "remote", "get-url", "origin"], { encoding: "utf8" }).stdout.trim();
   spawnSync("git", ["-C", repo, "config", "url." + reach + ".insteadOf", "git@gitlab-work:acme/site.git"]);
   spawnSync("git", ["-C", repo, "remote", "set-url", "origin", "git@gitlab-work:acme/site.git"]);
@@ -393,10 +396,10 @@ test("an alias for another host is not GitHub: the trunk is live and gh is never
   env.PATH = sshStub({ "gitlab-work": "gitlab.com" }) + ":" + env.PATH;
   const r = sut(["revision", "workbench", repo], env);
   assert.equal(r.rc, 0, r.err);
-  assert.equal(JSON.parse(r.out).sourceCommit, tips[0]);
+  assert.equal(JSON.parse(r.out).sourceCommit, null);
 });
 
-test("an SSH alias ssh cannot resolve is a failure, never the trunk", () => {
+test("an SSH alias ssh cannot resolve is a failure, never 'cannot tell'", () => {
   const { repo } = checkout(1);
   spawnSync("git", ["-C", repo, "remote", "set-url", "origin", "git@broken-alias:acme/site.git"]);
   const env = ghStub(DEPLOYED);
@@ -406,13 +409,23 @@ test("an SSH alias ssh cannot resolve is a failure, never the trunk", () => {
   assert.match(r.err, /could not resolve broken-alias/);
 });
 
-test("a history longer than the reading limit with no production success is a failure, never the trunk", () => {
+// The whole history is read or none of it counts: a production deployment
+// older than the read limit may be what serves, so a success inside the limit
+// is no answer while more history lies past it.
+test("a history longer than the read limit is refused, even with a success inside it", () => {
   const answers: Record<string, unknown> = {};
   for (let page = 1; page <= 10; page++)
     answers[`${DEPS}${page}`] = Array.from({ length: 100 }, (_, i) => ({ id: page * 1000 + i, sha: D, environment: "Preview" }));
+  (answers[`${DEPS}1`] as unknown[])[0] = { id: 1000, sha: C, environment: "production" };
+  answers[statuses(1000)] = [{ state: "success", created_at: "2026-11-01T00:00:00Z" }];
+  answers[`${DEPS}11`] = [{ id: 1, sha: E, environment: "production" }];
   const r = sut(["revision", "workbench", onGithub()], ghStub(answers));
   assert.equal(r.rc, 1, r.out);
-  assert.match(r.err, /older deployment history is unread/);
+  assert.match(r.err, /more than 1000 deployments/);
+  answers[`${DEPS}11`] = [];
+  const exact = sut(["revision", "workbench", onGithub()], ghStub(answers));
+  assert.equal(exact.rc, 0, exact.err);
+  assert.deepEqual(JSON.parse(exact.out), { deploymentId: "deployment 1000", sourceCommit: C }, "exactly the limit is the whole history");
 });
 
 // GitHub marks earlier successes inactive only outside production
@@ -449,41 +462,4 @@ test("a rollback to an older production deployment is what is live, not the newe
   const u = sut(["revision", "workbench", onGithub()], undated);
   assert.equal(u.rc, 1, "a success with no time cannot be ordered");
   assert.match(u.err, /a malformed status/);
-});
-
-// With no deployment recorded, the trunk is what is live only once nothing is
-// still building it: trunk B, whose deploy check is running, while the site
-// still serves A, was returned as live and a capture of A was labelled B
-// (Contextium v9.2.0 review). The read refuses until the checks finish.
-const checkRuns = (sha: string) => `repos/acme/site/commits/${sha}/check-runs?per_page=100&page=1`;
-const combined = (sha: string) => `repos/acme/site/commits/${sha}/status`;
-test("no deployment recorded: a trunk still building is not live; once its checks finish, it is", () => {
-  const repo = onGithub();
-  const B = "b".repeat(40);
-  const seam = stub({ "workbench#deployment": null, workbench: B });
-  const building = ghStub({
-    [checkRuns(B)]: { total_count: 1, check_runs: [{ name: "deploy", status: "in_progress" }] },
-    [combined(B)]: { state: "pending", statuses: [] },
-  });
-  const r = sut(["revision", "workbench", repo], { ...seam, ...building });
-  assert.equal(r.rc, 1, r.out);
-  assert.equal(r.out, "");
-  assert.match(r.err, /still building.*deploy/);
-  const statusBuilding = ghStub({
-    [checkRuns(B)]: { total_count: 0, check_runs: [] },
-    [combined(B)]: { state: "pending", statuses: [{ context: "pages", state: "pending" }] },
-  });
-  const sb = sut(["revision", "workbench", repo], { ...seam, ...statusBuilding });
-  assert.equal(sb.rc, 1, sb.out);
-  assert.match(sb.err, /still building.*pages/);
-  const settled = ghStub({
-    [checkRuns(B)]: { total_count: 1, check_runs: [{ name: "deploy", status: "completed" }] },
-    [combined(B)]: { state: "pending", statuses: [] },
-  });
-  const ok = sut(["revision", "workbench", repo], { ...seam, ...settled });
-  assert.equal(ok.rc, 0, ok.err);
-  assert.deepEqual(JSON.parse(ok.out), { deploymentId: B, sourceCommit: B });
-  const unreadable = sut(["revision", "workbench", repo], { ...seam, ...ghStub({}) });
-  assert.equal(unreadable.rc, 1, "checks that cannot be read are a failure, never live");
-  assert.match(unreadable.err, /check-runs/);
 });

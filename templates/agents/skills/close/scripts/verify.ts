@@ -302,10 +302,12 @@ function listChangedPaths(wt: string): string[] {
 // folders only, and read as a domain its suites under tests/ never ran. A
 // domain's own README or config file is not app structure: read as one, any
 // such file made a grouped domain a flat app, and apps/ops/dispatcher/index.ts
-// ran under "ops" (Contextium v9.2.0 review). Nothing for a file directly
-// under `apps/`.
+// ran under "ops" (Contextium v9.2.0 review); nor is a config written as code
+// (APP_CONFIG: eslint.config.mjs, vitest.config.ts, a dotfile, tsconfig*),
+// which did the same (third review). Nothing for a file directly under `apps/`.
 const APP_PARTS = new Set(["src", "lib", "test", "tests", "evals", "scripts"]);
 const APP_CODE = /\.(?:ts|tsx|mts|cts|js|jsx|mjs|cjs)$/;
+const APP_CONFIG = /^\.|\.config\.[^.]+$|^tsconfig/;
 function appOf(wt: string, rel: string): string[] {
   const f = rel.split("/");
   if (f[0] !== "apps") return [];
@@ -319,7 +321,9 @@ function appOf(wt: string, rel: string): string[] {
   if (f.length >= 4) {
     try {
       grouped = !readdirSync(top, { withFileTypes: true }).some(
-        (e) => (e.isFile() && APP_CODE.test(e.name)) || (e.isDirectory() && APP_PARTS.has(e.name)),
+        (e) =>
+          (e.isFile() && APP_CODE.test(e.name) && !APP_CONFIG.test(e.name)) ||
+          (e.isDirectory() && APP_PARTS.has(e.name)),
       );
     } catch {
       grouped = true; // a removed domain folder: its app went with it

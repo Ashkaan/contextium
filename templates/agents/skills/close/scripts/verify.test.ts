@@ -678,13 +678,18 @@ test("a flat app with no manifest and only folders runs its own suites", () => {
 // file at the domain level as a flat app made apps/ops/dispatcher/index.ts the
 // app "ops", whose suites were not the dispatcher's (Contextium v9.2.0
 // review). A domain is flat only when it holds what an app is made of: a code
-// file of its own or one of its folders (src/, tests/ …).
-test("a grouped domain holding a README and a config file keeps its apps apart", () => {
+// file of its own or one of its folders (src/, tests/ …). A config written as
+// code (eslint.config.mjs, a dotfile) is configuration too, not an app's code
+// (third v9.2.0 review).
+test("a grouped domain holding a README and config files keeps its apps apart", () => {
   writeFileSync(CLEDGER, row(CLEAN, join(TMP, "cshared"), `t3/${TID}`));
   const D = join(CLEAN, "apps/ops");
   mkdirSync(join(D, "dispatcher"), { recursive: true });
   writeFileSync(join(D, "README.md"), "# ops\n");
   writeFileSync(join(D, "tsconfig.json"), "{}\n");
+  writeFileSync(join(D, "eslint.config.mjs"), "export default [];\n");
+  writeFileSync(join(D, "vitest.config.ts"), "export default {};\n");
+  writeFileSync(join(D, ".prettierrc.cjs"), "module.exports = {};\n");
   writeFileSync(join(D, "dispatcher/index.ts"), "export const d = 1;\n");
   writeFileSync(
     join(D, "dispatcher/main.test.ts"),

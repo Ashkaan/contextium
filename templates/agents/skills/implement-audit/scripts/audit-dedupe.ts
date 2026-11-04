@@ -715,9 +715,25 @@ const GAP_WORDS: Record<string, string> = {
  *  colon named no file, and its blocker closed on any round that changed
  *  anything (Contextium v9.2.0 reviews). A path followed by `:<line>` may hold
  *  colons but never a colon followed by a space, so prose (`Note: … a.ts:12`)
- *  is not read as a file; one with no line holds no colon at all. */
-export function findingFile(line: string): string | null {
+ *  is not read as a file; one with no line holds no colon at all.
+ *  First, though, a <known> path (the paths the review covered or changed)
+ *  the line names followed by `:<line>` — the first such location, the longest
+ *  path there — the only reading of a path with no extension (`Makefile:12:`)
+ *  or holding `: ` (`x: y é.ts:12:`), whose blockers otherwise closed on any
+ *  round (third v9.2.0 review). */
+export function findingFile(line: string, known: Iterable<string> = []): string | null {
   const body = line.replace(/^\[[a-z-]+\]\s*/, "");
+  let best: { at: number; p: string } | null = null;
+  for (const p of known) {
+    if (p === "") continue;
+    for (let at = body.indexOf(p); at >= 0; at = body.indexOf(p, at + 1)) {
+      if (at > 0 && !/[\s`'"(\[]/.test(body[at - 1] ?? "")) continue;
+      if (!/^:\d/.test(body.slice(at + p.length))) continue;
+      if (best === null || at < best.at || (at === best.at && p.length > best.p.length)) best = { at, p };
+      break;
+    }
+  }
+  if (best !== null) return best.p;
   const located = body.match(/^(\S(?:(?!:\s).)*?\.[A-Za-z0-9]+):\d+(?:-\d+)?(?=[:\s,;]|$)/);
   if (located) return located[1] ?? null;
   return body.match(/^([^:\s][^:]*?\.[A-Za-z0-9]+):/)?.[1] ?? null;
@@ -962,10 +978,14 @@ function summary(r: Receipt): string {
  * tail, file first (`a.ts:12: **title** — nature — …`), so findingFile reads
  * the file it names. Kept title-first, the finding named no file, and a later
  * round that changed only another file cleared it (Contextium v9.2.0 review).
+ * The location is the backticked path followed by `:<line>`, as findingFile
+ * reads one; only without one is it the first backticked file name — a title
+ * naming another file first bound the blocker to that file (third review).
  * A line with no backticked path is returned as it came.
  */
 function fileFirst(l: string): string {
-  const loc = /`([^`\s][^`]*?\.[A-Za-z0-9]+(?::\d+(?:-\d+)?)?)`/.exec(l);
+  const loc =
+    /`([^`\s][^`]*?:\d+(?:-\d+)?)`/.exec(l) ?? /`([^`\s][^`]*?\.[A-Za-z0-9]+(?::\d+(?:-\d+)?)?)`/.exec(l);
   if (!loc) return l;
   const rest = `${l.slice(0, loc.index)}${l.slice(loc.index + loc[0].length)}`.replace(/^(\*\*[^*]*\*\*)\s*:\s*(?=—|$)/, "$1 ");
   return `${loc[1]}: ${rest.trim()}`;
@@ -1434,7 +1454,10 @@ async function main(): Promise<void> {
           // blocker naming no file closes only on a round that changed something.
           for (const b of prev.blocking ?? []) {
             if (r.blocking.includes(b)) continue;
-            const file = findingFile(b);
+            const known = [...Object.keys(r.covered), ...Object.keys(prev.covered), ...delta].filter(
+              (k) => !k.startsWith("contract:") && !k.includes("::"),
+            );
+            const file = findingFile(b, known);
             if (file ? !delta.has(file) : delta.size === 0) r.blocking.push(b);
           }
           // The base this round builds on was read by the fresh-context

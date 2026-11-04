@@ -2292,6 +2292,31 @@ kase("Case 14g: the workbench roadmap gate and an app's check on the merged tree
   );
   is("…and nothing of it was pushed", onMain(F.CODE, "packages/p/p.ts"), "no");
 
+  // 8d. The same through a barrel: the app imports the package's index.ts,
+  //     which re-exports p.ts by a specifier that does not hold the
+  //     repo-relative path. A changed p.ts reaches the app only through its
+  //     importers in shared code, followed in turn (third v9.2.0 review).
+  fixture("c14gm");
+  gDo(F.WT2, "pull", "-q", "origin", "main");
+  write(
+    join(F.WT2, "apps/y/package.json"),
+    `${JSON.stringify({ name: "y", private: true, scripts: { check: sig } }, null, 2)}\n`,
+  );
+  write(join(F.WT2, "packages/p/index.ts"), 'export * from "./p.ts";\n');
+  write(join(F.WT2, "apps/y/caller.ts"), 'import { p } from "../../packages/p/index.ts";\np(1);\n');
+  gDo(F.WT2, "add", "-A");
+  gDo(F.WT2, "commit", "-q", "-m", "the trunk adds a caller of the package's barrel");
+  gDo(F.WT2, "push", "-q", "origin", "HEAD:main");
+  write(join(F.WT1, "packages/p/p.ts"), "export const p = (a: number, b: number): number => a + b;\n");
+  r = land(1, ["thread one"], { merge: true });
+  is("a package change reaching a trunk caller through a barrel exits 3", r.rc, "3");
+  has(
+    "…naming the app that imports the barrel",
+    r.out,
+    `NOT CLOSED: apps/y's check fails on the merged tree in ${F.WT1}: caller.ts(1,1): error TS2554: Expected 2 arguments, but got 1.`,
+  );
+  is("…and nothing of it was pushed", onMain(F.CODE, "packages/p/p.ts"), "no");
+
   // 3. The REAL roadmap gate over a row-by-row ROADMAP merge: two threads each add
   //    a row to one project, the second landing after the first. Thread one
   //    also finishes R1, so thread two's own table still says R1 is next while
@@ -4088,12 +4113,11 @@ kase("Case 26: audit lines, harness links and the saved report", () => {
 // that writes the spec `complete` owes them, holds whatever flag it was given,
 // and --release runs each command check itself and accepts an evidence check
 // only from a record taken on the deployment live now. What is live is each
-// repo's trunk on its bare origin, read for real, or a stubbed answer from a
-// file (LIVE_CHECKS_TEST_SOURCES) where a case needs the live commit to differ.
-// A stubbed target also records no deployment (`<target>#deployment`: null)
-// and no check still running on its trunk (`<target>#pending`: []): an origin
-// with a GitHub name is read as GitHub, through `insteadOf` or an SSH alias
-// alike, and this fixture has no deployments or checks for gh to list.
+// production deployment GitHub records for the repo, stubbed from a file
+// (LIVE_CHECKS_TEST_SOURCES) as a deployment named after its commit. A target
+// the file does not name is read for real: a fixture origin is a local bare
+// repo, not on GitHub, so nothing records what serves and the reader cannot
+// tell (case e).
 
 const liveStub = (): string => join(F.S, "live.json");
 const LIVE_ENV = (): Record<string, string> => ({
@@ -4103,20 +4127,15 @@ const LIVE_ENV = (): Record<string, string> => ({
 function liveLand(args: string[], extra: Record<string, string> = {}, bare = false): Res {
   return land(1, args, { merge: true, extra: { ...LIVE_ENV(), ...extra }, bare });
 }
-/** <answers> with no deployment recorded, and nothing still building the trunk,
- *  for each target it names, unless it says otherwise. */
-function noDeploy(answers: Record<string, unknown>): Record<string, unknown> {
-  const out: Record<string, unknown> = { ...answers };
-  for (const k of Object.keys(answers)) {
-    if (k.includes("#")) continue;
-    if (!(`${k}#deployment` in out)) out[`${k}#deployment`] = null;
-    if (!(`${k}#pending` in out)) out[`${k}#pending`] = [];
-  }
+/** <answers> with each commit given as the production deployment named after it. */
+function asDeployments(answers: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(answers)) out[k] = typeof v === "string" ? { id: v, sha: v } : v;
   return out;
 }
 /** What the stub calls live, per target; a target it does not name is read for real. */
 function stubLive(answers: Record<string, unknown>): void {
-  write(liveStub(), JSON.stringify(noDeploy(answers)));
+  write(liveStub(), JSON.stringify(asDeployments(answers)));
 }
 /** The commit live on the workbench target, as the stub answers it. */
 function deployed(sha: string): void {
@@ -4332,7 +4351,7 @@ kase("Case 27: live checks are owed, run and proved before a held close is relea
     `cannot read the live revision of ${T}: origin 503`,
   );
   stubLive({ [T]: prodTip });
-  write(`${liveStub()}.flip`, JSON.stringify(noDeploy({ [T]: prodTip.slice(0, 12) })));
+  write(`${liveStub()}.flip`, JSON.stringify(asDeployments({ [T]: prodTip.slice(0, 12) })));
   r = liveLand(["--release"]);
   is("(b) a deploy landing during the checks is refused", r.rc, "3");
   has("(b) …saying the repo changed", r.out, `the live ${T} changed during the checks`);
@@ -4522,4 +4541,32 @@ kase("Case 27: live checks are owed, run and proved before a held close is relea
   write(join(F.WT1, "note.txt"), "another unrelated change\n");
   liveLand(["another unrelated change", "--hold"]);
   is("(d) an owed check whose spec is gone is cleared", owedKeys(), "rows/002-second/ping");
+
+  // (e) Nothing records what serves: the fixture's origin is not on GitHub, so
+  // the reader cannot tell which commit is live. An evidence check cannot be
+  // taken, saying why; a command check, which proves itself, still runs.
+  fixture("c27e");
+  seedRows("| R1 | first | — | in-progress | `specs/001-first/` |");
+  finishSpec(
+    "001-first",
+    liveBlock("ping | workbench | command | true", "shot | workbench | evidence | the page shows one"),
+  );
+  r = liveLand(["ship R1"]);
+  is("(e) it holds", r.rc, "4");
+  r = liveLand(["--live-start", "rows/001-first/shot"]);
+  is("(e) --live-start where nothing records what serves is refused", r.rc, "3");
+  has(
+    "(e) …saying what an evidence check needs",
+    r.out,
+    "an evidence check needs a repo whose deploys GitHub records as production deployments",
+  );
+  r = liveLand(["--release"]);
+  is("(e) the release is refused for the evidence check", r.rc, "3");
+  has("(e) …naming it", r.out, "live check rows/001-first/shot: cannot tell which commit is live on workbench");
+  hasnt("(e) …and not for the command check", r.out, "live check rows/001-first/ping");
+  finishSpec("001-first", liveBlock("ping | workbench | command | true"));
+  liveLand(["only the command check", "--hold"]);
+  r = liveLand(["--release"]);
+  is("(e) with only the command check owed, it releases", r.rc, "0");
+  has("(e) …saying the command passed where nothing records the commit", r.out, "- rows/001-first/ping — `true` passed on workbench (none — ");
 });

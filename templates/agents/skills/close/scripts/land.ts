@@ -148,7 +148,7 @@ import {
   symlinkSync,
   writeFileSync,
 } from "node:fs";
-import { basename, dirname, join, resolve } from "node:path";
+import { basename, dirname, join, posix, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Exit, exit, runToExit } from "../../../packages/cli-exit/cli-exit.ts";
 import { contains, githubRepoOf as readGithubRepo, liveRevision, parseLiveChecks, type Revision, sourceRepo } from "./live-checks.ts";
@@ -613,6 +613,10 @@ async function main(): Promise<void> {
       throw new Error(`cannot read the live revision of ${target}: ${e instanceof Error ? e.message : String(e)}`);
     }
   };
+  // Where nothing records which commit serves, a capture cannot be tied to
+  // one (live-checks.ts's header); a command check proves itself and runs.
+  const cannotTell = (target: string, rev: Revision): string =>
+    `cannot tell which commit is live on ${target} (${rev.deploymentId}) — an evidence check needs a repo whose deploys GitHub records as production deployments; a command check works anywhere`;
 
   // ── An evidence check, recorded in two steps ─────────────────────────────
   //
@@ -634,6 +638,7 @@ async function main(): Promise<void> {
       } catch (e) {
         notClosed(e instanceof Error ? e.message : String(e));
       }
+      if (rev.sourceCommit === null) notClosed(`${LIVE_KEY}: ${cannotTell(o.target, rev)}`);
       passed[LIVE_KEY] = { key: LIVE_KEY, startRevision: rev, time: new Date().toISOString() };
       writePassed(passed);
       say(
@@ -1748,28 +1753,27 @@ c.on("exit", (code, sig) => {
       }
       const rev = before.get(o.target);
       if (!rev) continue;
-      if (rev.sourceCommit === null) {
-        fails.push(
-          `live check ${o.key}: cannot tell which commit is live on ${o.target} (deployment ${rev.deploymentId})`,
-        );
+      const live = rev.sourceCommit;
+      if (live === null && o.kind === "evidence") {
+        fails.push(`live check ${o.key}: ${cannotTell(o.target, rev)}`);
         continue;
       }
-      const ck = `${o.repo}\t${o.commit}\t${rev.sourceCommit}`;
-      const has = seen.get(ck) ?? contains(o.repo, o.commit, rev.sourceCommit);
-      seen.set(ck, has);
-      if (has === "not") {
-        fails.push(
-          `live check ${o.key}: the live ${o.target} does not contain ${short(o.commit)} (it serves ${short(rev.sourceCommit)})`,
-        );
-        continue;
+      if (live !== null) {
+        const ck = `${o.repo}\t${o.commit}\t${live}`;
+        const has = seen.get(ck) ?? contains(o.repo, o.commit, live);
+        seen.set(ck, has);
+        if (has === "not") {
+          fails.push(
+            `live check ${o.key}: the live ${o.target} does not contain ${short(o.commit)} (it serves ${short(live)})`,
+          );
+          continue;
+        }
+        if (has === "unreadable") {
+          fails.push(`live check ${o.key}: the live ${o.target} serves ${short(live)}, which ${o.repo} does not have`);
+          continue;
+        }
       }
-      if (has === "unreadable") {
-        fails.push(
-          `live check ${o.key}: the live ${o.target} serves ${short(rev.sourceCommit)}, which ${o.repo} does not have`,
-        );
-        continue;
-      }
-      const at = `${o.target} at ${short(rev.deploymentId)}`;
+      const at = live === null ? `${o.target} (${rev.deploymentId})` : `${o.target} at ${short(rev.deploymentId)}`;
       if (o.kind === "command") {
         // Through timeout(1), which signals the whole process group of the command:
         // a child the command started (a sleep, a server) would otherwise keep
@@ -2161,7 +2165,12 @@ c.on("exit", (code, sig) => {
     // all; so every app in the merged tree that imports a changed shared code
     // file is checked too. Imports here are relative and carry the extension, so
     // the repo-relative path is a literal substring of the specifier — the rule
-    // verify.ts's importer pass reads by.
+    // verify.ts's importer pass reads by. Inside shared code it is not: a
+    // package's index.ts names its p.ts as `./p.ts`, so an app importing the
+    // index reached no check when p.ts changed (Contextium v9.2.0 review). So
+    // each shared file importing a changed one, its relative specifiers
+    // resolved, joins the changed set in turn until none is new — the set only
+    // grows and is bounded by the shared files, so a cycle ends it.
     const mergedAppChecks = (base: string): void => {
       if (!IS_WORKBENCH) return;
       // Each changed file's app is the nearest folder under apps/ holding a
@@ -2179,6 +2188,38 @@ c.on("exit", (code, sig) => {
       for (const p of changedPaths(WT, base)) {
         if (p.startsWith("apps/")) appOf(p);
         else if (/^(integrations|packages)\/[^/]+\/.+\.(ts|tsx|mts|mjs|js)$/.test(p)) shared.push(p);
+      }
+      if (shared.length > 0) {
+        const specs = new Map<string, string[]>();
+        const walk = (dir: string): void => {
+          for (const e of readdirSync(`${WT}/${dir}`, { withFileTypes: true })) {
+            const p = `${dir}/${e.name}`;
+            if (e.isDirectory() && e.name !== "node_modules") walk(p);
+            else if (e.isFile() && /\.(ts|tsx|mts|mjs|js)$/.test(e.name)) {
+              const to: string[] = [];
+              for (const m of readFileSync(`${WT}/${p}`, "utf8").matchAll(
+                /\b(?:from|import|require)\s*\(?\s*["'](\.{1,2}\/[^"']+)["']/g,
+              ))
+                to.push(posix.normalize(posix.join(posix.dirname(p), m[1] ?? "")));
+              specs.set(p, to);
+            }
+          }
+        };
+        try {
+          for (const top of ["integrations", "packages"]) if (isDir(`${WT}/${top}`)) walk(top);
+        } catch (e) {
+          notClosed(`could not read the shared code in ${WT} for importers of what changed — ${(e as Error).message}`);
+        }
+        const seen = new Set(shared);
+        for (let grew = true; grew; ) {
+          grew = false;
+          for (const [p, to] of specs) {
+            if (seen.has(p) || !to.some((x) => seen.has(x))) continue;
+            seen.add(p);
+            shared.push(p);
+            grew = true;
+          }
+        }
       }
       if (shared.length > 0 && isDir(`${WT}/apps`)) {
         const g = run(
