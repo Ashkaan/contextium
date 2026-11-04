@@ -512,6 +512,24 @@ test("a located blocker in an unchanged, undeclared file stands on a round over 
   assert.match(f1.err, /1 must-fix\/should-fix finding\(s\) unresolved/);
 });
 
+// The first location in a finding decides its file: one in the undeclared
+// apps/site/Makefile that cites the changed .agents/skills/demo/b.ts:5 later in the line
+// was resolved to b.ts and closed by a round over b.ts (final v9.2.0 review).
+// A path known to the review counts as the finding's file only when it leads.
+test("a located blocker citing another, changed file stays bound to its leading location", () => {
+  const d = repo("blkcites");
+  const env = owner("blkcites");
+  const t0 = snap(d);
+  assert.match(begin(env, d).out, /RECEIPT=review/);
+  const blocker = "[must-fix] apps/site/Makefile:12: calls .agents/skills/demo/b.ts:5 — fix — breaks";
+  assert.equal(run(env, "finish", "--repo", d, "--rc", "0", "--result", result("bc0", [blocker])).out, "APPROVED=0");
+  writeFileSync(join(d, ".agents/skills/demo/b.ts"), "export const b = 2;\n");
+  begin(env, d, "since", ["--since", t0]);
+  const f1 = run(env, "finish", "--repo", d, "--rc", "0", "--result", result("bc1", []));
+  assert.equal(f1.out, "APPROVED=0", "a round over b.ts does not close a blocker located in apps/site/Makefile");
+  assert.match(f1.err, /1 must-fix\/should-fix finding\(s\) unresolved/);
+});
+
 // The control: a blocker with no location at all names no file, so it closes
 // on a round that changed something.
 test("a blocker with no location names no file", () => {
@@ -886,6 +904,42 @@ for (const [tag, title] of [
       items.openFindings[0] ?? "",
       /^\[must-fix\] \.agents\/skills\/demo\/a\.ts:12: /,
       "the location leads the line",
+    );
+    const f = run(env, "finish", "--repo", d, "--rc", "0", "--result", result(`${tag}-1`, []));
+    assert.equal(f.out, "APPROVED=0", "a round over b.ts alone does not clear the blocker located in a.ts");
+    assert.match(f.err, /1 must-fix\/should-fix finding\(s\) unresolved/);
+  });
+}
+
+// The first location in a finding decides its file. With a.ts unchanged and
+// undeclared, the rewritten line `a.ts:12: **\`b.ts:5\` callers break** …`
+// was bound to b.ts, the only path the review knew, and a round over b.ts
+// cleared it (final v9.2.0 review); and a location after the title written
+// without backticks lost to the title's citation, which fileFirst moved to
+// the front. The location after the title leads, and the blocker stays.
+for (const [tag, loc] of [
+  ["fallback-lead", "`.agents/skills/demo/a.ts:12`"],
+  ["fallback-lead-bare", ".agents/skills/demo/a.ts:12"],
+] as const) {
+  test(`a fallback finding located at ${loc} in an undeclared file is bound to it, not its title's b.ts:5`, () => {
+    const d = repo(tag);
+    const env = owner(tag);
+    const t0 = snap(d);
+    assert.match(begin(env, d).out, /RECEIPT=review/);
+    run(env, "finish", "--repo", d, "--rc", "3");
+    const reply = join(TMP, `${tag}.txt`);
+    writeFileSync(
+      reply,
+      `1. **\`.agents/skills/demo/b.ts:5\` callers break**: ${loc} — wrong — verdict: **fix-now** — failure: breaks — fix it\n`,
+    );
+    assert.equal(run(env, "finish", "--repo", d, "--fallback", reply).out, "APPROVED=0");
+    writeFileSync(join(d, ".agents/skills/demo/b.ts"), "export const b = 2;\n");
+    const b1 = begin(env, d, "since", ["--since", t0]);
+    const items = JSON.parse(readFileSync(b1.out.match(/ITEMS_FILE=(.*)/)?.[1] ?? "", "utf8"));
+    assert.match(
+      items.openFindings[0] ?? "",
+      /^\[must-fix\] \.agents\/skills\/demo\/a\.ts:12: /,
+      "the location after the title leads the line",
     );
     const f = run(env, "finish", "--repo", d, "--rc", "0", "--result", result(`${tag}-1`, []));
     assert.equal(f.out, "APPROVED=0", "a round over b.ts alone does not clear the blocker located in a.ts");

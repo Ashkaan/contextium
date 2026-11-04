@@ -710,22 +710,26 @@ const GAP_WORDS: Record<string, string> = {
 };
 
 /** The file a triage line names first (`[must-fix] a.ts:12: …`), or null.
- *  The whole path before its line location, spaces and colons included
- *  (`src/my file.ts:12:`, `src/x:y é.ts:12:`): a path cut at its space or
- *  colon named no file, and its blocker closed on any round that changed
- *  anything (Contextium v9.2.0 reviews). A path followed by `:<line>` may hold
- *  colons but never a colon followed by a space, so prose (`Note: … a.ts:12`)
- *  is not read as a file; one with no line holds no colon at all.
- *  First, though, a <known> path (the paths the review covered or changed)
- *  the line names followed by `:<line>` — the first such location, the longest
- *  path there — the only reading of a path with no extension (`Makefile:12:`)
- *  or holding `: ` (`x: y é.ts:12:`), whose blockers otherwise closed on any
- *  round (third v9.2.0 review). */
+ *  The first location in a finding decides its file: the `<path>:<line>`
+ *  leading the line after its tag, with or without an extension, even when
+ *  it names no file the review knows. Read anywhere else, a later citation
+ *  won: `apps/site/Makefile:12: calls b.ts:5` was bound to b.ts and closed
+ *  by a round over b.ts (final v9.2.0 review). At the leading position the
+ *  longest <known> path (the paths the review covered or changed) followed by
+ *  `:<line>` is taken first — the only reading of a path holding `: `
+ *  (`x: y é.ts:12:`); otherwise the whole path before its line, spaces and
+ *  colons included (`src/my file.ts:12:`, `src/x:y é.ts:12:`), but never
+ *  across a colon followed by a space, so prose (`Note: … a.ts:12`) leads
+ *  with no location. Only a line with no leading location falls back to the
+ *  first <known> path it names followed by `:<line>`, then to a leading
+ *  file name with no line, which holds no colon at all. */
 export function findingFile(line: string, known: Iterable<string> = []): string | null {
   const body = line.replace(/^\[[a-z-]+\]\s*/, "");
+  let lead: string | null = null;
   let best: { at: number; p: string } | null = null;
   for (const p of known) {
     if (p === "") continue;
+    if (body.startsWith(p) && /^:\d/.test(body.slice(p.length)) && (lead === null || p.length > lead.length)) lead = p;
     for (let at = body.indexOf(p); at >= 0; at = body.indexOf(p, at + 1)) {
       if (at > 0 && !/[\s`'"(\[]/.test(body[at - 1] ?? "")) continue;
       if (!/^:\d/.test(body.slice(at + p.length))) continue;
@@ -733,9 +737,12 @@ export function findingFile(line: string, known: Iterable<string> = []): string 
       break;
     }
   }
-  if (best !== null) return best.p;
-  const located = body.match(/^(\S(?:(?!:\s).)*?\.[A-Za-z0-9]+):\d+(?:-\d+)?(?=[:\s,;]|$)/);
+  if (lead !== null) return lead;
+  const located =
+    body.match(/^(\S(?:(?!:\s).)*?\.[A-Za-z0-9]+):\d+(?:-\d+)?(?=[:\s,;]|$)/) ??
+    body.match(/^(\S(?:(?!:\s).)*?):\d+(?:-\d+)?(?=[:\s,;]|$)/);
   if (located) return located[1] ?? null;
+  if (best !== null) return best.p;
   return body.match(/^([^:\s][^:]*?\.[A-Za-z0-9]+):/)?.[1] ?? null;
 }
 
@@ -978,13 +985,16 @@ function summary(r: Receipt): string {
  * tail, file first (`a.ts:12: **title** — nature — …`), so findingFile reads
  * the file it names. Kept title-first, the finding named no file, and a later
  * round that changed only another file cleared it (Contextium v9.2.0 review).
- * The location is the backticked path followed by `:<line>`, as findingFile
- * reads one; only without one is it the first backticked file name — a title
- * naming another file first bound the blocker to that file (third review).
+ * The location is the first path followed by `:<line>`, backticked or not
+ * (a bare one holds a `.` or `/`), as findingFile reads one; only without
+ * one is it the first backticked file name — a title naming another file
+ * first bound the blocker to that file (third review).
  * Both are looked for after the title (its closing `**`, else the first `: `
  * or ` — `), and in the title only when none follows: a title holding a
  * located path (`b.ts:5` callers break) bound the blocker to it (fourth
- * review). A line with no backticked path is returned as it came.
+ * review). A location after the title written without backticks lost to a
+ * title citation, which went to the front and so became the finding's file
+ * (final review). A line with no path is returned as it came.
  */
 function fileFirst(l: string): string {
   const close = l.startsWith("**") ? l.indexOf("**", 2) : -1;
@@ -992,8 +1002,10 @@ function fileFirst(l: string): string {
   const end = close >= 0 ? close + 2 : (sep?.index ?? 0);
   const find = (from: number): { at: number; whole: string; path: string } | null => {
     const t = l.slice(from);
-    const m = /`([^`\s][^`]*?:\d+(?:-\d+)?)`/.exec(t) ?? /`([^`\s][^`]*?\.[A-Za-z0-9]+(?::\d+(?:-\d+)?)?)`/.exec(t);
-    return m ? { at: from + m.index, whole: m[0], path: m[1] ?? "" } : null;
+    const m =
+      /`([^`\s][^`]*?:\d+(?:-\d+)?)`|(?<![^\s(])((?=[^\s`*():]*[./])[^\s`*():]+:\d+(?:-\d+)?)(?=[\s,;:)]|$)/.exec(t) ??
+      /`([^`\s][^`]*?\.[A-Za-z0-9]+(?::\d+(?:-\d+)?)?)`/.exec(t);
+    return m ? { at: from + m.index, whole: m[0], path: m[1] ?? m[2] ?? "" } : null;
   };
   const loc = find(end) ?? find(0);
   if (!loc) return l;
