@@ -12,6 +12,7 @@
 // Usage:
 //   validate.ts --phase checks --scope <arg>
 //   validate.ts --phase review --base <sha> --head <sha> [--since <tree>] --scope <arg> [--report <path>]
+//   validate.ts --phase review --base <sha> --head <sha> --slice <file> --scope <arg> [--report <path>]
 //   validate.ts --phase qa-list [--base <sha>]
 //   validate.ts --phase qa-revalidate --since <tree> [--report <path>]
 //   validate.ts --require-qa --targets-file <path> --tree <sha>
@@ -28,6 +29,10 @@
 //   --since <tree>       a tree from `code-review.ts --snapshot`; scopes the
 //                        review to what changed since it (phase review rounds
 //                        2+, and every qa-revalidate)
+//   --slice <file>       one piece of the full review: a NUL-separated
+//                        list of the changed files this piece reviews, over
+//                        the same --base and --head as the set's other pieces.
+//                        Only with --phase review --base/--head, never --since
 //   --targets-file PATH  the QA_TARGETS list (one absolute path per line)
 //   --tree <sha>         the tree every target's QA marker must be keyed on
 //   --report <path>      the spec's report.md, whose `test-failure-observed:`
@@ -43,6 +48,10 @@
 //   NEED_E2E=0|1     the tree moved since the phase started, so SPEC § 6 has to
 //                    be walked again
 //
+// A piece whose set has not read every changed file yet also prints
+// `SLICE_PENDING=<n>` and one `unread: <path>` line per file still unread,
+// before the two fields. That alone is not NEED_FIX — the next piece reads them
+// — but the phase still exits 1, because nothing is approved yet.
 // `--phase review` / `qa-revalidate` additionally print `NEED_FALLBACK_REVIEW=1`
 // when no independent reviewer answered (code-review.ts exit 3), and exit 3:
 // the review is PENDING, not passed. Run the implement-audit-reviewer agent in a
@@ -200,6 +209,7 @@ async function main(): Promise<void> {
   let TARGETS_FILE = "";
   let TREE = "";
   let REPORT = "";
+  let SLICE = "";
   let REQUIRE_QA = false;
   let FALLBACK_FILE = "";
   let REPO_DIR = process.env.CLAUDE_PROJECT_DIR ?? "";
@@ -244,6 +254,9 @@ async function main(): Promise<void> {
       case "--report":
         REPORT = value();
         break;
+      case "--slice":
+        SLICE = resolve(value());
+        break;
       case "--repo":
         REPO_DIR = value();
         break;
@@ -287,6 +300,15 @@ async function main(): Promise<void> {
     exit(2);
   }
   REPO_DIR = resolve(REPO_DIR);
+  // A piece is one part of the build bucket's full review, and nothing else.
+  if (SLICE !== "" && PHASE !== "review") {
+    err("validate: --slice applies only to --phase review's full review (--base and --head)");
+    exit(2);
+  }
+  if (SLICE !== "" && SINCE !== "") {
+    err("validate: --slice is a piece of the full review; a --since round reviews the fixes across the whole change");
+    exit(2);
+  }
 
   // The reviewer is read from the repo under test first: the workbench carries it
   // at .agents/skills/review/.
@@ -421,7 +443,14 @@ async function main(): Promise<void> {
   // reviewer's exit (2 for a caller error in the receipt's inputs, 1 when the
   // attempt could not be recorded) and its stdout. NEED_FIX for an unapproved
   // receipt is the caller's, which knows whether findings explain it.
-  type Reviewed = { rc: number; out: string; approved: boolean | null; items: string };
+  type Reviewed = {
+    rc: number;
+    out: string;
+    approved: boolean | null;
+    items: string;
+    /** A piece whose set is not complete: the changed files still unread, and whether anything else already blocks it. */
+    pending?: { unread: number; lines: string[]; blocked: boolean };
+  };
   const runReview = (bucket: "build" | "qa", tree: string): Reviewed => {
     const mode = SINCE !== "" ? "since" : "range";
     let itemsFile = "";
@@ -434,6 +463,7 @@ async function main(): Promise<void> {
       if (bucket === "build") args.push("--scope", SCOPE);
       if (SINCE !== "") args.push("--since", SINCE);
       if (REPORT !== "") args.push("--report", REPORT);
+      if (SLICE !== "") args.push("--slice", SLICE);
       const b = runTs(AUDIT, args, { env: withRepo(), capture: true });
       const said = b.stdout ?? "";
       if (statusOf(b) === 2) return { rc: 2, out: "", approved: false, items: "" };
@@ -456,7 +486,11 @@ async function main(): Promise<void> {
         if (itemsFile !== "") env.CODE_REVIEW_COVERAGE_FILE = itemsFile;
       }
       const call = (extra: string[]) =>
-        runTs(REVIEW, SINCE !== "" ? ["--since", SINCE, ...extra] : [BASE, HEAD_REF], { env, capture: true });
+        runTs(
+          REVIEW,
+          SINCE !== "" ? ["--since", SINCE, ...extra] : [BASE, HEAD_REF, ...(SLICE !== "" ? ["--slice", SLICE] : [])],
+          { env, capture: true },
+        );
       let review = call([]);
       let rc = statusOf(review);
       // At the ceiling, the fixes made since the last round still get their one
@@ -475,17 +509,25 @@ async function main(): Promise<void> {
         }
       }
       let approved: boolean | null = null;
+      let pending: Reviewed["pending"];
       if (keep) {
         const fargs = ["finish", "--repo", REPO_DIR, "--rc", String(rc)];
         if (rc === 0 && isFile(resultFile)) fargs.push("--result", resultFile);
         const f = runTs(AUDIT, fargs, { env: withRepo(), capture: true });
         approved = /^APPROVED=1$/m.test(f.stdout ?? "");
+        const sp = (f.stdout ?? "").match(/^SLICE_PENDING=(\d+)$/m);
+        if (sp)
+          pending = {
+            unread: Number(sp[1]),
+            lines: (f.stdout ?? "").split("\n").filter((l) => /^(?:unread|unchecked): /.test(l)),
+            blocked: /^SLICE_BLOCKED=1$/m.test(f.stdout ?? ""),
+          };
         if (statusOf(f) !== 0) {
           err("validate: the review's outcome could not be recorded — it cannot count.");
           if (rc === 0) rc = 1;
         } else if (rc === 0 || rc === 4) out(`RECEIPT: ${approved ? "approved" : "not approved (reasons above)"}`);
       }
-      return { rc, out: review.stdout ?? "", approved, items: itemsFile };
+      return { rc, out: review.stdout ?? "", approved, items: itemsFile, ...(pending ? { pending } : {}) };
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -534,11 +576,20 @@ async function main(): Promise<void> {
       exit(statusOf(f) === 2 ? 2 : 1);
     }
     process.stdout.write(text.endsWith("\n") || text === "" ? text : `${text}\n`);
-    if (/^\[(must-fix|should-fix)\]|verdict: \*\*(fix-now|deferred-batch-[0-9]+)\*\*/m.test(text) || !approved) NEED_FIX = 1;
+    // A piece whose set is not complete: the next piece reads what is unread,
+    // so that alone is not a change request — but nothing is approved yet.
+    const fsaid = f.stdout ?? "";
+    const sp = fsaid.match(/^SLICE_PENDING=(\d+)$/m);
+    if (sp) {
+      out(`SLICE_PENDING=${sp[1]}`);
+      for (const l of fsaid.split("\n")) if (/^(?:unread|unchecked): /.test(l)) out(l);
+    }
+    const onlyPending = sp !== null && !/^SLICE_BLOCKED=1$/m.test(fsaid);
+    if (/^\[(must-fix|should-fix)\]|verdict: \*\*(fix-now|deferred-batch-[0-9]+)\*\*/m.test(text) || (!approved && !onlyPending)) NEED_FIX = 1;
     out(`RECEIPT: ${approved ? "approved" : "not approved (reasons above)"}`);
     out("NOTE: recorded as claude-fallback (fresh context, NOT independent)");
     emitFields();
-    exit(NEED_FIX === 0 ? 0 : 1);
+    exit(NEED_FIX === 0 && !sp ? 0 : 1);
   }
 
   // ── --require-qa ──────────────────────────────────────────────────────
@@ -732,7 +783,16 @@ async function main(): Promise<void> {
     // A review that completed but did not approve — an unchecked declared item,
     // a reviewed range missing a changed path, or blockers a converged round
     // left standing — is a change request, never a pass.
-    if ((reviewRc === 0 || reviewRc === 4) && reviewed.approved === false) NEED_FIX = 1;
+    // A piece set still being read is not a change request: the next piece
+    // reads the files it names. Anything else that already blocks the
+    // set — a finding, a writer as reviewer, a later commit — still is.
+    const pending = reviewed.pending;
+    if (pending) {
+      out(`SLICE_PENDING=${pending.unread}`);
+      for (const l of pending.lines) out(l);
+    }
+    const onlyPending = pending !== undefined && !pending.blocked;
+    if ((reviewRc === 0 || reviewRc === 4) && reviewed.approved === false && !onlyPending) NEED_FIX = 1;
 
     const POST = snapshot();
     out(`POST_TREE=${POST}`);
@@ -754,7 +814,7 @@ async function main(): Promise<void> {
     }
 
     emitFields();
-    exit(reviewRc === 5 ? 5 : NEED_FIX !== 0 ? 1 : PENDING_FALLBACK ? 3 : reviewRc === 4 ? 4 : 0);
+    exit(reviewRc === 5 ? 5 : NEED_FIX !== 0 || pending ? 1 : PENDING_FALLBACK ? 3 : reviewRc === 4 ? 4 : 0);
   }
 
   // ── --phase qa-list ───────────────────────────────────────────────────

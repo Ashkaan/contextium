@@ -1,0 +1,16 @@
+{
+  "hookEventName": "stop",
+  "sessionId": "01a1a429-c57f-7f90-a666-8a077de80694",
+  "cwd": "/home/user/probe/20261104T012558Z-1ca8/stop",
+  "workspaceRoot": "/home/user/probe/20261104T012558Z-1ca8/stop",
+  "timestamp": "2026-11-04T01:26:19.567014901+00:00",
+  "transcriptPath": "/home/user/probe/20261104T012558Z-1ca8/home/grok/.grok/sessions/%2Fhome%2Fuser%2Fprobe%2F20261104T012558Z-1ca8%2Fstop/01a1a429-c57f-7f90-a666-8a077de80694/updates.jsonl",
+  "permissionMode": "bypassPermissions",
+  "reason": "shutdown",
+  "stopHookActive": false,
+  "hook_event_name": "Stop",
+  "session_id": "01a1a429-c57f-7f90-a666-8a077de80694",
+  "transcript_path": "/home/user/probe/20261104T012558Z-1ca8/home/grok/.grok/sessions/%2Fhome%2Fuser%2Fprobe%2F20261104T012558Z-1ca8%2Fstop/01a1a429-c57f-7f90-a666-8a077de80694/updates.jsonl",
+  "permission_mode": "bypassPermissions",
+  "stop_hook_active": false
+}

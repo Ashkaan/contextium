@@ -11,10 +11,11 @@ level up, in this folder's parent.
 
 | Eval | Asks | Costs |
 |---|---|---|
-| `caller-contract.eval.ts` | Does the reviewer catch a caller the diff never shows it? | one vendor call |
+| `caller-contract.eval.ts` | Does the reviewer catch a caller the diff never shows it — in a whole review, and in a piece (`--slice`) that holds only the callee while the changed caller sits in another piece? | one vendor call per case, two by default |
 
 ```bash
-node --experimental-strip-types .agents/skills/review/evals/caller-contract.eval.ts             # the rerun
+node --experimental-strip-types .agents/skills/review/evals/caller-contract.eval.ts             # the rerun, both cases
+node --experimental-strip-types .agents/skills/review/evals/caller-contract.eval.ts --case sliced  # one case, one call
 node --experimental-strip-types .agents/skills/review/evals/caller-contract.eval.ts --pack-only # free half
 ```
 

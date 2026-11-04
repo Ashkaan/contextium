@@ -191,6 +191,13 @@ function jqEdit(filter: string, file: string): void {
 }
 const guardsIn = (file: string): string =>
   jq("-r", '[.hooks.PreToolUse[]?.hooks[]?.command | select(startswith(": contextium;"))] | length', file);
+/** The harness each Contextium end-of-turn (Stop) entry in a file names, space-separated. */
+const stopsIn = (file: string): string =>
+  jq(
+    "-r",
+    '[.hooks.Stop[]?.hooks[]?.command | select(startswith(": contextium;")) | select(contains("check-close-reached.sh")) | split(" --harness ")[1]] | join(" ")',
+    file,
+  );
 
 function lexists(p: string): boolean {
   try {
@@ -933,7 +940,7 @@ test(
   rows((r) => {
     writeFileSync(CURL_LOG, "");
     scratch();
-    install([T], { input: "8\ny\nPat Doe\n2\n\n\n\nn\n", env: { CONTEXTIUM_PROMPT_STDIN: "1" } });
+    install([T], { input: "8\nPat Doe\n2\n\n\ny\n\nn\n", env: { CONTEXTIUM_PROMPT_STDIN: "1" } });
     r.hasOut("the harness is the first question", "Which tool will you drive this repo with?");
     r.is("the eighth tool is Grok Build", field(join(T, ".agents/harness"), "harness"), "grok");
     r.is("a yes to the offer installs it", cat(CURL_LOG), "https://x.ai/cli/install.sh");
@@ -943,7 +950,7 @@ test(
 
     stubClaude("2.1.283");
     scratch();
-    install([T], { input: "1\n1 2\nn\nPat\n1\n\n\n\nn\n", env: { CONTEXTIUM_PROMPT_STDIN: "1" } });
+    install([T], { input: "1\n1 2\nPat\n1\n\n\nn\n\nn\n", env: { CONTEXTIUM_PROMPT_STDIN: "1" } });
     r.hasOut("T3 Code asks which agent it runs", "Which agent will T3 Code run?");
     r.is("the first agent picked writes the code", cat(join(T, ".agents/harness")), "harness=t3\nagent=claude\ntools=t3 claude codex");
     r.is("Claude Code among them is wired", readlink(join(HOME, ".claude/skills")), join(HOME, ".agents/skills"));
@@ -1304,6 +1311,52 @@ test(
   }),
 );
 
+// ── the end-of-turn check (Stop) ─────────────────────────────────────────
+// The close's end-of-turn check runs as each covered harness's Stop hook,
+// naming that harness: Claude Code's copy is merged into ~/.claude/settings.json
+// as --harness claude; the manifest Codex (and Grok Build) link to says codex.
+
+test(
+  "the end-of-turn check is wired on Stop for Claude Code and Codex",
+  rows((r) => {
+    if (fresh("--all-tools") !== 0) r.bad(`--all-tools install exited non-zero: ${tail(out, 5)}`);
+    const settings = join(H, ".claude/settings.json");
+    r.is("Claude Code's settings run the end-of-turn check as claude", stopsIn(settings), "claude");
+    r.check(fileHas(settings, join(T, ".agents/hooks/check-close-reached.sh")), "…naming this workbench's hook");
+    r.is("the manifest Codex links to runs it as codex", stopsIn(join(H, ".codex/hooks.json")), "codex");
+    r.there("the hook is installed", ".agents/hooks/check-close-reached.sh");
+    r.there("…and the check it runs", ".agents/skills/close/scripts/end-of-turn.ts");
+    r.hasOut("the check at the end counts it on both", "end-of-turn hook wired on claude, codex");
+    rerun("--all-tools");
+    r.is("a re-run adds no second Stop entry", stopsIn(settings), "claude");
+  }),
+);
+
+test(
+  "v9.1.0 -> the end-of-turn check",
+  rows((r) => {
+    const src = join(TMP, "v910src");
+    if (spawnSync("git", ["-C", HERE, "worktree", "add", "-q", "--detach", src, "v9.1.0"]).status !== 0) {
+      r.bad("cannot check out v9.1.0 for the upgrade rows — run from a clone with its tags");
+      return;
+    }
+    try {
+      scratch();
+      git("init", "-q", T);
+      install([T, "--yes", "--no-integrations", "--harness", "claude"], { script: join(src, "install.sh") });
+      const settings = join(H, ".claude/settings.json");
+      r.is("v9.1.0 wired no end-of-turn check", stopsIn(settings), "");
+      rerun("--harness", "claude");
+      r.is("the upgrade wires it into Claude Code's settings as claude", stopsIn(settings), "claude");
+      r.is("…keeping the guards, once", guardsIn(settings), "3");
+      r.there("…with the hook installed", ".agents/hooks/check-close-reached.sh");
+      r.hasOut("…and the check at the end counts it", "end-of-turn hook wired on claude");
+    } finally {
+      spawnSync("git", ["-C", HERE, "worktree", "remove", "--force", src]);
+    }
+  }),
+);
+
 // ── how much guidance AGENTS.md carries: --rules ─────────────────────────
 
 const AGENTS = (): string => join(T, ".agents/AGENTS.md");
@@ -1496,13 +1549,13 @@ test(
   "--rules: the interview asks, previews, and a no writes nothing",
   rows((r) => {
     scratch();
-    install([T], { input: "2\nn\nPat Doe\n2\n3\n\n\nn\n", env: { CONTEXTIUM_PROMPT_STDIN: "1" } });
+    install([T], { input: "2\nPat Doe\n2\n3\n\nn\n\nn\n", env: { CONTEXTIUM_PROMPT_STDIN: "1" } });
     r.hasOut("the level is asked", "How much guidance should AGENTS.md carry?");
     r.is("the third choice is full", levelOf(AGENTS()), "full");
     r.hasOut("the preview names what full adds", "Working preferences");
 
     scratch();
-    const status = install([T], { input: "2\nn\nPat Doe\n1\n1\nn\n", env: { CONTEXTIUM_PROMPT_STDIN: "1" } });
+    const status = install([T], { input: "2\nPat Doe\n1\n1\nn\n", env: { CONTEXTIUM_PROMPT_STDIN: "1" } });
     r.is("a no at the preview exits 1", String(status), "1");
     r.gone("…before the layer is written", ".agents");
   }),
@@ -1534,5 +1587,85 @@ test(
     r.is("the fetched installer runs", String(status), "0");
     r.hasOut("…after fetching", "fetched the template");
     r.is("…with --rules as given", levelOf(AGENTS()), "minimal");
+  }),
+);
+
+// ── v9.2.0 review round 2 ────────────────────────────────────────────────────
+test(
+  "--rules: two level names in one value are refused before anything is written",
+  rows((r) => {
+    scratch();
+    const target = join(T, "new");
+    const status = install([target, "--yes", "--no-integrations", "--harness", "claude", "--rules", "minimal recommended"]);
+    r.is("a combined value exits 1", String(status), "1");
+    r.gone("…and makes no target", "new");
+
+    fresh("--harness", "codex", "--rules", "minimal");
+    const A = AGENTS();
+    run(BASH, ["-c", `sed -e 's/^Contextium rule level: minimal\\./Contextium rule level: minimal recommended./' "$0" >"$0.x" && mv "$0.x" "$0"`, A]);
+    copyFileSync(A, join(TMP, "before"));
+    r.is("a recorded combined level exits 1", String(rerun()), "1");
+    r.check(same(A, join(TMP, "before")), "…leaving AGENTS.md as it was");
+  }),
+);
+
+test(
+  "an AGENTS.md block left open before a later complete block stops the run",
+  rows((r) => {
+    fresh("--harness", "codex");
+    const A = AGENTS();
+    // Drop the records block's closing marker; the blocks after it still close.
+    run(BASH, [
+      "-c",
+      `awk '/^<!-- contextium:records -->$/ { inrec = 1 } inrec && /^<!-- \\/contextium -->$/ { inrec = 0; next } { print }' "$0" >"$0.x" && mv "$0.x" "$0"`,
+      A,
+    ]);
+    copyFileSync(A, join(TMP, "before"));
+    r.is("the run stops", String(rerun()), "1");
+    r.hasOut("…saying a block is never closed", "is never closed");
+    r.check(same(A, join(TMP, "before")), "…and the file is untouched");
+  }),
+);
+
+test(
+  "an interactive rerun offers the workbench's own autonomy as the default",
+  rows((r) => {
+    fresh("--harness", "codex", "--autonomy", "autonomous", "--rules", "minimal");
+    install([T, "--harness", "codex", "--no-integrations", "--rules", "minimal"], {
+      input: "\n\n\n",
+      env: { CONTEXTIUM_PROMPT_STDIN: "1" },
+    });
+    r.hasOut("the question shows the recorded answer as its default", "Choose 1 or 2 [2]");
+    r.check(fileHasLine(AGENTS(), AUTO_LINE), "Enter keeps autonomous");
+  }),
+);
+
+// ── v9.2.0 review round 3 ────────────────────────────────────────────────────
+test(
+  "--force keeps a recorded level, and asks for --rules when it cannot read one",
+  rows((r) => {
+    fresh("--harness", "codex", "--rules", "full");
+    r.is("--force without --rules", String(rerun("--force")), "0");
+    r.is("…keeps the recorded full level", levelOf(AGENTS()), "full");
+    r.is("…and its preferences block", countLines(AGENTS(), /^<!-- contextium:preferences -->$/), "1");
+
+    run(BASH, ["-c", `sed -e 's/^Contextium rule level: full\\./Contextium rule level: huge./' "$0" >"$0.x" && mv "$0.x" "$0"`, AGENTS()]);
+    copyFileSync(AGENTS(), join(TMP, "before"));
+    r.is("--force over an unreadable level without --rules exits 1", String(rerun("--force")), "1");
+    r.hasOut("…naming --rules", "--rules");
+    r.check(same(AGENTS(), join(TMP, "before")), "…and writes nothing");
+    r.is("…with --rules it proceeds", String(rerun("--force", "--rules", "minimal")), "0");
+    r.is("…at that level", levelOf(AGENTS()), "minimal");
+  }),
+);
+
+test(
+  "a workbench the installer refuses gets no software installed first",
+  rows((r) => {
+    fresh("--harness", "codex", "--rules", "minimal");
+    run(BASH, ["-c", `sed -e 's/^Contextium rule level: minimal\\./Contextium rule level: huge./' "$0" >"$0.x" && mv "$0.x" "$0"`, AGENTS()]);
+    writeFileSync(CURL_LOG, "");
+    r.is("the refused rerun exits 1", String(rerun("--harness", "grok", "--install-missing")), "1");
+    r.is("…and installed nothing", cat(CURL_LOG), "");
   }),
 );

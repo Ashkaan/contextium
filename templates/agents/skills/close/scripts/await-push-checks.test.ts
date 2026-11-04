@@ -95,18 +95,12 @@ function env(url: string): NodeJS.ProcessEnv {
   return { ...process.env, HOME: home, PATH: `${bin}:${process.env.PATH ?? ""}` };
 }
 
-async function waiter(
-  handler: Handler,
-  ...args: string[]
-): Promise<{ code: number; out: string; err: string }> {
+async function waiter(handler: Handler, ...args: string[]): Promise<{ code: number; out: string; err: string }> {
   return runWaiter(handler, {}, args);
 }
 
 /** Same as `waiter`, with the color variables this harness sets forced on. */
-async function waiterForced(
-  handler: Handler,
-  ...args: string[]
-): Promise<{ code: number; out: string; err: string }> {
+async function waiterForced(handler: Handler, ...args: string[]): Promise<{ code: number; out: string; err: string }> {
   return runWaiter(handler, { FORCE_COLOR: "1", CLICOLOR_FORCE: "1" }, args);
 }
 
@@ -351,6 +345,20 @@ describe("await-push-checks: an empty commit", () => {
     assert.match(r.out, /^expected a deploy for o\/r and none started \(bbbbbbb reported Cloudflare Pages\)$/m);
   });
 
+  it("a lint-only parent does not hide the grandparent's Pages run from an empty commit", async () => {
+    const GRAND = "e".repeat(40);
+    const r = await waiter((p) => {
+      if (p === `repos/${REPO}/commits/${SHA}`) return { body: { sha: SHA, parents: [{ sha: PARENT }] } };
+      if (p === `repos/${REPO}/commits/${PARENT}`) return { body: { sha: PARENT, parents: [{ sha: GRAND }] } };
+      if (checkRuns(PARENT)(p)) return runs(run(2, "lint", "completed", "success"));
+      if (checkRuns(GRAND)(p))
+        return runs(run(5, "Cloudflare Pages", "completed", "success", "cloudflare-workers-and-pages"));
+      return undefined;
+    });
+    assert.equal(r.code, 1, r.out + r.err);
+    assert.match(r.out, /^expected a deploy for o\/r and none started \(an earlier push reported Cloudflare Pages\)$/m);
+  });
+
   const actionsAncestor = (workflow: string, changed: string[] = []): Handler =>
     withParent((p) => {
       if (p === `repos/${REPO}/compare/${PARENT}...${SHA}`)
@@ -557,6 +565,53 @@ describe("await-push-checks: marks owed from further back", () => {
     assert.equal(r.code, 1, r.out + r.err);
     assert.match(r.out, /^aaaaaaa superseded by ccccccc/m);
     assert.match(r.out, /deployer never reported\n$/);
+  });
+});
+
+describe("await-push-checks: a deploy app's run is owed like a mark", () => {
+  // A check run from an app other than Actions (a hosted deploy such as
+  // Cloudflare Pages) runs on every push, so a commit whose other checks ran
+  // still owes it: a broken deploy trigger must not pass on lint alone.
+  const lineage: Handler = (p) => {
+    if (p === `repos/${REPO}/commits/${SHA}`) return { body: { sha: SHA, parents: [{ sha: PARENT }] } };
+    if (checkRuns(PARENT)(p)) return runs(run(1, "Cloudflare Pages", "completed", "success", "cloudflare-pages"));
+    return undefined;
+  };
+  it("a parent's deploy-app run missing here fails, named", async () => {
+    const r = await waiter(
+      (p, n) => (checkRuns(SHA)(p) ? runs(run(2, "lint", "completed", "success")) : lineage(p, n)),
+      "--finish-timeout",
+      "1",
+    );
+    assert.equal(r.code, 1, r.out + r.err);
+    assert.match(r.out, /Cloudflare Pages never reported\n$/);
+  });
+  it("a lint-only parent does not hide the grandparent's deploy-app run", async () => {
+    const GRAND = "e".repeat(40);
+    const r = await waiter(
+      (p) => {
+        if (p === `repos/${REPO}/commits/${SHA}`) return { body: { sha: SHA, parents: [{ sha: PARENT }] } };
+        if (p === `repos/${REPO}/commits/${PARENT}`) return { body: { sha: PARENT, parents: [{ sha: GRAND }] } };
+        if (checkRuns(SHA)(p) || checkRuns(PARENT)(p)) return runs(run(2, "lint", "completed", "success"));
+        if (checkRuns(GRAND)(p)) return runs(run(1, "Cloudflare Pages", "completed", "success", "cloudflare-pages"));
+        return undefined;
+      },
+      "--finish-timeout",
+      "1",
+    );
+    assert.equal(r.code, 1, r.out + r.err);
+    assert.match(r.out, /Cloudflare Pages never reported\n$/);
+  });
+  it("the deploy-app run present here passes", async () => {
+    const r = await waiter((p, n) =>
+      checkRuns(SHA)(p)
+        ? runs(
+            run(2, "lint", "completed", "success"),
+            run(3, "Cloudflare Pages", "completed", "success", "cloudflare-pages"),
+          )
+        : lineage(p, n),
+    );
+    assert.equal(r.code, 0, r.out + r.err);
   });
 });
 

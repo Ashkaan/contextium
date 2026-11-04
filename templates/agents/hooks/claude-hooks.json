@@ -1,5 +1,5 @@
 {
-  "description": "Contextium's PreToolUse guards in the shape Claude Code, Codex and Grok Build read (the matchers name Grok's own tool names too). install.sh fills in __WORKBENCH__ and adds .agents/user-hooks.json to this installed copy; ~/.codex/hooks.json and ~/.grok/hooks/contextium.json link to it and ~/.claude/settings.json has it merged in. The leading `: contextium;` marks the entries a re-run replaces.",
+  "description": "Contextium's PreToolUse guards and the close's end-of-turn check (Stop), in the shape Claude Code, Codex and Grok Build read (the matchers name Grok's own tool names too). install.sh fills in __WORKBENCH__ and adds .agents/user-hooks.json to this installed copy; ~/.codex/hooks.json and ~/.grok/hooks/contextium.json link to it and ~/.claude/settings.json has it merged in. The Stop entry names its harness: `--harness codex` here, `--harness claude` in the copy merged into ~/.claude/settings.json; a Grok Build payload through either is told apart by its fields and allowed, since Grok Build is not covered. The leading `: contextium;` marks the entries a re-run replaces.",
   "hooks": {
     "PreToolUse": [
       {
@@ -21,6 +21,16 @@
           {
             "type": "command",
             "command": ": contextium; d=\"${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel 2>/dev/null)}\"; h=\"$d/.agents/hooks/check-shared-checkout-write.sh\"; [ -f \"$h\" ] || h=\"__WORKBENCH__/.agents/hooks/check-shared-checkout-write.sh\"; [ -f \"$h\" ] || exit 0; exec bash \"$h\""
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": ": contextium; d=\"${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel 2>/dev/null)}\"; h=\"$d/.agents/hooks/check-close-reached.sh\"; [ -f \"$h\" ] || h=\"__WORKBENCH__/.agents/hooks/check-close-reached.sh\"; [ -f \"$h\" ] || exit 0; exec bash \"$h\" --harness codex"
           }
         ]
       }

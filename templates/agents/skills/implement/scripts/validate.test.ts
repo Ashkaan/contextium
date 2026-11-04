@@ -1616,3 +1616,110 @@ test("receipt: an interrupted attempt never inherits the earlier approval for ne
   writeFileSync(join(RREPO, ".agents/skills/demo/lib.ts"), "export const lib = 2;\n");
   assert.equal(check("r-intr").rc, 0, "restoring the reviewed bytes is the recovery");
 });
+
+// ── Pieces: a full review in parts over one base and head ────────────────
+function pieceList(name: string, paths: string[]): string {
+  const f = join(TMP, `vpiece-${name}`);
+  writeFileSync(f, paths.map((p) => `${p}\0`).join(""));
+  return f;
+}
+
+test("pieces: --slice reaches the receipt and the reviewer; a clean partial set is pending, not a fix", () => {
+  resetRepo();
+  writeFileSync(join(RREPO, ".agents/skills/demo/extra.ts"), "export const extra = 1;\n");
+  try {
+    const { stub, calls } = countingReviewer("pieces", "NO_FINDINGS");
+    const p1 = full("r-pieces", stub, ["--slice", pieceList("lib", [".agents/skills/demo/lib.ts"])]);
+    assert.equal(p1.rc, 1, p1.all);
+    assert.match(p1.out, /^SLICE_PENDING=1$/m);
+    assert.match(p1.out, /^unread: \.agents\/skills\/demo\/extra\.ts$/m);
+    assert.match(p1.out, /NEED_FIX=0/, "pending pieces are not a change request");
+    assert.match(readFileSync(join(TMP, "rcalls-pieces.log"), "utf8"), /--slice .*vpiece-lib/);
+    assert.equal(check("r-pieces").rc, 1, "the close refuses a partial set");
+    const p2 = full("r-pieces", stub, ["--slice", pieceList("extra", [".agents/skills/demo/extra.ts"])]);
+    assert.equal(p2.rc, 0, p2.all);
+    assert.match(p2.out, /RECEIPT: approved/);
+    assert.doesNotMatch(p2.out, /SLICE_PENDING/);
+    assert.equal(calls(), 2);
+    assert.equal(check("r-pieces").rc, 0, "the close accepts the combined receipt");
+  } finally {
+    rmSync(join(RREPO, ".agents/skills/demo/extra.ts"), { force: true });
+  }
+});
+
+// A piece whose chain found no independent vendor (exit 3) is finished by the
+// fresh-context fallback like any review. Until the set has read every changed
+// file that is pending, not a change request; the set it completes is recorded,
+// and reported, as NOT independent.
+function noVendorReviewer(name: string): string {
+  return tsWrap(
+    writeExec(
+      join(TMP, `rreviewer-${name}.sh`),
+      `#!/bin/sh
+if [ "\${1:-}" = "--snapshot" ]; then
+  idx="$(mktemp)"; rm -f "$idx"
+  GIT_INDEX_FILE="$idx" git -C ${shq(RREPO)} read-tree HEAD
+  GIT_INDEX_FILE="$idx" git -C ${shq(RREPO)} add -A
+  GIT_INDEX_FILE="$idx" git -C ${shq(RREPO)} write-tree
+  rm -f "$idx"
+  exit 0
+fi
+exit 3
+`,
+    ),
+  );
+}
+
+test("pieces: a fallback-reviewed piece is pending, not a fix, and its set is NOT independent", () => {
+  resetRepo();
+  writeFileSync(join(RREPO, ".agents/skills/demo/extra.ts"), "export const extra = 1;\n");
+  try {
+    const none = noVendorReviewer("pieces-fb");
+    const p1 = full("r-pieces-fb", none, ["--slice", pieceList("fb-lib", [".agents/skills/demo/lib.ts"])]);
+    assert.equal(p1.rc, 3, p1.all);
+    assert.match(p1.out, /NEED_FALLBACK_REVIEW=1/);
+    const fb = join(TMP, "pieces-fb.txt");
+    writeFileSync(fb, "NO_FINDINGS\n");
+    const f1 = rv("r-pieces-fb", none, ["--fallback-review", fb]);
+    assert.equal(f1.rc, 1, f1.all);
+    assert.match(f1.out, /^SLICE_PENDING=1$/m);
+    assert.match(f1.out, /^unread: \.agents\/skills\/demo\/extra\.ts$/m);
+    assert.match(f1.out, /NEED_FIX=0/, "a fallback piece of a set still being read is not a change request");
+    const { stub } = countingReviewer("pieces-fb2", "NO_FINDINGS");
+    const p2 = full("r-pieces-fb", stub, ["--slice", pieceList("fb-extra", [".agents/skills/demo/extra.ts"])]);
+    assert.equal(p2.rc, 0, p2.all);
+    const c = check("r-pieces-fb");
+    assert.equal(c.rc, 0, c.all);
+    assert.match(c.all, /NOT independent/, "a set holding a fallback piece is reported as not independent");
+  } finally {
+    rmSync(join(RREPO, ".agents/skills/demo/extra.ts"), { force: true });
+  }
+});
+
+test("pieces: a finding in a piece is NEED_FIX as today, and the set is still pending", () => {
+  resetRepo();
+  writeFileSync(join(RREPO, ".agents/skills/demo/extra.ts"), "export const extra = 1;\n");
+  try {
+    const { stub } = countingReviewer("pieces-fix", "[must-fix] .agents/skills/demo/lib.ts:1: broken — fix — crash");
+    const r = full("r-pieces-fix", stub, ["--slice", pieceList("lib2", [".agents/skills/demo/lib.ts"])]);
+    assert.equal(r.rc, 1, r.all);
+    assert.match(r.out, /NEED_FIX=1/);
+    assert.match(r.out, /^SLICE_PENDING=1$/m);
+  } finally {
+    rmSync(join(RREPO, ".agents/skills/demo/extra.ts"), { force: true });
+  }
+});
+
+test("pieces: --slice is a caller error with --since, without --base/--head, or outside phase review", () => {
+  const { stub, calls } = countingReviewer("pieces-bad", "NO_FINDINGS");
+  const list = pieceList("bad", [".agents/skills/demo/lib.ts"]);
+  const since = rv("r-pieces-bad", stub, ["--phase", "review", "--since", "abc", "--slice", list]);
+  assert.equal(since.rc, 2, since.all);
+  assert.match(since.err, /--slice is a piece of the full review/);
+  const noRange = rv("r-pieces-bad", stub, ["--phase", "review", "--scope", ".agents/skills/demo", "--slice", list]);
+  assert.equal(noRange.rc, 2, noRange.all);
+  const qa = rv("r-pieces-bad", stub, ["--phase", "qa-revalidate", "--since", "abc", "--slice", list]);
+  assert.equal(qa.rc, 2, qa.all);
+  assert.match(qa.err, /--slice applies only to --phase review/);
+  assert.equal(calls(), 0);
+});

@@ -1,7 +1,7 @@
 #!/usr/bin/env -S node --experimental-strip-types
 // check-harness-config-links.ts — prove that every harness link is still a
-// SYMLINK into this workbench, and that every hook manifest still names both
-// pre-tool guards.
+// SYMLINK into this workbench, that every hook manifest still names both
+// pre-tool guards, and that the end-of-turn check is wired where it runs.
 //
 // WHY. The harness homes reach the workbench's skills and agents through links,
 // so what every harness runs is versioned, diffable and restorable. The failure
@@ -17,6 +17,16 @@
 // manifest that quietly lost a guard. The assertions are MAPPINGS, not
 // set-equality: two manifests that both dropped the write guard are equal to
 // each other, and a right set of scripts behind a wrong matcher never fires.
+//
+// WHY THE END-OF-TURN HOOK. The close's end-of-turn check
+// (.agents/skills/close/scripts/end-of-turn.ts) runs only on the harnesses
+// where a blocking end-of-turn hook was measured — its COVERED list, imported
+// here so the list lives once. Each covered harness's manifest must declare
+// .agents/hooks/check-close-reached.sh on `Stop` with `--harness <id>`, and
+// an uncovered one must not name itself there. Codex and Grok Build read one
+// file, so Grok's carries Codex's entry; the check tells a Grok payload apart.
+// Codex runs a hook only after the user trusts it in its own UI, which this
+// does not read.
 //
 // Usage:
 //   node --experimental-strip-types check-harness-config-links.ts          report drift, exit 1 if any
@@ -53,6 +63,7 @@ import { homedir } from "node:os";
 import { dirname, isAbsolute, resolve } from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
+import { COVERED as END_OF_TURN_COVERED } from "../skills/close/scripts/end-of-turn.ts";
 
 const out = (s: string): void => {
   writeSync(1, s);
@@ -515,12 +526,58 @@ function main(): void {
   // .agents/hooks.json exists.
   const asserted = (tool: string, present: boolean): boolean =>
     toolRecorded(tool) || (toolsRec === "" && present);
+
+  // The end-of-turn check, on each asserted manifest of a Claude shape (and
+  // Antigravity's, which must not carry it). A covered harness needs a Stop
+  // handler running ${EOT} --harness <id>; an uncovered one must not name
+  // itself on one. A manifest that is missing or unreadable is reported by
+  // checkManifest, not here.
+  const EOT = "check-close-reached.sh";
+  const covered = new Set<string>(END_OF_TURN_COVERED);
+  const wired: string[] = [];
+  const stopCommands = (shape: Shape, m: unknown): string[] => {
+    const cmd = (h: unknown): string => {
+      const c = isObj(h) ? h.command : undefined;
+      return typeof c === "string" ? c : "";
+    };
+    if (!isObj(m)) return [];
+    if (shape === "agy")
+      return Object.values(m).flatMap((named) =>
+        isObj(named) && Array.isArray(named.Stop) ? named.Stop.map(cmd) : [],
+      );
+    const groups = isObj(m.hooks) ? m.hooks.Stop : undefined;
+    return (Array.isArray(groups) ? groups : []).flatMap((g) =>
+      isObj(g) && Array.isArray(g.hooks) ? g.hooks.map(cmd) : [],
+    );
+  };
+  const checkEndOfTurn = (label: string, shape: Shape, mf: string, id: string): void => {
+    const m = readJson(mf);
+    if (m === undefined) return;
+    const named = stopCommands(shape, m).filter(
+      (c) => c.includes(EOT) && new RegExp(`--harness ${id}(\\s|$)`).test(c),
+    );
+    if (!covered.has(id)) {
+      if (named.length > 0)
+        err(`Error: ${label} manifest runs the end-of-turn check (${EOT}) as ${id}, but that harness
+    is not covered (.agents/skills/close/scripts/end-of-turn.ts COVERED). Remove it from ${mf}.`);
+      return;
+    }
+    if (named.length === 0) {
+      err(`Error: ${label} manifest does not run the end-of-turn check on Stop: ${mf} needs a Stop
+    handler running .agents/hooks/${EOT} --harness ${id}. Without it a close's report can go
+    unpasted and a closed thread's later work unlanded, and nothing says so. Re-run install.sh.`);
+      return;
+    }
+    wired.push(id);
+  };
   if (asserted("claude", isDir(`${H}/.claude`))) {
     checkManifest("Claude Code", "claude", `${H}/.claude/settings.json`, CLAUDE_WANT);
+    checkEndOfTurn("Claude Code", "claude", `${H}/.claude/settings.json`, "claude");
   }
   const codexHooks = `${H}/.codex/hooks.json`;
   if (asserted("codex", existsSync(codexHooks))) {
     checkManifest("Codex", "claude", codexHooks, [...CLAUDE_WANT, `apply_patch:${WRITE}`]);
+    checkEndOfTurn("Codex", "claude", codexHooks, "codex");
     // Codex throws a manifest away whole when it carries any top-level key
     // besides `hooks` or `description` — both guards stop running there, with
     // no error anywhere.
@@ -540,6 +597,7 @@ function main(): void {
   const grokHooks = `${H}/.grok/hooks/contextium.json`;
   if (asserted("grok", existsSync(grokHooks))) {
     checkManifest("Grok Build", "claude", grokHooks, GROK_WANT);
+    checkEndOfTurn("Grok Build", "claude", grokHooks, "grok");
   }
   const geminiSettings = `${HERE}/.gemini/settings.json`;
   if (asserted("gemini", existsSync(geminiSettings))) {
@@ -566,6 +624,7 @@ function main(): void {
       `write_to_file:${WRITE}`,
       `replace_file_content:${WRITE}`,
     ]);
+    checkEndOfTurn("Antigravity", "agy", agyHooks, "antigravity");
   }
 
   if (rc !== 0) {
@@ -579,9 +638,13 @@ function main(): void {
   }
 
   if (nSkip > 0) {
-    out(`OK — ${nOk} links verified (${nSkip} skipped: no such home), ${nManifests} manifests carry the required hooks\n`);
+    out(
+      `OK — ${nOk} links verified (${nSkip} skipped: no such home), ${nManifests} manifests carry the required hooks, end-of-turn hook wired on ${wired.join(", ") || "none"}\n`,
+    );
   } else {
-    out(`OK — ${nOk} links verified, ${nManifests} manifests carry the required hooks\n`);
+    out(
+      `OK — ${nOk} links verified, ${nManifests} manifests carry the required hooks, end-of-turn hook wired on ${wired.join(", ") || "none"}\n`,
+    );
   }
 }
 

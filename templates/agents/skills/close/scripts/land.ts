@@ -411,6 +411,48 @@ function harnessLinks(ledgerLines: string[], emit: (line: string) => void): void
   }
 }
 
+// ── Work not landed (the auto-close gate's test) ─────────────────────────
+//
+// Is anything in this thread's ledger worktrees not on its trunk? `--gate`
+// asks it after a close, and so does the end-of-turn check
+// (.agents/skills/close/scripts/end-of-turn.ts), which imports it rather than copying
+// it. `clean`: every
+// worktree that still exists has an empty `git status` and nothing ahead of
+// `origin/<trunk>`. `unlanded`: one has something in it or ahead. `unreadable`:
+// a git read failed or a trunk did not resolve, and nothing was found
+// unlanded — so `unlanded` wins whatever the order. A worktree a landing
+// already removed is skipped. `--gate` fires on anything but `clean`; the
+// end-of-turn check refuses only on `unlanded`.
+export type LandedState = "clean" | "unlanded" | "unreadable";
+export function unlandedWork(ledgerFile: string): LandedState {
+  let unreadable = false;
+  for (const line of readLines(readFileSync(ledgerFile, "utf8"))) {
+    const [WT = ""] = tabFields(line, 3);
+    if (!WT || !isDir(WT)) continue;
+    const st = git(WT, ["status", "--porcelain"]);
+    if (!st.ok) {
+      unreadable = true;
+      continue;
+    }
+    if (chomp(st.stdout) !== "") return "unlanded";
+    // Resolved inline: an unresolvable trunk, or a count git fails to read, is
+    // a repo the test cannot vouch for. (Read as `$(… || echo 0)`, a failed
+    // count would be zero and the gate would answer `fired`.)
+    const gt = chomp(run(process.execPath, nodeArgs(TRUNK_TS, [WT])).stdout);
+    if (!gt) {
+      unreadable = true;
+      continue;
+    }
+    const ahead = git(WT, ["rev-list", "--count", `origin/${gt}..HEAD`]);
+    if (!ahead.ok) {
+      unreadable = true;
+      continue;
+    }
+    if (chomp(ahead.stdout) !== "0") return "unlanded";
+  }
+  return unreadable ? "unreadable" : "clean";
+}
+
 // NOT CLOSED is the one phrase the skill looks for, so every refusal uses it and
 // nothing else prints it.
 function notClosed(msg: string): never {
@@ -497,6 +539,10 @@ async function main(): Promise<void> {
   const NEXT_REF = `${STATE}/next`;
   const STATUS_REF = `${STATE}/project-status`;
   const HELD = `${STATE}/held`;
+  // The worktrees a held close left in place because these scripts run from
+  // them (or its checkers do), one `<wt>\t<shared>\t<branch>` per line: the
+  // close that ends the hold removes them (Contextium v9.2.0 review).
+  const HELD_REMOVALS = `${STATE}/held-removals`;
   // The harness-link lines of this close's landings, and the final report
   // block as printed — saved before the closed marker, so a reader of the state
   // (an end-of-turn check) finds the block any close that finished printed.
@@ -657,34 +703,10 @@ async function main(): Promise<void> {
       say("not-fired");
       exit(0);
     }
-    for (const line of readLines(readFileSync(LEDGER, "utf8"))) {
-      const [WT = ""] = tabFields(line, 3);
-      if (!WT) continue;
-      if (!isDir(WT)) continue;
-      // An unreadable worktree is not a clean one: the close runs.
-      const st = git(WT, ["status", "--porcelain"]);
-      if (!st.ok || chomp(st.stdout) !== "") {
-        say("not-fired");
-        exit(0);
-      }
-      // The gate runs BEFORE `trunkOf` is used, so it resolves inline. An
-      // unresolvable trunk, or a count git fails to read, reports `not-fired`,
-      // which is the safe direction: the gate's job is to prove there is nothing
-      // left, and a repo it cannot read is not a repo it can vouch for. (Read
-      // as `$(… || echo 0)`, a failed count would be zero and the gate would
-      // answer `fired`.)
-      const gt = chomp(run(process.execPath, nodeArgs(TRUNK_TS, [WT])).stdout);
-      if (!gt) {
-        say("not-fired");
-        exit(0);
-      }
-      const ahead = git(WT, ["rev-list", "--count", `origin/${gt}..HEAD`]);
-      if (!ahead.ok || chomp(ahead.stdout) !== "0") {
-        say("not-fired");
-        exit(0);
-      }
-    }
-    say("fired");
+    // An unreadable worktree is not a clean one: the close runs. The gate's
+    // job is to prove there is nothing left, and a repo it cannot read is not
+    // a repo it can vouch for.
+    say(unlandedWork(LEDGER) === "clean" ? "fired" : "not-fired");
     exit(0);
   }
 
@@ -697,6 +719,9 @@ async function main(): Promise<void> {
     writeAtomic(DEPLOY_LOG, "");
     rmSync(HARNESS_REF, { force: true });
     rmSync(REPORT_REF, { recursive: true, force: true });
+    // Before `closed` goes: a thread that closed before closed-once existed
+    // keeps the record if this landing is refused.
+    writeAtomic(`${STATE}/closed-once`, "");
     rmSync(CLOSED, { force: true });
   }
 
@@ -2821,6 +2846,14 @@ async function main(): Promise<void> {
       rmSync(HARNESS_REF, { force: true });
     }
     writeAtomic(CLOSED, "");
+    // That a close finished here at least once, kept when a later landing
+    // starts (which removes `closed` above) and fails: the end-of-turn check
+    // reads it, so work after a refused second close is still refused.
+    writeAtomic(`${STATE}/closed-once`, "");
+    // A close paused for the user's answer (end-of-turn.ts --pause) is dealt
+    // with once a new close completes.
+    rmSync(`${STATE}/reopened`, { force: true });
+    rmSync(`${STATE}/paused`, { force: true });
     rmSync(HELD, { force: true });
     rmSync(LIVE_OWED, { force: true });
     rmSync(LIVE_PASSED, { force: true });
@@ -2829,8 +2862,24 @@ async function main(): Promise<void> {
   // ── Last of all: the worktree these scripts are running from ────────────
   //
   // Everything above is done, the checks have passed and the marker is written,
-  // so nothing left to do needs a sibling script. Only git below.
-  for (const [dwt, dshared, dbranch] of DEFERRED_REMOVALS) removeWorktree(dwt, dshared, dbranch);
+  // so nothing left to do needs a sibling script. Only git below. A held close
+  // keeps them: --release runs these scripts again from the same worktree, and
+  // its landing pass queues the removal once the hold ends (Contextium v9.2.0
+  // review).
+  if (STAYS_HELD) {
+    const kept = isFile(HELD_REMOVALS) ? readFileSync(HELD_REMOVALS, "utf8").split("\n").filter(Boolean) : [];
+    for (const r of DEFERRED_REMOVALS) if (!kept.includes(r.join("\t"))) kept.push(r.join("\t"));
+    if (kept.length > 0) writeAtomic(HELD_REMOVALS, `${kept.join("\n")}\n`);
+  } else {
+    const queued = new Set(DEFERRED_REMOVALS.map((r) => r.join("\t")));
+    if (isFile(HELD_REMOVALS))
+      for (const l of readFileSync(HELD_REMOVALS, "utf8").split("\n").filter(Boolean)) {
+        const [dwt = "", dshared = "", dbranch = ""] = l.split("\t");
+        if (dwt && !queued.has(l) && isDir(dwt)) DEFERRED_REMOVALS.push([dwt, dshared, dbranch]);
+      }
+    for (const [dwt, dshared, dbranch] of DEFERRED_REMOVALS) removeWorktree(dwt, dshared, dbranch);
+    rmSync(HELD_REMOVALS, { force: true });
+  }
 
   if (nonEmpty(DEPLOY_LOG) && REPORTS) {
     say("");

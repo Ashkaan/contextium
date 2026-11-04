@@ -184,13 +184,16 @@ choose_autonomy() {
     return 0
   fi
   printf '%s\n' "${BOLD}How should your AI operate?${NC}" >&2
+  local d=1
+  [ "$default" = "autonomous" ] && d=2
   printf '%s\n' "  ${CYAN}1${NC}) ask        ${DIM}ask before host/infra changes (recommended)${NC}" >&2
   printf '%s\n' "  ${CYAN}2${NC}) autonomous ${DIM}act and report, only ask when stuck${NC}" >&2
-  printf '%s' "${DIM}Choose 1 or 2${NC} ${DIM}[1]${NC} " >&2
+  printf '%s' "${DIM}Choose 1 or 2${NC} ${DIM}[${d}]${NC} " >&2
   read_answer
   case "$answer" in
+    1) printf '%s\n' "ask" ;;
     2) printf '%s\n' "autonomous" ;;
-    *) printf '%s\n' "ask" ;;
+    *) printf '%s\n' "$default" ;;
   esac
 }
 
@@ -887,9 +890,12 @@ fill_workbench() {
 # Merge a Claude-shape manifest into a harness settings file: every entry an
 # earlier run made (its command starts `: contextium;`) goes, the new ones are
 # added, and every other key and hook stays as it was. A first write keeps the
-# original beside it. Args: $1=settings file $2=manifest file
+# original beside it. The manifest's end-of-turn (Stop) entry names the harness
+# that reads the manifest itself (`--harness codex`); given $3, the merged copy
+# names that harness instead, since the check reads the payload as its
+# harness's. Args: $1=settings file $2=manifest file $3=harness id (optional)
 merge_hooks_into() {
-  local f="$1" m="$2" tmp existed=0
+  local f="$1" m="$2" h="${3:-}" tmp existed=0
   mkdir -p "$(dirname "$f")"
   # The backup is of a file the user had: one this run creates holds nothing
   # of theirs to keep.
@@ -903,16 +909,25 @@ merge_hooks_into() {
   tmp="$(mktemp)"
   # Every event: each loses the entries an earlier run made and gains the
   # manifest's, after the user's own. An event left empty by that is dropped.
-  jq --slurpfile m "$m" '
-    .hooks = (.hooks // {})
+  if jq --slurpfile m "$m" --arg h "$h" '
+    (if $h == "" then $m[0].hooks else ($m[0].hooks | with_entries(.value |= map(.hooks = [ .hooks[]?
+        | if ((.command // "") | contains("check-close-reached.sh")) and ((.command // "") | endswith(" --harness codex"))
+          then .command = ((.command | rtrimstr(" --harness codex")) + " --harness " + $h) else . end ]))) end) as $mh
+    | .hooks = (.hooks // {})
     | .hooks = (reduce (.hooks | keys_unsorted[]) as $ev (.hooks;
           .[$ev] = [ (.[$ev] // [])[]
             | .hooks = [ .hooks[]? | select(((.command // "") | startswith(": contextium;")) | not) ]
             | select((.hooks | length) > 0) ])
-        | reduce ($m[0].hooks | keys_unsorted[]) as $ev (.; .[$ev] = ((.[$ev] // []) + $m[0].hooks[$ev]))
+        | reduce ($mh | keys_unsorted[]) as $ev (.; .[$ev] = ((.[$ev] // []) + $mh[$ev]))
         | with_entries(select(.value != [])))
-  ' "$f" >"$tmp" && cat "$tmp" >"$f"
-  rm -f "$tmp"
+  ' "$f" >"$tmp"; then
+    cat "$tmp" >"$f"
+    rm -f "$tmp"
+  else
+    rm -f "$tmp"
+    err "Could not merge the hooks from $m into $f; it is left as it was."
+    return 1
+  fi
 }
 
 # A home link: $1 -> $2. A link we made is replaced; a real folder or file, or
@@ -951,7 +966,8 @@ wire_home_links() {
   fi
 }
 
-# The pre-tool guards, in each harness's own file. ONE manifest per format,
+# The pre-tool guards, and the close's end-of-turn check (Stop) on the harnesses
+# it covers, in each harness's own file. ONE manifest per format,
 # in .agents/: .agents/hooks/claude-hooks.json (Claude Code, Codex, Grok
 # Build), .agents/gemini-settings.json (Gemini CLI) and .agents/hooks.json
 # (Antigravity, read in place) — the last two shipped only while their harness
@@ -989,7 +1005,7 @@ wire_hooks() {
     # an installed Claude Code not among the tools is left alone, so that a
     # --drop-tool claude stays dropped on the next run.
     if [ "$WIRE_CLAUDE" = "1" ]; then
-      merge_hooks_into "$HOME/.claude/settings.json" "$manifest" &&
+      merge_hooks_into "$HOME/.claude/settings.json" "$manifest" claude &&
         ok "merged the guards into ~/.claude/settings.json (your own settings and hooks kept)"
     fi
     if [ "$WIRE_CODEX" = "1" ] && [ -e "$codex" ] && [ ! -L "$codex" ]; then
@@ -1403,8 +1419,8 @@ recorded_rules() {
   local v
   grep -qx '<!-- contextium:core -->' "$1" 2>/dev/null || return 0
   v="$(awk '/^<!-- contextium:core -->$/ { f = 1 } f && /^Contextium rule level: / { s = $0; sub(/^Contextium rule level: /, "", s); sub(/\..*/, "", s); print s; exit } f && /^<!-- \/contextium -->$/ { exit }' "$1")"
-  case " $RULE_LEVELS " in
-    *" $v "*) [ -n "$v" ] && { printf '%s\n' "$v"; return 0; } ;;
+  case "$v" in
+    minimal|recommended|full) printf '%s\n' "$v"; return 0 ;;
   esac
   printf '%s\n' "${v:-(none)}"
   return 2
@@ -1422,7 +1438,8 @@ existing_autonomy() {
 # True when a file has a `<!-- contextium:… -->` block that is never closed.
 # Args: $1=file
 has_unclosed_block() {
-  awk '/^<!-- contextium:[a-z0-9-]+ -->$/ { o = 1; next } $0 == "<!-- /contextium -->" { o = 0 } END { exit o ? 0 : 1 }' "$1"
+  # A block opened inside one still open means the first was never closed.
+  awk '/^<!-- contextium:[a-z0-9-]+ -->$/ { if (o) { bad = 1; exit } o = 1; next } $0 == "<!-- /contextium -->" { o = 0 } END { exit (bad || o) ? 0 : 1 }' "$1"
 }
 
 # The § Working preferences section a v8 or v9 template wrote outside the blocks:
@@ -1979,8 +1996,9 @@ if [ -n "$ARG_HARNESS" ]; then
 fi
 # A level is checked here, with the harness, before anything is made or offered.
 if [ "$RULES_GIVEN" = "1" ]; then
-  case " $RULE_LEVELS " in
-    *" $ARG_RULES "*) [ -n "$ARG_RULES" ] || { err "--rules needs a level: minimal, recommended or full."; exit 1; } ;;
+  case "$ARG_RULES" in
+    minimal|recommended|full) : ;;
+    "") err "--rules needs a level: minimal, recommended or full."; exit 1 ;;
     *) err "Unknown --rules level '$ARG_RULES' (one of: $RULE_LEVELS)."; exit 1 ;;
   esac
 fi
@@ -2079,11 +2097,6 @@ for t in $DROP_TOOLS; do
   esac
 done
 
-# Anything the choice needs that is not installed: offered, never forced.
-offer_install "$HARNESS"
-for a in $T3_AGENTS; do offer_install "$a"; done
-printf '\n'
-
 # Resolve target directory.
 DEFAULT_TARGET="$HOME/code/workbench"
 if [ -z "$TARGET" ]; then
@@ -2119,8 +2132,8 @@ printf '\n'
 # replaces the file (keeping it as .bak), so it is let through.
 OLD_AGENTS_MD="$TARGET/.agents/AGENTS.md"
 RECORDED_RULES=""
-if [ -f "$OLD_AGENTS_MD" ] && [ "$FORCE" != "1" ]; then
-  if has_unclosed_block "$OLD_AGENTS_MD"; then
+if [ -f "$OLD_AGENTS_MD" ]; then
+  if [ "$FORCE" != "1" ] && has_unclosed_block "$OLD_AGENTS_MD"; then
     err "Left .agents/AGENTS.md alone: a <!-- contextium:… --> block in it is never closed."
     err "  Close it with <!-- /contextium --> and re-run, or re-run with --force to replace the file (kept as .bak)."
     exit 1
@@ -2128,9 +2141,18 @@ if [ -f "$OLD_AGENTS_MD" ] && [ "$FORCE" != "1" ]; then
   rr=0
   RECORDED_RULES="$(recorded_rules "$OLD_AGENTS_MD")" || rr=$?
   if [ "$rr" -ne 0 ]; then
-    err "Left .agents/AGENTS.md alone: its core block records the rule level '$RECORDED_RULES', which is not one of: $RULE_LEVELS."
-    err "  Fix the 'Contextium rule level:' line, or re-run with --rules <level> --force to replace the file (kept as .bak)."
-    exit 1
+    # --force replaces the file, but keeps the level it recorded: one it cannot
+    # read is named with --rules rather than guessed.
+    if [ "$FORCE" != "1" ]; then
+      err "Left .agents/AGENTS.md alone: its core block records the rule level '$RECORDED_RULES', which is not one of: $RULE_LEVELS."
+      err "  Fix the 'Contextium rule level:' line, or re-run with --rules <level> --force to replace the file (kept as .bak)."
+      exit 1
+    elif [ "$RULES_GIVEN" != "1" ]; then
+      err "--force cannot tell which rule level this workbench chose: its AGENTS.md records '$RECORDED_RULES'."
+      err "  Re-run with --rules minimal, recommended or full and --force."
+      exit 1
+    fi
+    RECORDED_RULES=""
   fi
 fi
 
@@ -2162,7 +2184,7 @@ esac
 # recommended otherwise), else recommended.
 if [ -n "$RECORDED_RULES" ]; then
   DEFAULT_RULES="$RECORDED_RULES"; RULES_WHY="kept from this workbench"
-elif [ ! -f "$OLD_AGENTS_MD" ] || [ "$FORCE" = "1" ]; then
+elif [ ! -f "$OLD_AGENTS_MD" ]; then
   DEFAULT_RULES="recommended"; RULES_WHY="the default"
 elif grep -q '^<!-- contextium:[a-z0-9-]* -->$' "$OLD_AGENTS_MD"; then
   if [ "$(v8_prefs_state "$OLD_AGENTS_MD")" = "pristine" ]; then DEFAULT_RULES="full"; else DEFAULT_RULES="recommended"; fi
@@ -2191,6 +2213,13 @@ if [ "$RULES_GIVEN" != "1" ] && [ "$(ask_yesno "Write AGENTS.md this way and ins
   err "Nothing was written. Re-run with --rules minimal, recommended or full to choose again."
   exit 1
 fi
+printf '\n'
+
+# Anything the choice needs that is not installed: offered, never forced — and
+# only now, once this workbench passed its checks and its preview, so a run that
+# stops above installs nothing.
+offer_install "$HARNESS"
+for a in $T3_AGENTS; do offer_install "$a"; done
 printf '\n'
 
 ensure_git_repo

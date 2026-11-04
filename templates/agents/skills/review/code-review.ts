@@ -228,8 +228,13 @@ function logicalCwd(): string {
 
 async function main(): Promise<void> {
   const argv = process.argv.slice(2);
+  // Every caller names the review's owner and the work's original authors, a
+  // scripted one too: evals/caller-contract.eval.ts sets its own loop id and
+  // names its fixture's author "human", since no model wrote that diff
+  // (Contextium v9.2.0 review).
+  const isPiece = argv.length === 4 && argv[2] === "--slice";
   const needsReviewContext =
-    argv[0] === "--snapshot" || argv[0] === "--since" || argv[0] === "--fixture" || argv.length === 2;
+    argv[0] === "--snapshot" || argv[0] === "--since" || argv[0] === "--fixture" || argv.length === 2 || isPiece;
   if (needsReviewContext && inT3ReviewContext() && !process.env.CODE_REVIEW_LOOP_ID?.trim()) {
     err(
       "Error: CODE_REVIEW_LOOP_ID is required in T3; preserve the audit owner's id across snapshots and review children.",
@@ -326,6 +331,7 @@ async function main(): Promise<void> {
   function usage(): void {
     const me = basename(process.argv[1] ?? "code-review.ts");
     err(`Usage: ${me} <base-sha> <head-sha>   full review`);
+    err(`       ${me} <base-sha> <head-sha> --slice <file>   one piece of a full review`);
     err(`       ${me} --since <tree>          follow-up round`);
     err(`       ${me} --since <tree> --final  the one review past the ceiling`);
     err(`       ${me} --snapshot              print a tree SHA`);
@@ -479,6 +485,8 @@ async function main(): Promise<void> {
   let BASE_SHA = "";
   let HEAD_SHA = "";
   let PREV_TREE = "";
+  /** `--slice <file>`: the piece file naming this piece's paths, NUL-separated. */
+  let SLICE_FILE = "";
 
   if (argv.length === 1 && argv[0] === "--snapshot") {
     requireRepo();
@@ -514,11 +522,12 @@ async function main(): Promise<void> {
     MODE = "since";
     PREV_TREE = argv[1] as string;
     FINAL = argv.length === 3;
-  } else if (argv.length === 2) {
+  } else if (argv.length === 2 || (isPiece && !(argv[0] as string).startsWith("--"))) {
     requireRepo();
     MODE = "range";
     BASE_SHA = argv[0] as string;
     HEAD_SHA = argv[1] as string;
+    SLICE_FILE = isPiece ? resolve(argv[3] as string) : "";
   } else {
     usage();
     exit(2);
@@ -650,8 +659,41 @@ Be concise. No prose introduction. No summary at the end. Just findings.
   let SUBJECT_LABEL = "";
   let DIRTY_NOTE = "";
   let ROUND_NOTE = "";
+  let PIECE_NOTE = "";
 
   if (MODE === "range") {
+    // ── A PIECE ──
+    //
+    // A change too large for one review call is reviewed as pieces: each one
+    // a full review over the same base and head that reads only the paths its
+    // piece file lists (NUL-separated, repo-relative), so a name holding a
+    // space, a newline or a wildcard stays one path. audit-dedupe.ts keeps the
+    // completed pieces and combines a set that read every changed file into
+    // one receipt. A list that is unreadable, empty or names a path outside
+    // the repo is a caller error before anything else, and spends nothing.
+    let PIECE: Set<string> | null = null;
+    if (SLICE_FILE !== "") {
+      let raw: string;
+      try {
+        raw = readFileSync(SLICE_FILE, "utf8");
+      } catch (e) {
+        err(`Error: the piece file ${SLICE_FILE} could not be read: ${(e as Error).message}`);
+        exit(2);
+      }
+      const paths = raw.split("\0").filter((p) => p !== "");
+      if (paths.length === 0) {
+        err(`Error: the piece file ${SLICE_FILE} names no path (paths are NUL-separated).`);
+        exit(2);
+      }
+      for (const p of paths) {
+        const parts = p.split("/");
+        if (p.startsWith("/") || parts.includes("..") || parts.includes(".") || parts.includes("")) {
+          err(`Error: the piece file names ${JSON.stringify(p)}, which is not a repo-relative path inside the repo.`);
+          exit(2);
+        }
+      }
+      PIECE = new Set(paths);
+    }
     process.chdir(REPO_ROOT);
 
     const base = git(["rev-parse", "--verify", `${BASE_SHA}^{commit}`], { quiet: true });
@@ -693,7 +735,15 @@ the committed range PLUS uncommitted work; you are NOT reviewing a clean tree.`;
     // owner: its first full review is round 1, and any later full review of the
     // same owner and repo spends a round like a `--since` does. A genuinely new
     // change starts in a new owning thread, which has its own counter.
+    //
+    // The ceiling is checked here, before anything is read; the round itself is
+    // spent only after the empty-diff and byte-budget refusals below. A
+    // refused review made no call, and refusing it again is deterministic, so
+    // spending on it bought nothing — and a misjudged piece would burn one of
+    // the four rounds a piece set has. The `--since` branch already refused
+    // before it spent.
     const BUCKET: Bucket = process.env.CODE_REVIEW_BUCKET === "qa" ? "qa" : "build";
+    let repeatSpend: (() => void) | null = null;
     {
       const spent = readSpend(REPO_ROOT, BUCKET);
       if (spent !== null && "unknown" in spent) {
@@ -707,17 +757,23 @@ the committed range PLUS uncommitted work; you are NOT reviewing a clean tree.`;
           err(`Error: a repeated full review would be round ${round}; the fix loop's ceiling is 4.`);
           err("A full review does not start a new loop for the same change. Review the fixes made");
           err("since the last round with --since <tree> --final (once per loop), then report what is still open.");
+          if (PIECE) err("A piece set fits in four pieces; the files no piece has read stay unreviewed.");
           exit(5);
         }
-        writeSpend(REPO_ROOT, BUCKET, { ...spent, rounds: spent.rounds + 1 });
-        err(`[code-review] a repeated full review — round ${round} of at most 4`);
+        repeatSpend = () => {
+          writeSpend(REPO_ROOT, BUCKET, { ...spent, rounds: spent.rounds + 1 });
+          err(`[code-review] a repeated full review — round ${round} of at most 4`);
+        };
       } else {
         FULL_PENDING = spent !== null;
       }
     }
 
-    const changedFiles = gitPaths("diff", ["diff", "-z", "--name-only", baseResolved, headResolved]);
-    const trackedFiles = gitPaths("diff", ["diff", "-z", "--name-only", "HEAD"]);
+    // A piece lists its renames' two names separately, so its name reads keep
+    // a rename as two paths, as audit-dedupe.ts counts what changed.
+    const renames = PIECE ? ["--no-renames"] : [];
+    const allChanged = gitPaths("diff", ["diff", "-z", ...renames, "--name-only", baseResolved, headResolved]);
+    const allTracked = gitPaths("diff", ["diff", "-z", ...renames, "--name-only", "HEAD"]);
 
     // `git diff HEAD` shows only files git already TRACKS, so a file the session
     // created and has not staged is invisible to it. That is a false GREEN, not a
@@ -726,13 +782,26 @@ the committed range PLUS uncommitted work; you are NOT reviewing a clean tree.`;
     // path never had this hole (its snapshot writes untracked files into a temp
     // index), so this is the two-arg form catching up. --exclude-standard keeps
     // build output and other gitignored noise out.
-    const untrackedList = gitPaths("ls-files", ["ls-files", "-z", "--others", "--exclude-standard"]);
+    const allUntracked = gitPaths("ls-files", ["ls-files", "-z", "--others", "--exclude-standard"]);
+    // A piece keeps the changed paths its file names, compared as exact strings.
+    const inPiece = (p: string): boolean => PIECE === null || PIECE.has(p);
+    const changedFiles = allChanged.filter(inPiece);
+    const trackedFiles = allTracked.filter(inPiece);
+    const untrackedList = allUntracked.filter(inPiece);
     const workingFiles = [...trackedFiles, ...untrackedList];
+    // Each kept path as a LITERAL pathspec, so `*`, `?`, `[x]` or a leading
+    // `:` in a name selects that file alone. A piece whose read holds no path
+    // skips the read: `git diff` with no pathspec would read everything.
+    const only = (paths: string[]): string[] | null =>
+      PIECE === null ? [] : paths.length === 0 ? null : ["--", ...paths.map((p) => `:(literal)${p}`)];
 
     // Each read is checked on its own: a failed one would drop that part of the
     // change and review the rest as if whole.
-    const committedDiff = gitRead("diff", ["diff", baseResolved, headResolved]);
-    const workingDiff = gitRead("diff", ["diff", "HEAD"]);
+    const committedSpec = only(changedFiles);
+    const workingSpec = only(trackedFiles);
+    const committedDiff =
+      committedSpec === null ? "" : gitRead("diff", ["diff", ...renames, baseResolved, headResolved, ...committedSpec]);
+    const workingDiff = workingSpec === null ? "" : gitRead("diff", ["diff", ...renames, "HEAD", ...workingSpec]);
     let untrackedDiff = "";
     for (const u of untrackedList) {
       // --no-index against /dev/null renders a whole untracked file as an
@@ -751,26 +820,42 @@ the committed range PLUS uncommitted work; you are NOT reviewing a clean tree.`;
     // never read. Refuse loudly instead — the caller treats exit 1 as "not
     // reviewed", which is the truth.
     if (diffBytes === 0) {
-      err("Error: the diff is empty — nothing was reviewed.");
+      err(`Error: the ${PIECE ? "piece's " : ""}diff is empty — nothing was reviewed.`);
       err(`  repo:  ${REPO_ROOT}`);
       err(`  range: ${baseResolved.slice(0, 8)}..${headResolved.slice(0, 8)} (plus uncommitted)`);
+      if (PIECE) err(`  piece: ${SLICE_FILE} names no path this range or the working tree changed`);
       err("This usually means the resolved repo is not the tree holding the work");
       err("(a session worktree invoking the script from the main checkout), or the");
       err("SHA range is wrong. Set CODEX_REVIEW_REPO or fix the range and re-run.");
       exit(1);
     }
     if (diffBytes > MAX_DIFF_BYTES) {
-      err(`Error: diff is ${diffBytes} bytes, over the ${MAX_DIFF_BYTES}-byte budget.`);
-      err("Refusing rather than reviewing a truncated slice. Split the range or");
-      err("raise CODEX_REVIEW_MAX_DIFF_BYTES deliberately.");
+      err(`Error: ${PIECE ? "the piece's " : ""}diff is ${diffBytes} bytes, over the ${MAX_DIFF_BYTES}-byte budget.`);
+      err("Refusing rather than reviewing a truncated slice. Review it as pieces by file over");
+      err("this one base and head (--slice <file>, at most four), or raise");
+      err("CODEX_REVIEW_MAX_DIFF_BYTES deliberately. Nothing was spent.");
       exit(1);
     }
+    repeatSpend?.();
 
-    SUBJECT_LABEL = `diff ${baseResolved.slice(0, 8)}..${headResolved.slice(0, 8)}`;
+    // What the reviewer is told about the rest of the change: the changed
+    // paths outside this piece, which other pieces read.
+    if (PIECE) {
+      const read = new Set([...changedFiles, ...workingFiles]);
+      const others = [...new Set([...allChanged, ...allTracked, ...allUntracked])].filter((p) => !read.has(p));
+      PIECE_NOTE = `THIS IS ONE PIECE OF A LARGER REVIEW (${basename(SLICE_FILE)}): ${read.size} of the
+changed files, over the same base and head as the other pieces. ${others.length} other changed file(s)
+are reviewed in other pieces; their diff is not below. Read them in the repo for
+context whenever a finding depends on them — a caller outside this piece that a
+change inside it breaks is a finding in this piece.`;
+    }
+
+    SUBJECT_LABEL = `diff ${baseResolved.slice(0, 8)}..${headResolved.slice(0, 8)}${PIECE ? ` (piece ${basename(SLICE_FILE)})` : ""}`;
     // The pack's file list is the UNION of both lists above — the same bytes the
     // reviewer is about to read, so the pack can never cite a file the diff did
     // not show it.
     const packFiles = [...new Set([...changedFiles, ...workingFiles])].sort();
+    const packSpec = only(packFiles.filter((p) => !untrackedList.includes(p)));
 
     // …but the DIFF it gets is not the one above. `diffBody` concatenates two
     // diffs with two different bases (base..head, then HEAD..working-tree), so for
@@ -790,9 +875,12 @@ the committed range PLUS uncommitted work; you are NOT reviewing a clean tree.`;
     // (`git diff` exits non-zero only on an error; `--no-index` exits 1 for "the
     // files differ", which is the normal case, and 2 or more on an error.)
     let packRc = 0;
-    const pd = git(["diff", baseResolved], { quiet: true });
-    if (pd.status !== 0) packRc = pd.status;
-    let packDiff = chomp(pd.stdout);
+    let packDiff = "";
+    if (packSpec !== null) {
+      const pd = git(["diff", ...renames, baseResolved, ...packSpec], { quiet: true });
+      if (pd.status !== 0) packRc = pd.status;
+      packDiff = chomp(pd.stdout);
+    }
     for (const u of untrackedList) {
       const one = git(["diff", "--no-index", "--", "/dev/null", u], { quiet: true });
       if (one.status > 1) packRc = one.status;
@@ -1122,7 +1210,7 @@ ${REPLY_FORMAT}
 
 REVIEW SUBJECT: ${SUBJECT_LABEL}
 ${DIRTY_NOTE}${COMPANION_NOTE}
-${ROUND_NOTE}
+${ROUND_NOTE}${PIECE_NOTE}
 
 ${SUBJECT}`;
 

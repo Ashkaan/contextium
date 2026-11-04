@@ -133,7 +133,9 @@ function main(): void {
 
   // git grep exits 1 for "no match", which is a clean answer; anything above 1 is
   // a grep that did not happen.
-  const grepArgs = ["grep", ...(cached ? ["--cached"] : []), "-n", "-I", "-F", "-e", KEY, "-e", "@rule:", "--", ...args];
+  // -z: each hit is `path\0line\0text`, the path as it is on disk — never
+  // C-quoted, so a name with an accent or a colon reads as itself.
+  const grepArgs = ["grep", ...(cached ? ["--cached"] : []), "-z", "-n", "-I", "-F", "-e", KEY, "-e", "@rule:", "--", ...args];
   const g = git(grepArgs, root);
   if (g.rc > 1) {
     err(`check-standards-refs: git grep failed: ${g.err.trim()}`);
@@ -165,14 +167,19 @@ function main(): void {
     violations++;
   };
 
-  for (const hit of g.out.split("\n")) {
-    if (!hit) continue;
-    const p1 = hit.indexOf(":");
-    const f = hit.slice(0, p1);
-    const rest = hit.slice(p1 + 1);
-    const p2 = rest.indexOf(":");
-    const l = rest.slice(0, p2);
-    const line = rest.slice(p2 + 1);
+  // Each hit is `path\0line\0text\n`, read field by field: a path may hold a
+  // newline, so the records are not split on one first (v9.2.0 review).
+  const hits: [string, string, string][] = [];
+  for (let at = 0; at < g.out.length; ) {
+    const z1 = g.out.indexOf("\0", at);
+    const z2 = z1 < 0 ? -1 : g.out.indexOf("\0", z1 + 1);
+    if (z2 < 0) break;
+    const nl = g.out.indexOf("\n", z2 + 1);
+    const end = nl < 0 ? g.out.length : nl;
+    hits.push([g.out.slice(at, z1), g.out.slice(z1 + 1, z2), g.out.slice(z2 + 1, end)]);
+    at = end + 1;
+  }
+  for (const [f, l, line] of hits) {
 
     let s = line;
     let p: number;

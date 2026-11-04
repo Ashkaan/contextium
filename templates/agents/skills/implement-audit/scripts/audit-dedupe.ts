@@ -52,6 +52,18 @@
 // the plan's backstop classification when the thread shows implementation work
 // (a registered audit, unreadable state, or a report carrying a coverage block).
 //
+// PIECES. A change too large for one
+// review call is reviewed in pieces: full reviews over one base and head, each
+// reading a disjoint list of the changed files (`begin --slice <file>`). Each
+// completed piece is kept in `slices` with the files its reviewed diff actually
+// held; when the pieces together have read every changed file at its current
+// content, `finish` combines them into one ordinary full-review receipt, read by
+// every reader below like any other. A file that moved after the piece that
+// read it is unread again; a declared item counts only from a piece that
+// checked it and whose digests for it still hold; a different base, head,
+// branch base, scope, writer set or declaration starts a new set. Every piece
+// spends a round from the same allowance (code-review.ts).
+//
 // State: ~/.cache/workbench/threads/<owner>/review.json, written atomically.
 // Counters: <owner dir>/review-rounds[-qa]/<loop key>[.final|.full], or under
 // CODE_REVIEW_ROUND_STATE_DIR[-qa] when that is set (the suites set it).
@@ -74,12 +86,22 @@
 //       trailer is a record, never proof of review.
 //   audit-dedupe.ts begin --repo <dir> --base <sha> --scope <s> --tree <tree>
 //                         --mode range|since|final --bucket build|qa
-//                         [--since <tree>] [--report <path>]
+//                         [--since <tree>] [--report <path>] [--head <sha>]
+//                         [--slice <file>]
 //       register the obligation, validate the declaration, and either print
 //       `RECEIPT=reuse` (a valid receipt matches; no review is needed) or write
 //       the attempt `incomplete` and print `RECEIPT=review` + `ITEMS_FILE=<path>`.
+//       With --slice (mode range only), the attempt is one piece: its file lists
+//       NUL-separated repo-relative paths, each changed since the branch base,
+//       none a record, none read at its current content by an earlier piece of
+//       the same set — else exit 2 before any state change.
 //   audit-dedupe.ts finish --repo <dir> --rc <n> [--result <file>] [--checks-failed]
 //       record the attempt's outcome; prints `APPROVED=0|1` and the reasons.
+//       For a piece whose set is not complete it also prints
+//       `SLICE_PENDING=<n>`, one `unread: <path>` line per changed file no
+//       piece has read, one `unchecked: <id>` per declared item no piece has
+//       checked yet, and `SLICE_BLOCKED=1` when a reason other than those
+//       (a finding, a writer as reviewer, a later commit) already stands.
 //       --rc 3 leaves the attempt open and pending the fresh-context fallback.
 //   audit-dedupe.ts finish --repo <dir> --fallback <file> [--checks-failed]
 //       record the fresh-context reviewer's reply (triage lines, its own
@@ -196,6 +218,11 @@ export interface Receipt {
   requiredItems: string[];
   /** Each declared path's covered key and the item the reviewer reports it under. */
   itemKeys?: Record<string, string>;
+  /**
+   * Each declared item's covered keys. The reverse of itemKeys, which
+   * keeps one item per path: claims that share an evidence file each keep it.
+   */
+  itemPaths?: Record<string, string[]>;
   authors: string;
   reviewer?: string;
   items?: ItemResult[];
@@ -204,10 +231,27 @@ export interface Receipt {
   gaps?: string[];
   approved?: boolean;
   trailer?: string;
+  /** A piece: the paths its piece file listed. */
+  slice?: string[];
+  /** A piece: the listed paths its reviewed diff actually held. */
+  read?: string[];
+  /** A combined receipt: every answering reviewer, each held to the writer exclusion. */
+  reviewers?: string[];
+  /** A combined receipt: how many pieces it was made of. */
+  pieces?: number;
   /** The chain left no independent vendor (code-review.ts exit 3): a fresh-context fallback may finish it. */
   pendingFallback?: boolean;
   /** false: the fresh-context fallback reviewed it — recorded, and reported, as NOT independent. */
   independent?: boolean;
+}
+/** What makes pieces one set: both ends of the reviewed range and what the review was bound to. */
+export interface SliceSet {
+  base: string;
+  head: string;
+  branchBase: string;
+  scope: string;
+  authors: string;
+  block: string | null;
 }
 export interface RepoState {
   required: boolean;
@@ -218,6 +262,9 @@ export interface RepoState {
   spendInit: Partial<Record<Bucket, boolean>>;
   receipt?: Receipt;
   last?: Receipt;
+  /** The completed pieces of the set being reviewed; absent reads as no set. */
+  slices?: Receipt[];
+  sliceSet?: SliceSet;
 }
 export interface State {
   version: 1;
@@ -458,6 +505,16 @@ export function declaredKeys(decl: Declaration | null): Record<string, string> {
   return keys;
 }
 
+/** Each declared item's covered keys, every item keeping every path it names. */
+export function declaredItemPaths(decl: Declaration | null): Record<string, string[]> {
+  const paths: Record<string, string[]> = {};
+  if (!decl) return paths;
+  for (const e of decl.entryPoints) paths[e.id] = [e.path];
+  for (const d of decl.dependencies) paths[d.id] = [d.repo ? `${canonicalRepo(d.repo)}::${d.path}` : d.path];
+  for (const c of decl.claims) paths[c.id] = [...(c.negativeTest?.evidence ?? [])];
+  return paths;
+}
+
 /** The items the reviewer reports on, one per declared entry point, dependency and claim. */
 export function declarationItems(decl: Declaration | null): { id: string; required: boolean; text: string }[] {
   if (!decl) return [];
@@ -497,6 +554,9 @@ export function isRecord(p: string): boolean {
 export function needsReview(p: string, workbench: boolean): boolean {
   if (!workbench) return !isRecord(p) && !p.endsWith(".md");
   if (p === "AGENTS.md") return true;
+  // A project's own scripts run in layer-2 like an app's code, so they are
+  // reviewed like it; the project's records stay records.
+  if (/^projects\//.test(p) && /\.(?:ts|tsx|mts|cts|js|mjs|cjs|sh|py)$/.test(p)) return true;
   if (/^(?:apps|integrations|packages|\.agents)\//.test(p) && !p.endsWith(".md")) return true;
   return /^\.agents\/(?:skills|agents)\//.test(p) && p.endsWith(".md");
 }
@@ -561,6 +621,8 @@ export interface Coverage {
   decl: Declaration | null;
   problems: string[];
   changed: string[];
+  /** HEAD when the coverage was read; absent where a caller builds one by hand. */
+  head?: string | null;
 }
 
 /**
@@ -611,7 +673,7 @@ export function coverageNow(repo: string, base: string, report: string | null): 
     const contract = join(dirname(report), "spec.md");
     if (existsSync(contract)) covered[`contract:${contract}`] = digest(contract);
   }
-  return { covered, block, decl, problems, changed };
+  return { covered, block, decl, problems, changed, head: gitLine(repo, ["rev-parse", "--verify", "HEAD^{commit}"]) };
 }
 
 /** The writer vendors of an `<vendors>|<thread>` authors string, normalised. */
@@ -637,6 +699,7 @@ const GAP_WORDS: Record<string, string> = {
   "#no-base": "no earlier complete review for this follow-up to build on",
   "#checks": "the deterministic checks failed before this review",
   "#head": "commits after the --head the full review ended at",
+  "#pieces": "the rest of the change: this round built on one piece of an incomplete piece set",
 };
 
 /** The file a triage line names first (`[must-fix] a.ts:12: …`), or null. */
@@ -650,15 +713,18 @@ export function receiptReasons(r: Receipt | undefined, cov: Coverage, scope: str
   if (!r) return ["no completed independent review"];
   if (r.status !== "complete") return ["the last review attempt did not complete"];
   const why: string[] = [];
-  if (!r.reviewer) why.push("the review recorded no answering reviewer, so it is not a coverage receipt");
-  if (r.reviewer && authorVendors(r.authors).includes(r.reviewer.split("/")[0] ?? ""))
-    why.push(`the reviewer ${r.reviewer} is one of the writers`);
+  if (r.slice) why.push("one piece of a larger review, not a review of the whole change");
+  const reviewers = r.reviewers ?? (r.reviewer ? [r.reviewer] : []);
+  if (reviewers.length === 0) why.push("the review recorded no answering reviewer, so it is not a coverage receipt");
+  for (const v of reviewers)
+    if (authorVendors(r.authors).includes(v.split("/")[0] ?? "")) why.push(`the reviewer ${v} is one of the writers`);
   if ((r.blocking ?? []).length > 0) why.push(`${(r.blocking ?? []).length} must-fix/should-fix finding(s) unresolved`);
   for (const g of r.gaps ?? []) why.push(`not reviewed: ${GAP_WORDS[g] ?? g}`);
   const status = new Map((r.items ?? []).map((i) => [i.id, i]));
   for (const id of r.requiredItems) {
     const it = status.get(id);
-    if (!it) why.push(`the reviewer reported nothing for ${id}`);
+    if (!it && r.pieces) why.push(`no piece checked ${id} at its current content`);
+    else if (!it) why.push(`the reviewer reported nothing for ${id}`);
     else if (it.status !== "checked")
       why.push(`the reviewer did not check ${id}: ${it.evidence.join("; ") || "no reason"}`);
   }
@@ -671,9 +737,112 @@ export function receiptReasons(r: Receipt | undefined, cov: Coverage, scope: str
   return why;
 }
 
+export interface PieceSet {
+  /** Changed non-record paths no piece has read at their current content. */
+  unread: string[];
+  /** Required declared items no piece has checked at their current content. */
+  unchecked: string[];
+  /** Every other reason the set does not approve. */
+  why: string[];
+  /** The set as one full-review receipt, bound to the current content. */
+  combined: Receipt;
+}
+
+/**
+ * Pieces combined against the content as it is now. A changed path is read
+ * when a piece's reviewed diff held it and that piece's digest of it is the
+ * current one; a declared item is checked when a piece reported it checked and
+ * that piece's digests of every path naming it are the current ones. Any other
+ * covered key (the behavior contract, a declared path no checked item vouches
+ * for) must not have moved under any piece.
+ */
+export function pieceSet(pieces: Receipt[], cov: Coverage, scope: string | null): PieceSet {
+  const last = pieces[pieces.length - 1] as Receipt;
+  const now = cov.covered;
+  const unread = cov.changed.filter(
+    (p) => !isRecord(p) && !pieces.some((pc) => (pc.read ?? []).includes(p) && pc.covered[p] === now[p]),
+  );
+  const keysOf = (pc: Receipt, id: string): string[] =>
+    pc.itemPaths?.[id] ??
+    Object.entries(pc.itemKeys ?? {})
+      .filter(([, v]) => v === id)
+      .map(([k]) => k);
+  const ids = [...new Set(pieces.flatMap((pc) => (pc.items ?? []).map((i) => i.id)))];
+  const items: ItemResult[] = [];
+  const vouched = new Set<string>();
+  for (const id of ids) {
+    const pc = pieces.find(
+      (x) =>
+        (x.items ?? []).some((i) => i.id === id && i.status === "checked") &&
+        keysOf(x, id).every((k) => x.covered[k] === now[k]),
+    );
+    const it = pc?.items?.find((i) => i.id === id);
+    if (pc && it) {
+      items.push(it);
+      for (const k of keysOf(pc, id)) vouched.add(k);
+    }
+  }
+  const changed = new Set(cov.changed);
+  const gaps = new Set<string>(pieces.flatMap((pc) => (pc.gaps ?? []).filter((g) => g.startsWith("#"))));
+  if (last.head && cov.head && last.head !== cov.head) gaps.add("#head");
+  for (const k of Object.keys(now).sort()) {
+    if (changed.has(k) || vouched.has(k)) continue;
+    if (pieces.some((pc) => pc.covered[k] !== now[k])) gaps.add(k);
+  }
+  const uniq = (xs: string[]): string[] => [...new Set(xs)];
+  const combined: Receipt = {
+    status: "complete",
+    mode: "range",
+    bucket: "build",
+    tree: last.tree,
+    ...(last.head ? { head: last.head } : {}),
+    base: last.base,
+    scope: last.scope,
+    startedAt: (pieces[0] as Receipt).startedAt,
+    finishedAt: new Date().toISOString(),
+    block: last.block,
+    covered: { ...now },
+    requiredItems: last.requiredItems,
+    itemKeys: last.itemKeys,
+    ...(last.itemPaths ? { itemPaths: last.itemPaths } : {}),
+    authors: last.authors,
+    reviewer: pieces.find((pc) => pc.reviewer)?.reviewer,
+    reviewers: uniq(pieces.flatMap((pc) => (pc.reviewer ? [pc.reviewer] : []))),
+    items,
+    blocking: uniq(pieces.flatMap((pc) => pc.blocking ?? [])),
+    nits: uniq(pieces.flatMap((pc) => pc.nits ?? [])),
+    gaps: [...gaps],
+    pieces: pieces.length,
+    // One piece the fresh-context fallback reviewed makes the whole set NOT independent.
+    ...(pieces.some((pc) => pc.independent === false) ? { independent: false } : {}),
+  };
+  const checked = new Set(items.filter((i) => i.status === "checked").map((i) => i.id));
+  const unchecked = last.requiredItems.filter((id) => !checked.has(id));
+  const why = receiptReasons({ ...combined, requiredItems: [] }, cov, scope);
+  // Every piece answered by a reviewer, or the set is not a review: a piece
+  // with none is never kept (finish), and this holds if one ever is.
+  pieces.forEach((pc, i) => {
+    if (!pc.reviewer) why.push(`piece ${i + 1} recorded no answering reviewer`);
+  });
+  return { unread, unchecked, why: [...cov.problems, ...why], combined };
+}
+
 /** A valid receipt among the latest attempt and the latest complete one, or the reasons neither is. */
 export function validity(rs: RepoState, cov: Coverage, scope: string | null): { ok: Receipt } | { why: string[] } {
   if (cov.problems.length > 0) return { why: cov.problems };
+  // A piece set still being reviewed: what the whole set lacks, never only
+  // the latest piece's own reasons.
+  if ((rs.slices ?? []).length > 0 && rs.receipt?.slice) {
+    const set = pieceSet(rs.slices as Receipt[], cov, scope);
+    const why = [...set.why, ...set.unchecked.map((id) => `no piece checked ${id} at its current content`)];
+    if (rs.receipt.status !== "complete") why.unshift("the last review attempt did not complete");
+    why.push(
+      set.unread.length > 0
+        ? `pieces pending: ${set.unread.length} changed file(s) unread by any piece: ${set.unread.join(", ")}`
+        : "every changed file was read by a piece, but the set was never combined — a full review replaces it",
+    );
+    return { why };
+  }
   const a = receiptReasons(rs.receipt, cov, scope);
   if (a.length === 0 && rs.receipt) return { ok: rs.receipt };
   // The earlier complete receipt stands only when the latest one is an attempt
@@ -688,6 +857,32 @@ export function validity(rs: RepoState, cov: Coverage, scope: string | null): { 
 }
 
 // ── The CLI ─────────────────────────────────────────────────────────────────
+
+/** A piece file: NUL-separated repo-relative paths, deduplicated and sorted. */
+export function readPieceFile(file: string): string[] | { error: string } {
+  let raw: string;
+  try {
+    raw = readFileSync(file, "utf8");
+  } catch (e) {
+    return { error: `the piece file ${file} could not be read: ${(e as Error).message}` };
+  }
+  const paths = [...new Set(raw.split("\0").filter((p) => p !== ""))].sort();
+  if (paths.length === 0) return { error: `the piece file ${file} names no path (paths are NUL-separated)` };
+  for (const p of paths) {
+    const parts = p.split("/");
+    if (isAbsolute(p) || parts.includes("..") || parts.includes(".") || parts.includes(""))
+      return { error: `the piece names ${JSON.stringify(p)}, which is not a repo-relative path inside the repo` };
+  }
+  return paths;
+}
+const SET_FIELDS: [keyof SliceSet, string][] = [
+  ["base", "base"],
+  ["head", "head"],
+  ["branchBase", "branch base"],
+  ["scope", "scope"],
+  ["authors", "writers"],
+  ["block", "declaration"],
+];
 
 function flags(argv: string[], known: string[], bools: string[] = []): { f: Record<string, string>; rest: string[] } {
   const f: Record<string, string> = {};
@@ -736,12 +931,14 @@ function loadOrFail(owner: string): State {
   return (r as { state: State }).state;
 }
 /** How a receipt's reviewer is reported: a fresh-context fallback always says it is not independent. */
-const byWhom = (r: Receipt): string =>
-  r.independent === false ? `${r.reviewer} (claude-fallback: fresh context, NOT independent)` : `${r.reviewer}`;
+const byWhom = (r: Receipt): string => {
+  const who = (r.reviewers ?? [r.reviewer]).join(", ");
+  return r.independent === false ? `${who} (claude-fallback: fresh context, NOT independent)` : who;
+};
 function summary(r: Receipt): string {
   return (
     r.trailer ??
-    `implement-audit: receipt ${r.mode} review by ${byWhom(r)} at ${r.finishedAt}; ${(r.nits ?? []).length} nit(s) held; APPROVE`
+    `implement-audit: receipt ${r.mode} review${r.pieces ? ` in ${r.pieces} pieces` : ""} by ${byWhom(r)} at ${r.finishedAt}; ${(r.nits ?? []).length} nit(s) held; APPROVE`
   );
 }
 
@@ -780,6 +977,13 @@ export function parseFallbackReply(text: string): { findings: string[]; coverage
         !c.evidence.every((x) => typeof x === "string")
       )
         return { error: "a coverage entry is not {id, status: checked|unchecked, evidence: [strings]}" };
+    }
+    // One answer per item: with two, the receipt's lookup keeps the last, and an
+    // item the reviewer said it did not check could read as checked.
+    const ids = new Set<string>();
+    for (const c of v.coverage as { id: string }[]) {
+      if (ids.has(c.id)) return { error: `the frame names coverage item ${c.id} more than once` };
+      ids.add(c.id);
     }
     coverage = v.coverage as ItemResult[];
     body = v.findings.split("\n");
@@ -868,12 +1072,23 @@ async function main(): Promise<void> {
         "--bucket",
         "--since",
         "--report",
+        "--slice",
       ]);
       for (const k of ["--repo", "--tree", "--mode", "--bucket"]) if (!f[k]) usageExit(`begin needs ${k}`);
       const mode = f["--mode"] as Mode;
       const bucket = f["--bucket"] as Bucket;
       if (!["range", "since", "final"].includes(mode)) usageExit(`unknown mode ${mode}`);
       if (!["build", "qa"].includes(bucket)) usageExit(`unknown bucket ${bucket}`);
+      // A piece is one part of the build bucket's full review; refused here,
+      // before anything is read or written, when its list cannot be one.
+      let slice: string[] | null = null;
+      if (f["--slice"] !== undefined) {
+        if (mode !== "range" || bucket !== "build")
+          usageExit("--slice is a piece of the build bucket's full review (--mode range --bucket build)");
+        const got = readPieceFile(f["--slice"] as string);
+        if ("error" in got) usageExit(got.error);
+        slice = got;
+      }
       const owner = needOwner();
       if (owner === "") exit(1);
       const repo = canonicalRepo(f["--repo"] as string);
@@ -915,11 +1130,57 @@ async function main(): Promise<void> {
         warn("implement-audit: fix the report's coverage declaration before spending a review call");
         exit(1);
       }
-      const v = validity(rs, cov, rs.scope);
       const authors = normaliseAuthors(
         process.env.POLICY_CHAIN_AUTHOR_VENDORS ?? "",
         process.env.POLICY_CHAIN_AUTHOR_THREAD_ID ?? "",
       );
+      // The set this attempt belongs to. Earlier pieces count only toward the
+      // same set; a different set, or a full review, which reads everything,
+      // replaces them. Their spending stays spent.
+      const headCommit =
+        mode === "range" ? (gitLine(repo, ["rev-parse", "--verify", `${f["--head"] ?? "HEAD"}^{commit}`]) ?? "") : "";
+      let sliceSet: SliceSet | null = null;
+      if (slice) {
+        sliceSet = {
+          base: gitLine(repo, ["rev-parse", "--verify", `${rs.base || "HEAD"}^{commit}`]) ?? rs.base,
+          head: headCommit || (f["--head"] ?? "HEAD"),
+          branchBase: branchBase(repo, cov.decl?.base ?? rs.base),
+          scope: rs.scope,
+          authors,
+          block: cov.block,
+        };
+        const kept = rs.slices ?? [];
+        const was = rs.sliceSet;
+        const differs = was ? SET_FIELDS.find(([k]) => was[k] !== (sliceSet as SliceSet)[k]) : undefined;
+        if (kept.length > 0 && (was === undefined || differs)) {
+          warn(
+            `implement-audit: ${kept.length} earlier piece(s) no longer count: the ${differs?.[1] ?? "set"} differs — this piece starts a new set`,
+          );
+          rs.slices = [];
+        }
+        // Refused before any reviewer call, and before anything is written.
+        const changed = new Set(cov.changed);
+        const refuse = (why: string): never => {
+          warn(`implement-audit: ${why} — no review call was made`);
+          return exit(2);
+        };
+        for (const pth of slice) {
+          if (isRecord(pth))
+            refuse(`the piece names ${pth}, a record (journal, knowledge, decisions, project Markdown)`);
+          if (!changed.has(pth)) refuse(`the piece names a path not changed since the branch base: ${pth}`);
+          const n = (rs.slices ?? []).findIndex(
+            (pc) => (pc.read ?? []).includes(pth) && pc.covered[pth] === cov.covered[pth],
+          );
+          if (n >= 0) refuse(`piece ${n + 1} already read ${pth} at its current content`);
+        }
+      } else if (mode === "range" && (rs.slices ?? []).length > 0) {
+        warn(
+          `implement-audit: ${(rs.slices ?? []).length} earlier piece(s) no longer count: a full review reads the whole change`,
+        );
+        rs.slices = [];
+        rs.sliceSet = undefined;
+      }
+      const v = validity(rs, cov, rs.scope);
       if ("ok" in v && v.ok.authors === authors) {
         writeState(owner, state);
         say("RECEIPT=reuse");
@@ -929,6 +1190,7 @@ async function main(): Promise<void> {
         return;
       }
       if (rs.receipt?.status === "complete") rs.last = rs.receipt;
+      if (sliceSet) rs.sliceSet = sliceSet;
       const items = declarationItems(cov.decl);
       rs.receipt = {
         status: "incomplete",
@@ -936,9 +1198,8 @@ async function main(): Promise<void> {
         bucket,
         tree: f["--tree"] as string,
         ...(f["--since"] ? { since: f["--since"] } : {}),
-        ...(mode === "range" && f["--head"]
-          ? { head: gitLine(repo, ["rev-parse", "--verify", `${f["--head"]}^{commit}`]) ?? f["--head"] }
-          : {}),
+        ...(mode === "range" && f["--head"] ? { head: headCommit || f["--head"] } : {}),
+        ...(slice ? { slice } : {}),
         base: rs.base,
         scope: rs.scope,
         startedAt: now,
@@ -946,6 +1207,7 @@ async function main(): Promise<void> {
         covered: cov.covered,
         requiredItems: items.filter((i) => i.required).map((i) => i.id),
         itemKeys: declaredKeys(cov.decl),
+        itemPaths: declaredItemPaths(cov.decl),
         authors,
       };
       const itemsFile = join(ownerDir(owner), `review-items-${sha256(repo).slice(0, 12)}.json`);
@@ -1040,6 +1302,14 @@ async function main(): Promise<void> {
         res = { vendor: "fresh-context/claude-fallback", ...parsed };
         r.independent = false;
         delete r.pendingFallback;
+        // The chain's exit 3 charged nothing, as code-review.ts charges a first
+        // full review only when it completes: this completion is that review,
+        // so it is spent here, and a repeated full review counts as a round.
+        if (r.mode === "range") {
+          const bucket: Bucket = process.env.CODE_REVIEW_BUCKET === "qa" ? "qa" : "build";
+          const spent = readSpend(repo, bucket);
+          if (spent !== null && !("unknown" in spent) && !spent.full) writeSpend(repo, bucket, { ...spent, full: true });
+        }
       } else {
         try {
           res = JSON.parse(readFileSync(f["--result"] as string, "utf8"));
@@ -1050,7 +1320,14 @@ async function main(): Promise<void> {
         }
       }
       const lines = Array.isArray(res.findings) ? (res.findings as string[]) : [];
-      r.reviewer = typeof res.vendor === "string" ? res.vendor : undefined;
+      r.reviewer = typeof res.vendor === "string" && res.vendor.trim() !== "" ? res.vendor : undefined;
+      if (r.slice && !r.reviewer) {
+        // A piece is kept only as a completed review; with no answering
+        // reviewer it read nothing, and the attempt stays incomplete.
+        warn("implement-audit: the piece's result names no answering reviewer — not kept, nothing counted as read");
+        say("APPROVED=0");
+        return;
+      }
       r.blocking = lines.filter((l) => /^\[(?:must-fix|should-fix)\]/.test(l));
       const prev = r.mode === "range" ? undefined : rs.last;
       r.nits = lines.filter((l) => l.startsWith("[nit]"));
@@ -1071,10 +1348,17 @@ async function main(): Promise<void> {
           ...gitZ(repo, ["diff", "-z", "--no-renames", "--name-only", "HEAD"]),
           ...gitZ(repo, ["ls-files", "-z", "--others", "--exclude-standard"]),
         ]);
-        const base = branchBase(repo, r.base);
-        for (const p of changedSince(repo, base)) if (!isRecord(p) && !read.has(p)) gaps.push(p);
+        if (r.slice) {
+          // A piece read only the listed paths its reviewed diff held; what
+          // the other pieces read is judged when the set is combined below.
+          r.read = (r.slice ?? []).filter((p) => read.has(p));
+        } else {
+          const base = branchBase(repo, r.base);
+          for (const p of changedSince(repo, base)) if (!isRecord(p) && !read.has(p)) gaps.push(p);
+        }
       } else {
         if (!prev) gaps.push("#no-base");
+        else if (prev.slice) gaps.push("#pieces");
         else {
           const delta = new Set(gitZ(repo, ["diff", "-z", "--no-renames", "--name-only", r.since ?? "", r.tree]));
           // A path in another repo (a companion, or the report beside a product) is
@@ -1125,12 +1409,38 @@ async function main(): Promise<void> {
       r.gaps = gaps;
       r.status = "complete";
       r.finishedAt = new Date().toISOString();
-      const why = receiptReasons(
+      let why = receiptReasons(
         r,
         { covered: r.covered, block: r.block, decl: null, problems: [], changed: [] },
         rs.scope,
       );
-      r.approved = why.length === 0;
+      let pending: PieceSet | null = null;
+      if (r.slice) {
+        // Combine the set against the content as it is now. Nothing is
+        // written until the end, so a failure here leaves the set as it was.
+        let cov: Coverage;
+        try {
+          cov = coverageNow(repo, rs.base, rs.report);
+        } catch (e) {
+          warn(`implement-audit: ${(e as Error).message} — the piece cannot be bound to its content`);
+          say("APPROVED=0");
+          exit(1);
+        }
+        const pieces = [...(rs.slices ?? []), r];
+        const set = pieceSet(pieces, cov, rs.scope);
+        if (set.unread.length === 0) {
+          rs.receipt = set.combined;
+          rs.slices = undefined;
+          rs.sliceSet = undefined;
+          why = receiptReasons(set.combined, cov, rs.scope);
+        } else {
+          rs.slices = pieces;
+          pending = set;
+          why = set.why;
+        }
+      }
+      const done = rs.receipt as Receipt;
+      done.approved = why.length === 0 && pending === null;
       try {
         writeState(owner, state);
       } catch (e) {
@@ -1139,7 +1449,18 @@ async function main(): Promise<void> {
         exit(1);
       }
       for (const w of why) warn(`implement-audit: ${w}`);
-      say(`APPROVED=${r.approved ? 1 : 0}`);
+      say(`APPROVED=${done.approved ? 1 : 0}`);
+      if (pending) {
+        // Not a failure: the next piece reads these. Anything else that already
+        // stands is SLICE_BLOCKED, so a caller can tell a set still being read
+        // from one that will not approve once it is.
+        say(`SLICE_PENDING=${pending.unread.length}`);
+        if (pending.why.length > 0) say("SLICE_BLOCKED=1");
+        // One line per path: a name holding a control character or a quote is
+        // printed as a JSON string, so a newline in it cannot split the line.
+        for (const u of pending.unread) say(`unread: ${/[\u0000-\u001f"\\]/.test(u) ? JSON.stringify(u) : u}`);
+        for (const id of pending.unchecked) say(`unchecked: ${id}`);
+      }
       return;
     }
     case "check": {

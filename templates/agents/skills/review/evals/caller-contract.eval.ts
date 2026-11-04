@@ -20,12 +20,20 @@
 // caller as `[must-fix]`, as `[should-fix]`, or in passing inside another
 // finding all PASS. The claim under test is about what reached the prompt.
 //
-// This spends ONE real vendor call, on whichever vendor the `adversarial-review`
-// row selects. It is not part of `npm test` for that reason — a suite that costs
-// a vendor call per run stops being run.
+// THE SLICED CASE. A change too large for one
+// review call is reviewed in pieces, each reading only its own files' diff. The
+// second case changes the caller too (a new, unrelated function beside the
+// broken call), and reviews the piece that holds only the callee: the caller is
+// a changed file the reviewer is told another piece reads. The claim is the
+// same — the review must still name the broken caller — because a piece that
+// waves a caller off as "another piece's" is a whole-change regression.
+//
+// This spends ONE real vendor call per case, on whichever vendor the
+// `adversarial-review` row selects: two by default. It is not part of `npm test`
+// for that reason — a suite that costs a vendor call per run stops being run.
 //
 // Usage:
-//   node --experimental-strip-types .agents/skills/review/evals/caller-contract.eval.ts
+//   node --experimental-strip-types .agents/skills/review/evals/caller-contract.eval.ts [--case whole|sliced]
 //   node --experimental-strip-types .agents/skills/review/evals/caller-contract.eval.ts --pack-only
 //
 // `--pack-only` asserts the deterministic half — that the pack names the caller
@@ -34,8 +42,9 @@
 // prompt and a reviewer that acts on it are two different claims.
 //
 // Exit:
-//   0  PASS — the review named the caller (or, with --pack-only, the pack did)
-//   1  FAIL — it did not
+//   0  PASS — every case's review named the caller (or, with --pack-only, every
+//      case's pack did)
+//   1  FAIL — a case's review did not
 //   2  the review did not happen (chain exhausted, timeout, caller error).
 //      INCONCLUSIVE, not a failing grade: an outage must never read as a
 //      model regression.
@@ -66,21 +75,30 @@ async function main(): Promise<void> {
   const REVIEW = `${CHECKS}/code-review.ts`;
   const PACK = `${CHECKS}/blast-radius.ts`;
 
-  const PACK_ONLY = process.argv[2] === "--pack-only";
+  const argv = process.argv.slice(2);
+  const PACK_ONLY = argv[0] === "--pack-only";
+  let CASES: ("whole" | "sliced")[] = ["whole", "sliced"];
+  if (argv[0] === "--case" && (argv[1] === "whole" || argv[1] === "sliced") && argv.length === 2) CASES = [argv[1]];
+  else if (argv.length > 0 && !(PACK_ONLY && argv.length === 1)) {
+    err("usage: caller-contract.eval.ts [--case whole|sliced] | --pack-only");
+    exit(2);
+  }
 
   const TMP = mkdtempSync(join(tmpdir(), "caller-contract-eval-"));
   try {
-    const REPO = `${TMP}/repo`;
-    mkdirSync(`${REPO}/src`, { recursive: true });
-    const git = (...args: string[]): string =>
-      (spawnSync("git", ["-C", REPO, ...args], { encoding: "utf8" }).stdout ?? "").replace(/\n+$/, "");
-    git("init", "-q", ".");
-    git("config", "user.email", "eval@local");
-    git("config", "user.name", "eval");
+    /** One fixture repo per case: the caller is broken by the change in both. */
+    const build = (kind: "whole" | "sliced"): { REPO: string; BASE: string; HEAD_SHA: string } => {
+      const REPO = `${TMP}/repo-${kind}`;
+      mkdirSync(`${REPO}/src`, { recursive: true });
+      const git = (...args: string[]): string =>
+        (spawnSync("git", ["-C", REPO, ...args], { encoding: "utf8" }).stdout ?? "").replace(/\n+$/, "");
+      git("init", "-q", ".");
+      git("config", "user.email", "eval@local");
+      git("config", "user.name", "eval");
 
-    writeFileSync(
-      `${REPO}/src/api.ts`,
-      `export interface User {
+      writeFileSync(
+        `${REPO}/src/api.ts`,
+        `export interface User {
   id: string
   name: string
 }
@@ -89,36 +107,36 @@ export function getUser(id: string): User {
   return { id, name: \`user-\${id}\` }
 }
 `,
-    );
+      );
 
-    // The caller. It is committed BEFORE the change and never touched again, so it
-    // appears in no hunk of the diff under review.
-    writeFileSync(
-      `${REPO}/src/consumer.ts`,
-      `import { getUser } from './api'
+      // The caller. In the whole case it is committed BEFORE the change and never
+      // touched again, so it appears in no hunk of the diff under review.
+      writeFileSync(
+        `${REPO}/src/consumer.ts`,
+        `import { getUser } from './api'
 
 export function greet(id: string): string {
   const user = getUser(id)
   return \`hello \${user.name}\`
 }
 `,
-    );
+      );
 
-    writeFileSync(
-      `${REPO}/README.md`,
-      `# fixture
+      writeFileSync(
+        `${REPO}/README.md`,
+        `# fixture
 A two-file module used by the review chain's caller-contract eval.
 `,
-    );
+      );
 
-    git("add", "src", "README.md");
-    git("commit", "-qm", "initial module");
+      git("add", "src", "README.md");
+      git("commit", "-qm", "initial module");
 
-    // The change: a second parameter, required, and dereferenced on the first line
-    // of the body. Every existing caller now passes `undefined` and throws.
-    writeFileSync(
-      `${REPO}/src/api.ts`,
-      `export interface User {
+      // The change: a second parameter, required, and dereferenced on the first line
+      // of the body. Every existing caller now passes `undefined` and throws.
+      writeFileSync(
+        `${REPO}/src/api.ts`,
+        `export interface User {
   id: string
   name: string
 }
@@ -132,94 +150,129 @@ export function getUser(id: string, options: LookupOptions): User {
   return { id, name: \`user-\${id}\${suffix}\` }
 }
 `,
-    );
+      );
+      // The sliced case changes the caller as well — an unrelated addition that
+      // leaves the broken call as it was — so it is a changed file outside the
+      // piece under review, read by "another piece".
+      if (kind === "sliced")
+        writeFileSync(
+          `${REPO}/src/consumer.ts`,
+          `import { getUser } from './api'
 
-    git("add", "src/api.ts");
-    git("commit", "-qm", "add a lookup options parameter to getUser");
+export function greet(id: string): string {
+  const user = getUser(id)
+  return \`hello \${user.name}\`
+}
 
-    const BASE = git("rev-parse", "HEAD~1");
-    const HEAD_SHA = git("rev-parse", "HEAD");
+export function farewell(name: string): string {
+  return \`goodbye \${name}\`
+}
+`,
+        );
 
-    // ── The deterministic half ────────────────────────────────────────────
+      git("add", "src");
+      git("commit", "-qm", "add a lookup options parameter to getUser");
+      return { REPO, BASE: git("rev-parse", "HEAD~1"), HEAD_SHA: git("rev-parse", "HEAD") };
+    };
 
-    writeFileSync(
-      `${TMP}/fixture.diff`,
-      spawnSync("git", ["-C", REPO, "diff", BASE, HEAD_SHA], { encoding: "utf8" }).stdout ?? "",
-    );
-    const pack = (
-      spawnSync(
-        process.execPath,
-        [
-          "--experimental-strip-types",
-          PACK,
-          "--repo",
-          REPO,
-          "--diff-file",
-          `${TMP}/fixture.diff`,
-          "--old-ref",
-          BASE,
-          "src/api.ts",
-        ],
-        { encoding: "utf8", stdio: ["inherit", "pipe", "ignore"], maxBuffer: 1 << 26 },
-      ).stdout ?? ""
-    ).replace(/\n+$/, "");
+    // The piece the sliced case reviews: the callee alone.
+    const PIECE = `${TMP}/piece-callee`;
+    writeFileSync(PIECE, "src/api.ts\0");
 
-    if (!pack.includes("src/consumer.ts")) {
-      err("FAIL: the pack itself does not name the caller — the fixture no longer bites.");
-      err(pack);
+    for (const kind of CASES) {
+      const { REPO, BASE, HEAD_SHA } = build(kind);
+
+      // ── The deterministic half ──────────────────────────────────────────
+      // The pack is built over the piece's own file in both cases (the whole
+      // case's diff holds no other), so it must still reach the caller.
+      writeFileSync(
+        `${TMP}/fixture.diff`,
+        spawnSync("git", ["-C", REPO, "diff", BASE, HEAD_SHA, "--", "src/api.ts"], { encoding: "utf8" }).stdout ?? "",
+      );
+      const pack = (
+        spawnSync(
+          process.execPath,
+          [
+            "--experimental-strip-types",
+            PACK,
+            "--repo",
+            REPO,
+            "--diff-file",
+            `${TMP}/fixture.diff`,
+            "--old-ref",
+            BASE,
+            "src/api.ts",
+          ],
+          { encoding: "utf8", stdio: ["inherit", "pipe", "ignore"], maxBuffer: 1 << 26 },
+        ).stdout ?? ""
+      ).replace(/\n+$/, "");
+
+      if (!pack.includes("src/consumer.ts")) {
+        err(`FAIL (${kind}): the pack itself does not name the caller — the fixture no longer bites.`);
+        err(pack);
+        exit(1);
+      }
+      out(`PASS: the pack names src/consumer.ts as a caller of getUser${kind === "sliced" ? " (sliced)" : ""}`);
+      if (PACK_ONLY) continue;
+
+      // ── The rerun ───────────────────────────────────────────────────────
+
+      out(`caller-contract (${kind}): spending one vendor call on the adversarial-review row…`);
+      const args = kind === "sliced" ? [BASE, HEAD_SHA, "--slice", PIECE] : [BASE, HEAD_SHA];
+      // The review needs an owner and the authors to leave out. The fixture is a
+      // scripted diff no model wrote, so its author is "human" and the eval owns
+      // its own review loop; run in the scratch repo, no thread's T3 context is
+      // taken for the writer's (Contextium v9.2.0 review).
+      const r = spawnSync(process.execPath, ["--experimental-strip-types", REVIEW, ...args], {
+        encoding: "utf8",
+        cwd: REPO,
+        env: {
+          ...process.env,
+          CODE_REVIEW_LOOP_ID: process.env.CODE_REVIEW_LOOP_ID || `caller-contract-eval-${process.pid}`,
+          POLICY_CHAIN_AUTHOR_VENDORS: process.env.POLICY_CHAIN_AUTHOR_VENDORS || "human",
+          // An executing thread's id or writing thread, inherited, would make the
+          // scripted fixture look like T3 work owing a writing thread: cleared.
+          WORKBENCH_THREAD_ID: "",
+          POLICY_CHAIN_AUTHOR_THREAD_ID: "",
+          CODEX_REVIEW_REPO: REPO,
+          CODE_REVIEW_ROUND_STATE_DIR: `${TMP}/rounds-${kind}`,
+          CODE_REVIEW_SNAP_STATE_DIR: `${TMP}/snaps`,
+        },
+        stdio: ["inherit", "pipe", "pipe"],
+        maxBuffer: 1 << 26,
+      });
+      writeFileSync(`${TMP}/review.out`, r.stdout ?? "");
+      const rc = r.status ?? 1;
+
+      if (rc !== 0) {
+        err(`INCONCLUSIVE: the review did not complete (${kind}, exit ${rc}). This is not a`);
+        err("failing grade — an exhausted chain or a timeout says nothing about the");
+        err("prompt. Restore a vendor and re-run.");
+        // `tail -20`
+        const lines = (r.stderr ?? "").split("\n");
+        if (lines[lines.length - 1] === "") lines.pop();
+        for (const l of lines.slice(-20)) err(l);
+        exit(2);
+      }
+
+      out(`--- review stdout --- (${kind})`);
+      process.stdout.write(readFileSync(`${TMP}/review.out`));
+      out("--- end ---");
+
+      if (/consumer/i.test(r.stdout ?? "")) {
+        out(`caller-contract: PASS — the review named the broken caller${kind === "sliced" ? " (sliced)" : ""}.`);
+        continue;
+      }
+
+      err(`caller-contract: FAIL — the review did not name src/consumer.ts${kind === "sliced" ? " (sliced)" : ""}.`);
+      err("The pack put that file in the prompt by name and the caller is now");
+      err("passing `undefined` into a required parameter that is dereferenced on");
+      err("the first line of the body. Read the review above before changing the");
+      err("prompt: a single miss is one sample, not a regression.");
       exit(1);
     }
-    out("PASS: the pack names src/consumer.ts as a caller of getUser");
-
-    if (PACK_ONLY) {
-      out("caller-contract: PASS (pack-only; no vendor call spent)");
-      exit(0);
-    }
-
-    // ── The rerun ─────────────────────────────────────────────────────────
-
-    out("caller-contract: spending one vendor call on the adversarial-review row…");
-    const r = spawnSync(process.execPath, ["--experimental-strip-types", REVIEW, BASE, HEAD_SHA], {
-      encoding: "utf8",
-      env: {
-        ...process.env,
-        CODEX_REVIEW_REPO: REPO,
-        CODE_REVIEW_ROUND_STATE_DIR: `${TMP}/rounds`,
-        CODE_REVIEW_SNAP_STATE_DIR: `${TMP}/snaps`,
-      },
-      stdio: ["inherit", "pipe", "pipe"],
-      maxBuffer: 1 << 26,
-    });
-    writeFileSync(`${TMP}/review.out`, r.stdout ?? "");
-    writeFileSync(`${TMP}/review.err`, r.stderr ?? "");
-    const rc = r.status ?? 1;
-
-    if (rc !== 0) {
-      err(`INCONCLUSIVE: the review did not complete (exit ${rc}). This is not a`);
-      err("failing grade — an exhausted chain or a timeout says nothing about the");
-      err("prompt. Restore a vendor and re-run.");
-      // `tail -20`
-      const lines = (r.stderr ?? "").split("\n");
-      if (lines[lines.length - 1] === "") lines.pop();
-      for (const l of lines.slice(-20)) err(l);
-      exit(2);
-    }
-
-    out("--- review stdout ---");
-    process.stdout.write(readFileSync(`${TMP}/review.out`));
-    out("--- end ---");
-
-    if (/consumer/i.test(r.stdout ?? "")) {
-      out("caller-contract: PASS — the review named the broken caller.");
-      exit(0);
-    }
-
-    err("caller-contract: FAIL — the review did not name src/consumer.ts.");
-    err("The pack put that file in the prompt by name and the caller is now");
-    err("passing `undefined` into a required parameter that is dereferenced on");
-    err("the first line of the body. Read the review above before changing the");
-    err("prompt: a single miss is one sample, not a regression.");
-    exit(1);
+    if (PACK_ONLY) out("caller-contract: PASS (pack-only; no vendor call spent)");
+    exit(0);
   } finally {
     rmSync(TMP, { recursive: true, force: true });
   }

@@ -1,0 +1,16 @@
+{
+  "session_id": "22926bfe-befa-4ac0-95cf-59c0c70356e6",
+  "transcript_path": "/home/user/probe/20261104T012109Z-4a46/home/claude/.claude/projects/-home-user-probe-20261104T012109Z-4a46-stop/22926bfe-befa-4ac0-95cf-59c0c70356e6.jsonl",
+  "cwd": "/home/user/probe/20261104T012109Z-4a46/stop",
+  "scratchpad_dir": "/tmp/claude-1000/-home-user-probe-20261104T012109Z-4a46-stop/22926bfe-befa-4ac0-95cf-59c0c70356e6/scratchpad",
+  "prompt_id": "f2419c1c-ff96-499e-8a31-edad1c05ea31",
+  "permission_mode": "bypassPermissions",
+  "effort": {
+    "level": "medium"
+  },
+  "hook_event_name": "Stop",
+  "stop_hook_active": false,
+  "last_assistant_message": "Hello! What would you like to work on?",
+  "background_tasks": [],
+  "session_crons": []
+}

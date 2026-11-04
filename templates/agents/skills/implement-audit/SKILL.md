@@ -91,7 +91,18 @@ Interpret the exit code — this is a **gate**, not a best-effort step:
 
 **Never fall back to an artifact author.** The chain names exclusions and attempted vendors on stderr and ends with `answered: <vendor>/<model>` on success. Eligible backups are already authorized by policy; do not ask again. Record the answering vendor in the trailer. A Claude slot remains unavailable in this script executor, whether or not Claude authored the artifact.
 
-The loop's stopping rule is the review round cap and lives in step-4. Bound the ROUND 1 pass to ~400 changed lines; split a larger diff into separate passes. Rounds 2+ are self-bounding — they only carry the fixes.
+The loop's stopping rule is the review round cap and lives in step-4. Rounds 2+ are self-bounding — they only carry the fixes.
+
+**A change too large for one review call is reviewed in pieces** (the driver refuses a diff over the byte budget, and spends nothing doing so). Group the changed files into at most four pieces — related files together, each piece's diff under the budget — write each piece's paths NUL-separated to a file, and run round 1 once per piece with `--slice <file>` added, every piece over the SAME `--base` and `--head`:
+
+```bash
+printf '%s\0' .agents/skills/a/x.ts .agents/skills/a/x.test.ts >"$PIECE1"
+CODE_REVIEW_LOOP_ID="<audit-owner thread id>" POLICY_CHAIN_AUTHOR_THREAD_ID="<writing thread id>" POLICY_CHAIN_AUTHOR_VENDORS="<all writer providers>" \
+node --experimental-strip-types .agents/skills/implement/scripts/validate.ts --repo "$REVIEW_REPO" --phase review \
+  --base "$BASE_SHA" --head HEAD --slice "$PIECE1" --scope <scope> --report "$REPORT"
+```
+
+Each piece spends a round from the same allowance (piece 1 is round 1, piece 4 is round 4), so a set of four leaves only the one `--final` review for fixes. A piece whose set still has unread files prints `SLICE_PENDING=<n>` and one `unread: <path>` line each, exits 1 with `NEED_FIX=0`, and is not a fix request: run the next piece over those files. When the pieces together have read every changed file at its current content, the driver combines them into one receipt, which approves (or names its findings) exactly as one full review would. Never cut pieces by commit (`<commit>..<commit>`): a piece that ends before HEAD reads an earlier version of every file a later commit touched again, and is refused. A file you edit between pieces is unread again until a later piece reads it, and a piece that lists a file an earlier piece already read, an unchanged file or a record is refused before any call.
 
 `.agents/agents/implement-audit-reviewer.md` is retained as a **documented manual fallback only** — it is no longer dispatched by this step.
 
@@ -121,6 +132,8 @@ Fix EVERY finding whose fix is **ready in this session** — `fix-now` AND `defe
 **A finding you believe is wrong is not dismissed by converging.** An open must-fix or should-fix keeps the receipt from approving, and a round with nothing changed resolves nothing. Change the code so the next round can review your answer, or ask the user, as a numbered question, to accept it.
 
 Then re-enter step 2 with `--since` for the fixes alone; the driver re-runs the deterministic checks.
+
+**A piece set is read whole before any fix round.** While the last piece printed `SLICE_PENDING` > 0, run the next piece (step-2), even when a piece reported a finding: fixing first moves the files an earlier piece read and costs another piece to re-read them. Once the set is complete, fix what the combined receipt holds open and review the fixes with `--since` the PRE_TREE of the last piece.
 
 ### When to stop
 
@@ -242,7 +255,8 @@ Round 1 Step 1 returns all PASS; Step 2's agent returns no findings. Step 3 emit
 | `code-review.ts` exits 1 — "no parseable findings and no NO_FINDINGS sentinel" | A vendor answered but said nothing usable; indistinguishable from a crash, so it is NOT chain fallthrough | Treat as NOT reviewed. Re-run; if it repeats, inspect the stderr tail the script prints. Never read empty stdout as a clean pass. |
 | `code-review.ts` exits 124 | Review exceeded the timeout (default 900s) | Same handling as exit 1. Raise `CODEX_REVIEW_TIMEOUT_S` only if the diff is genuinely large; a hang usually means a stdin-wait regression (the script redirects stdin from `/dev/null` to prevent it). |
 | `code-review.ts` exits 2 | Invalid range or original-author provenance | Correct the specific input named on stderr. |
-| Diff exceeds the byte budget (exit 1) | The change is larger than the prompt budget | Split the range and review in parts. The script refuses rather than reviewing a truncated slice, because a partial review reported as clean is the failure mode this gate exists to prevent. |
+| Diff exceeds the byte budget (exit 1) | The change is larger than the prompt budget | Review it as up to four pieces by file over one base and head (`--slice <file>`, step-2). The script refuses rather than reviewing a truncated slice, because a partial review reported as clean is the failure mode this gate exists to prevent; the refusal spends no round. |
+| `SLICE_PENDING=<n>` with `NEED_FIX=0` | A piece finished and other changed files are still unread by any piece | Run the next piece over the `unread:` files, same `--base` and `--head`. Not a finding, and no fix round yet. |
 | Rounds keep returning findings near ones already fixed | The loop is reviewing its own fixes, not the change | Stop — this is step-4's test 3. Do not fire a question, and do not read the finding COUNT as a reason to continue; it stays flat at ~1.2/round however deep the loop goes |
 | A round returns findings about code the session never touched | Round 2+ was run as a full review instead of `--since` | Re-scope: rounds 2+ take `--since <the snapshot from before the previous round>`. A full re-review hands the reviewer settled code and it will find something in it |
 | `--since` exits 4 immediately on round 2 | The fix round changed nothing on disk — findings were dismissed rather than fixed, or the fixes went to a different tree | If the findings were genuinely all rejected, the loop is done; say so. Otherwise check you are in the session worktree the fixes landed in |

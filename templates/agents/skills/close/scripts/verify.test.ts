@@ -600,6 +600,56 @@ test("a package that owns a suite is verified in pass 1, one without is silent",
   copyFileSync(join(TMP, "ledger.bak"), CLEDGER);
 });
 
+// An app with no package.json printed nothing, ran nothing, and the close
+// recorded a pass with none of its tests run. Its `*.test.ts` suites run the
+// way a project's do.
+test("an app with no package.json runs its node:test suites", () => {
+  writeFileSync(CLEDGER, row(CLEAN, join(TMP, "cshared"), `t3/${TID}`));
+  const A = join(CLEAN, "apps/tools/nopkg");
+  mkdirSync(join(A, "tests"), { recursive: true });
+  writeFileSync(join(A, "main.ts"), "export const m = 1;\n");
+  writeFileSync(join(A, "tests/main.test.ts"), 'import { test } from "node:test";\ntest("green", () => {});\n');
+  go();
+  is("an app with no package.json and a green suite exits 0", String(RC), "0");
+  has("and is reported ok", OUT, "ok tools/nopkg");
+
+  writeFileSync(
+    join(A, "tests/main.test.ts"),
+    'import { test } from "node:test";\ntest("red", () => { throw new Error("app suite ran"); });\n',
+  );
+  go();
+  is("a red suite in an app with no package.json fails the close", String(RC), "1");
+  has(
+    "naming the app and the suite, with the rerun line",
+    OUT,
+    `FAIL tools/nopkg apps/tools/nopkg/tests/main.test.ts — rerun: cd ${CLEAN} && node --test`,
+  );
+  hasnt("and a failing app is not also reported ok", OUT, "ok tools/nopkg");
+
+  rmSync(join(A, "tests"), { recursive: true, force: true });
+  go();
+  is("an app with neither a manifest nor a suite does not fail the close", String(RC), "0");
+  has("but is named unverified", OUT, "unverified tools/nopkg — no package.json and no test suites");
+  rmSync(A, { recursive: true, force: true });
+
+  // The same class: an integration with no package.json, or one declaring no
+  // half, ran none of the suites it carries.
+  const I = join(CLEAN, "integrations/barewithsuite");
+  mkdirSync(I, { recursive: true });
+  writeFileSync(join(I, "lib.ts"), "export const i = 1;\n");
+  writeFileSync(join(I, "lib.test.ts"), 'import { test } from "node:test";\ntest("red", () => { throw new Error("x"); });\n');
+  go();
+  is("a red suite in an integration with no package.json fails the close", String(RC), "1");
+  has("naming the integration", OUT, "FAIL integrations/barewithsuite integrations/barewithsuite/lib.test.ts");
+  writeFileSync(join(I, "package.json"), '{ "name": "barewithsuite" }\n');
+  writeFileSync(join(I, "lib.test.ts"), 'import { test } from "node:test";\ntest("green", () => {});\n');
+  go();
+  is("a green one declaring no half exits 0", String(RC), "0");
+  has("and is reported ok", OUT, "ok integrations/barewithsuite");
+  rmSync(I, { recursive: true, force: true });
+  copyFileSync(join(TMP, "ledger.bak"), CLEDGER);
+});
+
 test("the skills tree: fixture", () => {
   git("clone", "-q", BARE, WBCLEAN);
   git("-C", WBCLEAN, "config", "user.email", "t@example.com");
@@ -791,6 +841,13 @@ test("a project's own code runs its node:test suites", () => {
   go();
   hasnt("a project's records alone run nothing", OUT, "projects/ai/2026-01-01_demo");
   rmSync(join(P, "README.md"), { force: true });
+
+  const Q = join(WBCLEAN, "projects/ai/2026-01-02_nosuite");
+  mkdirSync(join(Q, "scripts"), { recursive: true });
+  writeFileSync(join(Q, "scripts/y.ts"), "export const y = 1;\n");
+  go();
+  has("a project with code and no suites is named unverified", OUT, "unverified projects/ai/2026-01-02_nosuite — no test suites");
+  rmSync(Q, { recursive: true, force: true });
 });
 
 test("a red bash suite", () => {
@@ -1256,7 +1313,20 @@ test("a product repo's worktree runs its own check and test", () => {
   writeFileSync(LEDGER, row(WT, join(TMP, "shared"), `t3/${TID}`) + row(PRODWT, join(TMP, "prodshared"), `t3/${TID}`));
   writeFileSync(join(PRODWT, "src/feature.ts"), "export const f = 1;\n");
   go();
-  hasnt("a moved product worktree with no package.json is silent", OUT, "prodshared");
+  // A suite under node_modules is a dependency's, never the repo's own.
+  mkdirSync(join(PRODWT, "node_modules/dep"), { recursive: true });
+  writeFileSync(
+    join(PRODWT, "node_modules/dep/dep.test.ts"),
+    'import { test } from "node:test";\ntest("red", () => { throw new Error("dep"); });\n',
+  );
+  go();
+  has(
+    "a moved product worktree with no package.json and no suites is named unverified",
+    OUT,
+    "unverified prodshared — no package.json and no test suites",
+  );
+  hasnt("and a dependency's suite is not run", OUT, "FAIL prodshared");
+  rmSync(join(PRODWT, "node_modules"), { recursive: true, force: true });
 
   writeFileSync(join(PRODWT, "package.json"), '{ "name": "prod", "scripts": { "check": "true", "test": "true" } }\n');
   go();
@@ -1270,6 +1340,62 @@ test("a product repo's worktree runs its own check and test", () => {
 
   rmSync(join(PRODWT, "package.json"));
   rmSync(join(PRODWT, "src/feature.ts"));
+});
+
+// A product MONOREPO — one with an apps/ folder of its own — still runs its
+// root check and test when a file outside apps/ moved: a changed root config or
+// root contract test is verified here or nowhere (Contextium v9.2.0 review).
+test("a product repo with apps/ runs its root check and test when a root file moved", () => {
+  writeFileSync(LEDGER, row(WT, join(TMP, "shared"), `t3/${TID}`) + row(PRODWT, join(TMP, "prodshared"), `t3/${TID}`));
+  mkdirSync(join(PRODWT, "apps/web/site"), { recursive: true });
+  writeFileSync(join(PRODWT, "apps/web/site/index.ts"), "x\n");
+  git("-C", PRODWT, "add", "apps");
+  git("-C", PRODWT, "commit", "-q", "-m", "an app");
+  writeFileSync(join(PRODWT, "package.json"), '{ "name": "prod", "scripts": { "check": "true", "test": "exit 1" } }\n');
+  writeFileSync(join(PRODWT, "tsconfig.json"), "{}\n");
+  go();
+  is("a red root test in a product monorepo fails the close", String(RC), "1");
+  has("naming the repo and the half", OUT, "FAIL prodshared test");
+  rmSync(join(PRODWT, "tsconfig.json"));
+  // An app file whose app has no suite of its own is the root's to test: with
+  // the root suite committed, only the app file moves.
+  git("-C", PRODWT, "add", "package.json");
+  git("-C", PRODWT, "commit", "-q", "-m", "root suite");
+  writeFileSync(join(PRODWT, "apps/web/site/index.ts"), "y\n");
+  go();
+  is("a change only in an app with no suite of its own runs the root suite", String(RC), "1");
+  has("…naming the repo and the half", OUT, "FAIL prodshared test");
+  git("-C", PRODWT, "checkout", "-q", "--", "apps");
+  // An app manifest that declares no test is not a suite of its own either.
+  writeFileSync(join(PRODWT, "apps/web/site/package.json"), '{ "name": "site", "scripts": { "build": "true" } }\n');
+  git("-C", PRODWT, "add", "apps/web/site/package.json");
+  git("-C", PRODWT, "commit", "-q", "-m", "an app manifest with no test");
+  writeFileSync(join(PRODWT, "apps/web/site/index.ts"), "z\n");
+  go();
+  is("an app whose manifest declares no test leaves the root suite to run", String(RC), "1");
+  has("…naming the repo and the half", OUT, "FAIL prodshared test");
+  git("-C", PRODWT, "checkout", "-q", "--", "apps");
+  // The app a file belongs to is the one pass 1 picks, its nearest manifest: a
+  // build-only tool inside a tested app is not covered by the app's test.
+  writeFileSync(join(PRODWT, "apps/web/site/package.json"), '{ "name": "site", "scripts": { "test": "true" } }\n');
+  mkdirSync(join(PRODWT, "apps/web/site/tool"), { recursive: true });
+  writeFileSync(join(PRODWT, "apps/web/site/tool/package.json"), '{ "name": "tool", "scripts": { "build": "true" } }\n');
+  writeFileSync(join(PRODWT, "apps/web/site/tool/index.ts"), "t\n");
+  git("-C", PRODWT, "add", "apps");
+  git("-C", PRODWT, "commit", "-q", "-m", "a tool inside the app");
+  writeFileSync(join(PRODWT, "apps/web/site/tool/index.ts"), "u\n");
+  go();
+  is("a file under a build-only nested manifest leaves the root suite to run", String(RC), "1");
+  has("…naming the repo and the half", OUT, "FAIL prodshared test");
+  git("-C", PRODWT, "checkout", "-q", "--", "apps");
+  git("-C", PRODWT, "rm", "-q", "-r", "apps/web/site/tool");
+  git("-C", PRODWT, "rm", "-q", "apps/web/site/package.json");
+  git("-C", PRODWT, "commit", "-q", "-m", "no app manifest");
+  git("-C", PRODWT, "rm", "-q", "package.json");
+  git("-C", PRODWT, "commit", "-q", "-m", "no root suite");
+  rmSync(join(PRODWT, "apps"), { recursive: true, force: true });
+  git("-C", PRODWT, "rm", "-q", "-r", "--cached", "apps");
+  git("-C", PRODWT, "commit", "-q", "-m", "no app");
 });
 
 // ── The record and --stamped ──────────────────────────────────────────────

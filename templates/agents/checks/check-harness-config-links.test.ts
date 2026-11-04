@@ -1,7 +1,7 @@
 // check-harness-config-links.test.ts — boundary rows for
 // check-harness-config-links.ts: every link correct, a link replaced by a plain
 // file, a dangling link, a real directory, a home that does not exist, --fix,
-// and NEGATIVE manifest fixtures.
+// NEGATIVE manifest fixtures, and the end-of-turn hook's Stop entries.
 //
 // Run: node --test --experimental-strip-types .agents/checks/check-harness-config-links.test.ts
 //
@@ -43,6 +43,7 @@ after(() => rmSync(TMP, { recursive: true, force: true }));
 // carries the bare path.
 const INFRA_CMD = "bash .agents/hooks/check-host-infra-safety.sh";
 const WRITE_CMD = "bash .agents/hooks/check-shared-checkout-write.sh";
+const eotCmd = (harness: string) => `bash .agents/hooks/check-close-reached.sh --harness ${harness}`;
 
 type Json = { [key: string]: unknown };
 
@@ -56,13 +57,19 @@ function writeJson(p: string, v: unknown): void {
 
 const cmd = (command: string) => ({ type: "command", command });
 
-function claudeManifest(p: string, writeMatcher = "Edit|Write|MultiEdit|NotebookEdit|apply_patch|write|search_replace"): void {
+/** A Claude-shape manifest; `stopAs` is the harness its end-of-turn entry names. */
+function claudeManifest(
+  p: string,
+  writeMatcher = "Edit|Write|MultiEdit|NotebookEdit|apply_patch|write|search_replace",
+  stopAs = "codex",
+): void {
   writeJson(p, {
     hooks: {
       PreToolUse: [
         { matcher: "Bash|run_terminal_command", hooks: [cmd(INFRA_CMD), cmd(WRITE_CMD)] },
         { matcher: writeMatcher, hooks: [cmd(WRITE_CMD)] },
       ],
+      Stop: [{ hooks: [cmd(eotCmd(stopAs))] }],
     },
   });
 }
@@ -88,7 +95,7 @@ function mkfix(): string {
   ]) {
     mkdirSync(d, { recursive: true });
   }
-  claudeManifest(`${h}/.claude/settings.json`);
+  claudeManifest(`${h}/.claude/settings.json`, undefined, "claude");
   claudeManifest(`${r}/.agents/hooks/claude-hooks.json`);
   writeJson(`${r}/.agents/gemini-settings.json`, {
     context: { fileName: ["AGENTS.md"] },
@@ -165,7 +172,7 @@ test("a correct tree", async (t) => {
   const r = run(mkfix());
   await t.test("passes", () => assert.equal(r.rc, 0, r.out));
   await t.test("and counts what it checked", () =>
-    says(r.out, "OK — 8 links verified, 5 manifests carry the required hooks"),
+    says(r.out, "OK — 8 links verified, 5 manifests carry the required hooks, end-of-turn hook wired on claude, codex"),
   );
 });
 
@@ -551,4 +558,66 @@ test("tools= naming claude requires its settings even where ~/.claude is gone", 
 test("an unknown flag", () => {
   const r = run(mkfix(), "--bogus");
   assert.equal(r.rc, 1, r.out);
+});
+
+// ── The end-of-turn hook ──────────────────────────────────────────────────
+//
+// Claude Code's settings and the manifest Codex reads each need a Stop entry
+// running check-close-reached.sh as their own harness; Grok Build reads the
+// Codex manifest too, and is not covered, so nothing may run the check as
+// grok; Antigravity's manifest must not carry it either.
+
+const dropStop = (j: Json): Json => {
+  const hooks = { ...(j.hooks as Json) };
+  delete hooks.Stop;
+  return { ...j, hooks };
+};
+
+test("Claude Code settings with no end-of-turn entry", async (t) => {
+  const F = mkfix();
+  edit(`${F}/home/.claude/settings.json`, dropStop);
+  const r = run(F);
+  await t.test("exits 1", () => assert.equal(r.rc, 1, r.out));
+  await t.test("and names the harness and the entry it needs", () => {
+    says(r.out, "Claude Code manifest does not run the end-of-turn check on Stop");
+    says(r.out, "check-close-reached.sh --harness claude");
+  });
+});
+
+test("the Codex manifest with no end-of-turn entry", async (t) => {
+  const F = mkfix();
+  edit(`${F}/repo/.agents/hooks/claude-hooks.json`, dropStop);
+  const r = run(F);
+  await t.test("exits 1", () => assert.equal(r.rc, 1, r.out));
+  await t.test("and names Codex", () => says(r.out, "Codex manifest does not run the end-of-turn check on Stop"));
+});
+
+test("an entry naming another harness does not count", async (t) => {
+  const F = mkfix();
+  claudeManifest(`${F}/home/.claude/settings.json`, undefined, "codex");
+  const r = run(F);
+  await t.test("exits 1", () => assert.equal(r.rc, 1, r.out));
+  await t.test("for Claude Code", () => says(r.out, "Claude Code manifest does not run the end-of-turn check on Stop"));
+});
+
+test("an uncovered harness running the check as itself", async (t) => {
+  const F = mkfix();
+  // The file Grok Build links to (Codex's) gains an entry naming grok.
+  edit(`${F}/repo/.agents/hooks/claude-hooks.json`, (j) => {
+    const hooks = j.hooks as { Stop: unknown[] };
+    return { ...j, hooks: { ...hooks, Stop: [...hooks.Stop, { hooks: [cmd(eotCmd("grok"))] }] } };
+  });
+  edit(`${F}/repo/.agents/hooks.json`, (j) => ({ ...j, eot: { Stop: [cmd(eotCmd("antigravity"))] } }));
+  const r = run(F);
+  await t.test("exits 1", () => assert.equal(r.rc, 1, r.out));
+  await t.test("naming Grok Build", () => says(r.out, "Grok Build manifest runs the end-of-turn check (check-close-reached.sh) as grok"));
+  await t.test("and Antigravity", () => says(r.out, "Antigravity manifest runs the end-of-turn check (check-close-reached.sh) as antigravity"));
+});
+
+test("a tools= record without Codex asks only for Claude Code's entry", async (t) => {
+  const F = mkfix();
+  writeFileSync(`${F}/repo/.agents/harness`, "harness=claude\nagent=claude\ntools=claude\n");
+  const r = run(F);
+  await t.test("passes", () => assert.equal(r.rc, 0, r.out));
+  await t.test("and counts Claude Code alone", () => says(r.out, "end-of-turn hook wired on claude\n"));
 });

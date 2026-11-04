@@ -32,14 +32,21 @@
 // halting the close on it would make every session that brushed that app
 // unclosable.
 //
+// NO MANIFEST TO RUN. A unit with no package.json, or one that declares
+// neither half, runs its own `*.test.ts` suites with `node --test` from the
+// worktree root, exactly as a project's do, and is `ok` when they pass.
+// Printing nothing for it let a close record a pass with none of its tests
+// run. With no suites either it is `unverified`, never silent.
+//
 // WHICH INTEGRATIONS. The ones whose own files moved AND which declare a
 // `check` or `test` of their own — verified in pass 1 beside the apps, on the
 // same narrow rule. This is not the importer fallback: pass 2 fires only when
 // pass 1 verified NOTHING, so a session touching an app AND an integration would
 // otherwise verify the app and skip the integration's own suite. An integration
-// that declares neither half prints nothing at all, rather than `unverified`: by
-// convention an integration has no typecheck target of its own, so its silence
-// is the norm and not a gap.
+// that declares neither half and carries no `*.test.ts` suite prints nothing at
+// all, rather than `unverified`: by convention an integration has no typecheck
+// target of its own, so its silence is the norm and not a gap. One that declares
+// neither half but carries suites runs them.
 //
 // AND WHICH PACKAGES. A `packages/<name>` folder is held to the same rule:
 // verified when its own files moved and it declares a `test` or `check`,
@@ -87,14 +94,20 @@
 // fixture a suite reads — and every `*.test.ts` beneath it runs with
 // `node --test`, bounded like a skill suite; otherwise a project's own suites
 // run on no close. A project's markdown records (README, ROADMAP, specs) move
-// nothing a test reads, so they select nothing.
+// nothing a test reads, so they select nothing. One with code and no suites
+// is `unverified`, never silent.
 //
-// Output, one line per app:
+// Output, one line per app (and per integration, package or product repo,
+// labelled `integrations/<name>`, `packages/<name>` or the repo's name):
 //   ok <app>
 //   unverified <app> — no <check|test|check or test> script
+//   unverified <app> — no package.json and no test suites
 //   unverified <app> — imports <path>, and N importers is past the cap
 //   FAIL <app> <half> — rerun: cd <dir> && npm run <half>
 //   FAIL <app> <half> — <dir>/package.json could not be parsed   (an app or integration)
+//   FAIL <app> <suite> — rerun: cd <worktree> && node --test … <suite>   (no manifest to run)
+//   FAIL <app> <suite> — timed out after <N>s
+//   FAIL <app> — could not list its node:test suites (find exited <N>)
 //
 // and, halting at once with exit 1:
 //   FAIL verify — could not register <worktree>: <write-root's reason>
@@ -120,8 +133,10 @@
 //
 // and one line per project unit:
 //   ok projects/<domain>/<slug>
+//   unverified projects/<domain>/<slug> — no test suites
 //   FAIL projects/<domain>/<slug> <suite> — rerun: cd <worktree> && node --test … <suite>
 //   FAIL projects/<domain>/<slug> <suite> — timed out after <N>s
+//   FAIL projects/<domain>/<slug> — could not list its node:test suites (find exited <N>)
 //
 // Env:
 //   WORKBENCH_THREAD_ID, T3CODE_HOME — read by thread.ts.
@@ -129,7 +144,7 @@
 //                   test suite replaces it; nothing in production does.
 //   VERIFY_IMPORTER_CAP — how many importer apps may be RUN in the fallback pass
 //                   before they are named unverified instead. Default 8.
-//   VERIFY_SKILLS_TIMEOUT — seconds one skill or project suite may take. Default 180.
+//   VERIFY_SKILLS_TIMEOUT — seconds one suite of any unit may take. Default 180.
 //                   Enforced by a watchdog in this process (the suite runs in a
 //                   process group of its own, TERMed at the limit and KILLed 5s
 //                   later), not by timeout(1), which stock macOS does not have.
@@ -150,6 +165,7 @@ import {
   lstatSync,
   mkdirSync,
   openSync,
+  readdirSync,
   readFileSync,
   readlinkSync,
   realpathSync,
@@ -170,6 +186,8 @@ const WRITE_ROOT = join(SCRIPT_DIR, "write-root.sh");
 // The review receipt's reader, run as a program.
 const AUDIT = join(SCRIPT_DIR, "../../implement-audit/scripts/audit-dedupe.ts");
 const RUNNER = process.env.VERIFY_RUNNER || "npm run";
+// Seconds one suite may take, whatever unit it belongs to.
+const SUITE_TIMEOUT = process.env.VERIFY_SKILLS_TIMEOUT || "180";
 
 let FAILED = 0;
 
@@ -276,7 +294,10 @@ function listChangedPaths(wt: string): string[] {
 
 // The app a repo-relative path belongs to: the nearest folder under `apps/`
 // holding a package.json, returned without `apps/` — `<name>` in a flat layout,
-// `<domain>/<name>` in a grouped one. Nothing for a path in no such folder.
+// `<domain>/<name>` in a grouped one. With no manifest above the path the app
+// is still one (it runs its own `*.test.ts` suites, or is `unverified`), told
+// by layout: `<domain>/<name>` when `apps/<domain>/` holds folders and no file
+// of its own, else `<name>`. Nothing for a file directly under `apps/`.
 function appOf(wt: string, rel: string): string[] {
   const f = rel.split("/");
   if (f[0] !== "apps") return [];
@@ -284,7 +305,17 @@ function appOf(wt: string, rel: string): string[] {
     const d = f.slice(0, n).join("/");
     if (isFile(`${wt}/${d}/package.json`)) return [d.slice("apps/".length)];
   }
-  return [];
+  if (f.length < 3) return [];
+  const top = `${wt}/apps/${f[1]}`;
+  let grouped = false;
+  if (f.length >= 4) {
+    try {
+      grouped = !readdirSync(top, { withFileTypes: true }).some((e) => e.isFile() && !e.name.startsWith("."));
+    } catch {
+      grouped = true; // a removed domain folder: its app went with it
+    }
+  }
+  return [grouped ? `${f[1]}/${f[2]}` : (f[1] as string)];
 }
 
 // `apps/…` and nothing else. A row with no `apps/` — a product repo's —
@@ -393,10 +424,26 @@ function runLogged(argv: string[], cwd: string, log: string): number {
 // `apps/` prefix, and the result lines are what `/close` quotes and what this
 // suite asserts on, so generalizing the directory must not rename the unit.
 // `verifyApp` below is the `apps/<domain>/<app>` caller's shorthand.
-function verifyUnit(logs: string, wt: string, rel: string, app: string, note = ""): void {
+//
+// A UNIT WITH NO package.json, OR ONE THAT DECLARES NEITHER HALF, RUNS ITS OWN
+// `*.test.ts` SUITES, the way a project's run (runNodeSuites): returning at
+// once with no line at all let a close record a pass with none of a unit's
+// tests run. Neither a manifest nor a suite is named `unverified`, never
+// silence. A path that names no folder is a deleted unit (the deletion is the
+// intent) or a file directly under `apps/<domain>/`: nothing to run, nothing
+// to say.
+async function verifyUnit(logs: string, wt: string, rel: string, app: string, note = ""): Promise<void> {
   const dir = `${wt}/${rel}`;
   const pkg = `${dir}/package.json`;
-  if (!isFile(pkg)) return;
+  if (!isDir(dir)) return;
+  const manifest = isFile(pkg);
+  if (!manifest || (hasScript(pkg, "check") === 1 && hasScript(pkg, "test") === 1)) {
+    const r = await runNodeSuites(logs, SUITE_TIMEOUT, wt, rel === "." ? wt : dir, app);
+    if (r === "ok") say(`ok ${app}${note}`);
+    else if (r === "none" && manifest) say(`unverified ${app} — no check or test script`);
+    else if (r === "none") say(`unverified ${app} — no package.json and no test suites`);
+    return;
+  }
   let missing = "";
   let appFailed = false;
 
@@ -429,8 +476,8 @@ function verifyUnit(logs: string, wt: string, rel: string, app: string, note = "
 
 // The two `apps/<domain>/<app>` call sites keep their short unit name, so the
 // result lines and the SEEN keys they compare against are unchanged.
-function verifyApp(logs: string, wt: string, app: string, note = ""): void {
-  verifyUnit(logs, wt, `apps/${app}`, app, note);
+function verifyApp(logs: string, wt: string, app: string, note = ""): Promise<void> {
+  return verifyUnit(logs, wt, `apps/${app}`, app, note);
 }
 
 // ── Pass 3 helpers: the skills tree ────────────────────────────────────────
@@ -555,12 +602,19 @@ function sameFile(a: string, b: string): boolean {
   }
 }
 
-/** `find <dir> [-maxdepth 1] -type f -name <pattern> | sort`, and find's status. */
+/** `find <dir> [-maxdepth 1] -type f -name <pattern> | sort`, and find's status.
+ *  `node_modules` and `.git` are pruned: a product repo's root is searched
+ *  when it has no manifest, and a dependency's suite is not the repo's own. */
 function findSuites(dir: string, root: boolean, pattern: string): { rc: number; suites: string[] } {
-  const r = spawnSync("find", [dir, ...(root ? ["-maxdepth", "1"] : []), "-type", "f", "-name", pattern], {
-    encoding: "utf8",
-    stdio: ["ignore", "pipe", "ignore"],
-  });
+  const prune = ["(", "-name", "node_modules", "-o", "-name", ".git", ")", "-prune", "-o"];
+  const r = spawnSync(
+    "find",
+    [dir, ...(root ? ["-maxdepth", "1"] : []), ...prune, "-type", "f", "-name", pattern, "-print"],
+    {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    },
+  );
   const suites = (r.stdout ?? "")
     .split("\n")
     .filter((l) => l !== "")
@@ -760,21 +814,28 @@ async function verifySkillUnit(logs: string, timeout: string, wt: string, unit: 
   }
 }
 
-// Every `*.test.ts` beneath one project, each run where it sits with the
-// flags layer-2.ts gives a test run in place (`--experimental-test-module-mocks`
+// Every `*.test.ts` beneath `dir`, each run from the worktree root `wt` with
+// the flags layer-2.ts gives a test run in place (`--experimental-test-module-mocks`
 // so a mock.module() suite does not read as a regression). Same vocabulary and
-// clock as verifySkillUnit; a project with code and no suites prints nothing,
-// which is the common case.
-async function verifyProjectUnit(logs: string, timeout: string, wt: string, unit: string): Promise<void> {
-  const dir = `${wt}/projects/${unit}`;
-  if (!isDir(dir)) return;
+// clock as verifySkillUnit. Prints each FAIL under `label` and sets FAILED; the
+// caller prints the `ok` or `unverified` line, because what a unit with no
+// suites is called depends on what kind of unit it is. One runner for every
+// unit that has no manifest to run: a project, and an app, integration, package
+// or product repo with no package.json or one declaring neither half.
+async function runNodeSuites(
+  logs: string,
+  timeout: string,
+  wt: string,
+  dir: string,
+  label: string,
+): Promise<"ok" | "none" | "failed"> {
   const ts = findSuites(dir, false, "*.test.ts");
   if (ts.rc !== 0) {
-    say(`FAIL projects/${unit} — could not list its node:test suites (find exited ${ts.rc})`);
+    say(`FAIL ${label} — could not list its node:test suites (find exited ${ts.rc})`);
     FAILED = 1;
-    return;
+    return "failed";
   }
-  if (ts.suites.length === 0) return;
+  if (ts.suites.length === 0) return "none";
   const limit = Number(timeout);
   const flags = [
     "--test",
@@ -794,9 +855,9 @@ async function verifyProjectUnit(logs: string, timeout: string, wt: string, unit
     const rc = await runBounded([process.execPath, ...flags, rel], wt, log, limit, env);
     const elapsed = Date.now() - start;
     if (elapsed >= limit * 1000) {
-      say(`FAIL projects/${unit} ${rel} — timed out after ${timeout}s`);
+      say(`FAIL ${label} ${rel} — timed out after ${timeout}s`);
     } else if (rc !== 0) {
-      say(`FAIL projects/${unit} ${rel} — rerun: cd ${wt} && node ${flags.join(" ")} ${rel}`);
+      say(`FAIL ${label} ${rel} — rerun: cd ${wt} && node ${flags.join(" ")} ${rel}`);
     } else {
       continue;
     }
@@ -804,7 +865,17 @@ async function verifyProjectUnit(logs: string, timeout: string, wt: string, unit
     unitFailed = true;
     FAILED = 1;
   }
-  if (!unitFailed) say(`ok projects/${unit}`);
+  return unitFailed ? "failed" : "ok";
+}
+
+// A project with code and no suites is named `unverified`, as a skill folder
+// is, so no unit kind's gap is silent.
+async function verifyProjectUnit(logs: string, timeout: string, wt: string, unit: string): Promise<void> {
+  const dir = `${wt}/projects/${unit}`;
+  if (!isDir(dir)) return;
+  const r = await runNodeSuites(logs, timeout, wt, dir, `projects/${unit}`);
+  if (r === "ok") say(`ok projects/${unit}`);
+  else if (r === "none") say(`unverified projects/${unit} — no test suites`);
 }
 
 // ── The record ─────────────────────────────────────────────────────────────
@@ -1024,21 +1095,27 @@ async function main(): Promise<void> {
       // rename across worktrees would otherwise verify it twice.
       if (SEEN.includes(app)) continue;
       SEEN.push(app);
-      verifyApp(LOGS, wt, app);
+      await verifyApp(LOGS, wt, app);
     }
 
     // The integrations whose own files moved AND which declare a half to run.
     // Kept out of SEEN: SEEN is what pass 2 tests for "did pass 1 verify an APP",
     // and an integration verifying itself must not suppress the importer fallback
     // for the apps that read it.
-    // A manifest that is absent is silence; one that exists and cannot be parsed
-    // (hasScript's 2) goes to verifyUnit, which fails it — skipping it read a
-    // broken package.json as "declares no suite" and let the close through.
+    // One that exists and cannot be parsed (hasScript's 2) goes to verifyUnit,
+    // which fails it — skipping it read a broken package.json as "declares no
+    // suite" and let the close through. One with no manifest, or declaring
+    // neither half, goes too when it carries `*.test.ts` suites: skipping it ran
+    // none of the suites such an integration carries. Silence is
+    // kept only for one with nothing at all to run, the convention above.
     for (const integ of integrationDirsFor(wt)) {
       const pkg = `${wt}/${integ}/package.json`;
-      if (!isFile(pkg)) continue;
-      if (hasScript(pkg, "test") === 1 && hasScript(pkg, "check") === 1) continue;
-      verifyUnit(LOGS, wt, integ, integ);
+      const declares = isFile(pkg) && !(hasScript(pkg, "test") === 1 && hasScript(pkg, "check") === 1);
+      if (!declares) {
+        const found = findSuites(`${wt}/${integ}`, false, "*.test.ts");
+        if (!isDir(`${wt}/${integ}`) || (found.rc === 0 && found.suites.length === 0)) continue;
+      }
+      await verifyUnit(LOGS, wt, integ, integ);
     }
   }
 
@@ -1050,12 +1127,38 @@ async function main(): Promise<void> {
   // root, exactly as an app's do, and a red half fails the close: a product
   // repo whose push builds without testing is tested here or nowhere.
   // Labelled by the repo's name. Kept out of SEEN, which is about APPS.
+  // A root with no package.json runs its own `*.test.ts` suites, or is named
+  // `unverified`, as an app is.
   const PRODUCT_SKIP = workbenchWorktree(rows);
   for (const { wt, shared } of rows) {
-    if (wt === "" || wt === PRODUCT_SKIP || !isDir(wt) || isDir(`${wt}/apps`)) continue;
-    if (!isFile(`${wt}/package.json`)) continue;
-    if (changedPaths(wt).length === 0) continue;
-    verifyUnit(LOGS, wt, ".", basename(shared || wt));
+    if (wt === "" || wt === PRODUCT_SKIP || !isDir(wt)) continue;
+    const moved = changedPaths(wt);
+    if (moved.length === 0) continue;
+    // A product repo with apps/ of its own has those verified as apps; its root
+    // suites still run when any moved file is not an app's with a suite of its
+    // own — a root config, a contract test, or an app file the root tests
+    // (Contextium v9.2.0 review).
+    if (isDir(`${wt}/apps`)) {
+      const ownSuite = (p: string): boolean => {
+        // The app pass 1 verifies this file under (appOf).
+        const [app] = appOf(wt, p);
+        if (app === undefined) return false;
+        const dir = `${wt}/apps/${app}`;
+        const pkg = `${dir}/package.json`;
+        // A manifest that declares a test is a suite, and so is a broken one,
+        // since the app pass reports it. One that declares a check alone runs
+        // only that. With no manifest, or one declaring neither half, the
+        // app's own *.test.ts files are what the app pass runs.
+        if (isFile(pkg)) {
+          if (hasScript(pkg, "test") !== 1) return true;
+          if (hasScript(pkg, "check") !== 1) return false;
+        }
+        const found = findSuites(dir, false, "*.test.ts");
+        return found.rc === 0 && found.suites.length > 0;
+      };
+      if (!moved.some((p) => !ownSuite(p))) continue;
+    }
+    await verifyUnit(LOGS, wt, ".", basename(shared || wt));
   }
 
   // ── Pass 2: nothing moved in any app, but shared code did ──────────────────
@@ -1086,7 +1189,7 @@ async function main(): Promise<void> {
           // takes ten minutes is its own kind of failure.
           say(`unverified ${app} — imports shared code, and ${COUNT} importers is past the cap of ${CAP}`);
         } else {
-          verifyApp(LOGS, wt, app, " (imports shared code this thread changed)");
+          await verifyApp(LOGS, wt, app, " (imports shared code this thread changed)");
         }
       }
     }
@@ -1095,7 +1198,7 @@ async function main(): Promise<void> {
   // ── Pass 3: the skills tree ────────────────────────────────────────────────
 
   const SKILLS_SEEN: string[] = [];
-  const SKILLS_TIMEOUT = process.env.VERIFY_SKILLS_TIMEOUT || "180";
+  const SKILLS_TIMEOUT = SUITE_TIMEOUT;
   const WB_WT = workbenchWorktree(rows);
 
   if (WB_WT === "") {

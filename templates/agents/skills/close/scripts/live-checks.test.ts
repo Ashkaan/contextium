@@ -4,7 +4,7 @@
 
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { after, test } from "node:test";
@@ -238,4 +238,121 @@ test("contains: a descendant contains, an unrelated or older commit does not, an
   assert.equal(sut(["contains", repo, two, one]).out, "not", "an older live commit does not");
   assert.equal(sut(["contains", repo, one, other]).out, "not", "an unrelated one does not");
   assert.equal(sut(["contains", repo, one, "c".repeat(40)]).out, "unreadable");
+});
+
+// ── A recorded deployment is what is live ─────────────────────────────────
+// When GitHub records deployments for the repo, the newest one whose latest
+// status is success is what serves: a push still building does not count, and
+// a capture taken before it deploys names the old deployment, which a release
+// after it refuses. With none recorded, the trunk is what is live.
+
+test("the seam: a recorded deployment answers ahead of the trunk", () => {
+  const { repo, tips } = checkout(1);
+  const B = "b".repeat(40);
+  const dep = JSON.parse(sut(["revision", "workbench", repo], stub({ "workbench#deployment": { id: "7", sha: B } })).out);
+  assert.deepEqual(dep, { deploymentId: "deployment 7", sourceCommit: B });
+  const none = JSON.parse(sut(["revision", "workbench", repo], stub({ "workbench#deployment": null })).out);
+  assert.equal(none.sourceCommit, tips[0], "no recorded deployment: the trunk is live");
+});
+
+/** A gh on PATH that answers the deployments API from <answers> (exact path →
+ *  JSON), wrapping it in ANSI when colour is forced, as the real gh does. */
+function ghStub(answers: Record<string, unknown>): Record<string, string> {
+  const bin = mkdtempSync(join(tmp, "ghbin-"));
+  const file = join(bin, "answers.json");
+  writeFileSync(file, JSON.stringify(answers));
+  const script = join(bin, "gh");
+  writeFileSync(
+    script,
+    `#!/usr/bin/env node\nconst a = require(${JSON.stringify(file)});\nconst p = process.argv[3] ?? "";\nif (!(p in a)) { process.stderr.write("gh: stub has no " + p + "\\n"); process.exit(1); }\nconst body = JSON.stringify(a[p]);\nconst c = process.env.FORCE_COLOR || process.env.CLICOLOR_FORCE;\nprocess.stdout.write(c ? "\\u001b[1;37m" + body + "\\u001b[m" : body);\n`,
+  );
+  chmodSync(script, 0o755);
+  return { PATH: `${bin}:${process.env.PATH ?? ""}` };
+}
+const DEPS = "repos/acme/site/deployments?per_page=100&page=";
+const statuses = (id: number) => `repos/acme/site/deployments/${id}/statuses?per_page=1`;
+const onGithub = (): string => {
+  const { repo } = checkout(1);
+  spawnSync("git", ["-C", repo, "remote", "set-url", "origin", "git@github.com:acme/site.git"]);
+  return repo;
+};
+const C = "c".repeat(40);
+const D = "d".repeat(40);
+const E = "e".repeat(40);
+
+test("a GitHub origin: the newest successful production deployment, past one building and a newer preview", () => {
+  const env = ghStub({
+    [`${DEPS}1`]: [
+      { id: 13, sha: E, environment: "Preview" },
+      { id: 12, sha: D, environment: "Production" },
+      { id: 11, sha: C, environment: "production" },
+    ],
+    [statuses(13)]: [{ state: "success" }],
+    [statuses(12)]: [{ state: "in_progress" }],
+    [statuses(11)]: [{ state: "success" }],
+  });
+  const r = sut(["revision", "workbench", onGithub()], env);
+  assert.equal(r.rc, 0, r.err);
+  assert.deepEqual(JSON.parse(r.out), { deploymentId: "deployment 11", sourceCommit: C });
+});
+
+test("a success on the second page of history is found; forced colour does not break the read", () => {
+  const failed = Array.from({ length: 100 }, (_, i) => ({ id: 200 - i, sha: D, production_environment: true }));
+  const answers: Record<string, unknown> = { [`${DEPS}1`]: failed, [`${DEPS}2`]: [{ id: 50, sha: C, environment: "github-pages" }] };
+  for (const d of failed) answers[statuses(d.id)] = [{ state: "failure" }];
+  answers[statuses(50)] = [{ state: "success" }];
+  const env = { ...ghStub(answers), FORCE_COLOR: "1", CLICOLOR_FORCE: "1" };
+  const r = sut(["revision", "workbench", onGithub()], env);
+  assert.equal(r.rc, 0, r.err);
+  assert.deepEqual(JSON.parse(r.out), { deploymentId: "deployment 50", sourceCommit: C });
+});
+
+test("production deployments none of which succeeded are a failure, never the trunk", () => {
+  const env = ghStub({
+    [`${DEPS}1`]: [
+      { id: 12, sha: D, environment: "production" },
+      { id: 11, sha: C, environment: "production" },
+    ],
+    [statuses(12)]: [{ state: "pending" }],
+    [statuses(11)]: [],
+  });
+  const r = sut(["revision", "workbench", onGithub()], env);
+  assert.equal(r.rc, 1);
+  assert.match(r.err, /2 production deployment\(s\).*none succeeded/);
+});
+
+test("a history with only previews leaves the trunk live; a malformed status is a failure", () => {
+  const previews = ghStub({ [`${DEPS}1`]: [{ id: 9, sha: D, environment: "Preview" }], [statuses(9)]: [{ state: "success" }] });
+  const repo = onGithub();
+  const p = sut(["revision", "workbench", repo], previews);
+  assert.equal(p.rc, 1, "no production deployment: the trunk is read, here an unreachable GitHub origin");
+  assert.match(p.err, /ls-remote origin failed/);
+  const bad = ghStub({ [`${DEPS}1`]: [{ id: 9, sha: D, environment: "production" }], [statuses(9)]: [{ status: "ok" }] });
+  const m = sut(["revision", "workbench", repo], bad);
+  assert.equal(m.rc, 1);
+  assert.match(m.err, /a malformed status/);
+});
+
+test("a GitHub origin whose deployments cannot be read, or with no gh, is a failure, never the trunk", () => {
+  const repo = onGithub();
+  const r = sut(["revision", "workbench", repo], ghStub({}));
+  assert.equal(r.rc, 1);
+  assert.match(r.err, /deployments/);
+  // A PATH holding git and nothing else: no gh to find.
+  const nogh = mkdtempSync(join(tmp, "nogh-"));
+  const realGit = spawnSync("sh", ["-c", "command -v git"], { encoding: "utf8" }).stdout.trim();
+  writeFileSync(join(nogh, "git"), `#!/bin/sh\nexec ${realGit} "$@"\n`);
+  chmodSync(join(nogh, "git"), 0o755);
+  const n = sut(["revision", "workbench", repo], { PATH: nogh });
+  assert.equal(n.rc, 1);
+  assert.match(n.err, /needs the gh CLI/);
+});
+
+test("a history longer than the reading limit with no production success is a failure, never the trunk", () => {
+  const answers: Record<string, unknown> = {};
+  for (let page = 1; page <= 10; page++)
+    answers[`${DEPS}${page}`] = Array.from({ length: 100 }, (_, i) => ({ id: page * 1000 + i, sha: D, environment: "Preview" }));
+  const r = sut(["revision", "workbench", onGithub()], ghStub(answers));
+  assert.equal(r.rc, 1, r.out);
+  assert.match(r.err, /older deployment history is unread/);
 });

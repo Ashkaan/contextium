@@ -147,7 +147,7 @@ test("original-author exclusion reaches the executable review and missing proven
   assert.equal(r.rc, 0, r.err);
   assert.match(r.err, /excluded codex\/codex: artifact author/);
   assert.match(r.err, /answered: grok\//);
-  const missing = { ...env };
+  const missing: NodeJS.ProcessEnv = { ...env };
   delete missing.POLICY_CHAIN_AUTHOR_VENDORS;
   const refused = review(["--fixture", fixture], missing);
   assert.equal(refused.rc, 2, refused.err);
@@ -1251,4 +1251,175 @@ test("receipt mode: the sentinel with stray whitespace is the same clean review 
   rcIs("accepted and parsed as clean", 0, r.rc);
   eq("no finding", "", r.out);
   eq("the result is clean", 0, JSON.parse(r.result).findings.length);
+});
+
+// ── Pieces: a full review of a declared subset of the changed files ──
+//
+// A change too large for one review call is reviewed as pieces over one base
+// and head, each listing its files in a NUL-separated piece file. These cases
+// pin which bytes a piece hands the reviewer, and that a refused review —
+// a piece or a repeated full review — spends nothing. Their own repo, so the
+// shared one above keeps its history.
+const SREPO = `${TMP}/slice-repo`;
+mkdirSync(SREPO, { recursive: true });
+function sg(...args: string[]): string {
+  const r = spawnSync("git", ["-C", SREPO, ...args], { encoding: "utf8" });
+  return (r.stdout ?? "").replace(/\n+$/, "");
+}
+sg("init", "-q", ".");
+sg("config", "user.email", "t@t");
+sg("config", "user.name", "t");
+for (const f of ["a.ts", "b.ts", "c.ts", "d.ts", "*.ts", "?.ts", "[x].ts", ":lead.ts"])
+  writeFileSync(join(SREPO, f), `export const base_${f.replace(/[^a-z]/g, "_")} = 0;\n`);
+sg("add", "-A");
+sg("commit", "-qm", "init");
+const SBASE = sg("rev-parse", "HEAD");
+writeFileSync(join(SREPO, "a.ts"), "export const committedA = 1;\n");
+writeFileSync(join(SREPO, "b.ts"), "export const committedB = 1;\n");
+sg("commit", "-qam", "pieces");
+writeFileSync(join(SREPO, "c.ts"), "export const workingC = 1;\n");
+writeFileSync(join(SREPO, "d.ts"), "export const workingD = 1;\n");
+writeFileSync(join(SREPO, "e.ts"), "export const untrackedE = 1;\n");
+writeFileSync(join(SREPO, "f.ts"), "export const untrackedF = 1;\n");
+// A stand-in packer that names the files it was handed, so the pack's scope is visible.
+const SPACKER = `${TMP}/slice-packer.ts`;
+writeFileSync(
+  SPACKER,
+  `import { readFileSync } from "node:fs";
+const a = process.argv.slice(2);
+const files = readFileSync(a[a.indexOf("--files-file") + 1], "utf8").split("\\0").filter(Boolean);
+process.stdout.write("BLAST RADIUS (stand-in)\\n" + files.map((f) => "PACKED " + f).join("\\n") + "\\n");
+`,
+);
+function pieceFile(name: string, paths: string[]): string {
+  const f = `${TMP}/piece-${name}`;
+  writeFileSync(f, paths.map((p) => `${p}\0`).join(""));
+  return f;
+}
+function sliceReview(args: string[], extra: NodeJS.ProcessEnv = {}): Result {
+  writeFileSync(SEEN, "");
+  return review(args, {
+    ...BASE_ENV,
+    CODEX_REVIEW_REPO: SREPO,
+    POLICY_JSON: POLICY,
+    CODEX_BIN: STUB,
+    GROK_BIN: STUB,
+    CODE_REVIEW_BLAST_RADIUS: SPACKER,
+    CLAUDE_CODE_SESSION_ID: "slice-session",
+    ...extra,
+  });
+}
+/** The build counter for one round-state dir: its single counter file, or 0. */
+function rounds(dir: string): number {
+  if (!existsSync(dir)) return 0;
+  const f = readdirSync(dir).find((n) => !n.includes("."));
+  return f ? Number(readFileSync(join(dir, f), "utf8").trim()) : 0;
+}
+
+test("a refused repeated full review spends no round: over the budget, or an empty diff", () => {
+  const dir = `${TMP}/refusal-rounds`;
+  rmSync(dir, { recursive: true, force: true });
+  rcIs("the first full review is round 1", 0, sliceReview([SBASE, "HEAD"], { CODE_REVIEW_ROUND_STATE_DIR: dir }).rc);
+  eq("round 1 spends the full flag, not a counted round", 0, rounds(dir));
+  const big = sliceReview([SBASE, "HEAD"], { CODE_REVIEW_ROUND_STATE_DIR: dir, CODEX_REVIEW_MAX_DIFF_BYTES: "10" });
+  rcIs("an over-budget repeated full review is refused", 1, big.rc);
+  has("and says why", "over the 10-byte budget", big.err);
+  eq("and spends no round", 0, rounds(dir));
+  eq("and makes no reviewer call", "", seen());
+  const empty = sliceReview(["HEAD", "HEAD", "--slice", pieceFile("unchanged", ["?.ts"])], {
+    CODE_REVIEW_ROUND_STATE_DIR: dir,
+  });
+  rcIs("an empty diff is refused", 1, empty.rc);
+  has("and says the diff is empty", "diff is empty", empty.err);
+  eq("and spends no round", 0, rounds(dir));
+  const real = sliceReview([SBASE, "HEAD"], { CODE_REVIEW_ROUND_STATE_DIR: dir });
+  rcIs("a repeated full review that is reviewed", 0, real.rc);
+  eq("spends its round", 1, rounds(dir));
+});
+
+test("a piece hands the reviewer only its files: committed, uncommitted and untracked, and the pack", () => {
+  const r = sliceReview([SBASE, "HEAD", "--slice", pieceFile("ace", ["a.ts", "c.ts", "e.ts"])], {
+    CODE_REVIEW_ROUND_STATE_DIR: `${TMP}/piece-rounds-1`,
+  });
+  rcIs("the piece is reviewed", 0, r.rc);
+  const s = seen();
+  for (const want of ["committedA", "workingC", "untrackedE"]) has(`the piece carries ${want}`, want, s);
+  for (const not of ["committedB", "workingD", "untrackedF"]) lacks(`the piece leaves out ${not}`, not, s);
+  const pack = s.slice(s.indexOf("BLAST RADIUS"), s.indexOf("\nDIFF:"));
+  for (const want of ["PACKED a.ts", "PACKED c.ts", "PACKED e.ts"]) has("the pack is the piece's", want, pack);
+  for (const not of ["PACKED b.ts", "PACKED d.ts", "PACKED f.ts"]) lacks("the pack is the piece's only", not, pack);
+  has("the reviewer is told it reads a piece", "THIS IS ONE PIECE OF A LARGER REVIEW", s);
+  has("and how many changed files other pieces read", "3 other changed file(s)", s);
+  has("and which piece", "piece-ace", s);
+});
+
+test("a piece's names are literal: a wildcard or pathspec magic selects only itself", () => {
+  for (const f of ["*.ts", "?.ts", "[x].ts", ":lead.ts"])
+    writeFileSync(join(SREPO, f), `export const edited = "${f}";\n`);
+  try {
+    for (const name of ["*.ts", "?.ts", "[x].ts", ":lead.ts"]) {
+      const r = sliceReview([SBASE, "HEAD", "--slice", pieceFile(`lit-${name.length}`, [name])], {
+        CODE_REVIEW_ROUND_STATE_DIR: `${TMP}/piece-rounds-lit`,
+        CODE_REVIEW_LOOP_ID: `lit-${name}`,
+      });
+      rcIs(`${name} is reviewed`, 0, r.rc);
+      const diff = seen().slice(seen().indexOf("\nDIFF:"));
+      has(`${name} reaches the reviewer`, `edited = "${name}"`, diff);
+      for (const other of ["committedA", "workingC", "untrackedE"]) lacks(`${name} matches no other file`, other, diff);
+      for (const o of ["*.ts", "?.ts", "[x].ts", ":lead.ts"].filter((o) => o !== name))
+        lacks(`${name} does not match ${o}`, `edited = "${o}"`, diff);
+    }
+  } finally {
+    sg("checkout", "-q", "--", "*.ts");
+  }
+});
+
+test("a malformed piece file is a caller error before any call", () => {
+  for (const [why, file] of [
+    ["empty", pieceFile("empty", [])],
+    ["absolute", pieceFile("abs", ["/etc/passwd"])],
+    ["outside", pieceFile("dotdot", ["../x.ts"])],
+    ["missing", `${TMP}/no-such-piece`],
+  ] as const) {
+    const r = sliceReview([SBASE, "HEAD", "--slice", file], { CODE_REVIEW_ROUND_STATE_DIR: `${TMP}/piece-bad` });
+    rcIs(`${why} piece file`, 2, r.rc);
+    eq(`${why}: no reviewer call`, "", seen());
+  }
+  const misplaced = sliceReview([SBASE, "--slice", pieceFile("ok", ["a.ts"]), "HEAD"], {});
+  rcIs("--slice in the wrong place is a usage error", 2, misplaced.rc);
+});
+
+test("a piece in T3 needs the audit owner, as the two-arg form does", () => {
+  const home = join(TMP, "slice-t3");
+  mkdirSync(join(home, "userdata"), { recursive: true });
+  const db = new DatabaseSync(join(home, "userdata/statev2.sqlite"));
+  db.exec(
+    "create table orchestration_v2_projection_threads(thread_id text,title text,created_at text,deleted_at text,payload_json text); create table orchestration_v2_projection_provider_sessions(thread_id text,provider text,driver text)",
+  );
+  db.prepare("insert into orchestration_v2_projection_threads values (?,'fixture','0',null,?)").run(
+    "slice-child",
+    JSON.stringify({ worktreePath: SREPO, branch: "fixture" }),
+  );
+  db.prepare("insert into orchestration_v2_projection_provider_sessions values (?,?,?)").run(
+    "slice-child",
+    "grok",
+    "grok",
+  );
+  db.close();
+  const r = review(
+    [SBASE, "HEAD", "--slice", pieceFile("t3", ["a.ts"])],
+    {
+      ...BASE_ENV,
+      T3CODE_HOME: home,
+      WORKBENCH_THREAD_ID: "slice-child",
+      CODE_REVIEW_LOOP_ID: "",
+      CODEX_REVIEW_REPO: SREPO,
+      POLICY_JSON: POLICY,
+      CODEX_BIN: STUB,
+      GROK_BIN: STUB,
+    },
+    SREPO,
+  );
+  rcIs("refused without CODE_REVIEW_LOOP_ID", 2, r.rc);
+  has("and says so", "CODE_REVIEW_LOOP_ID is required in T3", r.err);
 });

@@ -164,3 +164,29 @@ test("git cannot answer: an unreadable index or a failing grep exits 2", () => {
     "a git grep that fails (a pathspec it rejects) is an error, not zero citations",
   );
 });
+
+// A path git would C-quote (an accented or colon-holding name) is read as it is
+// on disk: quoted, a stale citation under projects/ read as a live one and
+// failed the close instead of being counted as history (v9.2.0 review).
+test("an accented path under projects/ is still history, and a live one still fails", () => {
+  const repo = newrepo(".agents");
+  add(repo, "projects/ai/café.md", `see ${CITE} Gone standard`);
+  const r = run(repo);
+  assert.equal(r.rc, 0, r.out);
+  const live = newrepo(".agents");
+  add(live, "notes/café:x.md", `see ${CITE} Gone standard`);
+  const l = run(live);
+  assert.equal(l.rc, 1, l.out);
+  has("the live violation names its file as it is", l.out, "notes/café:x.md:1:");
+});
+
+test("a path holding a newline is read whole: history stays history, a live one fails", () => {
+  const repo = newrepo(".agents");
+  add(repo, "projects/ai/one\ncafé.md", `see ${CITE} Gone standard`);
+  assert.equal(run(repo).rc, 0, "a stale citation under projects/ is history");
+  const live = newrepo(".agents");
+  add(live, "notes/two\nx.md", `see ${CITE} Gone standard`);
+  const l = run(live);
+  assert.equal(l.rc, 1, l.out);
+  has("the live violation names its whole path", l.out, "notes/two\nx.md:1:");
+});

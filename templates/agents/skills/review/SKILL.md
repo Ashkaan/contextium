@@ -15,7 +15,7 @@ holds every folder here to.
 
 | Script | Reviews | Called by |
 |---|---|---|
-| `code-review.ts <base> <head>` / `--since <tree>` / `--snapshot` | a git diff, with the blast-radius pack spliced in; a framed result for the review receipt when asked | `/implement` Phase 4.7, `/implement-audit`, `validate.ts` |
+| `code-review.ts <base> <head> [--slice <file>]` / `--since <tree>` / `--snapshot` | a git diff, with the blast-radius pack spliced in; with `--slice`, one piece of a too-large change: only the NUL-separated paths the file lists, over the set's one base and head (at most four pieces; `.agents/skills/implement-audit/SKILL.md` step-2); a framed result for the review receipt when asked | `/implement` Phase 4.7, `/implement-audit`, `validate.ts` |
 | `spec-audit.ts <spec-or-folder> <brief> [pushback-file]` | a SPEC or spec folder | `/spec-audit` |
 | `policy-review.ts <task-kind> <artifact> <brief>` | one file, under any policy row | `/spec-audit`, `/author` |
 | `policy-chain.ts` | imported by the three above; walks the row | — |

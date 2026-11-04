@@ -59,10 +59,14 @@ function repo(build: (root: string, commit: (date: string) => void) => void): st
 }
 
 function run(root: string, ...args: string[]) {
-  const r = spawnSync(process.execPath, ["--experimental-strip-types", SUT, ...args, "--root", root, "--today", TODAY], {
-    encoding: "utf8",
-    timeout: 60_000,
-  });
+  const r = spawnSync(
+    process.execPath,
+    ["--experimental-strip-types", SUT, ...args, "--root", root, "--today", TODAY],
+    {
+      encoding: "utf8",
+      timeout: 60_000,
+    },
+  );
   if (r.error) throw r.error;
   return { code: r.status, out: r.stdout, err: r.stderr };
 }
@@ -225,6 +229,29 @@ test("usage errors exit 2", () => {
     assert.equal(r.status, 2, JSON.stringify(args));
     assert.match(r.stderr, /^usage: triage\.ts /);
   }
+});
+
+// The README frontmatter is read as the project index reads it: a quoted status
+// or one with a trailing comment is still `blocked` (Contextium v9.2.0 review).
+test("blocked: a quoted status, or one with a comment, is still blocked", () => {
+  const QUOTED = repo((root, commit) => {
+    project(root, "single", { status: "'blocked'", "blocked-on": '"R1: the vendor"' }, [
+      ["R1", "a", "—", "blocked: the vendor", "manual"],
+    ]);
+    project(root, "commented", { status: '"blocked" # until the quote', "blocked-on": '"R1: the quote"' }, [
+      ["R1", "a", "—", "blocked: the quote", "manual"],
+    ]);
+    commit("2026-10-01");
+  });
+  const r = run(QUOTED, "blocked");
+  assert.equal(r.code, 0, r.err);
+  assert.match(r.out, /^\*\*Blocked — 2\*\*/);
+  assert.deepEqual(
+    rowsOf(r.out)
+      .map((row) => row[1])
+      .sort(),
+    ["commented", "single"],
+  );
 });
 
 // Whose move: a pronoun, "the user" or "the owner", or the first word of the

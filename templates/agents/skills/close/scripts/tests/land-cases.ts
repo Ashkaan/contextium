@@ -1416,6 +1416,41 @@ kase("Case 8: the auto-close gate, and what makes it go stale", () => {
   is("and closing again shuts it again", land(1, ["--gate"]).out, "fired");
   is("the later work reached main", onMain(F.CODE, "later.txt"), "yes");
 
+  // A close paused for the user's answer (end-of-turn.ts --pause) is dealt
+  // with once a new close completes, which removes both markers.
+  write(threadFile(TID1, "reopened"), "");
+  write(threadFile(TID1, "paused"), "Which plan should I keep?\n");
+  write(join(F.WT1, "answer.txt"), "answered\n");
+  land(1, ["thread one answered"]);
+  ok("a completed close removes reopened", !existsSync(threadFile(TID1, "reopened")), "reopened survived the close");
+  ok("…and paused", !existsSync(threadFile(TID1, "paused")), "paused survived the close");
+  ok("…and writes closed-once", existsSync(threadFile(TID1, "closed-once")), "no closed-once marker");
+
+  // A later landing that is refused clears `closed` as it starts,
+  // and must leave `closed-once` for the end-of-turn check.
+  write(join(F.WT1, "refused.txt"), "refused\n");
+  const PURL = g(F.CODE, "remote", "get-url", "origin");
+  gDo(F.CODE, "remote", "set-url", "--push", "origin", join(F.S, "origins/gone.git"));
+  is("a refused later landing does not close", land(1, ["thread one refused"]).rc, "3");
+  ok("…clearing closed", !existsSync(threadFile(TID1, "closed")), "closed survived a refused landing");
+  ok("…but keeping closed-once", existsSync(threadFile(TID1, "closed-once")), "closed-once was lost");
+  gDo(F.CODE, "remote", "set-url", "--push", "origin", PURL);
+  is("…and the next landing closes", land(1, ["thread one refused"]).rc, "0");
+
+  // A thread closed before closed-once existed: only `closed`. A refused
+  // landing from that state must still leave closed-once behind.
+  rmSync(threadFile(TID1, "closed-once"), { force: true });
+  write(join(F.WT1, "legacy.txt"), "legacy\n");
+  gDo(F.CODE, "remote", "set-url", "--push", "origin", join(F.S, "origins/gone.git"));
+  is("a refused landing from a legacy closed thread does not close", land(1, ["thread one legacy"]).rc, "3");
+  ok(
+    "…and still leaves closed-once",
+    existsSync(threadFile(TID1, "closed-once")),
+    "closed-once missing after a legacy refusal",
+  );
+  gDo(F.CODE, "remote", "set-url", "--push", "origin", PURL);
+  is("…and the next landing closes", land(1, ["thread one legacy"]).rc, "0");
+
   // A commit that was never pushed counts as outstanding too.
   write(join(F.WT1, "unpushed.txt"), "unpushed\n");
   gDo(F.WT1, "add", "unpushed.txt");
@@ -1477,6 +1512,26 @@ kase("Case 9: landing the worktree the scripts run from", () => {
   );
   ok("the script's own worktree is removed, last", !isDir(SATDIR), "the script's own worktree was never removed");
   is("both repos still reached main", onMain(F.CODE, "one.txt") + onMain(F.PROD, "one-prod.md"), "yesyes");
+});
+
+// A HELD CLOSE KEEPS THE WORKTREE ITS SCRIPTS RUN FROM. The release runs the
+// same scripts again, from the same worktree; a hold that removed it left
+// --release with nothing to run, and a retry from another copy without the
+// journal (Contextium v9.2.0 review). The removal waits for the release.
+kase("Case 9h: a held close keeps its scripts' worktree until release", () => {
+  fixture("c9h");
+  const SATDIR = writeRoot(1, F.PROD).out;
+  copyScripts(SATDIR);
+  write(join(SATDIR, "one-prod.md"), "prod\n");
+  write(join(F.WT1, "one.txt"), "one\n");
+  const script = join(SATDIR, ".agents/skills/close/scripts/land.ts");
+  let r = land(1, ["thread one", "--hold"], { merge: true, script });
+  is("the held landing exits 4", r.rc, "4");
+  ok("…and keeps the worktree its scripts run from", isDir(SATDIR), "the held close removed its own scripts");
+  r = land(1, ["--release"], { merge: true, script });
+  is("the release, run from that worktree, passes", r.rc, "0");
+  has("…and prints the line", r.out, "— closing this tab loses nothing.");
+  ok("…and only then removes it", !isDir(SATDIR), `the scripts' worktree was never removed:\n${r.out}\n${g(SATDIR, "status", "--short")}`);
 });
 
 // ── Case 10 ───────────────────────────────────────────────────────────────
@@ -2841,6 +2896,14 @@ kase("Case 12x: a failed git read never reads as clean", () => {
   land(1, ["thread one"]);
   is("with the count readable, the gate is shut", land(1, ["--gate"]).out, "fired");
   is("…but an unreadable count opens it", land(1, ["--gate"], { extra: FAILRL }).out, "not-fired");
+  // The gate reads through the exported unlandedWork, and an
+  // unreadable status opens it exactly as before.
+  failingGit(join(F.S, "failst3"), " status --porcelain ");
+  is(
+    "…and so does an unreadable status",
+    land(1, ["--gate"], { extra: { PATH: `${join(F.S, "failst3")}:${process.env.PATH ?? ""}` } }).out,
+    "not-fired",
+  );
 
   // And for the two SHAs the push decision compares: HEAD and the trunk, each
   // read failing, are two empty strings, which compared equal and read as

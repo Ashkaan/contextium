@@ -191,3 +191,46 @@ test("refuses a database without turn items, a missing database, and bad usage",
     assert.match(r.err, /usage: session\.ts/);
   }
 });
+
+// A harness cuts long output near 30,000 characters, so no page may be longer
+// than a page, even when one message is: a 60,000-character tool output comes
+// back over several pages, every character of it (Contextium v9.2.0 review).
+test("one message longer than a page is split over pages, nothing lost", () => {
+  const huge = t3Home("huge");
+  const body = Array.from({ length: 6000 }, (_, i) => `line${String(i).padStart(5, "0")}`).join("\n");
+  huge.add(TID, 1, "assistant_message", "completed", { text: body, startedAt: "2026-10-19T13:45:00.000Z" });
+  const first = run(huge.home, {}, "--thread", TID);
+  assert.equal(first.rc, 0, first.err);
+  const total = Number(/page 1 of (\d+)/.exec(first.out)?.[1] ?? "0");
+  assert.ok(total >= 3, `a 60,000-character message spans at least 3 pages, got ${total}`);
+  let all = "";
+  for (let p = 1; p <= total; p++) {
+    const r = run(huge.home, {}, "--thread", TID, "--page", String(p));
+    assert.equal(r.rc, 0, r.err);
+    assert.ok(r.out.length <= 25_000, `page ${p} is ${r.out.length} characters`);
+    all += r.out;
+  }
+  for (const probe of ["line00000", "line02999", "line05999"]) assert.ok(all.includes(probe), `${probe} is on a page`);
+});
+
+// A page boundary never splits a character: an emoji is two UTF-16 code units,
+// and cut between them each half prints as U+FFFD (v9.2.0 review).
+test("splitting a long message never cuts a character in two", () => {
+  const emoji = t3Home("emoji");
+  const e = "\u{1F600}";
+  emoji.add(TID, 1, "assistant_message", "completed", { text: e.repeat(30000), startedAt: "2026-10-19T13:45:00.000Z" });
+  // Each item's text starts after its own prefix, so these three cover a page
+  // boundary on either half of a pair whatever the prefixes' lengths.
+  emoji.add(TID, 2, "assistant_message", "completed", { text: e.repeat(30000), startedAt: "2026-10-19T13:46:00.000Z" });
+  emoji.add(TID, 3, "assistant_message", "completed", {
+    text: `x${e.repeat(30000)}`,
+    startedAt: "2026-10-19T13:47:00.000Z",
+  });
+  const first = run(emoji.home, {}, "--thread", TID);
+  assert.equal(first.rc, 0, first.err);
+  const total = Number(/page 1 of (\d+)/.exec(first.out)?.[1] ?? "0");
+  let all = "";
+  for (let p = 1; p <= total; p++) all += run(emoji.home, {}, "--thread", TID, "--page", String(p)).out;
+  assert.ok(!all.includes("\uFFFD"), "no half character is printed");
+  assert.equal([...all.matchAll(/\u{1F600}/gu)].length, 90000, "every emoji arrives whole");
+});

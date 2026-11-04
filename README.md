@@ -49,7 +49,9 @@ five things:
    runs the decision-record, journal, skill, integration-manifest, standards-citation and secrets
    checks. In the tools where
    it is wired, a pre-tool guard stops a write into the checkout your sessions share and a change to
-   host infrastructure you haven't approved.
+   host infrastructure you haven't approved. On Claude Code and Codex an end-of-turn check refuses a
+   reply after a close that leaves out its report, and a session that changed something after its
+   close until it closes again.
 
 5. **Memory in three layers.** The git log records what changed. The journal records why each session
    went the way it did — one file per session, in a folder per day, written by `/close` in a fixed

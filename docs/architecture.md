@@ -26,7 +26,7 @@ empty and fills in as you use it.
 | `.agents/skills/` | The eleven skills, each with its scripts and the templates it writes; `review/` is the reviewer chain |
 | `.agents/agents/` | Agent prompts the skills dispatch in a fresh context |
 | `.agents/checks/` | The checks `/close` runs before it commits |
-| `.agents/hooks/` | The pre-tool guards, plus `claude-hooks.json`: the guards in the shape Claude Code, Codex and Grok Build read, with your workbench's path and your own hooks filled in by the installer |
+| `.agents/hooks/` | The pre-tool guards and the close's end-of-turn check, plus `claude-hooks.json`: those hooks in the shape Claude Code, Codex and Grok Build read, with your workbench's path and your own hooks filled in by the installer |
 | `.agents/hooks.json` | The guards in Antigravity's shape; present only while Antigravity is wired |
 | `.agents/gemini-settings.json` | Gemini CLI's settings: `AGENTS.md` as its context file, and the guards; present only while Gemini CLI is wired |
 | `.agents/user-hooks.json` | Your own hooks, for any hook event, in the Claude Code shape; you create it, and every run merges it into `claude-hooks.json` and never writes it |
@@ -73,8 +73,9 @@ that is already a file of yours; a file you had before gets a `.pre-contextium` 
 merge. Every entry Contextium adds starts with `: contextium;`, so a re-run replaces its own entries
 and leaves every other key and hook as it was. A real file or folder in the
 way of a link is moved aside to `<path>.pre-link`, never deleted.
-`.agents/checks/check-harness-config-links.ts` checks the links, and that every hook manifest still
-routes each tool's shell and write calls to both guards, any time you run it; `--fix` relinks.
+`.agents/checks/check-harness-config-links.ts` checks the links, that every hook manifest still
+routes each tool's shell and write calls to both guards, and that Claude Code's and Codex's run the
+end-of-turn check, any time you run it; `--fix` relinks.
 A tool is wired when you pick it, and stays wired: the `tools=` line of `.agents/harness` records
 every tool a run wired, and each re-run wires the union of those and the ones named then.
 "Wired" here always means named on `tools=`: an existing `~/.claude` or `~/.gemini/config` on its
@@ -263,6 +264,17 @@ network and service changes — and commands that would kill the session running
 whichever autonomy you chose; the autonomy answer is a line in `AGENTS.md`, not a switch on the
 guards.
 
+At the end of each turn, on Claude Code and Codex — the two where a blocking end-of-turn hook was
+measured — `check-close-reached.sh` runs the close's end-of-turn check
+(`.agents/skills/close/scripts/end-of-turn.ts`). After a close it refuses a reply that leaves out the
+close's report, and in a session that closed and then changed something it refuses every turn end
+until the work lands in a new close. The second stop of a turn always passes, so no turn loops, and
+anything that goes wrong in the check lets the reply through. A question for you after a close is
+recorded first (`end-of-turn.ts --pause "<question>"`), and the close then waits for your answer.
+The entry names its tool: `--harness codex` in `claude-hooks.json`, which Codex and Grok Build read,
+and `--harness claude` in the copy merged into `~/.claude/settings.json`; Grok Build, not covered, is
+told apart by its payload and let through.
+
 ## The reviewers
 
 Both reviews exist for the same reason: the author is the worst reviewer of their own work. A reviewer
@@ -299,12 +311,15 @@ asked for. The second catches what the first structurally cannot: a spec that is
 and solves the wrong problem. It skips non-material edits on its own, so fixing a typo in a spec
 doesn't spend a reviewer call.
 
-`/implement-audit` is the code reviewer, and it runs once per session. A marker records that it ran,
-so a second call repeats the verdict instead of reviewing the same diff again. Its later rounds review
-only the fixes: re-reading everything each round makes the reviewer re-decide settled code and turns
-each round's own fixes into the next round's findings. Nits are held and fixed in one pass at the end.
-The loop stops when nothing changed since the last round, at a clean round, when a round is mostly
-re-opening its own fixes, or at round four, which the script enforces.
+`/implement-audit` is the code reviewer. Each review leaves a receipt naming the content it read —
+the changed files plus the entry points, instructions and test records the report declares — and a
+later call reuses it only while that content is unchanged; anything that moved since, a fix or a
+held nit included, is reviewed before the close will land it. Later rounds review only the fixes:
+re-reading everything each round makes the reviewer re-decide settled code and turns each round's own
+fixes into the next round's findings. Held nits are fixed inside a reviewed round, never after the
+last review. The loop stops when nothing changed since the last round, at a clean round, when a round
+is mostly re-opening its own fixes, or at round four, which the script enforces; round four's fixes
+get one final review.
 
 Each reviewer records a one-line verdict where the artifact lives: `spec-audit:` into the spec's
 `plan.md`, and `implement-audit:` into the row's `report.md`, naming who reviewed and what is still

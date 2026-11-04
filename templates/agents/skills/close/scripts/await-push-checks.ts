@@ -38,7 +38,8 @@
 //     re-run: a second workflow queued after the first finished is waited for.
 //   - Every check a verdict counts must be in the newest read; one that drops
 //     out is never passed on an older reading.
-//   - A STATUS THE LAST MARKED PUSH CARRIED IS OWED. Walking first parents
+//   - A STATUS THE LAST MARKED PUSH CARRIED IS OWED, and so is a check run
+//     the nearest reporting ancestor got from an app other than Actions. Walking first parents
 //     (up to ANCESTORS back — a fast-forward pushes commits that were never a
 //     trunk tip), each commit status context on the nearest ancestor that
 //     carried any must appear here too, since a status comes after the thing
@@ -236,13 +237,17 @@ const passed = (c: Check): boolean => c.done && (c.app === "" ? c.outcome === "s
 
 /** `sha`/`checks`: the nearest ancestor that reported anything, or null.
  *  `marks`: the statuses of the nearest that carried any, which can be
- *  further back — a superseded build's commit has checks but no mark. */
-type Near = { sha: string; checks: Check[]; marks: Check[] } | null;
+ *  further back — a superseded build's commit has checks but no mark.
+ *  `deployRuns`: likewise the check runs from apps other than Actions of the
+ *  nearest that carried any — a lint-only parent must not hide them. */
+type Near = { sha: string; checks: Check[]; marks: Check[]; deployRuns: Check[] } | null;
 
 /** Walk first parents of <sha>, up to ANCESTORS back, for the Near. */
 async function nearestReporting(repo: string, sha: string): Promise<Read<Near>> {
   let cur = sha;
   let found: { sha: string; checks: Check[] } | null = null;
+  let marks: Check[] | null = null;
+  let deployRuns: Check[] | null = null;
   for (let i = 0; i < ANCESTORS; i++) {
     const c = await gh(`repos/${repo}/commits/${cur}`);
     if (!c.ok) return c;
@@ -254,11 +259,18 @@ async function nearestReporting(repo: string, sha: string): Promise<Read<Near>> 
     const checks = await readCommit(repo, parent);
     if (!checks.ok) return checks;
     if (found === null && checks.value.length > 0) found = { sha: parent, checks: checks.value };
-    const marks = checks.value.filter((x) => x.app === "");
-    if (found !== null && marks.length > 0) return { ok: true, value: { ...found, marks } };
+    const m = checks.value.filter((x) => x.app === "");
+    if (marks === null && m.length > 0) marks = m;
+    const d = checks.value.filter((x) => x.app !== "" && x.app !== ACTIONS);
+    if (deployRuns === null && d.length > 0) deployRuns = d;
+    if (found !== null && marks !== null && deployRuns !== null)
+      return { ok: true, value: { ...found, marks, deployRuns } };
     cur = parent;
   }
-  return { ok: true, value: found === null ? null : { ...found, marks: [] } };
+  return {
+    ok: true,
+    value: found === null ? null : { ...found, marks: marks ?? [], deployRuns: deployRuns ?? [] },
+  };
 }
 
 /** Why a deploy was expected of an empty <sha>, or null when nothing was. */
@@ -266,6 +278,10 @@ async function expectation(repo: string, sha: string, near: Near): Promise<Read<
   if (near === null) return { ok: true, value: null };
   const app = near.checks.find((x) => x.app !== "" && x.app !== ACTIONS);
   if (app) return { ok: true, value: `${short(near.sha)} reported ${app.name}` };
+  // A deploy app's run further back, past a lint-only parent, is expected too
+  // (Contextium v9.2.0 review).
+  const earlier = near.deployRuns[0];
+  if (earlier) return { ok: true, value: `an earlier push reported ${earlier.name}` };
   if (!near.checks.some((x) => x.app === ACTIONS)) return { ok: true, value: null };
   return pushWorkflowExpected(repo, near.sha, sha);
 }
@@ -500,9 +516,13 @@ async function watch(o: Opts, sha: string, say: (line: string) => void, owed: Ch
         why = n.why;
       }
       // A status the nearest marked ancestor carried is owed here too: a
-      // deployer can mark a build minutes after it finishes.
+      // deployer can mark a build minutes after it finishes. So is a check run
+      // the nearest reporting ancestor got from an app other than Actions: a
+      // hosted deploy (Cloudflare Pages) runs on every push, as the empty-commit
+      // rule below already assumes, so lint passing alone must not hide a deploy
+      // trigger that broke.
       if (near !== undefined && all.length > 0) {
-        const want = new Map([...(near?.marks ?? []), ...owed].map((c) => [c.key, c]));
+        const want = new Map([...(near?.marks ?? []), ...(near?.deployRuns ?? []), ...owed].map((c) => [c.key, c]));
         missing = [...want.values()].filter((c) => !seen.has(c.key));
       }
       const settled =

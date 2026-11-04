@@ -915,15 +915,18 @@ readonly_sudo_cmd() {
     return 0
   fi
 
-  # awk — a language, so its program decides. system(), getline from a
-  # command, a coprocess, `print … >` / `print … |`, and @load/@include run or
+  # awk — a language, so its program decides. A system() call, getline from a
+  # command (`"cmd" | getline`; getline from a file only reads), a coprocess, `print … >` / `print … |`, and @load/@include run or
   # write something; -f/-i/-l/-E load program text or code from elsewhere.
   # Scanned on the full text for the same reason as sed.
   if [[ "$head" == "awk" ]] ; then
     for a in ${args[@]+"${args[@]}"}; do
       [[ "$a" =~ ^-[filE]|^--(file|include|load|exec) ]] && return 1
     done
-    grep -qE '(system|getline)|\|&|@(load|include)|printf?[^;}]*[|>]' <<<"$full" && return 1
+    # A backslash-newline joins two lines of the program, so the scan reads it
+    # joined: `| \<newline> getline` is still a command piped into getline.
+    local joined="${full//$'\\\n'/ }"
+    grep -qE 'system[[:space:]]*\(|\|[[:space:]]*getline|\|&|@(load|include)|printf?[^;}]*[|>]' <<<"$joined" && return 1
     return 0
   fi
 

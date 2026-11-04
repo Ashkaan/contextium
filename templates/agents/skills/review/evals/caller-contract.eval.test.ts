@@ -3,7 +3,8 @@
 //
 // Pins the eval's own machinery without spending its vendor call: the two-commit
 // fixture it assembles, the `--pack-only` half (the blast-radius pack names the
-// untouched caller), and the three grades of the rerun — PASS when the review
+// untouched caller), its two cases (the whole change, and the piece holding only
+// the callee), and the three grades of the rerun — PASS when the review
 // names the caller, FAIL when it does not, INCONCLUSIVE when the chain never
 // answers. The reviewer is a stub: `CODEX_BIN`/`GROK_BIN` point at a script
 // that dumps the prompt it was handed and prints whatever this suite told it to,
@@ -26,6 +27,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { after, test } from "node:test";
 import { fileURLToPath } from "node:url";
 
@@ -63,7 +65,8 @@ const REPLY = `${tmp}/reply.txt`;
 writeFileSync(
   `${tmp}/reviewer.sh`,
   `#!/usr/bin/env bash
-cat >"${SEEN}"
+cat >>"${SEEN}"
+echo "=== END OF PROMPT ===" >>"${SEEN}"
 echo x >>"${CALLS}"
 [[ -f "${REPLY}" ]] || exit 1
 cat "${REPLY}"
@@ -123,7 +126,11 @@ const grepOut = (needle: string): string =>
     .join("\n");
 
 function t(label: string, expected: string | number | null, actual: string | number | null): void {
-  assert.equal(actual, expected, `${label}\n  expected: [${expected}]\n  actual  : [${actual}]\n${clip("stderr", stderr)}`);
+  assert.equal(
+    actual,
+    expected,
+    `${label}\n  expected: [${expected}]\n  actual  : [${actual}]\n${clip("stderr", stderr)}`,
+  );
 }
 
 test("1. --pack-only: the deterministic half, no reviewer reached", () => {
@@ -139,6 +146,7 @@ test("1. --pack-only: the deterministic half, no reviewer reached", () => {
     "yes",
     outHas("caller-contract: PASS (pack-only; no vendor call spent)"),
   );
+  t("pack-only checks the sliced case's pack too", "yes", outHas("as a caller of getUser (sliced)"));
   t("pack-only never calls the reviewer", 0, calls());
   t("pack-only leaves the rerun banner unprinted", "", grepOut("spending one vendor call"));
 });
@@ -156,8 +164,29 @@ test("2. the rerun, reviewer names the caller", () => {
     outHas("caller-contract: PASS — the review named the broken caller."),
   );
   t("the review stdout is echoed for the reader", "yes", outHas("--- review stdout ---"));
-  t("the reviewer was called once", 1, calls());
+  t("the reviewer was called once per case", 2, calls());
+  t(
+    "the sliced case passes too",
+    "yes",
+    outHas("caller-contract: PASS — the review named the broken caller (sliced)."),
+  );
   t("the prompt the reviewer saw carried the untouched caller by name", "yes", seenHas("src/consumer.ts"));
+  const prompts = readFileSync(SEEN, "utf8").split("=== END OF PROMPT ===");
+  const sliced = prompts[1] ?? "";
+  t("the sliced prompt says it is one piece", "true", String(sliced.includes("THIS IS ONE PIECE OF A LARGER REVIEW")));
+  t("and names the one other changed file", "true", String(sliced.includes("1 other changed file(s)")));
+  t(
+    "and its diff leaves the caller's change out",
+    "false",
+    String(sliced.slice(sliced.indexOf("\nDIFF:")).includes("farewell")),
+  );
+  t(
+    "while its pack still names the caller",
+    "true",
+    String(sliced.slice(0, sliced.indexOf("\nDIFF:")).includes("src/consumer.ts")),
+  );
+  t("--case runs one case: one call", 0, run("--case", "sliced"));
+  t("one call", 1, calls());
   t("the prompt carried the changed signature", "yes", seenHas("options: LookupOptions"));
   t("the pack half still ran first", "yes", outHas("PASS: the pack names src/consumer.ts as a caller of getUser"));
 
@@ -177,7 +206,7 @@ test("3. the rerun, reviewer misses the caller", () => {
     errHas("caller-contract: FAIL — the review did not name src/consumer.ts."),
   );
   t("the FAIL warns that one miss is one sample", "yes", errHas("a single miss is one sample, not a regression."));
-  t("the reviewer was still called", 1, calls());
+  t("the reviewer was still called, and the run stopped at the first miss", 1, calls());
   writeFileSync(REPLY, "[should-fix] src/api.ts:10 the option should default to false\n");
   rc = run();
   t("a finding about the changed file alone is still FAIL", 1, rc);
@@ -207,4 +236,60 @@ test("5. the fixture is rebuilt fresh each run and cleaned up", () => {
     else ENV.TMPDIR = saved;
   }
   t("the scratch repo is removed on exit", "", scratch().join(" "));
+});
+
+test("6. the documented invocation, with no review variables inherited, reaches the reviewer", () => {
+  writeFileSync(
+    REPLY,
+    "[must-fix] src/consumer.ts:4 greet() still calls getUser(id) with one argument — pass a LookupOptions — throws\n",
+  );
+  const bare: NodeJS.ProcessEnv = { ...ENV };
+  for (const k of [
+    "CODE_REVIEW_LOOP_ID",
+    "POLICY_CHAIN_AUTHOR_VENDORS",
+    "POLICY_CHAIN_AUTHOR_THREAD_ID",
+    "WORKBENCH_THREAD_ID",
+  ])
+    delete bare[k];
+  rmSync(SEEN, { force: true });
+  rmSync(CALLS, { force: true });
+  const r = spawnSync(process.execPath, ["--experimental-strip-types", SUT], {
+    encoding: "utf8",
+    env: bare,
+    timeout: 300_000,
+  });
+  stdout = r.stdout;
+  stderr = r.stderr;
+  t("the eval supplies its own review owner and author, and grades PASS", 0, r.status);
+  t("the reviewer was reached once per case", 2, calls());
+});
+
+test("7. an inherited executing-thread id does not stop the scripted review", () => {
+  writeFileSync(
+    REPLY,
+    "[must-fix] src/consumer.ts:4 greet() still calls getUser(id) with one argument — pass a LookupOptions — throws\n",
+  );
+  // A T3 home that knows the inherited thread, as a real executing child's does.
+  const t3 = join(tmp, "t3-inherited");
+  mkdirSync(join(t3, "userdata"), { recursive: true });
+  const db = new DatabaseSync(join(t3, "userdata/state.sqlite"));
+  db.exec(
+    "create table projection_threads(thread_id text,branch text,worktree_path text,created_at text,deleted_at text)",
+  );
+  db.prepare("insert into projection_threads values (?,null,?,null,null)").run("some-executing-thread", process.cwd());
+  db.close();
+  const inherited: NodeJS.ProcessEnv = { ...ENV, T3CODE_HOME: t3, WORKBENCH_THREAD_ID: "some-executing-thread" };
+  for (const k of ["CODE_REVIEW_LOOP_ID", "POLICY_CHAIN_AUTHOR_VENDORS", "POLICY_CHAIN_AUTHOR_THREAD_ID"])
+    delete inherited[k];
+  rmSync(SEEN, { force: true });
+  rmSync(CALLS, { force: true });
+  const r = spawnSync(process.execPath, ["--experimental-strip-types", SUT], {
+    encoding: "utf8",
+    env: inherited,
+    timeout: 300_000,
+  });
+  stdout = r.stdout;
+  stderr = r.stderr;
+  t("the scripted review runs under its own identity and grades PASS", 0, r.status);
+  t("the reviewer was reached once per case", 2, calls());
 });

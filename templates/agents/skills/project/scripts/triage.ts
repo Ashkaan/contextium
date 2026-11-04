@@ -50,6 +50,7 @@ import { spawnSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync, realpathSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { parseFrontmatter } from "../../../generators/parse_frontmatter.ts";
 import { listRows, releaseDate, watchDate } from "../../close/scripts/roadmap.ts";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -132,16 +133,6 @@ export function watchText(row: Row): string {
 
 const isOpen = (status: string) => !/^(done|absorbed by|closed:)/i.test(status.trim());
 
-function frontmatter(readme: string): Record<string, string> {
-  const m = /^---\n([\s\S]*?)\n---/.exec(readme);
-  const out: Record<string, string> = {};
-  for (const line of (m?.[1] ?? "").split("\n")) {
-    const kv = /^([a-z-]+):\s*(.*)$/.exec(line);
-    if (kv) out[kv[1]] = kv[2].replace(/^"(.*)"$/, "$1");
-  }
-  return out;
-}
-
 function readProjects(root: string): Project[] {
   const out: Project[] = [];
   const projects = join(root, "projects");
@@ -150,7 +141,8 @@ function readProjects(root: string): Project[] {
     for (const folder of readdirSync(join(projects, domain.name), { withFileTypes: true })) {
       const readme = join(projects, domain.name, folder.name, "README.md");
       if (!folder.isDirectory() || !existsSync(readme)) continue;
-      const fm = frontmatter(readFileSync(readme, "utf8"));
+      // Read as the project index reads it: quotes and trailing comments included.
+      const fm = parseFrontmatter(readFileSync(readme, "utf8")) ?? {};
       const decides = fm["blocked-on"] ?? (fm["monitoring-until"] ?? "").replace(/^\S+ — /, "");
       out.push({
         rel: `projects/${domain.name}/${folder.name}`,
@@ -224,7 +216,11 @@ function blocked(root: string, projects: Project[], today: string, owner: string
     );
   if (items.length === 0) return ["**Blocked — 0**"];
   const whoseCell = (i: (typeof items)[number]) =>
-    i.whose === "date" ? `date ${short(i.until)}` : i.whose === "date passed" ? `date passed ${short(i.until)}` : i.whose;
+    i.whose === "date"
+      ? `date ${short(i.until)}`
+      : i.whose === "date passed"
+        ? `date passed ${short(i.until)}`
+        : i.whose;
   return [
     `**Blocked — ${items.length}**`,
     "",
@@ -249,7 +245,13 @@ function monitored(root: string, projects: Project[], today: string): string[] {
         watches.find((r) => r[0] === p.decidingId) ??
         [...watches].sort((a, b) => watchDate(a[1]).localeCompare(watchDate(b[1])))[0];
       const ends = row ? watchDate(row[1]) : "";
-      return { p, id: row?.[0] ?? "—", what: row ? watchText(row) : "no watch row found", ends, more: watches.length - 1 };
+      return {
+        p,
+        id: row?.[0] ?? "—",
+        what: row ? watchText(row) : "no watch row found",
+        ends,
+        more: watches.length - 1,
+      };
     })
     .sort((a, b) => (a.ends || "9").localeCompare(b.ends || "9") || a.p.slug.localeCompare(b.p.slug));
   if (items.length === 0) return ["**Monitoring — 0**"];
@@ -292,7 +294,15 @@ function mine(root: string, projects: Project[], today: string, owner: string): 
       // Rows of one project waiting on the same thing are one step.
       const same = waits.find((w) => w.p === p && w.what === what);
       if (same) same.more++;
-      else waits.push({ p, id: r[0], what, kind: "waits on you", since: sinceOf(root, `${p.rel}/ROADMAP.md`, status), more: 0 });
+      else
+        waits.push({
+          p,
+          id: r[0],
+          what,
+          kind: "waits on you",
+          since: sinceOf(root, `${p.rel}/ROADMAP.md`, status),
+          more: 0,
+        });
     }
     if (p.status !== "active") continue;
     const manual = rows.filter((r) => r[2] === "yes" && r[3] === "manual");
@@ -341,10 +351,14 @@ function todayLocal(): string {
 /** Files under projects/ that origin/main changed after this checkout was cut;
  *  0 when there is no origin/main to compare with (a fixture). */
 function behindMain(root: string): number {
-  const r = spawnSync("git", ["-C", root, "diff", "-z", "--name-only", "HEAD...refs/remotes/origin/main", "--", "projects"], {
-    encoding: "utf8",
-    stdio: ["ignore", "pipe", "ignore"],
-  });
+  const r = spawnSync(
+    "git",
+    ["-C", root, "diff", "-z", "--name-only", "HEAD...refs/remotes/origin/main", "--", "projects"],
+    {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    },
+  );
   return r.status === 0 ? r.stdout.split("\0").filter((s) => s !== "").length : 0;
 }
 

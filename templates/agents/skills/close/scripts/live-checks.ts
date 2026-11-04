@@ -33,12 +33,17 @@
 //                        names it (land.ts finds its checkout in the ledger by
 //                        its origin)
 //
-// WHAT IS LIVE on a target is its trunk as origin holds it now
-// (`git ls-remote origin refs/heads/<trunk>`, the trunk from trunk.ts). The
-// close knows no deployer of its own: the push deploys, and land.ts waits for
-// every check GitHub reports on the pushed commit (await-push-checks.ts) before
-// it holds, so a pushed trunk whose checks passed is what is served. A later
-// push moves it, which voids an evidence capture taken before it.
+// WHAT IS LIVE on a target is, when GitHub records production deployments for
+// its origin, the newest production deployment whose latest status is success (`deployment <id>`, its
+// commit): a push still building does not count, so a capture taken while it
+// builds names the deployment that served it, and a release after the new one
+// lands refuses that capture. With no deployment recorded — or an origin that is
+// not on GitHub, or no `gh` — it is the trunk as origin holds it now
+// (`git ls-remote origin refs/heads/<trunk>`, the trunk from trunk.ts): land.ts
+// waits for every check GitHub reports on the pushed commit
+// (await-push-checks.ts) before it holds, and a later push moves the trunk,
+// which voids a capture taken before it. Deployments that exist but cannot be
+// read are a failure, never the trunk.
 //
 // A reader answers what is live NOW, `{deploymentId, sourceCommit}`, never
 // "did commit X deploy"; `sourceCommit` null is "cannot tell which commit",
@@ -55,8 +60,9 @@
 // every call (so a check can change what is "live" mid-release; no file yet
 // names nothing); the value is
 // the live commit, null for "origin has no trunk", or `{"throw": "<msg>"}` to make
-// that read fail. A target it does not name is read for real. Unset, as in
-// every real run, nothing is stubbed.
+// that read fail; `<target>#deployment` answers the deployment read the same way
+// (`{"id": …, "sha": …}`, null for none recorded, or a throw). A target it does
+// not name is read for real. Unset, as in every real run, nothing is stubbed.
 //
 // peers:
 //   .agents/skills/close/scripts/land.ts                       (the one caller)
@@ -78,6 +84,8 @@ const EARLY_EXIT_READER =
   /(?<!\|)\|(?!\|)\s*(?:!\s*)?(?:grep\b[^|;&]*?\s(?:-[a-zA-Z]*[qm][a-zA-Z0-9]*|--quiet|--silent|--max-count(?:=\S*)?)(?=\s|$)|head\b)/;
 
 const ID = /^[a-z0-9-]+$/;
+/** How far back the deployment history is read: 10 pages of 100. */
+const DEPLOY_PAGES = 10;
 const HEX = /^[0-9a-f]{7,40}$/;
 const TRUNK_TS = `${dirname(fileURLToPath(import.meta.url))}/trunk.ts`;
 
@@ -166,10 +174,41 @@ export function parseLiveChecks(text: string): Parsed {
 
 // ── What is live ───────────────────────────────────────────────────────────
 
+export type Deployment = { id: string; sha: string };
+
 export type Sources = {
   /** The commit origin's trunk is at, in the checkout <repo>; null when origin has no such branch. */
   trunkTip(repo: string): Promise<string | null>;
+  /** The newest PRODUCTION deployment GitHub records as successful for
+   *  <repo>'s origin; null only when the origin is not on GitHub or records no
+   *  production deployment. Throws when it cannot tell (no gh, an unreadable or
+   *  malformed answer, production deployments none of which succeeded). */
+  deployment(repo: string): Promise<Deployment | null>;
 };
+
+/** <owner>/<name> of a GitHub remote URL, or null for any other host. */
+function githubRepo(url: string): string | null {
+  const m = /github\.com[:/]([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+?)(?:\.git)?\/?$/.exec(url.trim());
+  return m ? `${m[1]}/${m[2]}` : null;
+}
+
+/** `gh api <path>` as JSON; throws when gh is missing or its answer cannot be read. */
+function ghJson(path: string): unknown {
+  // A harness may force colour (FORCE_COLOR, CLICOLOR_FORCE); gh then wraps its
+  // JSON in ANSI, as await-push-checks.ts says, so colour is turned off here too.
+  const env: NodeJS.ProcessEnv = { ...process.env, NO_COLOR: "1", CLICOLOR: "0", GH_FORCE_TTY: "0" };
+  delete env.FORCE_COLOR;
+  delete env.CLICOLOR_FORCE;
+  const r = spawnSync("gh", ["api", path], { encoding: "utf8", env, stdio: ["ignore", "pipe", "pipe"], maxBuffer: 1 << 26 });
+  if (r.error && (r.error as NodeJS.ErrnoException).code === "ENOENT")
+    throw new Error("the origin is on GitHub, and reading its deployments needs the gh CLI, which is not installed");
+  if (r.status !== 0) throw new Error(`gh api ${path} failed: ${(r.stderr ?? "").trim().split("\n")[0] ?? ""}`);
+  try {
+    return JSON.parse(r.stdout ?? "");
+  } catch {
+    throw new Error(`gh api ${path}: not JSON`);
+  }
+}
 
 const realSources: Sources = {
   async trunkTip(repo) {
@@ -187,12 +226,67 @@ const realSources: Sources = {
     const sha = (r.stdout ?? "").split("\t")[0]?.trim() ?? "";
     return sha === "" ? null : sha;
   },
+  async deployment(repo) {
+    const u = spawnSync("git", ["-C", repo, "remote", "get-url", "origin"], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+    const gh = u.status === 0 ? githubRepo(u.stdout ?? "") : null;
+    if (gh === null) return null;
+    // Newest first, as GitHub lists them. Only production deployments serve the
+    // site: a newer preview is not what is live. One still building, failed or
+    // never marked is skipped, and the older one that serves decides.
+    let production = 0;
+    let unread = false;
+    for (let page = 1; page <= DEPLOY_PAGES; page++) {
+      const list = ghJson(`repos/${gh}/deployments?per_page=100&page=${page}`);
+      if (!Array.isArray(list)) throw new Error(`repos/${gh}/deployments: not a list`);
+      for (const d of list) {
+        if (d === null || typeof d !== "object" || Array.isArray(d)) throw new Error(`repos/${gh}/deployments: a malformed deployment`);
+        const { id, sha, environment, production_environment } = d as Record<string, unknown>;
+        const prod = production_environment === true || (typeof environment === "string" && /^(production|github-pages)$/i.test(environment));
+        if (!prod) continue;
+        if ((typeof id !== "number" && typeof id !== "string") || typeof sha !== "string" || !HEX.test(sha))
+          throw new Error(`repos/${gh}/deployments: a production deployment without an id or commit`);
+        production++;
+        const st = ghJson(`repos/${gh}/deployments/${id}/statuses?per_page=1`);
+        if (!Array.isArray(st)) throw new Error(`repos/${gh}/deployments/${id}/statuses: not a list`);
+        if (st.length === 0) continue;
+        const latest = st[0];
+        if (latest === null || typeof latest !== "object" || typeof (latest as { state?: unknown }).state !== "string")
+          throw new Error(`repos/${gh}/deployments/${id}/statuses: a malformed status`);
+        if ((latest as { state: string }).state === "success") return { id: String(id), sha };
+      }
+      if (list.length < 100) break;
+      // A full last page: the history goes on past what this reads.
+      if (page === DEPLOY_PAGES) unread = true;
+    }
+    // A full history read with no production success is not the same as no
+    // deployment at all: one older than the limit may be what serves.
+    if (unread)
+      throw new Error(
+        `${gh}'s newest ${DEPLOY_PAGES * 100} deployments hold no successful production one, and its older deployment history is unread`,
+      );
+    if (production > 0)
+      throw new Error(
+        `${gh} records ${production} production deployment(s) in its newest ${DEPLOY_PAGES * 100}, and none succeeded — nothing to call live`,
+      );
+    return null;
+  },
 };
 
 /** The seam: answers from a JSON file, re-read on every call; a target it
  *  does not name falls through to the real read. */
 function fileSources(path: string, target: string): Sources {
+  const read = (): Record<string, unknown> =>
+    // No file yet is a stub that names nothing: every target is read for real.
+    (existsSync(path) ? JSON.parse(readFileSync(path, "utf8")) : {}) as Record<string, unknown>;
   return {
+    deployment: async (repo) => {
+      const all = read();
+      const key = `${target}#deployment`;
+      if (!(key in all)) return realSources.deployment(repo);
+      const v = all[key];
+      if (v !== null && typeof v === "object" && "throw" in v) throw new Error(String((v as { throw: unknown }).throw));
+      return v as Deployment | null;
+    },
     trunkTip: async (repo) => {
       // No file yet is a stub that names nothing: every target is read for real.
       const all = (existsSync(path) ? JSON.parse(readFileSync(path, "utf8")) : {}) as Record<string, unknown>;
@@ -214,6 +308,11 @@ export function sources(target: string): Sources {
 export async function liveRevision(target: string, repo: string, src: Sources = sources(target)): Promise<Revision> {
   const te = targetError(target);
   if (te) throw new Error(te);
+  const dep = await src.deployment(repo);
+  if (dep !== null) {
+    if (!HEX.test(dep.sha)) throw new Error(`${target}'s live deployment names no commit: ${String(dep.sha).slice(0, 60)}`);
+    return { deploymentId: `deployment ${dep.id}`, sourceCommit: dep.sha };
+  }
   const tip = await src.trunkTip(repo);
   if (tip === null || tip === "") throw new Error(`origin of ${repo} has no trunk branch to read`);
   if (!HEX.test(tip)) throw new Error(`${target}'s live trunk is not a commit: ${String(tip).slice(0, 60)}`);

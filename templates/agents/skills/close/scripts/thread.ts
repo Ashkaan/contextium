@@ -47,6 +47,8 @@
 //   thread.ts --require-unique — refuse a cwd shared by several tasks; a review
 //                                caller supplies its actual WORKBENCH_THREAD_ID
 //   thread.ts --branch         — the branch T3 gave the thread's worktree
+//   thread.ts --source         — `t3` when the thread is a T3 thread (its row is
+//                                in T3's database), `harness` for a native session
 //   thread.ts --worktree       — the thread's own worktree path (T3's, or the
 //                                linked worktree a harness started it in)
 //   thread.ts --started        — thread creation time, ISO 8601 as stored
@@ -282,6 +284,9 @@ async function main(): Promise<void> {
       case "--started":
         MODE = "started";
         break;
+      case "--source":
+        MODE = "source";
+        break;
       case "--local":
       case "--la":
         LOCAL = "time";
@@ -293,7 +298,7 @@ async function main(): Promise<void> {
         requireUnique = true;
         break;
       default:
-        fail("usage: thread.ts [--id | --branch | --worktree | --started [--local | --local-day]] [--require-unique]");
+        fail("usage: thread.ts [--id | --branch | --worktree | --source | --started [--local | --local-day]] [--require-unique]");
     }
   }
 
@@ -320,6 +325,7 @@ async function main(): Promise<void> {
       );
       row = rowOrNone(DB, r);
       if (row === "") fail(`no thread ${override} in ${DB}`);
+      t3Row = true;
     } else {
       // No T3 at all: the override names a harness session.
       row = harnessRow(LEDGER_HOME, override, true);
@@ -402,6 +408,9 @@ async function main(): Promise<void> {
   switch (MODE) {
     case "id":
       process.stdout.write(`${F_ID}\n`);
+      break;
+    case "source":
+      process.stdout.write(`${t3Row ? "t3" : "harness"}\n`);
       break;
     case "branch":
       if (F_BRANCH === "") fail(`thread ${F_ID} has no branch recorded`);

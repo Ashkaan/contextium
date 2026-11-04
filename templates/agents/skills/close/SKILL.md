@@ -3,7 +3,7 @@ name: close
 description: Ends the session — verify what changed, update the project, journal it, land every worktree this thread owns on its repo's trunk, report a line a script proved. Use when the user says "close", "wrap up", "let's close", or any plain-English request to end the session, and when a producer skill's auto-close gate fires. The gate is in close/references/auto-close-gate.md.
 allowed-tools: "Bash Read Edit Write"
 metadata:
-  peers: ".agents/skills/close/scripts/harness.sh .agents/skills/close/scripts/transcripts.ts .agents/skills/close/scripts/thread.ts .agents/skills/close/scripts/write-root.sh .agents/skills/close/scripts/trunk.ts .agents/skills/close/scripts/verify.ts .agents/skills/close/scripts/corrections.ts .agents/skills/close/scripts/session.ts .agents/skills/close/scripts/journal-file.ts .agents/skills/close/scripts/land.ts .agents/skills/close/scripts/await-push-checks.ts .agents/skills/close/scripts/live-checks.ts .agents/skills/close/scripts/check-roadmap-decisions.ts .agents/skills/close/scripts/project-status.ts .agents/skills/close/scripts/project-remaining-work.ts .agents/skills/close/scripts/next-implement-command.ts .agents/skills/close/scripts/roadmap.ts .agents/skills/close/scripts/roadmap-merge.ts .agents/skills/close/scripts/spec-state.ts .agents/skills/close/references/journal-entry.md .agents/skills/close/references/auto-close-gate.md"
+  peers: ".agents/skills/close/scripts/harness.sh .agents/skills/close/scripts/transcripts.ts .agents/skills/close/scripts/thread.ts .agents/skills/close/scripts/write-root.sh .agents/skills/close/scripts/trunk.ts .agents/skills/close/scripts/verify.ts .agents/skills/close/scripts/corrections.ts .agents/skills/close/scripts/session.ts .agents/skills/close/scripts/journal-file.ts .agents/skills/close/scripts/land.ts .agents/skills/close/scripts/await-push-checks.ts .agents/skills/close/scripts/live-checks.ts .agents/skills/close/scripts/check-roadmap-decisions.ts .agents/skills/close/scripts/project-status.ts .agents/skills/close/scripts/project-remaining-work.ts .agents/skills/close/scripts/next-implement-command.ts .agents/skills/close/scripts/roadmap.ts .agents/skills/close/scripts/roadmap-merge.ts .agents/skills/close/scripts/spec-state.ts .agents/skills/close/scripts/end-of-turn.ts .agents/skills/close/references/journal-entry.md .agents/skills/close/references/auto-close-gate.md"
 ---
 
 # /close — verify, project, journal, land, report
@@ -45,7 +45,9 @@ from its root — a product repo whose push builds without testing is tested
 here or nowhere — every `*.test.ts` of a project whose code moved, and every
 `*.test.sh` and `*.test.ts` beneath every `.agents/skills/<skill>/` folder that
 moved — a skill is code, and without this it would be the only code that closed
-with nothing run against it. **A `FAIL` halts here** — fix it and re-run;
+with nothing run against it. Any of these with no `package.json`, or one that
+declares neither half, runs its own `*.test.ts` suites instead, and with none is
+named `unverified`, never skipped in silence. **A `FAIL` halts here** — fix it and re-run;
 nothing is recorded yet, which is the point of going first. `unverified` is a
 gap in the app or the skill folder, not a failure.
 
@@ -310,6 +312,26 @@ checkable SHA in it.
 `origin/main` on most repos and is resolved rather than spelled, so a repo on
 `master` gets a true sentence instead of a reassuring one about a branch its
 work is not on.
+
+### After the report
+
+On Claude Code and Codex an end-of-turn check (`scripts/end-of-turn.ts`, run by
+the Stop hook `.agents/hooks/check-close-reached.sh` the installer wires on the
+two harnesses where a blocking end-of-turn hook was measured) refuses the reply
+that ends the turn when it lacks the saved report's last line, and refuses every
+turn end of a thread that closed and then changed something until a new close
+lands it. On every other harness nothing checks either, so the copy above is
+the whole step there.
+
+To ask the user something after the close has finished, record the question
+first, then ask it in those words:
+
+```bash
+node --experimental-strip-types .agents/skills/close/scripts/end-of-turn.ts --pause "<question>"
+```
+
+The close is then paused: every later turn end is refused until their answer is
+dealt with and a new close lands, or another `--pause` asks the next question.
 
 ## What this close does not do
 

@@ -60,12 +60,12 @@ it reads any code, so it is the cheapest place to prevent a wrong assumption.
 | `.agents/skills/` | the skills, each with its scripts and the templates it writes; `review/` is the reviewer chain |
 | `.agents/agents/` | the agent prompts the skills dispatch in a fresh context |
 | `.agents/checks/` | the checks `land.ts` runs before it commits: decision records, skills, integration manifests, script tests and languages, standards citations, secrets |
-| `.agents/hooks/` | the pre-tool guards: no host change without asking, no write into the shared checkout |
+| `.agents/hooks/` | the pre-tool guards (no host change without asking, no write into the shared checkout) and the close's end-of-turn check |
 | `.agents/generators/` | the index generators for `apps/`, `integrations/`, `projects/` |
 | `.agents/packages/` | small modules the scripts above share |
 | `.agents/output-styles/` | Claude Code output styles `/author` writes, reached through `~/.claude/output-styles` |
 | `.agents/harness` | `harness=` the tool you drive the workbench with (it decides where session worktrees go), `agent=` the model family that writes the code (a review leaves out every model that wrote the work), and `tools=` every tool the installer has wired here, which a re-run keeps wiring until `install.sh --drop-tool <name>` |
-| `.agents/hooks/claude-hooks.json` | the guards in the shape Claude Code, Codex and Grok Build read, with yours added by the installer |
+| `.agents/hooks/claude-hooks.json` | those hooks in the shape Claude Code, Codex and Grok Build read, with yours added by the installer |
 | `.agents/user-hooks.json` | your own hooks, on any event, in that same shape; the installer merges them in and never overwrites the file |
 | `.agents/gemini-settings.json` | Gemini CLI's settings: `AGENTS.md` as its context file, and the guards; there while `tools=` names Gemini CLI |
 | `.agents/user-gemini-settings.json` | your own Gemini CLI settings; the installer merges them in and never overwrites the file |

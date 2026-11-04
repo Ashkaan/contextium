@@ -1,0 +1,11 @@
+{
+  "session_id": "01a1a425-734c-7993-87d8-13bb3330f11b",
+  "turn_id": "01a1a425-7a6b-7b31-80c3-29643b56f495",
+  "transcript_path": "/home/user/probe/20261104T012109Z-4a46/home/codex/.codex/sessions/2026/11/03/rollout-2026-11-03T17-21-20-01a1a425-734c-7993-87d8-13bb3330f11b.jsonl",
+  "cwd": "/home/user/probe/20261104T012109Z-4a46/stop",
+  "hook_event_name": "Stop",
+  "model": "gpt-codex",
+  "permission_mode": "bypassPermissions",
+  "stop_hook_active": true,
+  "last_assistant_message": "STOP7Q"
+}

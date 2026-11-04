@@ -32,7 +32,8 @@
 // WHY PAGES. A harness truncates long command output (Claude Code's Bash tool
 // near 30,000 characters), and a cut read is exactly the loss this exists to
 // undo. So the output comes in pages of at most PAGE_CHARS, split at item
-// boundaries, and each page ends naming the next. The close reads every page.
+// boundaries (an item longer than a page is split across pages), and each page
+// ends naming the next. The close reads every page.
 //
 // Usage:
 //   session.ts                 — page 1 of this thread
@@ -211,11 +212,31 @@ function blocks(list: Item[]): string[] {
   return out;
 }
 
-/** Blocks packed into pages of at most `size` characters; a block longer than a page is a page of its own. */
+/** Blocks packed into pages of at most `size` characters. A block longer than
+ *  a page is split into page-sized pieces, each after the first marked as a
+ *  continuation: as a page of its own it was cut by the harness exactly as the
+ *  pages exist to prevent (Contextium v9.2.0 review). */
 export function paginate(list: string[], size = PAGE_CHARS): string[] {
   const pages: string[] = [];
   let current = "";
+  const MARK = "[… continued]\n";
+  const pieces: string[] = [];
   for (const b of list) {
+    if (b.length <= size) {
+      pieces.push(b);
+      continue;
+    }
+    for (let at = 0, first = true; at < b.length; first = false) {
+      let room = first ? size : size - MARK.length;
+      // Never between the two halves of a surrogate pair: cut, each half
+      // prints as U+FFFD (v9.2.0 review).
+      const last = b.charCodeAt(at + room - 1);
+      if (at + room < b.length && last >= 0xd800 && last <= 0xdbff) room -= 1;
+      pieces.push((first ? "" : MARK) + b.slice(at, at + room));
+      at += room;
+    }
+  }
+  for (const b of pieces) {
     if (current !== "" && current.length + b.length > size) {
       pages.push(current);
       current = "";

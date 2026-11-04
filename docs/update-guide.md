@@ -23,20 +23,31 @@ thing outside it may need a step: a deploy poller of your own (below).
   are no longer read: make your deploy a GitHub workflow, and the close waits on it.
 - **Live checks.** A spec's `tasks.md` can declare checks only the deployed thing can answer (a
   `live-checks` block naming `workbench` or `repo:<owner>/<name>`); the close holds until each one
-  has run against what is on the remote's trunk.
+  has run against what is live: the newest deployment GitHub records as successful, else the
+  remote's trunk. A capture taken before a newer deployment lands is refused.
 - **The planning close prints the next step.** `/project` and `/spec` never build. Their close prints
   `/implement <slug> <row>` for each row ready to build, in its own block; run each in a fresh
   session. Under T3 Code, `/implement` refuses a row another open thread is already building.
+- **An end-of-turn check after a close.** On Claude Code and Codex a Stop hook
+  (`.agents/hooks/check-close-reached.sh`) refuses a reply after a close that leaves out the close's
+  report, and every turn end of a session that closed and then changed something until it closes
+  again; the second stop of a turn always passes. To ask you something after a close, the session
+  records the question with `end-of-turn.ts --pause` and the close waits for your answer. The
+  installer merges the hook into `~/.claude/settings.json` and the manifest Codex reads; start
+  `codex` once and accept its hook-trust prompt for the new hook. Other tools are not checked.
 - **Reviews remember what they checked.** A review leaves a receipt naming the content it covered;
   the close and a later audit reuse it only while that content is unchanged, and review only what
   moved. A review leaves out every model that wrote the work, which the calling skill names. With no
-  other model installed, the fresh-context fallback is recorded as not independent, as before.
+  other model installed, the fresh-context fallback is recorded as not independent, as before. A
+  change too large for one review call can be reviewed in pieces over the same range; the pieces
+  approve together once every changed file has been read.
 - **`/project triage`** lists what is blocked, monitored or waiting on you, and `unblock` returns a
   `blocked: until` row to `planned`; nothing reopens one on its own.
 - **`/qa`** checks for cut-off, covered and modal-trapped controls, captures touch-sized and
   lazy-loaded pages, serves a static build without Python, and keeps one server per run alive
   across restarts.
-- **Checks.** `check-scripts.ts` refuses a git file listing without `-z`; `check-skills.ts` refuses
+- **Checks.** `/close` runs the `*.test.ts` suites of an app, integration or product repo with no
+  `package.json`, and names one with neither `unverified`. `check-scripts.ts` refuses a git file listing without `-z`; `check-skills.ts` refuses
   a `metadata.peers` path that does not exist and a step that runs a skill only you may start. The
   host guard refuses a kill by port (`fuser -k`, `lsof … | xargs kill`): stop a server by its process
   group instead.

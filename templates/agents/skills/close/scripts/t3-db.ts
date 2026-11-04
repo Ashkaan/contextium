@@ -75,7 +75,15 @@ export function reviewSessionId(): string {
 export function inT3ReviewContext(): boolean {
   if (!isFile(t3Database(process.env.T3CODE_HOME || `${process.env.HOME}/.t3`))) return false;
   const thread = currentThread(true);
-  return "id" in thread || !/not in a T3 thread|in no ledger/.test(thread.error);
+  if (!("id" in thread)) return !/not in a T3 thread|in no ledger/.test(thread.error);
+  // A named session is T3's only when its row is T3's: a native harness session
+  // on a machine that also runs T3 owes no T3 writing thread. A lookup that
+  // fails keeps the guard (v9.2.0 review).
+  const s = spawnSync(process.execPath, ["--experimental-strip-types", THREAD, "--source"], {
+    encoding: "utf8",
+    stdio: ["inherit", "pipe", "pipe"],
+  });
+  return s.status !== 0 || (s.stdout ?? "").trim() === "t3";
 }
 
 /** Conservative provenance: providers recorded for the ORIGINAL writing

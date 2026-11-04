@@ -20,6 +20,7 @@ import {
   threadsSource,
   reviewSessionId,
   recordedReviewAuthors,
+  inT3ReviewContext,
 } from "./t3-db.ts";
 
 const TMP = mkdtempSync(join(tmpdir(), "t3-db-test-"));
@@ -43,10 +44,15 @@ test("review ids prefer resolved T3 context, isolate explicit children and refus
       `t3-${createHash("sha256").update("native-id").digest("hex")}`,
       "no T3 context keys on the harness's native session id",
     );
+    // …and that native session is not a T3 thread: a T3 database on the machine
+    // does not make a native review owe a T3 writing thread (v9.2.0 review).
+    assert.equal(inT3ReviewContext(), false, "a native session beside a T3 database is not T3");
+    assert.deepEqual(recordedReviewAuthors(), { vendors: [] }, "…so no T3 writing thread is demanded");
     const insert = db.prepare("insert into projection_threads values (?,null,?,null,null)");
     insert.run("root", process.cwd());
     const rootKey = reviewSessionId();
     assert.match(rootKey, /^t3-[a-f0-9]{64}$/);
+    assert.equal(inT3ReviewContext(), true, "the cwd's own T3 thread is T3");
     insert.run("thread:child", process.cwd());
     assert.equal(reviewSessionId(), "", "a leaked native id cannot certify two T3 tasks");
     process.env.WORKBENCH_THREAD_ID = "thread:child";
