@@ -458,6 +458,23 @@ git(RD, "commit", "-qm", "init");
 test("a ten-hop chain still reaches the app", () =>
   assert.equal(run(["--repo", RD, "packages/chain/hop00.ts"]).out, `${RD}/apps/web/portal`));
 
+// A file whose name holds a second dot-extension (`button.js.ts`). import-map.ts
+// already drops the code extension from each edge's target; dropping it again
+// here indexed the import under `button` while the changed file looked up
+// `button.js`, so its consuming app's QA was silently skipped (Contextium
+// v9.2.0 review).
+const RJ = newRepo("double-ext");
+makeAstro(join(RJ, "apps/web/portal"));
+put(join(RJ, "packages/shared/button.js.ts"), "export const Button = () => null\n");
+put(
+  join(RJ, "apps/web/portal/src/uses.ts"),
+  'import { Button } from "../../../../packages/shared/button.js.ts"\nexport const a = Button\n',
+);
+git(RJ, "add", "apps", "packages");
+git(RJ, "commit", "-qm", "init");
+test("a change to a shared button.js.ts still makes its importing web app a target", () =>
+  assert.equal(run(["--repo", RJ, "packages/shared/button.js.ts"]).out, `${RJ}/apps/web/portal`));
+
 // A cycle must terminate rather than walk forever.
 {
   put(join(RH, "packages/ui/index.ts"), 'export { Button } from "./button"\nimport "./cycle"\n');

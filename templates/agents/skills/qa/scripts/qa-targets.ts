@@ -332,7 +332,10 @@ async function main(): Promise<void> {
       }
       for (const [target, importer] of edges) {
         if (!target || !importer) continue;
-        const key = dropCodeExt(dropQuery(target));
+        // import-map.ts already dropped the code extension from each target;
+        // dropping it twice indexed `button.js.ts` under `button` while its
+        // own lookup asks for `button.js` (Contextium v9.2.0 review).
+        const key = dropQuery(target);
         const list = IMPORT_MAP.get(key) ?? [];
         list.push(importer);
         IMPORT_MAP.set(key, list);

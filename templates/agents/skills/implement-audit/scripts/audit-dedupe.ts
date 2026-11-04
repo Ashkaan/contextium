@@ -997,19 +997,27 @@ function summary(r: Receipt): string {
  * review). A location after the title written without backticks lost to a
  * title citation, which went to the front and so became the finding's file
  * (final review), and so did one with no extension (`Makefile:12`), which
- * needed a `.` or `/` to count. A line with no path is returned as it came.
+ * needed a `.` or `/` to count. A bare one counts only in the location —
+ * right after the title, up to the first ` — ` — never in the description:
+ * `localhost:3000` there took the finding from its backticked `a.ts`. A line
+ * with no path is returned as it came.
  */
 function fileFirst(l: string): string {
   const close = l.startsWith("**") ? l.indexOf("**", 2) : -1;
   const sep = /: | — /.exec(l);
   const end = close >= 0 ? close + 2 : (sep?.index ?? 0);
+  const dash = l.indexOf(" — ", close >= 0 || !sep ? end : end + sep[0].length);
+  const locEnd = dash >= 0 ? dash : l.length;
   const find = (from: number, bare: string): { at: number; whole: string; path: string } | null => {
     const t = l.slice(from);
-    const m =
-      new RegExp(
-        `\`([^\`\\s][^\`]*?:\\d+(?:-\\d+)?)\`|(?<![^\\s(])((?=[^\\s\`*():]*${bare})[^\\s\`*():]+:\\d+(?:-\\d+)?)(?=[\\s,;:)]|$)`,
-      ).exec(t) ??
-      /`([^`\s][^`]*?\.[A-Za-z0-9]+(?::\d+(?:-\d+)?)?)`/.exec(t);
+    const re = new RegExp(
+      `\`([^\`\\s][^\`]*?:\\d+(?:-\\d+)?)\`|(?<![^\\s(])((?=[^\\s\`*():]*${bare})[^\\s\`*():]+:\\d+(?:-\\d+)?)(?=[\\s,;:)]|$)`,
+      "g",
+    );
+    let m = re.exec(t);
+    // A bare match (group 2) past the location is in the description: skip it.
+    while (m && m[1] === undefined && from + m.index >= locEnd) m = re.exec(t);
+    m ??= /`([^`\s][^`]*?\.[A-Za-z0-9]+(?::\d+(?:-\d+)?)?)`/.exec(t);
     return m ? { at: from + m.index, whole: m[0], path: m[1] ?? m[2] ?? "" } : null;
   };
   const loc = find(end, "[./A-Za-z]") ?? find(0, "[./]");
