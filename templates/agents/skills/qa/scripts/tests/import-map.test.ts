@@ -18,7 +18,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { after, test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { importEdges } from "../import-map.ts";
+import { dropQuery, importEdges } from "../import-map.ts";
 
 const MAP = join(dirname(fileURLToPath(import.meta.url)), "..", "import-map.ts");
 const TMP = mkdtempSync(join(tmpdir(), "import-map-test-"));
@@ -80,6 +80,14 @@ test("a .css import keeps its extension", () => has("apps/web/src/styles.css\tap
 test("an untracked importer counts", () => has("packages/ui/button\tapps/web/src/untracked.ts"));
 test("an import after a quoted 'from' in a comment", () => has("apps/web/src/card\tapps/web/src/page.ts"));
 test("a resource query is not part of the target", () => has("apps/web/src/template.html\tapps/web/src/page.ts"));
+test("dropQuery drops a query or hash and keeps a plain path", () => {
+  assert.equal(dropQuery("./README.md?raw"), "./README.md");
+  assert.equal(dropQuery("./icon.svg#top"), "./icon.svg");
+  assert.equal(dropQuery("./a.ts?worker#x"), "./a.ts");
+  assert.equal(dropQuery("./a.ts"), "./a.ts");
+  assert.equal(dropQuery("?raw"), "");
+  assert.equal(dropQuery(""), "");
+});
 test("an absolute spec is skipped", () => lacks("abs/path"));
 test("a spec outside the repo is skipped", () => lacks("outside"));
 test("a gitignored file is not an importer", () => lacks("ignored/x.ts"));

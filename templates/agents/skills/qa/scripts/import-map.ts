@@ -19,7 +19,8 @@
 //   - `./` and `../` resolve against the importer's directory, a bare spec
 //     against the repo root, an absolute one is skipped, and anything that
 //     resolves outside the repo is skipped;
-//   - a resource query (`?raw`, `?url`) is dropped from the spec;
+//   - a resource query or hash (`?raw`, `?url`, `#top`) is dropped from the
+//     spec (dropQuery, which qa-targets.ts also applies to its lookup);
 //   - a code extension is dropped from both ends (`.css` and the rest are kept).
 // One difference, deliberately: the path is normalized lexically, where the
 // shell used `realpath -m`, which also followed a symlinked directory. Nothing
@@ -48,6 +49,13 @@ const IMPORT = /(?:from|import|require)[ \t\f\v]*\(?[ \t\f\v]*(['"])([^'"]+)\1/g
 
 /** A path with its code extension (`.ts`, `.jsx`, …) dropped; `.css` and the rest kept. */
 export const dropCodeExt = (p: string): string => p.replace(CODE_EXT, "");
+
+/**
+ * A spec with its resource query or hash (`?raw`, `#top`) dropped: the
+ * bundler's instruction, not part of the file. qa-targets.ts drops it from
+ * the key it looks up too, so the two sides cannot disagree.
+ */
+export const dropQuery = (p: string): string => p.replace(/[?#].*$/, "");
 
 /**
  * Every `[target, importer]` edge in the repo, both repo-relative.
@@ -83,7 +91,7 @@ export function importEdges(repo: string): Array<[string, string]> {
       // A resource query (`./README.md?raw`, `./icon.svg?url`) is the bundler's
       // instruction, not part of the file: indexed with it, the README's own
       // lookup found no importer.
-      const spec = m[2].replace(/\?.*$/, "");
+      const spec = dropQuery(m[2]);
       if (spec === "" || spec.startsWith("/")) continue;
       const joined = spec.startsWith("./") || spec.startsWith("../") ? posix.join(posix.dirname(file), spec) : spec;
       const resolved = posix.normalize(joined);

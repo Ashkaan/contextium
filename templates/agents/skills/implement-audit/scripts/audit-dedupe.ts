@@ -986,28 +986,33 @@ function summary(r: Receipt): string {
  * the file it names. Kept title-first, the finding named no file, and a later
  * round that changed only another file cleared it (Contextium v9.2.0 review).
  * The location is the first path followed by `:<line>`, backticked or not
- * (a bare one holds a `.` or `/`), as findingFile reads one; only without
- * one is it the first backticked file name — a title naming another file
- * first bound the blocker to that file (third review).
+ * (a bare one in the title holds a `.` or `/`; after the title any bare
+ * `<name>:<line>` whose name holds a letter, `.` or `/`, such as
+ * `Makefile:12`), as findingFile reads one; only without one is it the first
+ * backticked file name — a title naming another file first bound the blocker
+ * to that file (third review).
  * Both are looked for after the title (its closing `**`, else the first `: `
  * or ` — `), and in the title only when none follows: a title holding a
  * located path (`b.ts:5` callers break) bound the blocker to it (fourth
  * review). A location after the title written without backticks lost to a
  * title citation, which went to the front and so became the finding's file
- * (final review). A line with no path is returned as it came.
+ * (final review), and so did one with no extension (`Makefile:12`), which
+ * needed a `.` or `/` to count. A line with no path is returned as it came.
  */
 function fileFirst(l: string): string {
   const close = l.startsWith("**") ? l.indexOf("**", 2) : -1;
   const sep = /: | — /.exec(l);
   const end = close >= 0 ? close + 2 : (sep?.index ?? 0);
-  const find = (from: number): { at: number; whole: string; path: string } | null => {
+  const find = (from: number, bare: string): { at: number; whole: string; path: string } | null => {
     const t = l.slice(from);
     const m =
-      /`([^`\s][^`]*?:\d+(?:-\d+)?)`|(?<![^\s(])((?=[^\s`*():]*[./])[^\s`*():]+:\d+(?:-\d+)?)(?=[\s,;:)]|$)/.exec(t) ??
+      new RegExp(
+        `\`([^\`\\s][^\`]*?:\\d+(?:-\\d+)?)\`|(?<![^\\s(])((?=[^\\s\`*():]*${bare})[^\\s\`*():]+:\\d+(?:-\\d+)?)(?=[\\s,;:)]|$)`,
+      ).exec(t) ??
       /`([^`\s][^`]*?\.[A-Za-z0-9]+(?::\d+(?:-\d+)?)?)`/.exec(t);
     return m ? { at: from + m.index, whole: m[0], path: m[1] ?? m[2] ?? "" } : null;
   };
-  const loc = find(end) ?? find(0);
+  const loc = find(end, "[./A-Za-z]") ?? find(0, "[./]");
   if (!loc) return l;
   const rest = `${l.slice(0, loc.at)}${l.slice(loc.at + loc.whole.length)}`.replace(/^(\*\*[^*]*\*\*)\s*:\s*(?=—|$)/, "$1 ");
   return `${loc.path}: ${rest.trim()}`;

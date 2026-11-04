@@ -77,7 +77,7 @@ import { type SpawnSyncReturns, spawnSync } from "node:child_process";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { dropCodeExt, importEdges } from "./import-map.ts";
+import { dropCodeExt, dropQuery, importEdges } from "./import-map.ts";
 import { exit, runToExit } from "../../../packages/cli-exit/cli-exit.ts";
 
 async function main(): Promise<void> {
@@ -332,12 +332,16 @@ async function main(): Promise<void> {
       }
       for (const [target, importer] of edges) {
         if (!target || !importer) continue;
-        const list = IMPORT_MAP.get(target) ?? [];
+        const key = dropCodeExt(dropQuery(target));
+        const list = IMPORT_MAP.get(key) ?? [];
         list.push(importer);
-        IMPORT_MAP.set(target, list);
+        IMPORT_MAP.set(key, list);
       }
     }
-    return IMPORT_MAP.get(dropCodeExt(file)) ?? [];
+    // Both sides through dropQuery: a doc imported as `./README.md?raw` was
+    // indexed under that whole spec, and its own lookup, `README.md`, found
+    // no importer (Contextium v9.2.0 review).
+    return IMPORT_MAP.get(dropCodeExt(dropQuery(file))) ?? [];
   }
 
   // Classified here, below the import map, which an app doc's check reads.

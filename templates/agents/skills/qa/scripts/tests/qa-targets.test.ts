@@ -232,6 +232,11 @@ git(R1, "commit", "-qm", "init");
   makeAstro(join(RC, "apps/c"));
   put(join(RC, "apps/c/README.md"), "# c\n");
   put(join(RC, "apps/c/src/pages/raw.astro"), 'import readme from "../../README.md?raw";\n<pre>{readme}</pre>\n');
+  // The same, written from the app root (`./README.md?raw`): qa-targets's own
+  // lookup drops the query, so the doc finds its importer whatever the map holds.
+  makeAstro(join(RC, "apps/d"));
+  put(join(RC, "apps/d/README.md"), "# d\n");
+  put(join(RC, "apps/d/page.astro"), 'import readme from "./README.md?raw";\n<pre>{readme}</pre>\n');
   git(RC, "add", "-A");
   git(RC, "commit", "-qm", "init");
   const own = run(["--repo", RC, "README.md"]);
@@ -242,6 +247,9 @@ git(R1, "commit", "-qm", "init");
     assert.equal(other.out, join(RC, "apps/b")));
   const raw = run(["--repo", RC, "apps/c/README.md"]);
   test("a README imported with a ?raw query makes its app a target", () => assert.equal(raw.out, join(RC, "apps/c")));
+  const rawRoot = run(["--repo", RC, "apps/d/README.md"]);
+  test("a README imported as ./README.md?raw makes the importing app a target", () =>
+    assert.equal(rawRoot.out, join(RC, "apps/d")));
   const unread = run(["--repo", RC, "DESIGN.md"]);
   test("a sibling doc no page imports is still not a target", () => assert.equal(unread.out, ""));
 }

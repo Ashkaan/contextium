@@ -947,6 +947,28 @@ for (const [tag, loc] of [
   });
 }
 
+// A bare location with no extension after the title (`Makefile:12`) lost to
+// the title's `b.ts:5`, because a bare location needed a `.` or `/`: the
+// blocker was bound to b.ts and a round over b.ts cleared it (final v9.2.0
+// review). After the title, any bare `<name>:<line>` is the location.
+test("a fallback finding located at a bare extensionless Makefile:12 is bound to it, not its title's b.ts:5", () => {
+  const d = repo("fallback-lead-noext");
+  const env = owner("fallback-lead-noext");
+  const t0 = snap(d);
+  assert.match(begin(env, d).out, /RECEIPT=review/);
+  run(env, "finish", "--repo", d, "--rc", "3");
+  const reply = join(TMP, "fallback-lead-noext.txt");
+  writeFileSync(reply, "1. **`.agents/skills/demo/b.ts:5` callers break**: Makefile:12 — wrong — verdict: **fix-now**\n");
+  assert.equal(run(env, "finish", "--repo", d, "--fallback", reply).out, "APPROVED=0");
+  writeFileSync(join(d, ".agents/skills/demo/b.ts"), "export const b = 2;\n");
+  const b1 = begin(env, d, "since", ["--since", t0]);
+  const items = JSON.parse(readFileSync(b1.out.match(/ITEMS_FILE=(.*)/)?.[1] ?? "", "utf8"));
+  assert.match(items.openFindings[0] ?? "", /^\[must-fix\] Makefile:12: /, "the extensionless location leads the line");
+  const f = run(env, "finish", "--repo", d, "--rc", "0", "--result", result("fallback-lead-noext-1", []));
+  assert.equal(f.out, "APPROVED=0", "a round over b.ts alone does not clear the blocker located in Makefile");
+  assert.match(f.err, /1 must-fix\/should-fix finding\(s\) unresolved/);
+});
+
 // The installer links AGENTS.md to .agents/AGENTS.md, so the file a change
 // actually edits is .agents/AGENTS.md: it is an instruction file, reviewed like
 // the root one (Contextium v9.2.0 review).
