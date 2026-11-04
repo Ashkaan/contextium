@@ -2267,6 +2267,31 @@ kase("Case 14g: the workbench roadmap gate and an app's check on the merged tree
   is("an app whose check passes on the merged tree lands", r.rc, "0");
   is("…after its check ran", existsSync(join(F.HOME_DIR, ".app-check-invoked")) ? "invoked" : "not", "invoked");
 
+  // 8c. The same failure through shared code: this branch changes a package's
+  //     signature while the trunk adds an app calling the old one. The branch
+  //     touches no app, so only an importer of the changed package can catch
+  //     it; the merged-tree run checks the trunk's new caller and refuses.
+  fixture("c14gl");
+  gDo(F.WT2, "pull", "-q", "origin", "main");
+  const sig = `node -e "if(require('fs').readFileSync('../../packages/p/p.ts','utf8').includes('b: number')){console.error('caller.ts(1,1): error TS2554: Expected 2 arguments, but got 1.');process.exit(2)}"`;
+  write(
+    join(F.WT2, "apps/y/package.json"),
+    `${JSON.stringify({ name: "y", private: true, scripts: { check: sig } }, null, 2)}\n`,
+  );
+  write(join(F.WT2, "apps/y/caller.ts"), 'import { p } from "../../packages/p/p.ts";\np(1);\n');
+  gDo(F.WT2, "add", "-A");
+  gDo(F.WT2, "commit", "-q", "-m", "the trunk adds a caller of the package");
+  gDo(F.WT2, "push", "-q", "origin", "HEAD:main");
+  write(join(F.WT1, "packages/p/p.ts"), "export const p = (a: number, b: number): number => a + b;\n");
+  r = land(1, ["thread one"], { merge: true });
+  is("a package change that breaks a trunk caller only on the merged tree exits 3", r.rc, "3");
+  has(
+    "naming the importing app and its check's error line",
+    r.out,
+    `NOT CLOSED: apps/y's check fails on the merged tree in ${F.WT1}: caller.ts(1,1): error TS2554: Expected 2 arguments, but got 1.`,
+  );
+  is("…and nothing of it was pushed", onMain(F.CODE, "packages/p/p.ts"), "no");
+
   // 3. The REAL roadmap gate over a row-by-row ROADMAP merge: two threads each add
   //    a row to one project, the second landing after the first. Thread one
   //    also finishes R1, so thread two's own table still says R1 is next while
@@ -2702,49 +2727,69 @@ kase("Case 15n: parallel rows print the next action of the merged table", () => 
 // row the trunk added was never filled in), so next: cannot be re-derived.
 // Pushing then would ship a README whose next: names the wrong row.
 kase("Case 15b: next: that cannot be re-derived stops the close", () => {
-  fixture("c15b");
-  write(
-    join(F.CODE, RMP, "ROADMAP.md"),
-    lines(
-      ...tableHead(),
-      "| R1 | first | — | planned | `specs/001-first/` |",
-      "| R2 | second | — | planned | `specs/002-second/` |",
-    ),
-  );
-  write(
-    join(F.CODE, RMP, "README.md"),
-    '---\nproject: rows\nstatus: active\nnext: "R1: first"\n---\n\n# Project: rows\n',
-  );
-  gDo(F.CODE, "add", "-A");
-  gDo(F.CODE, "commit", "-q", "-m", "roadmap");
-  gDo(F.CODE, "push", "-q", "origin", "main");
-  gDo(F.WT2, "fetch", "-q", "origin");
-  gDo(F.WT2, "reset", "-q", "--hard", "origin/main");
-  writeFileSync(
-    join(F.CODE, RMP, "ROADMAP.md"),
-    `${readFileSync(join(F.CODE, RMP, "ROADMAP.md"), "utf8")}| R3 | <name> | — | planned | — |\n`,
-  );
-  gDo(F.CODE, "commit", "-qam", "a row nobody filled in");
-  gDo(F.CODE, "push", "-q", "origin", "main");
-  sedLines(join(F.WT2, RMP, "ROADMAP.md"), "| R2 | second | — | planned |", "| R2 | second | — | done |");
-  entry(jf(2, "row two"), "row-two", "thread two's row");
+  /** The trunk's table gains a row nobody filled in after thread two's base. */
+  const brokenTrunk = (name: string): void => {
+    fixture(name);
+    write(
+      join(F.CODE, RMP, "ROADMAP.md"),
+      lines(
+        ...tableHead(),
+        "| R1 | first | — | planned | `specs/001-first/` |",
+        "| R2 | second | — | planned | `specs/002-second/` |",
+      ),
+    );
+    write(
+      join(F.CODE, RMP, "README.md"),
+      '---\nproject: rows\nstatus: active\nnext: "R1: first"\n---\n\n# Project: rows\n',
+    );
+    gDo(F.CODE, "add", "-A");
+    gDo(F.CODE, "commit", "-q", "-m", "roadmap");
+    gDo(F.CODE, "push", "-q", "origin", "main");
+    gDo(F.WT2, "fetch", "-q", "origin");
+    gDo(F.WT2, "reset", "-q", "--hard", "origin/main");
+    writeFileSync(
+      join(F.CODE, RMP, "ROADMAP.md"),
+      `${readFileSync(join(F.CODE, RMP, "ROADMAP.md"), "utf8")}| R3 | <name> | — | planned | — |\n`,
+    );
+    gDo(F.CODE, "commit", "-qam", "a row nobody filled in");
+    gDo(F.CODE, "push", "-q", "origin", "main");
+  };
   const doneRows = (): string =>
     String(
       g(F.CODE, "show", `origin/main:${RMP}/ROADMAP.md`)
         .split("\n")
         .filter((l) => l.includes("| R2 | second | — | done |")).length,
     );
+
+  // A branch that changes the table itself: the roadmap gate reads the merged
+  // table first, and a table it cannot read holds the close on its own
+  // (Contextium v9.2.0 review) — before, it was skipped as if deleted and only
+  // the re-derive below caught it.
+  brokenTrunk("c15b");
+  sedLines(join(F.WT2, RMP, "ROADMAP.md"), "| R2 | second | — | planned |", "| R2 | second | — | done |");
+  entry(jf(2, "row two"), "row-two", "thread two's row");
   let r = land(2, ["row two"], { merge: true });
-  is("a next: that cannot be re-derived stops the close", r.rc, "3");
-  has("…naming why", r.out, "NOT CLOSED: next: could not be re-derived");
+  is("a merged table the roadmap gate cannot read stops the close", r.rc, "3");
+  has("…naming the table and why", r.out, "ROADMAP.md: roadmap.ts cannot read it — placeholder row R3");
   gOk(F.CODE, "fetch", "-q", "origin");
   is("…and nothing of it was pushed", doneRows(), "0");
   // The merge stays committed in the worktree. A re-run finds trunk already
-  // merged, and must still re-derive next: before it pushes, not skip it.
+  // merged, and must still judge the table before it pushes, not skip it.
   r = land(2, ["row two"], { merge: true });
   is("a re-run with the table still broken stops again", r.rc, "3");
   gOk(F.CODE, "fetch", "-q", "origin");
   is("…and still pushes nothing", doneRows(), "0");
+
+  // A branch that touches only the project's README: the gate judges no table
+  // this push changed, and the re-derive of next: is what refuses.
+  brokenTrunk("c15b2");
+  write(join(F.WT2, RMP, "README.md"), `${readFileSync(join(F.WT2, RMP, "README.md"), "utf8")}\nA note.\n`);
+  entry(jf(2, "row two"), "row-two", "thread two's row");
+  r = land(2, ["row two"], { merge: true });
+  is("a next: that cannot be re-derived stops the close", r.rc, "3");
+  has("…naming why", r.out, "NOT CLOSED: next: could not be re-derived");
+  gOk(F.CODE, "fetch", "-q", "origin");
+  hasnt("…and nothing of the README was pushed", g(F.CODE, "show", `origin/main:${RMP}/README.md`), "A note.");
 });
 
 // The trunk flipped a row and re-derived next:; this thread touched only the
@@ -4045,6 +4090,9 @@ kase("Case 26: audit lines, harness links and the saved report", () => {
 // only from a record taken on the deployment live now. What is live is each
 // repo's trunk on its bare origin, read for real, or a stubbed answer from a
 // file (LIVE_CHECKS_TEST_SOURCES) where a case needs the live commit to differ.
+// A stubbed target also records no deployment (`<target>#deployment`: null):
+// an origin with a GitHub name is read as GitHub, through `insteadOf` or an SSH
+// alias alike, and this fixture has no deployments for gh to list.
 
 const liveStub = (): string => join(F.S, "live.json");
 const LIVE_ENV = (): Record<string, string> => ({
@@ -4054,9 +4102,15 @@ const LIVE_ENV = (): Record<string, string> => ({
 function liveLand(args: string[], extra: Record<string, string> = {}, bare = false): Res {
   return land(1, args, { merge: true, extra: { ...LIVE_ENV(), ...extra }, bare });
 }
+/** <answers> with no deployment recorded for each target it names, unless it says otherwise. */
+function noDeploy(answers: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = { ...answers };
+  for (const k of Object.keys(answers)) if (!k.includes("#") && !(`${k}#deployment` in out)) out[`${k}#deployment`] = null;
+  return out;
+}
 /** What the stub calls live, per target; a target it does not name is read for real. */
 function stubLive(answers: Record<string, unknown>): void {
-  write(liveStub(), JSON.stringify(answers));
+  write(liveStub(), JSON.stringify(noDeploy(answers)));
 }
 /** The commit live on the workbench target, as the stub answers it. */
 function deployed(sha: string): void {
@@ -4272,7 +4326,7 @@ kase("Case 27: live checks are owed, run and proved before a held close is relea
     `cannot read the live revision of ${T}: origin 503`,
   );
   stubLive({ [T]: prodTip });
-  write(`${liveStub()}.flip`, JSON.stringify({ [T]: prodTip.slice(0, 12) }));
+  write(`${liveStub()}.flip`, JSON.stringify(noDeploy({ [T]: prodTip.slice(0, 12) })));
   r = liveLand(["--release"]);
   is("(b) a deploy landing during the checks is refused", r.rc, "3");
   has("(b) …saying the repo changed", r.out, `the live ${T} changed during the checks`);

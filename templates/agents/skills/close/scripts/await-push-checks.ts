@@ -52,8 +52,9 @@
 //     reported anything decides:
 //     a check run from an app other than Actions, or an Actions workflow this
 //     push would start — no path filter, or one a changed file passes (a
-//     build that skips docs) — means one was expected here. A filter this
-//     cannot read expects one. A status alone expects nothing: it marks a
+//     build that skips docs) — means one was expected here. A workflow
+//     whose push trigger was removed since expects nothing; a filter or an
+//     `on:` this cannot read expects one. A status alone expects nothing: it marks a
 //     build, it does not start one.
 //   - A CANCEL OR AN ERRORED MARK. A newer push cancels an older run still
 //     building (a workflow's concurrency group), and a status in state
@@ -286,11 +287,12 @@ async function expectation(repo: string, sha: string, near: Near): Promise<Read<
   return pushWorkflowExpected(repo, near.sha, sha);
 }
 
-type Filter = { kind: "none" } | { kind: "paths" | "ignore"; patterns: RegExp[] } | { kind: "unknown" };
+type Filter =
+  | { kind: "absent" }
+  | { kind: "none" }
+  | { kind: "paths" | "ignore"; patterns: RegExp[] }
+  | { kind: "unknown"; what: "path filter" | "triggers" };
 
-/** A workflow's `push:` path filter, read from its text. Anything this cannot
- *  read for certain — a negation, a bracket or brace glob, a list it cannot
- *  parse — is "unknown", which expects a run rather than excusing one. */
 /** A YAML flow list's items, a quoted one's commas kept; null when a quote
  *  is left open. */
 function flowItems(body: string): string[] | null {
@@ -312,42 +314,88 @@ function flowItems(body: string): string[] | null {
   return items;
 }
 
+/** A workflow's push trigger, read from its text: "absent" when its `on:`
+ *  names no push (a deploy moved to workflow_dispatch only starts on no push),
+ *  "none" for a push with no path filter, else the filter. Anything this cannot
+ *  read for certain — an `on:` it cannot find or parse, a negation, a bracket
+ *  or brace glob, a list it cannot parse — is "unknown", which expects a run
+ *  rather than excusing one. */
 function pushFilter(yml: string): Filter {
   const lines = yml.split("\n");
   const indentOf = (l: string): number => l.length - l.trimStart().length;
-  const at = lines.findIndex((l) => /^\s*push:\s*(#.*)?$/.test(l));
-  if (at < 0) return { kind: "none" };
+  const skip = (l: string): boolean => l.trim() === "" || l.trim().startsWith("#");
+  // A value with its trailing comment and quotes removed.
+  const value = (v: string): string =>
+    v
+      .replace(/(^|\s)#.*$/, "")
+      .trim()
+      .replace(/^(["'])(.*)\1$/, "$2");
+  const triggers: Filter = { kind: "unknown", what: "triggers" };
+  // YAML 1.1 reads a bare `on` key as true, so a workflow may spell it either way.
+  const onAt = lines.findIndex((l) => /^(?:on|"on"|'on'|true)\s*:(?:\s|$)/.test(l));
+  if (onAt < 0) return triggers;
+  const onRest = value((lines[onAt] ?? "").replace(/^[^:]*:/, ""));
+  if (onRest.startsWith("[")) {
+    if (!onRest.endsWith("]")) return triggers;
+    const flow = flowItems(onRest.slice(1, -1));
+    if (flow === null) return triggers;
+    return flow.map(value).includes("push") ? { kind: "none" } : { kind: "absent" };
+  }
+  if (onRest.startsWith("{")) return triggers;
+  if (onRest !== "") return onRest === "push" ? { kind: "none" } : { kind: "absent" };
+  const onBlock: string[] = [];
+  for (const l of lines.slice(onAt + 1)) {
+    if (skip(l)) continue;
+    if (indentOf(l) === 0) break;
+    onBlock.push(l);
+  }
+  const child = indentOf(onBlock[0] ?? "");
+  if (onBlock.length === 0) return triggers;
+  if (/^\s*-(\s|$)/.test(onBlock[0] ?? "")) {
+    const events: string[] = [];
+    for (const l of onBlock) {
+      const item = l.match(/^\s*-\s*(.*)$/);
+      if (indentOf(l) !== child || !item) return triggers;
+      events.push(value(item[1] ?? ""));
+    }
+    return events.includes("push") ? { kind: "none" } : { kind: "absent" };
+  }
+  const pushAt = onBlock.findIndex((l) => indentOf(l) === child && /^\s*(?:push|"push"|'push')\s*:(?:\s|$)/.test(l));
+  if (pushAt < 0) return { kind: "absent" };
+  const pushRest = value((onBlock[pushAt] ?? "").replace(/^[^:]*:/, ""));
+  if (pushRest === "{}" || pushRest === "null" || pushRest === "~") return { kind: "none" };
+  if (pushRest !== "") return { kind: "unknown", what: "path filter" };
   const block: string[] = [];
-  for (const l of lines.slice(at + 1)) {
-    if (l.trim() === "" || l.trim().startsWith("#")) continue;
-    if (indentOf(l) <= indentOf(lines[at] ?? "")) break;
+  for (const l of onBlock.slice(pushAt + 1)) {
+    if (indentOf(l) <= child) break;
     block.push(l);
   }
   const k = block.findIndex((l) => /^\s*paths(-ignore)?\s*:/.test(l));
   if (k < 0) return { kind: "none" };
   const m = (block[k] ?? "").match(/^(\s*)(paths(?:-ignore)?)\s*:\s*(.*?)\s*(#.*)?$/);
-  if (!m) return { kind: "unknown" };
+  if (!m) return { kind: "unknown", what: "path filter" };
   const rest = m[3] ?? "";
   let items: string[];
   if (rest.startsWith("[") && rest.endsWith("]")) {
     const flow = flowItems(rest.slice(1, -1));
-    if (flow === null) return { kind: "unknown" };
+    if (flow === null) return { kind: "unknown", what: "path filter" };
     items = flow;
   } else if (rest === "") {
     items = [];
     for (const l of block.slice(k + 1)) {
       if (indentOf(l) <= (m[1] ?? "").length) break;
       const item = l.match(/^\s*-\s*(.*?)\s*(#.*)?$/);
-      if (!item) return { kind: "unknown" };
+      if (!item) return { kind: "unknown", what: "path filter" };
       items.push(item[1] ?? "");
     }
   } else {
-    return { kind: "unknown" };
+    return { kind: "unknown", what: "path filter" };
   }
   const patterns = items.map((s) => s.trim().replace(/^(["'])(.*)\1$/, "$2"));
-  if (patterns.length === 0 || patterns.some((p) => p === "" || /[!\[\]{}\\]/.test(p))) return { kind: "unknown" };
+  if (patterns.length === 0 || patterns.some((p) => p === "" || /[!\[\]{}\\]/.test(p)))
+    return { kind: "unknown", what: "path filter" };
   const res = patterns.map(globRegex);
-  if (res.some((r) => r === null)) return { kind: "unknown" };
+  if (res.some((r) => r === null)) return { kind: "unknown", what: "path filter" };
   return { kind: m[2] === "paths" ? "paths" : "ignore", patterns: res as RegExp[] };
 }
 
@@ -415,8 +463,10 @@ async function pushWorkflowExpected(repo: string, ancestor: string, sha: string)
     }
     const filter = pushFilter(Buffer.from(f.value.content, "base64").toString("utf8"));
     const ran = `${short(ancestor)} ran ${path}`;
+    // A trigger removed since that push starts nothing on this one.
+    if (filter.kind === "absent") continue;
     if (filter.kind === "none") return { ok: true, value: `${ran}, which runs on every push` };
-    if (filter.kind === "unknown") return { ok: true, value: `${ran}, whose path filter this cannot read` };
+    if (filter.kind === "unknown") return { ok: true, value: `${ran}, whose ${filter.what} this cannot read` };
     if (files === null) {
       const c = await changedFiles(repo, ancestor, sha);
       if (!c.ok) return c;

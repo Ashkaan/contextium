@@ -83,8 +83,10 @@
 // content (no vendor call), else record the attempt incomplete, run the
 // reviewer — falling back to the one final pass at the ceiling — and record
 // what it returned against the content captured before dispatch. They differ
-// only in their order (review runs the deterministic checks first; QA re-runs
-// layers 1+2 over what /qa moved first), the bucket they spend (build or qa),
+// only in their order (review runs the deterministic checks first, and on a
+// follow-up round layers 1+2 over its fixes; QA re-runs layers 1+2 over what
+// /qa moved first — a failure in either stops before any review), the bucket
+// they spend (build or qa),
 // and the range they hand the reviewer. Approval is the receipt's, read from
 // the parsed result, never the reviewer's exit 0 alone.
 //   5  review phase exhausted its final pass; NEED_FIX=1, approval blocked
@@ -114,7 +116,9 @@
 //
 // Boundary inputs:
 //   - empty scope:                 layers run over the staged set; 0 files is a PASS
-//   - layer-1 FAIL:                exit 1, and review NEVER runs
+//   - layer-1 FAIL:                exit 1, and review NEVER runs — in checks,
+//                                  over a follow-up round's fixes (run before
+//                                  its review) and over /qa's edits
 //   - layer-3 FAIL:                advisory, does not fail the phase
 //   - reviewer NO_FINDINGS:        NEED_FIX=0, exit 0
 //   - reviewer [nit] only:         NEED_FIX=0 — a nit is not a change request
@@ -129,6 +133,7 @@
 //   - reviewer exit 1/124:         exit 1 — the audit did not happen
 //   - tree unchanged over review:  NEED_E2E=0
 //   - tree changed over review:    layers 1+2 re-run, NEED_E2E=1
+//   - a follow-up round's fixes:   layers 1+2 before the review, NEED_E2E=1
 //   - 0 QA targets:                `QA_TARGETS=`, --require-qa is a no-op
 //   - target with no marker:       --require-qa exit 1
 //   - target with a STALE marker:  --require-qa exit 1 (the tree moved)
@@ -737,6 +742,21 @@ async function main(): Promise<void> {
       err("validate: --phase review needs --base and --head (round 1) or --since <tree> (rounds 2+)");
       exit(2);
     }
+    // A follow-up round's fixes are what no layer has seen. They run layers 1+2
+    // BEFORE the review, which records a receipt: run after it, a fix that does
+    // not type-check held an approval the next begin reused (the peer of the
+    // post-QA case, Contextium v9.2.0 review).
+    let layeredAt = "";
+    if (SINCE !== "" && PRE !== SINCE) {
+      NEED_E2E = 1;
+      if (!runLayers12(filesSince(SINCE))) {
+        err("validate: this round's fixes fail layers 1+2 — fix them and re-run before they are reviewed.");
+        NEED_FIX = 1;
+        emitFields();
+        exit(1);
+      }
+      layeredAt = PRE;
+    }
     const reviewed = runReview("build", PRE);
     const reviewRc = reviewed.rc;
     const reviewOut = reviewed.out;
@@ -806,10 +826,22 @@ async function main(): Promise<void> {
     // PREVIOUS round. Everything between them is this round's FIXES, which by
     // definition no layer and no E2E has seen. Comparing against PRE declared
     // them validated because PRE was taken after they were written.
-    const baseline = SINCE || PRE;
+    //
+    // Layers that already ran over SINCE..PRE before the review need not run
+    // again unless the tree moved during it.
+    const baseline = layeredAt || SINCE || PRE;
     if (POST !== "" && POST !== baseline) {
       err(`validate: the tree moved since ${baseline.slice(0, 12)} — re-running layers 1+2 over what moved.`);
-      if (!runLayers12(filesSince(baseline))) NEED_FIX = 1;
+      if (!runLayers12(filesSince(baseline))) {
+        NEED_FIX = 1;
+        // A review left pending is finished later by --fallback-review, which
+        // runs no layer: the failure goes on the pending receipt, or a clean
+        // fallback reply would approve it and exit 0 with NEED_FIX=0.
+        if (PENDING_FALLBACK && isFile(AUDIT)) {
+          const k = runTs(AUDIT, ["finish", "--repo", REPO_DIR, "--rc", "3", "--checks-failed"], { env: withRepo(), capture: true });
+          if (statusOf(k) !== 0) err("validate: the layer failure could NOT be kept on the pending review — do not run the fallback review; fix and re-run this phase.");
+        }
+      }
       NEED_E2E = 1;
     }
 
@@ -880,7 +912,16 @@ async function main(): Promise<void> {
     // Over what /qa MOVED, not over the scope. /qa's fixes are routinely unstaged
     // or untracked, and a blank scope resolves to the staged set — so this used to
     // report PASS over files it had never opened.
-    if (!runLayers12(filesSince(SINCE))) NEED_FIX = 1;
+    //
+    // A failure stops here, before any vendor call: the review below records a
+    // receipt, and one approving edits that fail layers 1+2 was reused as an
+    // approval of that content (Contextium v9.2.0 review). Fix and re-run.
+    if (!runLayers12(filesSince(SINCE))) {
+      err("validate: /qa's edits fail layers 1+2 — fix them and re-run before they are reviewed.");
+      NEED_FIX = 1;
+      emitFields();
+      exit(1);
+    }
 
     if (!isFile(REVIEW)) {
       err(`validate: no reviewer at ${REVIEW} — /qa's edits cannot be reviewed.`);

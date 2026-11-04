@@ -66,7 +66,9 @@ run_bounded() {
   # it fired before it kills, so the answer never depends on who ran first.
   local fired
   fired="$(mktemp "${TMPDIR:-/tmp}/run-bounded.XXXXXX")" && rm -f "$fired"
-  "$@" &
+  # stdin named explicitly: a background command in a non-interactive shell
+  # otherwise reads /dev/null, and a hook's payload arrives on stdin.
+  "$@" <&0 &
   pid=$!
   # At the limit: the command, then the children it had (listed first, since
   # they are re-parented once it dies) — a child such as a script's `sleep`

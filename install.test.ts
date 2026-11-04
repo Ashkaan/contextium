@@ -1439,8 +1439,30 @@ test(
     const order = lines(A).filter((l) => /^<!-- contextium:/.test(l));
     r.is("…right after the core block", order.slice(0, 2).join(" "), "<!-- contextium:core --> <!-- contextium:preferences -->");
     r.check(fileHasLine(A, "- **Deploy on Fridays.** Ours."), "…and keeps the user's text");
+    // The preview promises a Stack section at full; it is outside every block,
+    // so the block merge alone never wrote it.
+    r.is("…seeds the Stack section the preview promised", countLines(A, /^## Stack$/), "1");
+    const at = lines(A);
+    r.check(
+      at.indexOf("## Stack") > at.indexOf("<!-- contextium:preferences -->") && at.indexOf("## Stack") < at.indexOf("## Mine"),
+      "…after the preferences block, ahead of the user's own sections",
+    );
     rerun();
     r.is("a rerun keeps full", levelOf(A), "full");
+    r.is("…and does not seed a second Stack", countLines(A, /^## Stack$/), "1");
+
+    // A Stack section of the user's own is theirs: promotion adds none beside it.
+    fresh("--harness", "codex", "--rules", "recommended");
+    appendFileSync(AGENTS(), "\n## Stack\n\nOurs: Go on Fly.\n");
+    rerun("--rules", "full");
+    r.is("recommended -> full with the user's own Stack keeps one", countLines(AGENTS(), /^## Stack$/), "1");
+    r.check(fileHasLine(AGENTS(), "Ours: Go on Fly."), "…the user's");
+
+    // At full already, a Stack section the user deleted stays deleted.
+    fresh("--harness", "codex", "--rules", "full");
+    run(BASH, ["-c", `awk '/^## Stack$/ { f = 1; next } f && /^(## |<!-- contextium:)/ { f = 0 } !f' "$0" >"$0.x" && mv "$0.x" "$0"`, AGENTS()]);
+    rerun();
+    r.is("a full rerun does not bring back a deleted Stack", countLines(AGENTS(), /^## Stack$/), "0");
 
     // The Stack section a fresh full install writes is the user's: going down
     // keeps it, and says so.

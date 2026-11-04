@@ -35,9 +35,10 @@
 //                        and /qa shoots phones 1600 px tall, where that cap
 //                        holds every row, so no screenshot can show it.
 //
-// HELD MEANS NEVER SENT, and exactly this is held: every non-GET request and
-// every fetch/XHR (the route handler neither continues nor fulfils), every
-// WebSocket (the constructor is replaced before any page script runs, so no
+// HELD MEANS NEVER SENT, and exactly this is held, in every check from before
+// its page first navigates: every non-GET request (answered with a 204, or held
+// open during a press) and, while a press is judged, every fetch/XHR (the
+// route handler neither continues nor fulfils), every WebSocket (the constructor is replaced before any page script runs, so no
 // socket connects), and service workers (blocked, since page.route cannot see
 // what they fetch). A POST that is a page navigation (a plain HTML form) is
 // answered locally with a 204 instead of held, which still sends nothing and
@@ -236,6 +237,15 @@ async function main(): Promise<void> {
   const DESKTOP: Screen = { viewport: { width: 1440, height: 900 } };
   const PHONE: Screen = { viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true };
 
+  /**
+   * Every check's page, with the write guard in place before its first
+   * navigation: a write (any non-GET) is answered here with a 204 and never
+   * sent. A check that routes more narrowly does it on the page, and passes
+   * what it does not hold on with `fallback()`, so this guard still answers it.
+   * Until the Contextium v9.2.0 review only the cut-off and covered checks had
+   * it: the full run's button-finding page, and each press's page until the
+   * press, loaded with no route at all, and a page that saves on load sent it.
+   */
   async function newPage(screen: Screen = DESKTOP): Promise<{ ctx: BrowserContext; page: Page }> {
     const ctx = await browser.newContext({
       ...screen,
@@ -244,6 +254,9 @@ async function main(): Promise<void> {
     });
     await ctx.addInitScript(NO_SOCKETS);
     await ctx.addInitScript(HOLD_IN_PAGE);
+    await ctx.route("**/*", (r) =>
+      r.request().method() === "GET" ? r.continue() : r.fulfill({ status: 204, body: "" }),
+    );
     const page = await ctx.newPage();
     return { ctx, page };
   }
@@ -303,7 +316,7 @@ async function main(): Promise<void> {
   async function blankWhileLoading(route: string, url: string): Promise<boolean> {
     const { ctx, page } = await newPage();
     try {
-      await page.route("**/*", (r: Route) => (isData(r.request()) ? undefined : r.continue()));
+      await page.route("**/*", (r: Route) => (isData(r.request()) ? undefined : r.fallback()));
       await gotoChecked(page, url);
       await page.waitForTimeout(BLANK_AFTER_MS);
       assertLanded(page, url);
@@ -365,6 +378,7 @@ async function main(): Promise<void> {
       findings.push(`INTERACTION ${route} unloadable ${firstLine(err)}`);
       return false;
     } finally {
+      await armHold(page);
       await ctx.close();
     }
   }
@@ -507,6 +521,7 @@ async function main(): Promise<void> {
         }
         return r.continue();
       };
+      await armHold(page);
       await page.close({ runBeforeUnload: false });
 
       // And a fresh CONTEXT per press: storage is per context, and a press the
@@ -557,6 +572,7 @@ async function main(): Promise<void> {
           findings.push(`INTERACTION ${route} unpressed "${label}" ${firstLine(err)}`);
         } finally {
           await release();
+          await armHold(press);
           await press.close({ runBeforeUnload: false }).catch(() => {});
           await pressCtx.close().catch(() => {});
         }
@@ -791,13 +807,10 @@ async function main(): Promise<void> {
   };
 
   // Read-only, and may run on a deployed site (--checks cut-off): every write is
-  // answered here with a 204 and never sent, as covered() does, and the in-page
-  // hold is armed before the page closes, for what pagehide sends past any route.
+  // answered by newPage's guard and never sent, and the in-page hold is armed
+  // before the page closes, for what pagehide sends past any route.
   async function cutOff(route: string, url: string): Promise<boolean> {
     const { ctx, page } = await newPage(PHONE);
-    await ctx.route("**/*", (r) =>
-      r.request().method() === "GET" ? r.continue() : r.fulfill({ status: 204, body: "" }),
-    );
     try {
       await gotoChecked(page, url);
       await settle(page);
@@ -869,19 +882,11 @@ async function main(): Promise<void> {
   // them, so a tap on one title opens its neighbour. A mouse never meets the enlarged area, so this reads the page as a
   // phone does. Nothing is pressed; every write is answered here, never sent.
   async function covered(route: string, url: string): Promise<void> {
-    const ctx = await browser.newContext({
+    const { ctx, page } = await newPage({
       viewport: { width: TOUCH_WIDTH, height: 900 },
       hasTouch: true,
       isMobile: true,
-      extraHTTPHeaders,
-      serviceWorkers: "block",
     });
-    await ctx.addInitScript(NO_SOCKETS);
-    await ctx.addInitScript(HOLD_IN_PAGE);
-    await ctx.route("**/*", (r) =>
-      r.request().method() === "GET" ? r.continue() : r.fulfill({ status: 204, body: "" }),
-    );
-    const page = await ctx.newPage();
     try {
       await gotoChecked(page, url);
       await settle(page);

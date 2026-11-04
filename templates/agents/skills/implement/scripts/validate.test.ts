@@ -368,6 +368,48 @@ test("a convergence result cannot override failing validation of moved bytes", (
     writeFileSync(file, content);
   }
 });
+// The same for a follow-up round: its fixes ran layers 1+2 only after the
+// review had recorded an approved receipt for them, so a fix that does not
+// type-check could hold a reusable approval (the peer of the post-QA case).
+test("a follow-up round whose fixes fail layer 1 stops before the review", async (t) => {
+  const called = join(TMP, "round-lint-review-called");
+  const stub = tsWrap(
+    writeExec(
+      join(TMP, "round-lint-reviewer.sh"),
+      `#!/bin/sh
+${SNAPSHOT_BLOCK}touch ${shq(called)}
+${resultBlock("")}echo NO_FINDINGS
+exit 0
+`,
+    ),
+  );
+  const owner = seededOwner();
+  const before = snapshot(stub);
+  writeFileSync(join(REPO, "round-lint-fix.txt"), "a fix that fails layer 1\n");
+  const r = runNode(
+    join(FAKE_SCRIPTS, "validate.ts"),
+    ["--repo", REPO, "--phase", "review", "--since", before, "--scope", "seed.txt"],
+    {
+      env: {
+        ...process.env,
+        CLAUDE_PROJECT_DIR: REPO,
+        CODE_REVIEW_LOOP_ID: owner,
+        VALIDATE_CODE_REVIEW: stub,
+        VALIDATE_AUTOMATED_CHECKS: NOOP_TS,
+        VALIDATE_AUDIT_DEDUPE: join(SKILLS_DIR, "implement-audit/scripts/audit-dedupe.ts"),
+      },
+    },
+  );
+  rmSync(join(REPO, "round-lint-fix.txt"), { force: true });
+  await t.test("the phase fails", () => assert.equal(r.status, 1, r.stdout + r.stderr));
+  await t.test("and says NEED_FIX and NEED_E2E", () =>
+    assert.ok(r.stdout.includes("NEED_FIX=1") && r.stdout.includes("NEED_E2E=1"), r.stdout),
+  );
+  await t.test("the reviewer is never called", () => assert.equal(existsSync(called), false));
+  await t.test("no receipt approves the failing fixes", () =>
+    assert.ok(!r.stdout.includes("RECEIPT: approved"), r.stdout),
+  );
+});
 // At the ceiling the validator runs the one final review of the
 // outstanding fixes itself, and its findings count like a round's.
 function finalReviewer(name: string, finalOut: string, finalRc: number): string {
@@ -466,6 +508,46 @@ test("the pending note names the receipt's coverage items file when there is one
   assert.equal(r.rc, 3, r.all);
   assert.match(r.out, /coverage items in \S*review-items-[0-9a-f]+\.json/);
   assert.match(r.out, /--fallback-review <file> --repo /);
+});
+// A pending review whose phase then failed layers 1+2 — the tree moved during
+// the review and what moved fails layer 1 — owes a fix. The fallback review is a
+// separate invocation that ran no layer: a clean reply there exited 0 with
+// NEED_FIX=0, and the failure was forgotten. The pending receipt keeps it.
+test("a fallback review after the phase failed layers 1+2 keeps the layer failure", async (t) => {
+  const moved = join(REPO, "moved-during-review.txt");
+  const stub = tsWrap(
+    writeExec(
+      join(TMP, "moving-no-vendor.sh"),
+      `#!/bin/sh\n${SNAPSHOT_BLOCK}printf 'moved\\n' >${shq(moved)}\nexit 3\n`,
+    ),
+  );
+  const owner = "vt-pending-layers-" + ++OWNER;
+  const env = {
+    ...process.env,
+    CLAUDE_PROJECT_DIR: REPO,
+    CODE_REVIEW_LOOP_ID: owner,
+    VALIDATE_CODE_REVIEW: stub,
+    VALIDATE_AUTOMATED_CHECKS: NOOP_TS,
+    VALIDATE_AUDIT_DEDUPE: join(SKILLS_DIR, "implement-audit/scripts/audit-dedupe.ts"),
+  };
+  const phase = runNode(
+    join(FAKE_SCRIPTS, "validate.ts"),
+    ["--repo", REPO, "--phase", "review", "--base", "HEAD", "--head", "HEAD", "--scope", "seed.txt"],
+    { env },
+  );
+  const fb = runNode(
+    join(FAKE_SCRIPTS, "validate.ts"),
+    ["--repo", REPO, "--fallback-review", fallbackFile("after-layers", "NO_FINDINGS\n")],
+    { env },
+  );
+  rmSync(moved, { force: true });
+  await t.test("the phase fails on the layers", () => {
+    assert.equal(phase.status, 1, phase.stdout + phase.stderr);
+    assert.ok(phase.stdout.includes("NEED_FALLBACK_REVIEW=1") && phase.stdout.includes("NEED_FIX=1"), phase.stdout);
+  });
+  await t.test("a clean fallback reply does not clear it", () => assert.equal(fb.status, 1, fb.stdout + fb.stderr));
+  await t.test("…which says NEED_FIX=1", () => assert.ok(fb.stdout.includes("NEED_FIX=1"), fb.stdout));
+  await t.test("…and approves nothing", () => assert.ok(!fb.stdout.includes("RECEIPT: approved"), fb.stdout));
 });
 test("a clean fallback review passes, recorded as not independent, with no fix owed", async (t) => {
   const r = fallback(fallbackFile("clean", "[nit] tidy this\n"));
@@ -772,6 +854,47 @@ test("post-QA with the final review already spent is still unreviewed code: the 
   rmSync(join(REPO, "qa-fix.txt"), { force: true });
   assert.equal(r.rc, 1);
   assert.ok(r.err.includes("unreviewed"), r.err);
+});
+// /qa's edits that fail layers 1+2 never reach the reviewer: a review there
+// recorded an approved receipt (no --checks-failed), and that approval was
+// reused for lint-failing content (Contextium v9.2.0 review). As in the review
+// phase, a failed deterministic layer stops before any vendor call.
+test("post-QA edits that fail layer 1 stop before the review, and no receipt approves them", async (t) => {
+  const called = join(TMP, "qa-lint-review-called");
+  const stub = tsWrap(
+    writeExec(
+      join(TMP, "qa-lint-reviewer.sh"),
+      `#!/bin/sh
+${SNAPSHOT_BLOCK}touch ${shq(called)}
+${resultBlock("")}echo NO_FINDINGS
+exit 0
+`,
+    ),
+  );
+  const owner = freshQaOwner();
+  const r = runNode(
+    join(FAKE_SCRIPTS, "validate.ts"),
+    ["--repo", REPO, "--phase", "qa-revalidate", "--since", SNAP_NOW, "--scope", "seed.txt"],
+    {
+      env: {
+        ...process.env,
+        CLAUDE_PROJECT_DIR: REPO,
+        CODE_REVIEW_LOOP_ID: owner,
+        VALIDATE_CODE_REVIEW: stub,
+        VALIDATE_AUTOMATED_CHECKS: NOOP_TS,
+        VALIDATE_AUDIT_DEDUPE: join(SKILLS_DIR, "implement-audit/scripts/audit-dedupe.ts"),
+        VALIDATE_MARK_QA_DONE: MARK_QA_DONE,
+        QA_DONE_DIR: join(TMP, "qa-done"),
+      },
+    },
+  );
+  rmSync(join(REPO, "qa-fix.txt"), { force: true });
+  await t.test("the phase fails", () => assert.equal(r.status, 1, r.stdout + r.stderr));
+  await t.test("and says NEED_FIX", () => assert.ok(r.stdout.includes("NEED_FIX=1"), r.stdout));
+  await t.test("the reviewer is never called", () => assert.equal(existsSync(called), false));
+  await t.test("no receipt approves the failing edits", () =>
+    assert.ok(!r.stdout.includes("RECEIPT: approved"), r.stdout),
+  );
 });
 test("qa-revalidate without --since is a caller error", () =>
   assert.equal(runValidate(["--phase", "qa-revalidate", "--scope", "seed.txt"]).rc, 2));

@@ -157,9 +157,10 @@ better. So you think in one session, the spec is written and landed, and you sta
 build. The spec is the handoff. It carries the decisions forward without the noise.
 
 Nothing blocks a long session from running `/implement`; the skill checks its own context and tells
-you to start fresh when it is carrying the conversation that wrote the spec. `/project` makes the same
-call when it routes a project that is ready to build: in a short session it starts `/implement`
-itself, and in a long one it prints the command for a new session.
+you to start fresh when it is carrying the conversation that wrote the spec. `/project` never builds:
+when it routes a project with a row ready to build, it prints that row's `/implement <slug> <row>`
+command for you to run in a new session, however short the planning session was, and goes on with the
+planning or hands-on work beside it.
 
 ### Before the design: the grill
 

@@ -1200,6 +1200,25 @@ test("a prefixed finding and a prefixed sentinel are salvaged", () => {
   eq("a clean review prints nothing", "", c.out);
 });
 
+// The plain shape test reads an answer as the parser does. A sentence that only
+// names the sentinel once passed the shape test (a bare substring match), failed
+// the parser, and the primary was re-asked twice while a healthy backup sat
+// untried (Contextium v9.2.0 review).
+test("a sentence that merely mentions the sentinel falls through to a working backup", () => {
+  const prose = `${TMP}/prose-sentinel.sh`;
+  exe(
+    prose,
+    `#!/usr/bin/env bash\ncat >/dev/null\nprintf 'I could not complete the audit and cannot return NO_FINDINGS\\n'\n`,
+  );
+  const good = `${TMP}/prose-backup.sh`;
+  exe(good, `#!/usr/bin/env bash\ncat >/dev/null\nprintf '[nit] beta.txt:2: from the backup\\n'\n`);
+  const fixture = join(SCRIPT_DIR, "tests/fixtures/planted-bugs");
+  const r = review(["--fixture", fixture], { ...BASE_ENV, POLICY_JSON: POLICY, CODEX_BIN: prose, GROK_BIN: good });
+  rcIs("the backup's review completes", 0, r.rc);
+  eq("the backup's finding is the answer", "[nit] beta.txt:2: from the backup\n", r.out);
+  has("answered by the backup", "1 finding(s) from grok", r.err);
+});
+
 test("receipt mode: a follow-up round is shown the findings still open", () => {
   const items = `${TMP}/open-items.json`;
   writeFileSync(

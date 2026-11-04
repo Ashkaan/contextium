@@ -147,6 +147,35 @@ describe("check-roadmap-decisions", () => {
     assert.match(r.out, /^0 rows added or changed, 0 left open$/m);
   });
 
+  // A changed roadmap the parser cannot read was skipped as if deleted: exit 0
+  // and "0 roadmaps checked" over a table nobody judged (Contextium v9.2.0 review).
+  it("refuses a changed roadmap the parser cannot read, apart from a deleted one", () => {
+    const dir = repo([row("R1", "planned")], [row("R1", "planned")]);
+    writeFileSync(join(dir, ROADMAP), "# Wrong heading\n");
+    const r = run(dir, "--since", "main");
+    assert.equal(r.code, 1, r.err);
+    assert.match(r.err, /^projects\/sales\/2026-01-01_demo\/ROADMAP\.md: roadmap\.ts cannot read it — /m);
+    assert.match(r.out, /^0 roadmaps checked, 0 open decisions$/m);
+    assert.match(r.out, /^1 roadmaps unreadable$/m);
+  });
+
+  it("passes a roadmap the branch deleted, counting it neither checked nor unreadable", () => {
+    const dir = repo([row("R1", "planned")], [row("R1", "planned")]);
+    rmSync(join(dir, ROADMAP));
+    const r = run(dir, "--since", "main");
+    assert.equal(r.code, 0, r.err);
+    assert.match(r.out, /^0 roadmaps checked, 0 open decisions$/m);
+    assert.match(r.out, /^0 roadmaps unreadable$/m);
+  });
+
+  it("stops, rather than seeing no change, when git cannot list what changed", () => {
+    const dir = repo([row("R1", "planned")], [row("R1", "blocked: the user rules whether")]);
+    writeFileSync(join(dir, ".git/index"), "not an index\n");
+    const r = run(dir, "--since", "main");
+    assert.equal(r.code, 2, r.out + r.err);
+    assert.match(r.err, /check-roadmap-decisions: could not list what changed since /);
+  });
+
   it("is a caller error without --since, or with a ref that has no merge base", () => {
     const dir = repo([row("R1", "planned")], [row("R1", "planned")]);
     assert.equal(run(dir).code, 2);

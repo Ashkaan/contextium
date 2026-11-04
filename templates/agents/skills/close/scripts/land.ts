@@ -151,7 +151,7 @@ import {
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Exit, exit, runToExit } from "../../../packages/cli-exit/cli-exit.ts";
-import { contains, liveRevision, parseLiveChecks, type Revision, sourceRepo } from "./live-checks.ts";
+import { contains, githubRepoOf as readGithubRepo, liveRevision, parseLiveChecks, type Revision, sourceRepo } from "./live-checks.ts";
 import { listRows } from "./roadmap.ts";
 import { reportClaimsComplete } from "./spec-state.ts";
 
@@ -889,29 +889,15 @@ async function main(): Promise<void> {
     writeAtomic(DEPLOY_OWED, `${owedWithout(shared)}${shared}\t${sha}\n`, "owed-replace");
 
   // THE REPO GITHUB IS ASKED ABOUT: owner/name off <shared>'s configured
-  // origin URL, or null when that is not on GitHub. Read from the config, not
-  // `git remote get-url`, which expands `insteadOf`: a rewrite changes how
-  // the repo is reached, never which repo it is. Unset is null (`git config`
-  // exit 1); any other failure is a read that did not happen, never "no repo".
-  // An SSH origin may name a host alias from ~/.ssh/config rather than
-  // github.com (`git@github-work:owner/repo` for a second account), so its
-  // host is what `ssh -G` says it connects to — read from the local config, no
-  // connection made.
+  // origin, or null when that is not on GitHub — live-checks.ts's githubRepoOf,
+  // the one reader (configured URL, not the insteadOf expansion; an SSH alias
+  // resolved through `ssh -G`). A read that failed is NOT CLOSED, never "no repo".
   const githubRepoOf = (shared: string): string | null => {
-    const r = git(shared, ["config", "--get", "remote.origin.url"]);
-    if (r.status === 1) return null;
-    if (!r.ok) notClosed(`could not read the origin of ${shared} — git config failed; re-run`);
-    const url = chomp(r.stdout);
-    const m =
-      url.match(/^([a-z+]+):\/\/(?:[^@/]+@)?([^/:]+)(?::\d+)?\/([^/]+\/[^/]+?)(?:\.git)?\/?$/) ??
-      url.match(/^()(?:[^@/:]+@)?([^/:]+):([^/]+\/[^/]+?)(?:\.git)?\/?$/);
-    if (!m) return null;
-    const [, scheme, host = "", repo = null] = m;
-    if (host === "github.com") return repo;
-    if (scheme !== "" && scheme !== "ssh") return null;
-    const ssh = run("ssh", ["-G", host], { out: "pipe" });
-    if (!ssh.ok) notClosed(`could not resolve ${host}, the origin host of ${shared} — ssh -G failed; re-run`);
-    return /^hostname github\.com$/m.test(ssh.stdout) ? repo : null;
+    try {
+      return readGithubRepo(shared);
+    } catch (e) {
+      notClosed(e instanceof Error ? e.message : String(e));
+    }
   };
 
   // Whether the `gh` CLI is on PATH (LAND_GH names another binary to look
@@ -2140,18 +2126,53 @@ async function main(): Promise<void> {
     // breaks without a conflict) over the merged tree, and a failure refuses
     // the push — on the attempt that merged and on every retry until the tree
     // passes.
+    //
+    // A branch that changes shared code (`integrations/`, `packages/`) breaks
+    // the same way through a caller the trunk brought in, and touches no app at
+    // all; so every app in the merged tree that imports a changed shared code
+    // file is checked too. Imports here are relative and carry the extension, so
+    // the repo-relative path is a literal substring of the specifier — the rule
+    // verify.ts's importer pass reads by.
     const mergedAppChecks = (base: string): void => {
       if (!IS_WORKBENCH) return;
       // Each changed file's app is the nearest folder under apps/ holding a
       // package.json, as verify.ts finds it.
       const apps = new Set<string>();
-      for (const p of changedPaths(WT, base)) {
-        if (!p.startsWith("apps/")) continue;
+      const appOf = (p: string): void => {
         for (let dir = dirname(p); dir.startsWith("apps/"); dir = dirname(dir)) {
           if (isFile(`${WT}/${dir}/package.json`)) {
             apps.add(dir);
             break;
           }
+        }
+      };
+      const shared: string[] = [];
+      for (const p of changedPaths(WT, base)) {
+        if (p.startsWith("apps/")) appOf(p);
+        else if (/^(integrations|packages)\/[^/]+\/.+\.(ts|tsx|mts|mjs|js)$/.test(p)) shared.push(p);
+      }
+      if (shared.length > 0 && isDir(`${WT}/apps`)) {
+        const g = run(
+          "grep",
+          [
+            "-rlF",
+            "--include=*.ts",
+            "--include=*.tsx",
+            "--include=*.mts",
+            "--include=*.mjs",
+            "--include=*.js",
+            "--exclude-dir=node_modules",
+            ...shared.flatMap((p) => ["-e", p]),
+            "--",
+            `${WT}/apps`,
+          ],
+          { out: "pipe", err: "pipe" },
+        );
+        // grep exits 1 for no match; anything above that is a failed read.
+        if (g.status > 1)
+          notClosed(`could not list the apps importing the shared code ${WT} changed — grep failed; re-run`);
+        for (const line of g.stdout.split("\n")) {
+          if (line.startsWith(`${WT}/`)) appOf(line.slice(WT.length + 1));
         }
       }
       for (const app of [...apps].sort()) {

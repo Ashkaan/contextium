@@ -116,6 +116,19 @@ test("run_bounded without a coreutils timeout: a quick command returns at once, 
   assert.ok(took < 2500, `a quick command returned after ${took} ms, not at once`);
 });
 
+// A background job in a non-interactive shell reads /dev/null unless its stdin
+// is named: the end-of-turn hook's payload arrives on stdin, so the watcher
+// must hand it on as the coreutils timeout does.
+test("run_bounded without a coreutils timeout: stdin reaches the command", () => {
+  const r = spawnSync("bash", ["-c", 'set -uo pipefail; . "$LIB"; run_bounded 5 cat'], {
+    input: "the payload\n",
+    encoding: "utf8",
+    env: { ...process.env, LIB, ...WATCHER },
+  });
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(r.stdout, "the payload\n");
+});
+
 test("run_bounded without a coreutils timeout: exit code kept, 124 at the limit", () => {
   assert.equal(sh(`rc=0; run_bounded 5 sh -c 'exit 3' || rc=$?; echo "$rc"`, [], undefined, WATCHER).out, "3");
   const start = Date.now();

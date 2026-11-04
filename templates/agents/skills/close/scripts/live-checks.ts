@@ -186,10 +186,32 @@ export type Sources = {
   deployment(repo: string): Promise<Deployment | null>;
 };
 
-/** <owner>/<name> of a GitHub remote URL, or null for any other host. */
-function githubRepo(url: string): string | null {
-  const m = /github\.com[:/]([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+?)(?:\.git)?\/?$/.exec(url.trim());
-  return m ? `${m[1]}/${m[2]}` : null;
+/**
+ * THE REPO GITHUB IS ASKED ABOUT: owner/name off <dir>'s configured origin URL,
+ * or null when that is not on GitHub — the one reader land.ts and this file
+ * share. Read from the config, not `git remote get-url`, which expands
+ * `insteadOf`: a rewrite changes how the repo is reached, never which repo it
+ * is. Unset is null (`git config` exit 1); any other failure throws, a read
+ * that did not happen, never "no repo". An SSH origin may name a host alias
+ * from ~/.ssh/config rather than github.com (`git@github-work:owner/repo` for a
+ * second account), so its host is what `ssh -G` says it connects to — read from
+ * the local config, no connection made.
+ */
+export function githubRepoOf(dir: string): string | null {
+  const r = spawnSync("git", ["-C", dir, "config", "--get", "remote.origin.url"], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+  if (r.status === 1) return null;
+  if (r.status !== 0 || r.error) throw new Error(`could not read the origin of ${dir} — git config failed; re-run`);
+  const url = (r.stdout ?? "").trim();
+  const m =
+    url.match(/^([a-z+]+):\/\/(?:[^@/]+@)?([^/:]+)(?::\d+)?\/([^/]+\/[^/]+?)(?:\.git)?\/?$/) ??
+    url.match(/^()(?:[^@/:]+@)?([^/:]+):([^/]+\/[^/]+?)(?:\.git)?\/?$/);
+  if (!m) return null;
+  const [, scheme, host = "", repo = null] = m;
+  if (host === "github.com") return repo;
+  if (scheme !== "" && scheme !== "ssh") return null;
+  const ssh = spawnSync("ssh", ["-G", host], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
+  if (ssh.status !== 0 || ssh.error) throw new Error(`could not resolve ${host}, the origin host of ${dir} — ssh -G failed; re-run`);
+  return /^hostname github\.com$/m.test(ssh.stdout ?? "") ? repo : null;
 }
 
 /** `gh api <path>` as JSON; throws when gh is missing or its answer cannot be read. */
@@ -227,8 +249,7 @@ const realSources: Sources = {
     return sha === "" ? null : sha;
   },
   async deployment(repo) {
-    const u = spawnSync("git", ["-C", repo, "remote", "get-url", "origin"], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
-    const gh = u.status === 0 ? githubRepo(u.stdout ?? "") : null;
+    const gh = githubRepoOf(repo);
     if (gh === null) return null;
     // Newest first, as GitHub lists them. Only production deployments serve the
     // site: a newer preview is not what is live. One still building, failed or

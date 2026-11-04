@@ -264,8 +264,9 @@ checks the spec against your own words, which catches the failure a design revie
 excellent and solves the wrong problem.
 
 `/implement-audit` attacks the finished code. `/implement` runs it for you, and you can call it directly
-any time you want a second look before you trust something. It reviews once per session; a second call
-repeats the first verdict instead of paying for the same review twice.
+any time you want a second look before you trust something. Its verdict is a receipt bound to the content
+it read: a second call over the same content reuses that verdict instead of paying for the same review
+twice, and any change to that content since — a fix, /qa's edits, a merge — is reviewed again.
 
 Both try to run on a model other than the one that writes your code. The table is
 `.agents/skills/review/policy.json`: code and spec reviews try the Codex CLI, then the Grok CLI, and

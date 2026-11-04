@@ -213,6 +213,33 @@ git(R1, "commit", "-qm", "init");
   test("a markdown page under src/ is still a target", () => assert.equal(page.out, RD));
 }
 
+// ── An app doc a page imports is rendered content ─────────────────────
+{
+  // An Astro page that renders the app's README.md (`import { Content } from
+  // "../../README.md"`) shows its words to visitors, so a change to it is a
+  // change on screen (Contextium v9.2.0 review). Only a doc with no importer is
+  // left out; one imported by another app sends that app.
+  const RC = newRepo("doc-consumed");
+  makeAstro(RC);
+  put(join(RC, "README.md"), "# readme\n");
+  put(join(RC, "DESIGN.md"), "# design\n");
+  put(join(RC, "src/pages/about.astro"), 'import { Content } from "../../README.md";\n<Content />\n');
+  makeAstro(join(RC, "apps/b"));
+  makeAstro(join(RC, "apps/a"));
+  put(join(RC, "apps/a/AGENTS.md"), "# a\n");
+  put(join(RC, "apps/b/src/pages/guide.astro"), 'import { Content } from "../../../a/AGENTS.md";\n<Content />\n');
+  git(RC, "add", "-A");
+  git(RC, "commit", "-qm", "init");
+  const own = run(["--repo", RC, "README.md"]);
+  test("a root README a page imports exits 0", () => assert.equal(own.rc, 0, own.err));
+  test("a root README a page imports makes its app a target", () => assert.equal(own.out, RC));
+  const other = run(["--repo", RC, "apps/a/AGENTS.md"]);
+  test("an app doc another app's page imports makes the importing app the target", () =>
+    assert.equal(other.out, join(RC, "apps/b")));
+  const unread = run(["--repo", RC, "DESIGN.md"]);
+  test("a sibling doc no page imports is still not a target", () => assert.equal(unread.out, ""));
+}
+
 // ── 2 targets ─────────────────────────────────────────────────────────
 
 const R2 = newRepo("two");

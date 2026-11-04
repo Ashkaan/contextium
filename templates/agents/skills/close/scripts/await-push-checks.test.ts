@@ -379,6 +379,46 @@ describe("await-push-checks: an empty commit", () => {
     assert.match(r.out, /expected a deploy for o\/r and none started \(bbbbbbb ran \.github\/workflows\/x\.yml/);
   });
 
+  // A workflow whose push trigger was removed starts on no push, so the
+  // previous push's run expects nothing of this one (Contextium v9.2.0 review:
+  // a deploy changed to workflow_dispatch only was read as "every push").
+  for (const [label, workflow] of [
+    ["a block-map `on:` with no push key", "on:\n  workflow_dispatch:\njobs:\n  build: {}\n"],
+    ["a scalar `on:` naming another event", "on: workflow_dispatch\n"],
+    ["a flow-list `on:` without push", "on: [pull_request, workflow_dispatch]\n"],
+    ["a block-list `on:` without push", "on:\n  - pull_request\n  - workflow_dispatch\n"],
+    [
+      "a push key below another event only",
+      "on:\n  workflow_run:\n    workflows: [x]\njobs:\n  push:\n    runs-on: x\n",
+    ],
+  ] as const) {
+    it(`the previous push's workflow no longer triggers on push (${label}): exit 3`, async () => {
+      const r = await waiter(actionsAncestor(workflow, ["src/app.ts"]));
+      assert.equal(r.code, 3, r.out + r.err);
+      assert.equal(r.out, `no deploy reported for ${REPO}\n`);
+    });
+  }
+
+  for (const [label, workflow] of [
+    ["a scalar `on: push`", "on: push\n"],
+    ["a flow list naming push", 'on: [pull_request, "push"]\n'],
+    ["a block list naming push", "on:\n  - pull_request\n  - push # deploys\n"],
+    ["an empty-map push", "on:\n  push: {}\n"],
+    ["a quoted `on` key", '"on":\n  push:\n'],
+  ] as const) {
+    it(`an unfiltered push trigger (${label}) still expects a run: exit 1`, async () => {
+      const r = await waiter(actionsAncestor(workflow, ["src/app.ts"]));
+      assert.equal(r.code, 1, r.out + r.err);
+      assert.match(r.out, /ran \.github\/workflows\/x\.yml, which runs on every push/);
+    });
+  }
+
+  it("a workflow with no readable `on:` expects a run: exit 1", async () => {
+    const r = await waiter(actionsAncestor("jobs:\n  build: {}\n", ["src/app.ts"]));
+    assert.equal(r.code, 1, r.out + r.err);
+    assert.match(r.out, /whose triggers this cannot read/);
+  });
+
   const ignoreDocs = 'on:\n  push:\n    branches: [main]\n    paths-ignore: ["docs/**", README.md]\n';
   const onlySrc = "on:\n  push:\n    branches: [main]\n    paths:\n      - 'src/**' # the app\njobs:\n  build: {}\n";
 

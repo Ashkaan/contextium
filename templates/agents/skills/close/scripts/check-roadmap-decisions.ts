@@ -48,8 +48,12 @@
 //
 // Output (stdout): `N roadmaps checked, M open decisions`,
 //                  `R rows added or changed, O left open`,
+//                  `U roadmaps unreadable` (changed, on disk, and refused by
+//                  roadmap.ts's parser — each holds the close; a deleted one
+//                  is neither checked nor unreadable),
 //                  `K reports checked, J parked lines`, `P reports partial`.
 // Output (stderr): one line per refusal — `<roadmap>: <ID> "<status>": …`,
+//                  `<roadmap>: roadmap.ts cannot read it — <why>; …`,
 //                  `<roadmap>: <ID> "<status>" (Sub-spec <s>): …`,
 //                  `<report>:<line>: "<words>": …` or `<report>: reads partial, …`.
 //
@@ -61,8 +65,8 @@
 //   .agents/skills/close/scripts/spec-state.ts          (a report's state)
 //   .agents/skills/close/scripts/land.ts                (the gate that calls it)
 //
-// Exit: 0 clean · 1 one or more open items · 2 caller error, or a sibling
-// script that could not run
+// Exit: 0 clean · 1 one or more open items or unreadable roadmaps · 2 caller
+// error, a git listing that failed, or a sibling script that could not run
 
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
@@ -86,16 +90,23 @@ type Row = { status: string; sub: string; dependsOn: string; deps: DepResult[] }
 
 /** ID → Status, Sub-spec, the raw Depends on cell and each entry resolved, read
  *  by roadmap.ts's listRows from `ROADMAP.md` — or from `given`, a committed
- *  copy, whose entries are then left unresolved: only its cells are compared. */
-function statuses(roadmap: string, given?: Buffer): Map<string, Row> | null {
+ *  copy, whose entries are then left unresolved: only its cells are compared.
+ *  A table the parser refuses is its messages, joined, instead. */
+function readRows(roadmap: string, given?: Buffer): Map<string, Row> | string {
   const r = listRows(roadmap, given, given === undefined ? {} : { projectsRoot: null });
-  if (!r.ok) return null;
+  if (!r.ok) return r.messages.join("; ").trim() || "roadmap.ts gave no reason";
   const rows = new Map<string, Row>();
   r.rows.forEach(([id, status, , sub], i) => {
     if (id && status !== undefined)
       rows.set(id, { status, sub: sub ?? "—", dependsOn: r.dependsOn[i] ?? "", deps: r.deps[i] ?? [] });
   });
   return rows;
+}
+
+/** The rows, or null where the parser refused the table. */
+function statuses(roadmap: string, given?: Buffer): Map<string, Row> | null {
+  const r = readRows(roadmap, given);
+  return typeof r === "string" ? null : r;
 }
 
 /** Why a judged row holds the close and what clears it, or null when it may
@@ -149,10 +160,15 @@ function main(): number {
     return 2;
   }
   const base = mb.out.trim();
-  const touched = [
-    ...git(["diff", "-z", "--name-only", base, "--", "projects"]).out.split("\0"),
-    ...git(["ls-files", "-z", "--others", "--exclude-standard", "--", "projects"]).out.split("\0"),
-  ];
+  // A listing git could not make is not an empty one: read as empty, it judged
+  // nothing and passed.
+  const diff = git(["diff", "-z", "--name-only", base, "--", "projects"]);
+  const others = git(["ls-files", "-z", "--others", "--exclude-standard", "--", "projects"]);
+  if (!diff.ok || !others.ok) {
+    process.stderr.write(`check-roadmap-decisions: could not list what changed since ${base} — git failed; re-run\n`);
+    return 2;
+  }
+  const touched = [...diff.out.split("\0"), ...others.out.split("\0")];
   const changed = new Set(touched.filter((p) => /^projects\/.+\/ROADMAP\.md$/.test(p)));
   const reports = new Set(touched.filter((p) => /^projects\/.+\/specs\/[^/]+\/report\.md$/.test(p)));
 
@@ -161,9 +177,17 @@ function main(): number {
   let checked = 0;
   let judged = 0;
   let left = 0;
+  let unreadable = 0;
   for (const path of [...changed].sort()) {
-    const now = statuses(path);
-    if (now === null) continue; // deleted, or roadmap.ts's own error to report
+    if (!existsSync(path)) continue; // deleted on this branch
+    // A table the parser refuses is judged by no row below, so it holds the
+    // close on its own; skipping it as if deleted passed it unread.
+    const now = readRows(path);
+    if (typeof now === "string") {
+      unreadable++;
+      process.stderr.write(`${path}: roadmap.ts cannot read it — ${now}; fix the table so its rows can be judged\n`);
+      continue;
+    }
     checked++;
     const before = git(["show", `${base}:${path}`]);
     const was = (before.ok ? statuses(path, Buffer.from(before.out)) : null) ?? new Map<string, Row>();
@@ -194,6 +218,7 @@ function main(): number {
   }
   process.stdout.write(`${checked} roadmaps checked, ${open} open decisions\n`);
   process.stdout.write(`${judged} rows added or changed, ${left} left open\n`);
+  process.stdout.write(`${unreadable} roadmaps unreadable\n`);
 
   let parked = 0;
   let read = 0;
@@ -267,7 +292,7 @@ function main(): number {
     }
   }
   process.stdout.write(`${partial} reports partial\n`);
-  return left > 0 || parked > 0 || partial > 0 ? 1 : 0;
+  return left > 0 || parked > 0 || partial > 0 || unreadable > 0 ? 1 : 0;
 }
 
 // runToExit, not process.exit: a long refusal list must reach a slow reader whole.

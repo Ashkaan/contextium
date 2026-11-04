@@ -1,0 +1,4 @@
+<!doctype html><html><body><h1>Saves on load</h1>
+<button id="b" onclick="this.textContent='Saved'">Save</button>
+<script>addEventListener('load',()=>{fetch('/api/loadsave-fetch',{method:'POST',body:'x'});navigator.sendBeacon('/api/loadsave-beacon','x')})</script>
+</body></html>

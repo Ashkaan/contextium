@@ -296,8 +296,11 @@ function listChangedPaths(wt: string): string[] {
 // holding a package.json, returned without `apps/` — `<name>` in a flat layout,
 // `<domain>/<name>` in a grouped one. With no manifest above the path the app
 // is still one (it runs its own `*.test.ts` suites, or is `unverified`), told
-// by layout: `<domain>/<name>` when `apps/<domain>/` holds folders and no file
-// of its own, else `<name>`. Nothing for a file directly under `apps/`.
+// by layout: `<name>` when `apps/<name>/` holds a file of its own or a folder an
+// app is made of (src/, tests/ — APP_PARTS), else `<domain>/<name>`. A flat app of
+// src/ and tests/ alone holds folders only, and read as a domain its suites
+// under tests/ never ran. Nothing for a file directly under `apps/`.
+const APP_PARTS = new Set(["src", "lib", "test", "tests", "evals", "scripts"]);
 function appOf(wt: string, rel: string): string[] {
   const f = rel.split("/");
   if (f[0] !== "apps") return [];
@@ -310,7 +313,9 @@ function appOf(wt: string, rel: string): string[] {
   let grouped = false;
   if (f.length >= 4) {
     try {
-      grouped = !readdirSync(top, { withFileTypes: true }).some((e) => e.isFile() && !e.name.startsWith("."));
+      grouped = !readdirSync(top, { withFileTypes: true }).some(
+        (e) => (e.isFile() && !e.name.startsWith(".")) || (e.isDirectory() && APP_PARTS.has(e.name)),
+      );
     } catch {
       grouped = true; // a removed domain folder: its app went with it
     }
@@ -475,7 +480,7 @@ async function verifyUnit(logs: string, wt: string, rel: string, app: string, no
 }
 
 // The two `apps/<domain>/<app>` call sites keep their short unit name, so the
-// result lines and the SEEN keys they compare against are unchanged.
+// result lines are unchanged; pass 1 keys SEEN by worktree and app.
 function verifyApp(logs: string, wt: string, app: string, note = ""): Promise<void> {
   return verifyUnit(logs, wt, `apps/${app}`, app, note);
 }
@@ -1082,6 +1087,18 @@ async function main(): Promise<void> {
   mkdirSync(LOGS, { recursive: true });
   const rows = ledgerRows(LEDGER);
   const SEEN: string[] = [];
+  // The second app of one name (another repo's apps/web/site) logs under its
+  // repo's folder, so its log does not overwrite the first one's.
+  const NAMES = new Set<string>();
+  const logsFor = (wt: string, app: string): string => {
+    if (!NAMES.has(app)) {
+      NAMES.add(app);
+      return LOGS;
+    }
+    const dir = join(LOGS, basename(wt));
+    mkdirSync(dir, { recursive: true });
+    return dir;
+  };
   // The content this run verifies, taken before any suite runs.
   const SNAP = snapshot(rows);
 
@@ -1091,11 +1108,14 @@ async function main(): Promise<void> {
     if (wt === "" || !isDir(wt)) continue;
 
     for (const app of appDirsFor(wt)) {
-      // A worktree per repo means one app can only come from one of them, but a
-      // rename across worktrees would otherwise verify it twice.
-      if (SEEN.includes(app)) continue;
-      SEEN.push(app);
-      await verifyApp(LOGS, wt, app);
+      // Keyed by worktree AND app: one name in two repos (apps/web/site in the
+      // workbench and in a product repo) is two apps. Keyed by the name alone,
+      // the second repo's app never ran, and pass 1b then skipped that repo's
+      // root on the grounds that its app suite had (Contextium v9.2.0 review).
+      const key = `${wt}\0${app}`;
+      if (SEEN.includes(key)) continue;
+      SEEN.push(key);
+      await verifyApp(logsFor(wt, app), wt, app);
     }
 
     // The integrations whose own files moved AND which declare a half to run.
@@ -1183,13 +1203,13 @@ async function main(): Promise<void> {
     if (COUNT > 0) {
       say(`verify: no app files changed — verifying ${COUNT} app(s) that import the shared code this thread touched`);
       for (const { wt, app } of candidates) {
-        SEEN.push(app);
+        SEEN.push(`${wt}\0${app}`);
         if (COUNT > Number(CAP)) {
           // Named, not run. Silence would be the real failure here; a close that
           // takes ten minutes is its own kind of failure.
           say(`unverified ${app} — imports shared code, and ${COUNT} importers is past the cap of ${CAP}`);
         } else {
-          await verifyApp(LOGS, wt, app, " (imports shared code this thread changed)");
+          await verifyApp(logsFor(wt, app), wt, app, " (imports shared code this thread changed)");
         }
       }
     }

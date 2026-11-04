@@ -348,6 +348,64 @@ test("a GitHub origin whose deployments cannot be read, or with no gh, is a fail
   assert.match(n.err, /needs the gh CLI/);
 });
 
+/** An ssh on PATH whose -G answers <hosts> (alias → real host name), as
+ *  ~/.ssh/config would; any other host resolves to itself; "fail" fails. */
+function sshStub(hosts: Record<string, string>): string {
+  const bin = mkdtempSync(join(tmp, "sshbin-"));
+  const cases = Object.entries(hosts)
+    .map(([alias, real]) => (real === "fail" ? alias + ") exit 255 ;;" : alias + ') echo "hostname ' + real + '" ;;'))
+    .join("\n");
+  writeFileSync(join(bin, "ssh"), '#!/bin/sh\n[ "$1" = -G ] || exit 255\ncase "$2" in\n' + cases + '\n*) echo "hostname $2" ;;\nesac\n');
+  chmodSync(join(bin, "ssh"), 0o755);
+  return bin;
+}
+const DEPLOYED = {
+  [DEPS + "1"]: [{ id: 11, sha: C, environment: "production" }],
+  [statuses(11)]: [{ state: "success" }],
+};
+
+test("an SSH host alias for github.com is read as GitHub, the way land.ts reads it", () => {
+  const { repo } = checkout(1);
+  spawnSync("git", ["-C", repo, "remote", "set-url", "origin", "git@github-work:acme/site.git"]);
+  const env = ghStub(DEPLOYED);
+  env.PATH = sshStub({ "github-work": "github.com" }) + ":" + env.PATH;
+  const r = sut(["revision", "workbench", repo], env);
+  assert.equal(r.rc, 0, r.err);
+  assert.deepEqual(JSON.parse(r.out), { deploymentId: "deployment 11", sourceCommit: C });
+});
+
+test("the configured origin decides, not the URL an insteadOf rewrite reaches it by", () => {
+  const { repo } = checkout(1);
+  const reach = spawnSync("git", ["-C", repo, "remote", "get-url", "origin"], { encoding: "utf8" }).stdout.trim();
+  spawnSync("git", ["-C", repo, "config", "url." + reach + ".insteadOf", "https://github.com/acme/site.git"]);
+  spawnSync("git", ["-C", repo, "remote", "set-url", "origin", "https://github.com/acme/site.git"]);
+  const r = sut(["revision", "workbench", repo], ghStub(DEPLOYED));
+  assert.equal(r.rc, 0, r.err);
+  assert.deepEqual(JSON.parse(r.out), { deploymentId: "deployment 11", sourceCommit: C });
+});
+
+test("an alias for another host is not GitHub: the trunk is live and gh is never asked", () => {
+  const { repo, tips } = checkout(1);
+  const reach = spawnSync("git", ["-C", repo, "remote", "get-url", "origin"], { encoding: "utf8" }).stdout.trim();
+  spawnSync("git", ["-C", repo, "config", "url." + reach + ".insteadOf", "git@gitlab-work:acme/site.git"]);
+  spawnSync("git", ["-C", repo, "remote", "set-url", "origin", "git@gitlab-work:acme/site.git"]);
+  const env = ghStub({});
+  env.PATH = sshStub({ "gitlab-work": "gitlab.com" }) + ":" + env.PATH;
+  const r = sut(["revision", "workbench", repo], env);
+  assert.equal(r.rc, 0, r.err);
+  assert.equal(JSON.parse(r.out).sourceCommit, tips[0]);
+});
+
+test("an SSH alias ssh cannot resolve is a failure, never the trunk", () => {
+  const { repo } = checkout(1);
+  spawnSync("git", ["-C", repo, "remote", "set-url", "origin", "git@broken-alias:acme/site.git"]);
+  const env = ghStub(DEPLOYED);
+  env.PATH = sshStub({ "broken-alias": "fail" }) + ":" + env.PATH;
+  const r = sut(["revision", "workbench", repo], env);
+  assert.equal(r.rc, 1, r.out);
+  assert.match(r.err, /could not resolve broken-alias/);
+});
+
 test("a history longer than the reading limit with no production success is a failure, never the trunk", () => {
   const answers: Record<string, unknown> = {};
   for (let page = 1; page <= 10; page++)

@@ -11,6 +11,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import {
+  chmodSync,
   copyFileSync,
   existsSync,
   mkdirSync,
@@ -44,13 +45,15 @@ function run(hook: string, stdin: string, home: string, env: NodeJS.ProcessEnv =
   return { rc: r.status, out: r.stdout, err: r.stderr };
 }
 
-/** A scratch tree holding a copy of the wrapper and, unless `check` is null,
- *  an end-of-turn.ts with that body. */
-function tree(check: string | null): { hook: string; home: string } {
+/** A scratch tree holding a copy of the wrapper and its bounded runner
+ *  (lib/paths.sh, unless `lib` is false) and, unless `check` is null, an
+ *  end-of-turn.ts with that body. */
+function tree(check: string | null, lib = true): { hook: string; home: string } {
   const d = mkdtempSync(join(ROOT, "tree-"));
-  mkdirSync(join(d, ".agents", "hooks"), { recursive: true });
+  mkdirSync(join(d, ".agents", "hooks", "lib"), { recursive: true });
   mkdirSync(join(d, ".agents", "skills", "close", "scripts"), { recursive: true });
   copyFileSync(HOOK, join(d, ".agents", "hooks", "check-close-reached.sh"));
+  if (lib) copyFileSync(join(dirname(HOOK), "lib", "paths.sh"), join(d, ".agents", "hooks", "lib", "paths.sh"));
   if (check !== null) writeFileSync(join(d, ".agents", "skills", "close", "scripts", "end-of-turn.ts"), check);
   return { hook: join(d, ".agents", "hooks", "check-close-reached.sh"), home: join(d, "home") };
 }
@@ -107,6 +110,42 @@ test("a check past the bound is stopped: allowed and logged", () => {
   assert.equal(r.rc, 0);
   assert.ok(Date.now() - started < 10_000, "stopped at the bound");
   assert.match(logOf(t.home), /stopped after 1s; allowed/);
+});
+
+// A PATH whose timeout and gtimeout are missing, as on a stock macOS: each
+// stub exits 127, the shell's "command not found". The wrapper used to call
+// `timeout` directly, and that 127 became an allowed reply with the check never run.
+const NO_TIMEOUT = join(ROOT, "no-timeout-bin");
+mkdirSync(NO_TIMEOUT, { recursive: true });
+for (const t of ["timeout", "gtimeout"]) {
+  writeFileSync(join(NO_TIMEOUT, t), "#!/bin/sh\nexit 127\n");
+  chmodSync(join(NO_TIMEOUT, t), 0o755);
+}
+const NO_TIMEOUT_ENV = { PATH: NO_TIMEOUT + ":" + (process.env.PATH ?? "") };
+
+test("with no timeout command, the check still runs: its refusal, reading the payload on stdin, passes through", () => {
+  const t = tree(
+    'import { readFileSync } from "node:fs";\nconst p = JSON.parse(readFileSync(0, "utf8"));\nprocess.stderr.write("refused: " + p.why + "\\n");\nprocess.exit(2);\n',
+  );
+  const r = run(t.hook, JSON.stringify({ why: "no close" }), t.home, NO_TIMEOUT_ENV, "--harness", "claude");
+  assert.equal(r.rc, 2, r.err);
+  assert.match(r.err, /refused: no close/);
+});
+
+test("with no timeout command, a check past the bound is still stopped", () => {
+  const t = tree("setTimeout(() => {}, 60_000);\n");
+  const started = Date.now();
+  const r = run(t.hook, "{}", t.home, { ...NO_TIMEOUT_ENV, END_OF_TURN_TIMEOUT: "1" }, "--harness", "claude");
+  assert.equal(r.rc, 0, r.err);
+  assert.ok(Date.now() - started < 10_000, "stopped at the bound");
+  assert.match(logOf(t.home), /stopped after 1s; allowed/);
+});
+
+test("a missing bounded runner: allowed, said and logged", () => {
+  const t = tree("process.exit(2);\n", false);
+  const r = run(t.hook, "{}", t.home, {}, "--harness", "claude");
+  assert.equal(r.rc, 0);
+  assert.match(logOf(t.home), /missing: .*paths\.sh; allowed/);
 });
 
 test("stdout passes through (Antigravity's refusal is JSON on stdout, exit 0)", () => {

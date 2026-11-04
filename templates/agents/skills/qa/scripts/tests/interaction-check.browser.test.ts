@@ -487,6 +487,23 @@ describe("interaction-check.browser.ts", { skip: SKIP, concurrency: 4 }, () => {
     const sent = serverLog().match(/"POST \/api\/cutoff-save-[a-z]+/g) ?? [];
     assert.deepEqual(sent, [], `a write reached the server: ${sent.join(" ")}`);
   });
+  // Every check's page holds writes from before it navigates, not only from the
+  // press on: the full run once loaded the button-finding page and each press's
+  // page with no route in place, so a page that saves on load sent its save
+  // (Contextium v9.2.0 review). A fetch and a beacon, both sent at load.
+  test("the full run sends no write a page makes on load, in any check", async () => {
+    const r = await check("/loadsave/");
+    assert.equal(r.rc, 0, r.out);
+    assert.match(r.out, /pressed 1 of 1/);
+    const sent = serverLog().match(/"POST \/api\/loadsave-[a-z]+/g) ?? [];
+    assert.deepEqual(sent, [], `a load-time write reached the server: ${sent.join(" ")}`);
+  });
+  test("the full run on a page that saves on load and on its way out sends nothing", async () => {
+    const r = await check("/cutoffsave/");
+    assert.equal(r.rc, 9, r.out);
+    const sent = serverLog().match(/"POST \/api\/cutoff-save-[a-z]+/g) ?? [];
+    assert.deepEqual(sent, [], `a write reached the server: ${sent.join(" ")}`);
+  });
   for (const [route, why] of [
     // An 800-px scroller inside a 290-px clip: centred, a row lands past the
     // edge, but scrolled to the scroller's top it shows.

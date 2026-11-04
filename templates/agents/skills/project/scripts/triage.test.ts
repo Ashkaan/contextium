@@ -223,6 +223,33 @@ test("an unreadable roadmap fails the run with its path", () => {
   assert.match(r.err, /^triage: projects\/t\/2026-01-01_broken\/ROADMAP\.md: /);
 });
 
+// A long table through a pipe whose reader is slow: process.exit right after
+// the write dropped whatever Node still held once the 64 KiB pipe was full
+// (Contextium v9.2.0 review); the program leaves through cli-exit's drain.
+test("a long table through a slow pipe arrives whole, with its answer line", () => {
+  const N = 900;
+  const root = repo((rt, commit) => {
+    for (let i = 0; i < N; i++) {
+      const slug = `p-${String(i).padStart(4, "0")}`;
+      project(rt, slug, { status: "blocked", "blocked-on": '"R1: x"' }, [
+        ["R1", "a", "—", "blocked: a vendor reply about the long-running quote for the rack", "manual"],
+      ]);
+    }
+    commit("2026-10-01");
+  });
+  const r = spawnSync(
+    "bash",
+    [
+      "-c",
+      `"${process.execPath}" --experimental-strip-types "${SUT}" blocked --root "${root}" --today ${TODAY} | { sleep 1; cat; }`,
+    ],
+    { encoding: "utf8", timeout: 120_000, maxBuffer: 64 * 1024 * 1024 },
+  );
+  assert.equal(rowsOf(r.stdout).length, N);
+  assert.match(r.stdout, /\nAnswer by number: `unblock`, `until <date>`, `done`, `drop`, or a new wait\.\n$/);
+  assert.ok(Buffer.byteLength(r.stdout) > 64 * 1024, "the table outgrows one pipe buffer");
+});
+
 test("usage errors exit 2", () => {
   for (const args of [[], ["stale"], ["blocked", "--today", "soon"], ["blocked", "--wat", "x"]]) {
     const r = spawnSync(process.execPath, ["--experimental-strip-types", SUT, ...args], { encoding: "utf8" });

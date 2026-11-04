@@ -212,8 +212,9 @@ After EVERY task:
 
 ```bash
 # Layer 1 of Phase 4's ladder (don't skip): the package's own lint, then its
-# typecheck — its `lint` / `typecheck` / `check` npm script or make target
-printf '%s\n' <file> | node --experimental-strip-types .agents/skills/implement/scripts/layer-1.ts
+# typecheck — its `lint` / `typecheck` / `check` npm script or make target.
+# Its stdin is NUL-separated paths, as validate.ts writes them.
+printf '%s\0' <file> | node --experimental-strip-types .agents/skills/implement/scripts/layer-1.ts
 ```
 
 If it fails: read error, fix, re-run, only proceed when passing.

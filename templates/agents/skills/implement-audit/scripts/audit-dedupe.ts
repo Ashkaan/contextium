@@ -102,7 +102,9 @@
 //       piece has read, one `unchecked: <id>` per declared item no piece has
 //       checked yet, and `SLICE_BLOCKED=1` when a reason other than those
 //       (a finding, a writer as reviewer, a later commit) already stands.
-//       --rc 3 leaves the attempt open and pending the fresh-context fallback.
+//       --rc 3 leaves the attempt open and pending the fresh-context fallback;
+//       --rc 3 --checks-failed again on a pending attempt keeps that layers
+//       1+2 failed over it, so the fallback that finishes it cannot approve.
 //   audit-dedupe.ts finish --repo <dir> --fallback <file> [--checks-failed]
 //       record the fresh-context reviewer's reply (triage lines, its own
 //       verdict format, or the BEGIN_REVIEW_V1 frame) for a pending attempt.
@@ -241,6 +243,8 @@ export interface Receipt {
   pieces?: number;
   /** The chain left no independent vendor (code-review.ts exit 3): a fresh-context fallback may finish it. */
   pendingFallback?: boolean;
+  /** Layers 1+2 failed in the phase that left it pending: the fallback that finishes it is checks-failed. */
+  checksFailed?: boolean;
   /** false: the fresh-context fallback reviewed it — recorded, and reported, as NOT independent. */
   independent?: boolean;
 }
@@ -702,9 +706,14 @@ const GAP_WORDS: Record<string, string> = {
   "#pieces": "the rest of the change: this round built on one piece of an incomplete piece set",
 };
 
-/** The file a triage line names first (`[must-fix] a.ts:12: …`), or null. */
+/** The file a triage line names first (`[must-fix] a.ts:12: …`), or null.
+ *  The whole path before the location delimiter, spaces included
+ *  (`src/my file.ts:12:`): a path cut at its space named no file, and its
+ *  blocker closed on any round that changed anything (Contextium v9.2.0
+ *  review). A path never holds a colon, so prose ending in one (`Note: …`)
+ *  is not read as a file. */
 export function findingFile(line: string): string | null {
-  const m = line.replace(/^\[[a-z-]+\]\s*/, "").match(/^([^\s:]+\.[A-Za-z0-9]+)(?::\d+)?:/);
+  const m = line.replace(/^\[[a-z-]+\]\s*/, "").match(/^([^:\s][^:]*?\.[A-Za-z0-9]+)(?::\d+(?:-\d+)?)?:/);
   return m?.[1] ?? null;
 }
 
@@ -1249,6 +1258,9 @@ async function main(): Promise<void> {
         // No independent vendor: the attempt stays open, pending the declared
         // fresh-context fallback (see the header).
         r.pendingFallback = true;
+        // The phase's layers failed after the chain left it pending: the
+        // fallback, a later invocation that runs no layer, must not forget it.
+        if (f["--checks-failed"]) r.checksFailed = true;
         try {
           writeState(owner, state);
         } catch (e) {
@@ -1333,7 +1345,8 @@ async function main(): Promise<void> {
       r.nits = lines.filter((l) => l.startsWith("[nit]"));
       r.items = Array.isArray(res.coverage) ? (res.coverage as ItemResult[]) : [];
       const gaps: string[] = [];
-      if (f["--checks-failed"]) gaps.push("#checks");
+      if (f["--checks-failed"] || r.checksFailed) gaps.push("#checks");
+      delete r.checksFailed;
       if (r.mode === "range") {
         // What the full review read, as code-review.ts builds it: the committed
         // range base..head, the uncommitted changes against HEAD, and the

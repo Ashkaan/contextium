@@ -637,7 +637,10 @@ test("an app with no package.json runs its node:test suites", () => {
   const I = join(CLEAN, "integrations/barewithsuite");
   mkdirSync(I, { recursive: true });
   writeFileSync(join(I, "lib.ts"), "export const i = 1;\n");
-  writeFileSync(join(I, "lib.test.ts"), 'import { test } from "node:test";\ntest("red", () => { throw new Error("x"); });\n');
+  writeFileSync(
+    join(I, "lib.test.ts"),
+    'import { test } from "node:test";\ntest("red", () => { throw new Error("x"); });\n',
+  );
   go();
   is("a red suite in an integration with no package.json fails the close", String(RC), "1");
   has("naming the integration", OUT, "FAIL integrations/barewithsuite integrations/barewithsuite/lib.test.ts");
@@ -647,6 +650,27 @@ test("an app with no package.json runs its node:test suites", () => {
   is("a green one declaring no half exits 0", String(RC), "0");
   has("and is reported ok", OUT, "ok integrations/barewithsuite");
   rmSync(I, { recursive: true, force: true });
+  copyFileSync(join(TMP, "ledger.bak"), CLEDGER);
+});
+
+// A flat app with no package.json whose root holds only folders — src/ and
+// tests/ — is still one app, not a domain whose apps are src and tests: read
+// as a domain, its suites under tests/ never ran.
+test("a flat app with no manifest and only folders runs its own suites", () => {
+  writeFileSync(CLEDGER, row(CLEAN, join(TMP, "cshared"), "t3/" + TID));
+  const A = join(CLEAN, "apps/myapp");
+  mkdirSync(join(A, "src"), { recursive: true });
+  mkdirSync(join(A, "tests"), { recursive: true });
+  writeFileSync(join(A, "src/index.ts"), "export const m = 1;\n");
+  writeFileSync(
+    join(A, "tests/main.test.ts"),
+    'import { test } from "node:test";\ntest("red", () => { throw new Error("flat suite ran"); });\n',
+  );
+  go();
+  is("its red suite fails the close", String(RC), "1");
+  has("naming the app and its suite", OUT, "FAIL myapp apps/myapp/tests/main.test.ts");
+  hasnt("and src/ is not taken for an app", OUT, "myapp/src");
+  rmSync(A, { recursive: true, force: true });
   copyFileSync(join(TMP, "ledger.bak"), CLEDGER);
 });
 
@@ -846,7 +870,11 @@ test("a project's own code runs its node:test suites", () => {
   mkdirSync(join(Q, "scripts"), { recursive: true });
   writeFileSync(join(Q, "scripts/y.ts"), "export const y = 1;\n");
   go();
-  has("a project with code and no suites is named unverified", OUT, "unverified projects/ai/2026-01-02_nosuite — no test suites");
+  has(
+    "a project with code and no suites is named unverified",
+    OUT,
+    "unverified projects/ai/2026-01-02_nosuite — no test suites",
+  );
   rmSync(Q, { recursive: true, force: true });
 });
 
@@ -1395,6 +1423,40 @@ test("a product repo with apps/ runs its root check and test when a root file mo
   git("-C", PRODWT, "commit", "-q", "-m", "no root suite");
   rmSync(join(PRODWT, "apps"), { recursive: true, force: true });
   git("-C", PRODWT, "rm", "-q", "-r", "--cached", "apps");
+  git("-C", PRODWT, "commit", "-q", "-m", "no app");
+});
+
+// One app name in two repos is two apps. With apps/web/site changed in the
+// workbench AND in a product repo, keying pass 1 by the name alone ran only the
+// workbench's, and the product root then skipped its own suite on the grounds
+// that the app's had run — so the product app's red test never ran and its
+// content got a passing stamp (Contextium v9.2.0 review).
+test("an app name changed in two repos verifies each repo's app", () => {
+  writeFileSync(LEDGER, row(WT, join(TMP, "shared"), `t3/${TID}`) + row(PRODWT, join(TMP, "prodshared"), `t3/${TID}`));
+  mkdirSync(join(PRODWT, "apps/web/site"), { recursive: true });
+  writeFileSync(join(PRODWT, "apps/web/site/package.json"), '{ "name": "site", "scripts": { "test": "exit 1" } }\n');
+  writeFileSync(join(PRODWT, "apps/web/site/index.ts"), "x\n");
+  git("-C", PRODWT, "add", "apps");
+  git("-C", PRODWT, "commit", "-q", "-m", "a red app");
+  mkdirSync(join(WT, "apps/web/site"), { recursive: true });
+  writeFileSync(join(WT, "apps/web/site/package.json"), '{ "name": "site", "scripts": { "test": "true" } }\n');
+  writeFileSync(join(PRODWT, "apps/web/site/index.ts"), "y\n");
+  go();
+  is("the product repo's red app fails the close", String(RC), "1");
+  has("…naming the app and the half", OUT, "FAIL web/site test");
+  has(
+    "…with the rerun command in the product worktree",
+    OUT,
+    `rerun: cd ${PRODWT}/apps/web/site && ${RUNNER_CMD} test`,
+  );
+  has(
+    "…logged apart from the workbench app of the same name",
+    OUT,
+    `log: ${join(LEDGER_DIR, "verify", basename(PRODWT), "web-site-test.log")}`,
+  );
+  rmSync(join(WT, "apps/web"), { recursive: true, force: true });
+  git("-C", PRODWT, "checkout", "-q", "--", "apps");
+  git("-C", PRODWT, "rm", "-q", "-r", "apps");
   git("-C", PRODWT, "commit", "-q", "-m", "no app");
 });
 

@@ -500,16 +500,19 @@ Exit 0 prints `SIGHTED — n/n codes transcribed`. Exit 6 means the codes did no
 
 The chain also needs the UI's authors, as every adversarial review does (the review skill's § Original authors): `POLICY_CHAIN_AUTHOR_VENDORS` names every provider that wrote the pages or their fixes, and in T3 Code `POLICY_CHAIN_AUTHOR_THREAD_ID` names the original writing thread. In T3 Code put the following command in the reviewer child’s task, not the parent’s shell.
 
+The artifact it reviews is the list of PNG paths in `$CAPTURE_DIR` — the directory this pass stamped, which a served run, a replacement pass, a `cli` run and a render pass all have; only a served screenshot run also writes a manifest.
+
 ```bash
+find "$CAPTURE_DIR" -maxdepth 1 -name '*.png' | sort > /tmp/qa-shots-$RUN_ID.txt
 POLICY_CHAIN_AUTHOR_THREAD_ID="<writing thread id>" POLICY_CHAIN_AUTHOR_VENDORS="<all writer providers>" \
 POLICY_CHAIN_GROK_TOOLS=read_file POLICY_CHAIN_VALIDATOR="$S/sight-validate.ts" QA_SIGHT_CODES="$QA_SIGHT_CODES" \
 node --experimental-strip-types .agents/skills/review/policy-review.ts adversarial-review \
-  "/tmp/qa-shots/$QA_SLUG/$RUN_ID/manifest.json" /tmp/qa-brief-$RUN_ID.txt \
+  /tmp/qa-shots-$RUN_ID.txt /tmp/qa-brief-$RUN_ID.txt \
   > /tmp/qa-review-$RUN_ID.txt
 node --experimental-strip-types "$S/sight-check.ts" verify --codes "$QA_SIGHT_CODES" --response /tmp/qa-review-$RUN_ID.txt
 ```
 
-The brief file carries the same text as the subagent brief above — rubric, sight-code instruction, design intent, and the absolute path of every PNG to open — and still never the codes. Max **8 images per call**; a bigger run is batched, and each batch is checked against a codes file holding only its own shots' rows (`grep` them out of `$QA_SIGHT_CODES`, and pass that file as `QA_SIGHT_CODES` to both commands). A vendor that cannot open an image cannot return the codes, so the same gate refuses its answer: when no reviewer in the chain can see, the chain exits non-zero with an empty reply, the review HALTS, and the report says the visual review did not happen.
+The brief file carries the same text as the subagent brief above — rubric, sight-code instruction, design intent, and the absolute path of every PNG to open — and still never the codes. Max **8 images per call**; a bigger run is batched — each batch's list file names only its own PNGs — and each batch is checked against a codes file holding only its own shots' rows (`grep` them out of `$QA_SIGHT_CODES`, and pass that file as `QA_SIGHT_CODES` to both commands). A vendor that cannot open an image cannot return the codes, so the same gate refuses its answer: when no reviewer in the chain can see, the chain exits non-zero with an empty reply, the review HALTS, and the report says the visual review did not happen.
 
 Adjudicate every finding against the app’s actual design intent. Fix each confirmed, ready finding in this session, including P2/P3. Reject a false positive or unsupported taste suggestion with its reason; severity alone is not a deferral.
 
@@ -518,7 +521,7 @@ Adjudicate every finding against the app’s actual design intent. Fix each conf
 ## step-4.5-fix-reverify
 
 Fix every confirmed, ready finding from step 4 and every INTERACTION failure from step 3.7.
-For a render-only target, rerun step 5b and review its new PNGs; it has no
+For a render-only target, rerun step 5b under a new pass name and review its new PNGs; it has no
 server, browser interaction check or screenshot command. For served targets,
 follow step 2.7's mode-aware rebuild/candidate sequence, then **re-run
 `interaction-check.ts` until it exits 0**. For replacement screenshots,
@@ -559,16 +562,21 @@ Say "no UI surface — captured command output instead."
 
 ## step-5b-render
 
-For `render` targets — anything with a visual output that isn't a served web page (TRMNL Liquid, HTML-to-image). The repo declares its `qa:render` script in `package.json`; it produces the PNG(s) itself, reading `$QA_OUT`:
+For `render` targets — anything with a visual output that isn't a served web page (TRMNL Liquid, HTML-to-image). The repo declares its `qa:render` script in `package.json`; it produces the PNG(s) itself, reading `$QA_OUT`. Every render pass, the first and each fix iteration, writes into a new directory of its own beneath `QA_CAPTURE_DIR`; substitute a literal pass name not used before in this run (`render-1`, `render-2`, …):
 
 ```bash
-export QA_OUT="$QA_CAPTURE_DIR"
+export QA_OUT="$QA_CAPTURE_DIR/passes/<render-pass>"
+mkdir -p "$QA_OUT"
 (cd "$TARGET" && npm run --silent qa:render)
 ```
 
 The PNG(s) under `$QA_OUT` ARE the screenshots — no serve, no `screenshot.ts`.
 Use that directory as `$CAPTURE_DIR`, continue through `step-4-stamp-sight`,
-then `step-4-fresh-review`, including every render fix iteration. This is how
+then `step-4-fresh-review`, including every render fix iteration. A pass that
+reused an earlier directory would leave behind any image the new render no
+longer writes, already stamped, and `sight-check.ts stamp` would stamp it again
+and send it to review as current. The reviewer's brief for a render pass drops
+the MOTION paragraph: a render pass writes no `motion/` directory. This is how
 `/qa` guarantees it can always render the thing it's working on: if a target
 can't be served, it declares how to render itself.
 
@@ -595,8 +603,8 @@ node --experimental-strip-types "$S/serve.ts" down --runfile "$QA_RUNFILE" --cle
 Run teardown only after the review. `--clean` stops the recorded server and
 removes that run's captures, logs and runfile. With `--keep`, skip teardown and
 give the URL, captures directory and literal `down --runfile <path> --clean`
-command. Replacement and reduced-motion captures live beneath `QA_CAPTURE_DIR`
-as described in steps 3.6 and 4.5, so the same cleanup removes them too. Do not
+command. Replacement, render and reduced-motion captures live beneath `QA_CAPTURE_DIR`
+as described in steps 3.6, 4.5 and 5b, so the same cleanup removes them too. Do not
 clear images with shell `rm`. A restart preserves captures for their review.
 If the fix loop kept a separate baseline, run its recorded teardown command as
 well after the comparison review; do not lose its runfile when switching to the

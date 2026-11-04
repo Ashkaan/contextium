@@ -68,7 +68,8 @@
 //   - the worktree root is web:   the root is a target
 //   - shared package, 2 consumers: both consumers
 //   - deleted file:               kept; its app is still a target if it survives
-//   - an app's root AGENTS/CLAUDE/DESIGN/README.md alone: no target
+//   - an app's root AGENTS/CLAUDE/DESIGN/README.md alone: no target, unless
+//     a page imports it; then its importers' apps
 //   - detect-app.ts missing:      exit 2
 //   - detect-app.ts exit 2 / >3:  exit 2
 
@@ -296,19 +297,13 @@ async function main(): Promise<void> {
   // Counting each one made its app a target: a change that added an AGENTS.md to
   // three sites and a section to another's DESIGN.md was asked for four full /qa
   // passes over pages nothing changed.
-  // A markdown PAGE lives under src/ and is not in this set.
+  // A markdown PAGE lives under src/ and is not in this set. A doc a page
+  // IMPORTS is rendered content too (an Astro page rendering its README.md): it
+  // is walked to its importers' apps below, like a shared module, and only a doc
+  // nothing imports is left out.
   const APP_DOCS = new Set(["AGENTS.md", "CLAUDE.md", "DESIGN.md", "README.md"]);
   const isAppDoc = (file: string, target: string): boolean =>
     APP_DOCS.has(file.slice(file.lastIndexOf("/") + 1)) && resolve(REPO, parentDir(file)) === target;
-
-  const TARGETS: string[] = [];
-  const ORPHANS: string[] = [];
-  for (const f of CHANGED) {
-    const t = webTargetFor(f);
-    if (t && isAppDoc(f, t)) continue;
-    if (t) TARGETS.push(t);
-    else ORPHANS.push(f);
-  }
 
   // ── Shared-package fan-out ────────────────────────────────────────────
   //
@@ -345,6 +340,20 @@ async function main(): Promise<void> {
     return IMPORT_MAP.get(dropCodeExt(file)) ?? [];
   }
 
+  // Classified here, below the import map, which an app doc's check reads.
+  const TARGETS: string[] = [];
+  const ORPHANS: string[] = [];
+  const IMPORTED_DOCS: string[] = [];
+  for (const f of CHANGED) {
+    const t = webTargetFor(f);
+    if (t && isAppDoc(f, t)) {
+      if (importersOf(f).length > 0) IMPORTED_DOCS.push(f);
+      continue;
+    }
+    if (t) TARGETS.push(t);
+    else ORPHANS.push(f);
+  }
+
   // ── The fan-out walk ──────────────────────────────────────────────────
   //
   // BFS, not one hop. `button.ts` is usually not imported by the app directly —
@@ -362,8 +371,8 @@ async function main(): Promise<void> {
   // file that can never be queued again; a circular import graph terminates for
   // the same reason. The bound is the number of source files, which is also the
   // bound on how wrong the answer could be without it.
-  const VISITED = new Set<string>();
-  let frontier: string[] = [];
+  const VISITED = new Set<string>(IMPORTED_DOCS);
+  let frontier: string[] = [...IMPORTED_DOCS];
   for (const f of ORPHANS) {
     if (!/\.(ts|tsx|js|jsx|mjs|cjs|mts|cts|css|astro|svelte|vue)$/.test(f)) continue;
     frontier.push(f);

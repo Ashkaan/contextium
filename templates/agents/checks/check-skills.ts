@@ -571,7 +571,7 @@ function violation(name: string, what: string): void {
   violations += 1;
 }
 
-function checkSkill(dir: string, validatorBin: string, home: string, peerRoot: string): void {
+function checkSkill(dir: string, validatorBin: string, home: string, peerRoot: PeerRoot): void {
   const name = basename(dir);
 
   // (a)
@@ -645,8 +645,11 @@ function checkSkill(dir: string, validatorBin: string, home: string, peerRoot: s
             violation(name, "metadata.peers must be a non-empty string — name the peers or drop the key");
           } else {
             for (const peer of f.value.trim().split(/\s+/)) {
-              const abs = resolve(peerRoot, peer);
-              const rel = relative(peerRoot, abs);
+              const abs =
+                peerRoot.layer !== null && (peer.startsWith(".agents/") || peer === "AGENTS.md")
+                  ? join(peerRoot.layer, peer.replace(/^\.agents\//, ""))
+                  : resolve(peerRoot.root, peer);
+              const rel = relative(peerRoot.root, abs);
               if (isAbsolute(peer) || rel === ".." || rel.startsWith("../")) {
                 violation(name, `metadata.peers path must stay relative to the repo root: ${peer}`);
                 continue;
@@ -762,12 +765,20 @@ function checkSkill(dir: string, validatorBin: string, home: string, peerRoot: s
   });
 }
 
-/** The root a skill's metadata.peers paths are written from: the workbench that
- *  holds `.agents/skills/`, or the skills folder's parent when it is not under
- *  `.agents/`. */
-function peerRootOf(skillsRoot: string): string {
+/** Where a skill's metadata.peers paths are read from. `root` is the repo they
+ *  are written from: the workbench that holds `.agents/skills/`, or the skills
+ *  folder's parent when it is not under `.agents/`. Contextium's own source keeps
+ *  the layer at `templates/agents/`, which installs as `.agents/`: there `layer` is
+ *  that folder, a `.agents/…` peer is read beneath it — and so is `AGENTS.md`,
+ *  which an install links to `.agents/AGENTS.md` — and `root` is the repo
+ *  holding `templates/`. */
+type PeerRoot = { root: string; layer: string | null };
+function peerRootOf(skillsRoot: string): PeerRoot {
   const parent = dirname(realpathSync(skillsRoot));
-  return basename(parent) === ".agents" ? dirname(parent) : parent;
+  if (basename(parent) === ".agents") return { root: dirname(parent), layer: null };
+  if (basename(parent) === "agents" && basename(dirname(parent)) === "templates")
+    return { root: dirname(dirname(parent)), layer: parent };
+  return { root: parent, layer: null };
 }
 
 function isHidden(dir: string): boolean {

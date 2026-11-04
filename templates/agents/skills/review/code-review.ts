@@ -1263,21 +1263,24 @@ narration and no review output. Do the review and reply with ONLY ${
     // than dropped silently, so an unparseable review is diagnosable.
     const MARKERS = ["[must-fix]", "[should-fix]", "[nit]"];
     const startsWithMarker = (l: string) => MARKERS.some((m) => l.startsWith(m));
-    function parseReviewOutput(): { findings: string; count: number; sentinel: boolean; coverage: Coverage[] } {
+    /**
+     * The answer as both readers see it: the shape test below and the parse.
+     * One reading, so the gate that decides whether a slot answered cannot pass
+     * what the parse then rejects. A bare substring test once passed "cannot
+     * return NO_FINDINGS", the parse found no verdict, and the primary was
+     * re-asked while a healthy backup sat untried (Contextium v9.2.0 review).
+     * `report` is false for the shape test, so a salvage is reported once.
+     */
+    function readReview(
+      text: string,
+      report: boolean,
+    ): { findings: string; count: number; sentinel: boolean; coverage: Coverage[] } {
       let findings = "";
       let count = 0;
       let sentinel = false;
-      let text = readFileSync(RAW_OUT, "utf8");
-      let coverage: Coverage[] = [];
-      if (RECEIPT) {
-        const f = parseFrame(text);
-        if ("error" in f) {
-          err(`[code-review] unusable framed reply: ${f.error}`);
-          return { findings, count, sentinel, coverage };
-        }
-        text = `${f.findings}\n`;
-        coverage = f.coverage;
-      }
+      const note = (line: string): void => {
+        if (report) err(line);
+      };
       for (const raw of readLines(text)) {
         // Salvage a marker an agent CLI glued onto its own progress narration with no
         // newline between them (salvageTriageLine in policy-chain.ts owns the rule and
@@ -1287,18 +1290,29 @@ narration and no review output. Do the review and reply with ONLY ${
         // contract still ASKS for line-anchored output; this only stops a real finding
         // from being thrown away when a vendor scuffs the prefix.
         const { line, salvaged } = salvageTriageLine(raw, MARKERS, "NO_FINDINGS");
-        if (salvaged === "marker") err("[code-review] salvaged a triage marker from a prefixed line");
-        if (salvaged === "sentinel") err("[code-review] salvaged the NO_FINDINGS sentinel from a prefixed line");
+        if (salvaged === "marker") note("[code-review] salvaged a triage marker from a prefixed line");
+        if (salvaged === "sentinel") note("[code-review] salvaged the NO_FINDINGS sentinel from a prefixed line");
         if (startsWithMarker(line)) {
           findings += `${line}\n`;
           count += 1;
         } else if (line === "NO_FINDINGS") {
           sentinel = true;
         } else if (line !== "") {
-          err(`[code-review] dropped non-triage line: ${line}`);
+          note(`[code-review] dropped non-triage line: ${line}`);
         }
       }
-      return { findings, count, sentinel, coverage };
+      return { findings, count, sentinel, coverage: [] };
+    }
+
+    function parseReviewOutput(): { findings: string; count: number; sentinel: boolean; coverage: Coverage[] } {
+      const text = readFileSync(RAW_OUT, "utf8");
+      if (!RECEIPT) return readReview(text, true);
+      const f = parseFrame(text);
+      if ("error" in f) {
+        err(`[code-review] unusable framed reply: ${f.error}`);
+        return { findings: "", count: 0, sentinel: false, coverage: [] };
+      }
+      return { ...readReview(`${f.findings}\n`, true), coverage: f.coverage };
     }
 
     // Code review is read-only repo investigation, so scope grok to the read-only
@@ -1321,18 +1335,18 @@ narration and no review output. Do the review and reply with ONLY ${
     // backup was never tried, and the gate reported the whole chain exhausted while
     // a healthy vendor sat untried behind it.
     //
-    // The salvage cases are matched WITHOUT the line anchor for the same reason
-    // parseReviewOutput salvages them: grok routinely glues its marker onto the
-    // end of a narration line, and anchoring here would reject a review the parser
-    // would have accepted — a stricter gate than the parser it feeds, which turns
-    // good answers into chain burn.
+    // It reads the answer through readReview, the parser's own reading, salvage
+    // included: grok routinely glues its marker onto the end of a narration line,
+    // and a stricter gate than the parser turns good answers into chain burn; a
+    // looser one banks prose the parser then rejects, and the backup never runs.
     const looksLikeAReview = (file: string): ValidatorResult => {
       const text = readFileSync(file, "utf8");
       if (RECEIPT) {
         const f = parseFrame(text);
         return "error" in f ? { rc: 1, stderr: `[code-review] ${f.error}` } : { rc: 0, stderr: "" };
       }
-      return { rc: /\[(must-fix|should-fix|nit)\]|NO_FINDINGS/.test(text) ? 0 : 1, stderr: "" };
+      const r = readReview(text, false);
+      return { rc: r.count > 0 || r.sentinel ? 0 : 1, stderr: "" };
     };
 
     // A first full review is spent once a vendor has answered it, so a full

@@ -1554,12 +1554,49 @@ user_headings() {
   awk '/^<!-- contextium:[a-z0-9-]+ -->$/ { b = 1 } !b && /^## / { print } $0 == "<!-- /contextium -->" { b = 0 }' "$1"
 }
 
+# The rendered template's Stack section — the full level writes it outside
+# every block, for the user to fill: its heading and the lines up to the next
+# heading or Contextium block, trailing blank lines dropped.
+# Args: $1=rendered template; the section on stdout.
+stack_section() {
+  awk '$0 == "## Stack" { f = 1 } f && n++ && (/^## / || /^<!-- contextium:/) { exit } f { buf = buf $0 "\n"; if ($0 != "") keep = buf } END { printf "%s", keep }' "$1"
+}
+
+# A promotion to full merges only Contextium's blocks, and the Stack section the
+# preview promises is outside them: seed it when the user's text has none, after
+# the preferences block (its place in the template), else at the end. Nothing of
+# the user's is replaced. Sets AGENTS_SEEDED. Args: $1=plan file $2=rendered template
+seed_stack_section() {
+  local secf out heads nl='
+'
+  # Captured, then matched: under pipefail a `grep -q` that stops early fails
+  # the pipe, and that would read as "no Stack" and seed a second one.
+  heads="$(user_headings "$1")"
+  case "${nl}${heads}${nl}" in *"${nl}## Stack${nl}"*) return 0 ;; esac
+  secf="$(mktemp)"
+  stack_section "$2" >"$secf"
+  if [ ! -s "$secf" ]; then rm -f "$secf"; return 0; fi
+  out="$(mktemp)"
+  awk '
+    FNR == 1 { pass++ }
+    pass == 1 { sec = sec $0 "\n"; next }
+    { print }
+    $0 == "<!-- contextium:preferences -->" { inp = 1 }
+    inp && $0 == "<!-- /contextium -->" { inp = 0; printf "\n%s", sec; done = 1 }
+    END { if (!done) printf "\n%s", sec }
+  ' "$secf" "$1" >"$out"
+  mv "$out" "$1"
+  rm -f "$secf"
+  AGENTS_SEEDED="## Stack"
+}
+
 # Decide what .agents/AGENTS.md becomes, before anything is written: the result
 # goes to $AGENTS_PLAN and the branch to AGENTS_ACTION (install, force, keep,
 # refresh, replace, append). Absent: the rendered template. --force: the
 # template. A file with blocks: only its blocks replaced, and an unchanged v8/v9
 # § Working preferences becomes the preferences block. An unchanged v6/v7 file:
-# replaced whole. An edited v6/v7 one: the blocks appended to it.
+# replaced whole. An edited v6/v7 one: the blocks appended to it. A merge that
+# raises the level to full also seeds the Stack section (seed_stack_section).
 # Args: $1=name $2=autonomy $3=level
 plan_agents_md() {
   local dst="$TARGET/.agents/AGENTS.md" src rc=0
@@ -1567,6 +1604,7 @@ plan_agents_md() {
   AGENTS_PLAN="$(mktemp)"
   AGENTS_RENDER="$(mktemp)"
   AGENTS_REMOVED=""
+  AGENTS_SEEDED=""
   render_agents_md "$1" "$2" "$3" >"$AGENTS_RENDER"
   if [ ! -f "$dst" ]; then
     AGENTS_ACTION="install"; cp "$AGENTS_RENDER" "$AGENTS_PLAN"
@@ -1582,11 +1620,14 @@ plan_agents_md() {
     merge_contextium_blocks "$AGENTS_RENDER" "$src" >"$AGENTS_PLAN" || rc=$?
     [ "$src" = "$dst" ] || rm -f "$src"
     [ "$rc" -eq 0 ] || return "$rc"
+    # Only on the way up: at full already, a Stack the user deleted stays deleted.
+    if [ "$3" = full ] && [ "$(recorded_rules "$dst" || true)" != full ]; then seed_stack_section "$AGENTS_PLAN" "$AGENTS_RENDER"; fi
     if cmp -s "$AGENTS_PLAN" "$dst"; then AGENTS_ACTION="keep"; else AGENTS_ACTION="refresh"; fi
   elif is_pristine_pre_v8 "$dst"; then
     AGENTS_ACTION="replace"; cp "$AGENTS_RENDER" "$AGENTS_PLAN"
   else
     AGENTS_ACTION="append"; merge_contextium_blocks "$AGENTS_RENDER" "$dst" >"$AGENTS_PLAN"
+    if [ "$3" = full ]; then seed_stack_section "$AGENTS_PLAN" "$AGENTS_RENDER"; fi
   fi
 }
 
@@ -1610,8 +1651,9 @@ print_rules_preview() {
     printf '  %s\n' "Left out (full): $(rules_list full section)."
   fi
   if [ "$AGENTS_ACTION" != "install" ] && [ "$AGENTS_ACTION" != "force" ] && [ "$AGENTS_ACTION" != "replace" ]; then
-    kept="$(user_headings "$AGENTS_PLAN" | paste -sd ',' - | sed 's/,/, /g')"
+    kept="$(user_headings "$AGENTS_PLAN" | { grep -vxF -- "${AGENTS_SEEDED:-}" || true; } | paste -sd ',' - | sed 's/,/, /g')"
     [ -z "$kept" ] || printf '  %s\n' "Yours, kept as written and still in force: ${kept}."
+    [ -z "${AGENTS_SEEDED:-}" ] || printf '  %s\n' "Added for you to fill: ${AGENTS_SEEDED}."
   fi
   [ -z "$AGENTS_REMOVED" ] || printf '  %s\n' "Removed: ${AGENTS_REMOVED}."
 }

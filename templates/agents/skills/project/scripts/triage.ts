@@ -52,6 +52,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseFrontmatter } from "../../../generators/parse_frontmatter.ts";
 import { listRows, releaseDate, watchDate } from "../../close/scripts/roadmap.ts";
+import { Exit, exit, runToExit } from "../../../packages/cli-exit/cli-exit.ts";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const KINDS = ["blocked", "monitored", "mine"] as const;
@@ -397,10 +398,13 @@ function main(argv: string[]): number {
 }
 
 if (process.argv[1] && realpathSync(resolve(process.argv[1])) === realpathSync(fileURLToPath(import.meta.url))) {
-  try {
-    process.exit(main(process.argv.slice(2)));
-  } catch (err) {
-    process.stderr.write(`triage: ${err instanceof Error ? err.message : String(err)}\n`);
-    process.exit(1);
-  }
+  await runToExit(() => {
+    try {
+      exit(main(process.argv.slice(2)));
+    } catch (err) {
+      if (err instanceof Exit) throw err;
+      process.stderr.write(`triage: ${err instanceof Error ? err.message : String(err)}\n`);
+      exit(1);
+    }
+  });
 }

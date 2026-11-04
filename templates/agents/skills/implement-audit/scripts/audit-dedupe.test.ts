@@ -455,6 +455,32 @@ test("an open blocker stands until a round reviews a change to its file, and the
   );
 });
 
+// A path with a space was read as naming no file, so its blocker closed on any
+// round that changed anything, an unrelated file included (Contextium v9.2.0
+// review).
+test("a blocker whose path holds a space stands until a round reviews a change to that file", () => {
+  const d = repo("blkspace");
+  const env = owner("blkspace");
+  writeFileSync(join(d, ".agents/skills/demo/my file.ts"), "export const m = 1;\n");
+  const t0 = snap(d);
+  assert.match(begin(env, d).out, /RECEIPT=review/);
+  const blocker = "[must-fix] .agents/skills/demo/my file.ts:12: wrong — fix — breaks";
+  assert.equal(run(env, "finish", "--repo", d, "--rc", "0", "--result", result("bs0", [blocker])).out, "APPROVED=0");
+  writeFileSync(join(d, ".agents/skills/demo/b.ts"), "export const b = 2;\n");
+  begin(env, d, "since", ["--since", t0]);
+  const f1 = run(env, "finish", "--repo", d, "--rc", "0", "--result", result("bs1", []));
+  assert.equal(f1.out, "APPROVED=0", "a clean round over b.ts does not close a blocker in 'my file.ts'");
+  assert.match(f1.err, /1 must-fix\/should-fix finding\(s\) unresolved/);
+  const t1 = snap(d);
+  writeFileSync(join(d, ".agents/skills/demo/my file.ts"), "export const m = 2;\n");
+  begin(env, d, "since", ["--since", t1]);
+  assert.equal(
+    run(env, "finish", "--repo", d, "--rc", "0", "--result", result("bs2", [])).out,
+    "APPROVED=1",
+    "a round that reviewed the fix to 'my file.ts' and did not re-report it closes it",
+  );
+});
+
 test("a completed review of the same bytes supersedes an older approval; writer order is not a new writer", () => {
   const d = repo("supersede");
   const env = { ...owner("supersede"), POLICY_CHAIN_AUTHOR_VENDORS: "claude,codex" };

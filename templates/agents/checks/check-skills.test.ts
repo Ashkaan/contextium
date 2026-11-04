@@ -263,6 +263,43 @@ test("metadata.peers must resolve from the repo root, not the skill folder", () 
   expect("ok", "OK — 1 skill(s) checked", "alpha");
 });
 
+// Contextium's own source keeps the layer at templates/agents/, which installs
+// as .agents/: a peer written .agents/… is read beneath templates/agents/, as is
+// AGENTS.md (an install links it to .agents/AGENTS.md), and any other peer from
+// the repo that holds templates/.
+test("metadata.peers in the template layout: .agents/… is read beneath templates/agents/", () => {
+  const repo = join(TMP, "contextium-src");
+  const skills = join(repo, "templates", "agents", "skills");
+  mkdirSync(join(skills, "beta", "scripts"), { recursive: true });
+  mkdirSync(join(repo, "templates", "agents", "agents"), { recursive: true });
+  mkdirSync(join(repo, "docs"), { recursive: true });
+  writeFileSync(join(skills, "beta", "scripts", "run.ts"), "export {};\n");
+  writeFileSync(join(repo, "templates", "agents", "agents", "reviewer.md"), "A reviewer.\n");
+  writeFileSync(join(repo, "docs", "guide.md"), "A guide.\n");
+  writeFileSync(join(repo, "templates", "agents", "AGENTS.md"), "# AGENTS.md\n");
+  const fm = "name: beta\ndescription: Does one thing, and is used when that thing is asked for.";
+  const write = (peers: string): void =>
+    writeFileSync(join(skills, "beta", "SKILL.md"), "---\n" + fm + "\nmetadata:\n  peers: \"" + peers + "\"\n---\n# beta\n");
+  const check = () => {
+    const r = spawnSync(process.execPath, ["--experimental-strip-types", CHECK, join(skills, "beta")], {
+      cwd: repo,
+      env: { ...process.env, SKILLS_ROOT: skills, SKILLS_REF_BIN: VALIDATOR },
+      encoding: "utf8",
+      timeout: 60_000,
+    });
+    return { rc: r.status, out: r.stdout + r.stderr };
+  };
+  write(".agents/skills/beta/scripts/run.ts .agents/agents/reviewer.md docs/guide.md AGENTS.md");
+  const ok = check();
+  assert.equal(ok.rc, 0, ok.out);
+  write(".agents/skills/beta/scripts/gone.ts");
+  const missing = check();
+  assert.equal(missing.rc, 1, missing.out);
+  assert.ok(missing.out.includes("does not exist from the repo root: .agents/skills/beta/scripts/gone.ts"), missing.out);
+  write(".agents/../../../outside.ts");
+  assert.equal(check().rc, 1);
+});
+
 test("metadata.peers refuses missing, absolute and escaping paths", () => {
   for (const peer of ["retired/missing.ts", join(TMP, "a/b.ts"), "../outside.ts"]) {
     makeSkill("alpha", `${MINIMAL}\nmetadata:\n  peers: "${peer}"`);
