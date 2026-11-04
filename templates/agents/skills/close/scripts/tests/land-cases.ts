@@ -4543,8 +4543,11 @@ kase("Case 27: live checks are owed, run and proved before a held close is relea
   is("(d) an owed check whose spec is gone is cleared", owedKeys(), "rows/002-second/ping");
 
   // (e) Nothing records what serves: the fixture's origin is not on GitHub, so
-  // the reader cannot tell which commit is live. An evidence check cannot be
-  // taken, saying why; a command check, which proves itself, still runs.
+  // the reader cannot tell which commit is live. No live check can be tied to
+  // the commit it proves, so every one is refused, saying why. A command check
+  // that passes proves nothing either: with B's deploy failed, a probe of the
+  // still-healthy A succeeds and would release B (fourth v9.2.0 review) — the
+  // fixture's `true` is that probe.
   fixture("c27e");
   seedRows("| R1 | first | — | in-progress | `specs/001-first/` |");
   finishSpec(
@@ -4556,17 +4559,22 @@ kase("Case 27: live checks are owed, run and proved before a held close is relea
   r = liveLand(["--live-start", "rows/001-first/shot"]);
   is("(e) --live-start where nothing records what serves is refused", r.rc, "3");
   has(
-    "(e) …saying what an evidence check needs",
+    "(e) …saying what live checks need",
     r.out,
-    "an evidence check needs a repo whose deploys GitHub records as production deployments",
+    "live checks need a repo whose deploys GitHub records as production deployments",
   );
   r = liveLand(["--release"]);
-  is("(e) the release is refused for the evidence check", r.rc, "3");
-  has("(e) …naming it", r.out, "live check rows/001-first/shot: cannot tell which commit is live on workbench");
-  hasnt("(e) …and not for the command check", r.out, "live check rows/001-first/ping");
+  is("(e) the release is refused", r.rc, "3");
+  has("(e) …naming the evidence check", r.out, "live check rows/001-first/shot: cannot tell which commit is live on workbench");
+  has("(e) …and the command check", r.out, "live check rows/001-first/ping: cannot tell which commit is live on workbench");
   finishSpec("001-first", liveBlock("ping | workbench | command | true"));
   liveLand(["only the command check", "--hold"]);
   r = liveLand(["--release"]);
-  is("(e) with only the command check owed, it releases", r.rc, "0");
-  has("(e) …saying the command passed where nothing records the commit", r.out, "- rows/001-first/ping — `true` passed on workbench (none — ");
+  is("(e) with only a passing command check owed, the release is still refused", r.rc, "3");
+  has(
+    "(e) …naming why",
+    r.out,
+    "live check rows/001-first/ping: cannot tell which commit is live on workbench",
+  );
+  hasnt("(e) …and the command is not reported as passed", r.out, "`true` passed on");
 });

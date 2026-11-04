@@ -613,10 +613,13 @@ async function main(): Promise<void> {
       throw new Error(`cannot read the live revision of ${target}: ${e instanceof Error ? e.message : String(e)}`);
     }
   };
-  // Where nothing records which commit serves, a capture cannot be tied to
-  // one (live-checks.ts's header); a command check proves itself and runs.
+  // Where nothing records which commit serves, no live check can be tied to
+  // the commit it proves (live-checks.ts's header): a capture shows an unknown
+  // deploy, and a command that passes may be probing the last healthy one —
+  // with B's deploy failed, a probe of A succeeded and released B (fourth
+  // v9.2.0 review). Every live check on such a target is refused.
   const cannotTell = (target: string, rev: Revision): string =>
-    `cannot tell which commit is live on ${target} (${rev.deploymentId}) — an evidence check needs a repo whose deploys GitHub records as production deployments; a command check works anywhere`;
+    `cannot tell which commit is live on ${target} (${rev.deploymentId}) — live checks need a repo whose deploys GitHub records as production deployments; a repo without them can still release, but cannot declare live checks`;
 
   // ── An evidence check, recorded in two steps ─────────────────────────────
   //
@@ -1754,26 +1757,24 @@ c.on("exit", (code, sig) => {
       const rev = before.get(o.target);
       if (!rev) continue;
       const live = rev.sourceCommit;
-      if (live === null && o.kind === "evidence") {
+      if (live === null) {
         fails.push(`live check ${o.key}: ${cannotTell(o.target, rev)}`);
         continue;
       }
-      if (live !== null) {
-        const ck = `${o.repo}\t${o.commit}\t${live}`;
-        const has = seen.get(ck) ?? contains(o.repo, o.commit, live);
-        seen.set(ck, has);
-        if (has === "not") {
-          fails.push(
-            `live check ${o.key}: the live ${o.target} does not contain ${short(o.commit)} (it serves ${short(live)})`,
-          );
-          continue;
-        }
-        if (has === "unreadable") {
-          fails.push(`live check ${o.key}: the live ${o.target} serves ${short(live)}, which ${o.repo} does not have`);
-          continue;
-        }
+      const ck = `${o.repo}\t${o.commit}\t${live}`;
+      const has = seen.get(ck) ?? contains(o.repo, o.commit, live);
+      seen.set(ck, has);
+      if (has === "not") {
+        fails.push(
+          `live check ${o.key}: the live ${o.target} does not contain ${short(o.commit)} (it serves ${short(live)})`,
+        );
+        continue;
       }
-      const at = live === null ? `${o.target} (${rev.deploymentId})` : `${o.target} at ${short(rev.deploymentId)}`;
+      if (has === "unreadable") {
+        fails.push(`live check ${o.key}: the live ${o.target} serves ${short(live)}, which ${o.repo} does not have`);
+        continue;
+      }
+      const at = `${o.target} at ${short(rev.deploymentId)}`;
       if (o.kind === "command") {
         // Through timeout(1), which signals the whole process group of the command:
         // a child the command started (a sleep, a server) would otherwise keep

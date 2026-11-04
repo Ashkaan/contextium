@@ -52,9 +52,11 @@
 // When nothing records what serves — an origin not on GitHub, no production
 // deployment, none whose latest status is success — the answer is
 // `sourceCommit: null` ("cannot tell"), never the trunk, which a deploy may
-// still be building or may have failed to ship. So an eyes-only evidence check
-// needs a repo whose deploys GitHub records as production deployments; a
-// command check, which land.ts runs itself on --release, works anywhere.
+// still be building or may have failed to ship. So live checks, command and
+// evidence alike, need a repo whose deploys GitHub records as production
+// deployments: land.ts refuses every one on a target it cannot tell, since a
+// command that passes there may be probing the last healthy deploy. A repo
+// without them can still release, but cannot declare live checks.
 // Deployments that exist but cannot be read are a failure, never "cannot tell".
 //
 // A reader answers what is live NOW, `{deploymentId, sourceCommit}`, never

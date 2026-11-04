@@ -981,14 +981,24 @@ function summary(r: Receipt): string {
  * The location is the backticked path followed by `:<line>`, as findingFile
  * reads one; only without one is it the first backticked file name — a title
  * naming another file first bound the blocker to that file (third review).
- * A line with no backticked path is returned as it came.
+ * Both are looked for after the title (its closing `**`, else the first `: `
+ * or ` — `), and in the title only when none follows: a title holding a
+ * located path (`b.ts:5` callers break) bound the blocker to it (fourth
+ * review). A line with no backticked path is returned as it came.
  */
 function fileFirst(l: string): string {
-  const loc =
-    /`([^`\s][^`]*?:\d+(?:-\d+)?)`/.exec(l) ?? /`([^`\s][^`]*?\.[A-Za-z0-9]+(?::\d+(?:-\d+)?)?)`/.exec(l);
+  const close = l.startsWith("**") ? l.indexOf("**", 2) : -1;
+  const sep = /: | — /.exec(l);
+  const end = close >= 0 ? close + 2 : (sep?.index ?? 0);
+  const find = (from: number): { at: number; whole: string; path: string } | null => {
+    const t = l.slice(from);
+    const m = /`([^`\s][^`]*?:\d+(?:-\d+)?)`/.exec(t) ?? /`([^`\s][^`]*?\.[A-Za-z0-9]+(?::\d+(?:-\d+)?)?)`/.exec(t);
+    return m ? { at: from + m.index, whole: m[0], path: m[1] ?? "" } : null;
+  };
+  const loc = find(end) ?? find(0);
   if (!loc) return l;
-  const rest = `${l.slice(0, loc.index)}${l.slice(loc.index + loc[0].length)}`.replace(/^(\*\*[^*]*\*\*)\s*:\s*(?=—|$)/, "$1 ");
-  return `${loc[1]}: ${rest.trim()}`;
+  const rest = `${l.slice(0, loc.at)}${l.slice(loc.at + loc.whole.length)}`.replace(/^(\*\*[^*]*\*\*)\s*:\s*(?=—|$)/, "$1 ");
+  return `${loc.path}: ${rest.trim()}`;
 }
 
 /**
@@ -1451,14 +1461,18 @@ async function main(): Promise<void> {
           }
           // An earlier blocker stands until a round reviews a change to the file
           // it names (the round is shown it, and re-reports it if unfixed). A
-          // blocker naming no file closes only on a round that changed something.
+          // blocker carrying a location (`<path>:<line>`) that resolves to no
+          // file — unchanged, undeclared, no extension — stands too: dropping
+          // it closed `Makefile:12` on a round over b.ts (fourth v9.2.0
+          // review). Only a blocker with no location closes on a round that
+          // changed something.
           for (const b of prev.blocking ?? []) {
             if (r.blocking.includes(b)) continue;
             const known = [...Object.keys(r.covered), ...Object.keys(prev.covered), ...delta].filter(
               (k) => !k.startsWith("contract:") && !k.includes("::"),
             );
             const file = findingFile(b, known);
-            if (file ? !delta.has(file) : delta.size === 0) r.blocking.push(b);
+            if (file ? !delta.has(file) : delta.size === 0 || /[^\s:]:\d/.test(b)) r.blocking.push(b);
           }
           // The base this round builds on was read by the fresh-context
           // fallback: what the round inherits is NOT independent, as one such

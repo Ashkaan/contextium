@@ -494,15 +494,32 @@ for (const [tag, name] of [
   });
 }
 
-// The control: prose that starts with a word and a colon names no file, even
-// when a located path follows, so its blocker closes on a round that changed
-// something rather than waiting on a file called "Note: …".
-test("a blocker that opens with prose and a colon names no file", () => {
+// A located blocker whose file is neither changed nor covered resolves to no
+// known path, and one with no extension (`Makefile`) matches no other reading:
+// it was dropped on a round that changed only b.ts (fourth v9.2.0 review). A
+// blocker carrying a location stands until a round reviews its file.
+test("a located blocker in an unchanged, undeclared file stands on a round over another file", () => {
+  const d = repo("blkunknown");
+  const env = owner("blkunknown");
+  const t0 = snap(d);
+  assert.match(begin(env, d).out, /RECEIPT=review/);
+  const blocker = "[must-fix] apps/site/Makefile:12: caller not updated — fix — breaks";
+  assert.equal(run(env, "finish", "--repo", d, "--rc", "0", "--result", result("bu0", [blocker])).out, "APPROVED=0");
+  writeFileSync(join(d, ".agents/skills/demo/b.ts"), "export const b = 2;\n");
+  begin(env, d, "since", ["--since", t0]);
+  const f1 = run(env, "finish", "--repo", d, "--rc", "0", "--result", result("bu1", []));
+  assert.equal(f1.out, "APPROVED=0", "a round over b.ts does not close a blocker located in apps/site/Makefile");
+  assert.match(f1.err, /1 must-fix\/should-fix finding\(s\) unresolved/);
+});
+
+// The control: a blocker with no location at all names no file, so it closes
+// on a round that changed something.
+test("a blocker with no location names no file", () => {
   const d = repo("blkprose");
   const env = owner("blkprose");
   const t0 = snap(d);
   assert.match(begin(env, d).out, /RECEIPT=review/);
-  const blocker = "[must-fix] Note: .agents/skills/demo/a.ts:3 is wrong — fix — breaks";
+  const blocker = "[must-fix] Note: the summary is wrong — fix — breaks";
   assert.equal(run(env, "finish", "--repo", d, "--rc", "0", "--result", result("bp0", [blocker])).out, "APPROVED=0");
   writeFileSync(join(d, ".agents/skills/demo/b.ts"), "export const b = 2;\n");
   begin(env, d, "since", ["--since", t0]);
@@ -842,29 +859,39 @@ test("a fallback's numbered finding names its file, and a follow-up keeps NOT in
 
 // A title that mentions another file before the finding's location: the
 // first backticked name was taken, so the blocker in a.ts was bound to b.ts and
-// a round that changed only b.ts cleared it (third v9.2.0 review). The
-// location — the path followed by `:<line>` — is the file.
-test("a fallback finding whose title names another file is bound to its location", () => {
-  const d = repo("fallback-title");
-  const env = owner("fallback-title");
-  writeFileSync(join(d, ".agents/skills/demo/a.ts"), "export const a = 2;\n");
-  const t0 = snap(d);
-  assert.match(begin(env, d).out, /RECEIPT=review/);
-  run(env, "finish", "--repo", d, "--rc", "3");
-  const reply = join(TMP, "fallback-title.txt");
-  writeFileSync(
-    reply,
-    "1. **`.agents/skills/demo/b.ts` callers break**: `.agents/skills/demo/a.ts:12` — wrong — verdict: **fix-now** — failure: breaks — fix it\n",
-  );
-  assert.equal(run(env, "finish", "--repo", d, "--fallback", reply).out, "APPROVED=0");
-  writeFileSync(join(d, ".agents/skills/demo/b.ts"), "export const b = 2;\n");
-  const b1 = begin(env, d, "since", ["--since", t0]);
-  const items = JSON.parse(readFileSync(b1.out.match(/ITEMS_FILE=(.*)/)?.[1] ?? "", "utf8"));
-  assert.match(items.openFindings[0] ?? "", /^\[must-fix\] \.agents\/skills\/demo\/a\.ts:12: /, "the location leads the line");
-  const f = run(env, "finish", "--repo", d, "--rc", "0", "--result", result("fallback-title-1", []));
-  assert.equal(f.out, "APPROVED=0", "a round over b.ts alone does not clear the blocker located in a.ts");
-  assert.match(f.err, /1 must-fix\/should-fix finding\(s\) unresolved/);
-});
+// a round that changed only b.ts cleared it (third v9.2.0 review). A title
+// holding a located path (`b.ts:5`) was still searched first (fourth review).
+// The location after the title is the file.
+for (const [tag, title] of [
+  ["fallback-title", "**`.agents/skills/demo/b.ts` callers break**"],
+  ["fallback-title-loc", "**`.agents/skills/demo/b.ts:5` callers break**"],
+] as const) {
+  test(`a fallback finding whose title is ${title} is bound to its location`, () => {
+    const d = repo(tag);
+    const env = owner(tag);
+    writeFileSync(join(d, ".agents/skills/demo/a.ts"), "export const a = 2;\n");
+    const t0 = snap(d);
+    assert.match(begin(env, d).out, /RECEIPT=review/);
+    run(env, "finish", "--repo", d, "--rc", "3");
+    const reply = join(TMP, `${tag}.txt`);
+    writeFileSync(
+      reply,
+      `1. ${title}: \`.agents/skills/demo/a.ts:12\` — wrong — verdict: **fix-now** — failure: breaks — fix it\n`,
+    );
+    assert.equal(run(env, "finish", "--repo", d, "--fallback", reply).out, "APPROVED=0");
+    writeFileSync(join(d, ".agents/skills/demo/b.ts"), "export const b = 2;\n");
+    const b1 = begin(env, d, "since", ["--since", t0]);
+    const items = JSON.parse(readFileSync(b1.out.match(/ITEMS_FILE=(.*)/)?.[1] ?? "", "utf8"));
+    assert.match(
+      items.openFindings[0] ?? "",
+      /^\[must-fix\] \.agents\/skills\/demo\/a\.ts:12: /,
+      "the location leads the line",
+    );
+    const f = run(env, "finish", "--repo", d, "--rc", "0", "--result", result(`${tag}-1`, []));
+    assert.equal(f.out, "APPROVED=0", "a round over b.ts alone does not clear the blocker located in a.ts");
+    assert.match(f.err, /1 must-fix\/should-fix finding\(s\) unresolved/);
+  });
+}
 
 // The installer links AGENTS.md to .agents/AGENTS.md, so the file a change
 // actually edits is .agents/AGENTS.md: it is an instruction file, reviewed like
