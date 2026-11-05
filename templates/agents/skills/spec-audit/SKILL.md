@@ -62,7 +62,16 @@ independent judgment vendor answered, or the chain reached the authoring model's
 slot) → dispatch the `spirit-check` subagent in a FRESH context with the SPEC
 path instead, and say it answered as a fresh-context fallback, NOT independent.
 
-DRIFT findings get surfaced to the user with the converged SPEC at
+**The fidelity check runs once per `/spec-audit` run.** Never run it again in
+the same run: not after folding its points, not after the user rules on one,
+not "to confirm". A later material rewrite is a new `/spec-audit` run (step-1
+decides), and that run gets its own one check. Each DRIFT or AMBIGUOUS point is settled one of two ways: the spec is
+changed back to the user's words and the summary says what changed, or, when settling
+it needs a choice only they can make, it goes to them at `step-6-present-converged`.
+A second run reads the revised spec as new ground and nearly always finds one
+more small point, so a re-run loop has no natural end.
+
+DRIFT findings not folded get surfaced to the user with the converged SPEC at
 `step-6-present-converged` — except one that disputes a reading the user already
 ruled on in `## Clarifications` (their quoted words): record the reviewer's
 reading in that row's Rejected column and do not surface it, unless it carries
@@ -73,7 +82,7 @@ their trust and settles nothing.
 
 Supply verified original authors after reading `.agents/skills/review/SKILL.md` § Where things are found (including T3 execution lineage) before adversarial review. Preserve that input in round 2 and any child brief; include providers that write revisions. Do not infer authorship from the review executor. Missing provenance is a caller error, not permission to assume Claude.
 
-Run the review — in T3 Code, in a fresh delegated child — with the original writer inputs in the literal command:
+Run the review — in T3 Code, in the same delegated child as `step-3-spirit-check`: one child runs the fidelity check's command, then this one, and returns both outputs, rather than one child each, which doubles the child threads every spec costs. Give the original writer inputs in the literal command:
 
 ```bash
 POLICY_CHAIN_AUTHOR_THREAD_ID="<writing thread id>" POLICY_CHAIN_AUTHOR_VENDORS="<all writer providers>" \
@@ -113,7 +122,7 @@ It replaces the whole `- spec-audit: [...]` list item the plan template holds wi
 
 THEN emit to the user:
 - The converged SPEC (revised in place, plan.md's audit line included)
-- DRIFT findings from `step-3-spirit-check` (if spirit-check returned DRIFT), minus those step-3 recorded as Rejected because the user already ruled on the reading
+- DRIFT findings from `step-3-spirit-check` (if spirit-check returned DRIFT) that need the user's choice, minus those step-3 recorded as Rejected because the user already ruled on the reading; a point already folded back to their words is listed as a correction, never as a decision for them
 - One-line summary: `reviewer consensus: N findings, M accepted, K pushbacks accepted by the reviewer, L escalated. Spirit-check: MATCH | DRIFT | AMBIGUOUS.`
 
 ### `step-7-no-silent-revision`

@@ -439,6 +439,13 @@ describe("check-roadmap-decisions on spec reports", () => {
     assert.match(r.out, /^1 reports checked, 1 parked lines$/m);
   });
 
+  it("refuses a report line waiting for your answer, written as a possessive", () => {
+    const dir = withReport(null, "# Report\n\n- Not done, waiting for your answer on the copy\n");
+    const r = run(dir, "--since", "main");
+    assert.equal(r.code, 1, r.out);
+    assert.match(r.err, /report\.md:3: "waiting for your"/);
+  });
+
   it("leaves alone a parked line the report already held", () => {
     const old = "# Report\n\n- R1 waits on the user\n";
     const dir = withReport(old, `${old}- a new deviation, settled\n`);

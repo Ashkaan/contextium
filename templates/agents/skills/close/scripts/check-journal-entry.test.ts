@@ -1284,6 +1284,12 @@ test("f11: the user's own words under Corrections, and an act under Blocked, pas
   assert.equal(r.rc, 0, r.out);
 });
 
+test("f11: a wait on your approval, written as a possessive, blocks", () => {
+  const r = f11("f11-possessive", "**Findings:**\n- the footer change is pending your approval");
+  assert.notEqual(r.rc, 0);
+  assert.ok(r.out.includes("F11") && r.out.includes("pending your"), r.out);
+});
+
 test("f11: wording on the label line itself blocks", () => {
   const r = f11("f11-inline", "**Changes:** waiting on the user to decide the footer");
   assert.notEqual(r.rc, 0);

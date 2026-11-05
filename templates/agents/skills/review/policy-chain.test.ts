@@ -36,7 +36,9 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { after, test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { DatabaseSync } from "node:sqlite";
+// node:sqlite through a child Node that has it (tests/sqlite-child.ts): on
+// Node 22.5–22.12 it loads only behind a flag this suite cannot give itself.
+import { DatabaseSync } from "../close/scripts/tests/sqlite-child.ts";
 import { policyRunChain, spawnCapped, type Validator } from "./policy-chain.ts";
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));

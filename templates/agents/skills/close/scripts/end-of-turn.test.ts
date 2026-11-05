@@ -484,3 +484,40 @@ test("--pause after a refused second close (closed-once only) records the pause"
   assert.equal(r.code, 0, r.stderr);
   assert.ok(existsSync(t.file("paused")) && existsSync(t.file("reopened")));
 });
+
+// Every case above names its thread with WORKBENCH_THREAD_ID. A session whose
+// harness exports no id gets one thread.ts generates for its checkout, and a
+// new one once that id's close has landed — so the hook that ran right after
+// the close asked thread.ts, got the new id, read its empty state and let a
+// reply without the saved proof through (Contextium v9.2.0 review). The hook
+// and --pause ask for the id the checkout names now, without starting a new
+// one; any other caller still starts a new session after a close.
+test("an id-less session's close is checked by the hook that follows it, with no WORKBENCH_THREAD_ID", () => {
+  const home = join(ROOT, "native-home");
+  const repo = join(ROOT, "native-repo");
+  mkdirSync(repo, { recursive: true });
+  spawnSync("git", ["init", "-q", "-b", "main", repo]);
+  const env: NodeJS.ProcessEnv = { ...process.env, HOME: home, T3CODE_HOME: join(home, "no-t3") };
+  for (const k of ["WORKBENCH_THREAD_ID", "CONTEXTIUM_SESSION", "CLAUDE_CODE_SESSION_ID", "CLAUDE_SESSION_ID", "WORKBENCH_REVIEW_SLOT", "END_OF_TURN_TEST_COVERED"])
+    delete env[k];
+  const node = (script: string, args: string[], input = "") =>
+    spawnSync(process.execPath, ["--experimental-strip-types", script, ...args], { cwd: repo, env, input, encoding: "utf8" });
+  const first = node(join(HERE, "thread.ts"), ["--id"]);
+  assert.equal(first.status, 0, first.stderr);
+  const sid = first.stdout.trim();
+  assert.match(sid, /^session-/);
+  const state = join(home, ".cache", "workbench", "threads", sid);
+  writeFileSync(join(state, "closed"), "");
+  writeFileSync(join(state, "report"), REPORT);
+  const p = JSON.stringify({ ...payload("claude", "Done."), cwd: repo });
+  const r = node(SCRIPT, ["--harness", "claude"], p);
+  assert.equal(r.status, 2, `the reply without the proof is refused: ${r.stderr}`);
+  assert.match(r.stderr, /does not carry its close report/);
+  const ok = node(SCRIPT, ["--harness", "claude"], JSON.stringify({ ...payload("claude", `Closed.\n\n${PROOF}`), cwd: repo }));
+  assert.equal(ok.status, 0, ok.stderr);
+  const asked = node(SCRIPT, ["--pause", "Ship the copy as is?"]);
+  assert.equal(asked.status, 0, `--pause reaches the session that closed: ${asked.stderr}`);
+  assert.ok(existsSync(join(state, "reopened")));
+  const next = node(join(HERE, "thread.ts"), ["--id"]);
+  assert.notEqual(next.stdout.trim(), sid, "any other caller still starts a new session after the close");
+});

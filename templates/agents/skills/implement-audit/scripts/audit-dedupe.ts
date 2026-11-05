@@ -709,27 +709,67 @@ const GAP_WORDS: Record<string, string> = {
   "#pieces": "the rest of the change: this round built on one piece of an incomplete piece set",
 };
 
-/** The file a triage line names first (`[must-fix] a.ts:12: …`), or null.
- *  The first location in a finding decides its file: the `<path>:<line>`
- *  leading the line after its tag, with or without an extension, even when
- *  it names no file the review knows. Read anywhere else, a later citation
- *  won: `apps/site/Makefile:12: calls b.ts:5` was bound to b.ts and closed
- *  by a round over b.ts (final v9.2.0 review). At the leading position the
- *  longest <known> path (the paths the review covered or changed) followed by
- *  `:<line>` is taken first — the only reading of a path holding `: `
- *  (`x: y é.ts:12:`); otherwise the whole path before its line, spaces and
- *  colons included (`src/my file.ts:12:`, `src/x:y é.ts:12:`), but never
- *  across a colon followed by a space, so prose (`Note: … a.ts:12`) leads
- *  with no location. Only a line with no leading location falls back to the
- *  first <known> path it names followed by `:<line>`, then to a leading
- *  file name with no line, which holds no colon at all. */
+/** The path-like token leading <text>, or null: the one rule for the file a
+ *  finding names, used by findingFile here and by every caller that reads a
+ *  finding's location (a fallback reviewer's numbered line, read after its
+ *  title). Reading a location anywhere else let a later citation win:
+ *  `a.ts: incorrect call to b.ts:5` was bound to b.ts and closed by a round
+ *  over b.ts (Contextium v9.2.0 review). The token is the text up to the first
+ *  whitespace, backtick or quote, an opening backtick or quote skipped: with a
+ *  `:<line>` it is whatever precedes the line (`Makefile:12`, `localhost:3000`);
+ *  without one it is a path when it holds a `/` or ends in an extension and
+ *  holds no colon, so prose (`Note:`) and `node:sqlite` lead with none. A name
+ *  holding a space or colon (`x: y é.ts`) is only ever one of <known> (the
+ *  paths the review covered or changed), matched at the same leading position,
+ *  longest first. A markdown link (`[a.ts:9](/abs/a.ts:9)`) is read by its text.
+ *  `loc` is the path with its line; `end` is where the token, with any
+ *  closing backtick, quote or link target, ends in <text>. */
+export function leadingPath(
+  text: string,
+  known: Iterable<string> = [],
+): { path: string; loc: string; end: number } | null {
+  const link = /^\[([^\]\s][^\]]*)\]\([^)\s]*\)/.exec(text);
+  if (link) {
+    const inner = leadingPath(link[1] ?? "", known);
+    return inner ? { ...inner, end: link[0].length } : null;
+  }
+  const open = /^[`'"(]?/.exec(text)?.[0].length ?? 0;
+  const t = text.slice(open);
+  const shut = open > 0 ? (text[0] === "(" ? ")" : text[0]) : "";
+  const close = (n: number): number => open + n + (shut !== "" && t[n] === shut ? 1 : 0);
+  let spaced: { path: string; loc: string; n: number } | null = null;
+  for (const p of known) {
+    if (!/[\s:]/.test(p) || !t.startsWith(p)) continue;
+    const m = /^(?::\d+(?:[-:]\d+)*)?(?=[`'",;:)\s]|$)/.exec(t.slice(p.length));
+    if (m && (spaced === null || p.length > spaced.path.length))
+      spaced = { path: p, loc: p + m[0], n: p.length + m[0].length };
+  }
+  if (spaced) return { path: spaced.path, loc: spaced.loc, end: close(spaced.n) };
+  const raw = /^[^\s`'",;]+/.exec(t)?.[0] ?? "";
+  // Trailing punctuation is not the path's: a sentence's `.` or `:`, and a `)`
+  // that closes nothing the token opened (`app/(group)/page.tsx` keeps its own).
+  let tok = raw;
+  const opens = (x: string): number => x.split("(").length - x.split(")").length;
+  while (/[.:]$/.test(tok) || (tok.endsWith(")") && opens(tok) < 0)) tok = tok.slice(0, -1);
+  const lined = /^(.+?)(:\d+(?:[-:]\d+)*)$/.exec(tok);
+  if (lined && /[A-Za-z._/]/.test(lined[1] ?? ""))
+    return { path: lined[1] as string, loc: tok, end: close(tok.length) };
+  if (tok !== "" && !tok.includes(":") && /[A-Za-z0-9]/.test(tok) && (tok.includes("/") || /\.[A-Za-z0-9]+$/.test(tok)))
+    return { path: tok, loc: tok, end: close(tok.length) };
+  return null;
+}
+
+/** The file a triage line names (`[must-fix] a.ts:12: …`), or null: the path
+ *  leadingPath reads right after its tag. Only a line with no leading
+ *  path-like token falls back to the first <known> path it names followed by
+ *  `:<line>` anywhere in it. */
 export function findingFile(line: string, known: Iterable<string> = []): string | null {
   const body = line.replace(/^\[[a-z-]+\]\s*/, "");
-  let lead: string | null = null;
+  const lead = leadingPath(body, known);
+  if (lead) return lead.path;
   let best: { at: number; p: string } | null = null;
   for (const p of known) {
     if (p === "") continue;
-    if (body.startsWith(p) && /^:\d/.test(body.slice(p.length)) && (lead === null || p.length > lead.length)) lead = p;
     for (let at = body.indexOf(p); at >= 0; at = body.indexOf(p, at + 1)) {
       if (at > 0 && !/[\s`'"(\[]/.test(body[at - 1] ?? "")) continue;
       if (!/^:\d/.test(body.slice(at + p.length))) continue;
@@ -737,13 +777,7 @@ export function findingFile(line: string, known: Iterable<string> = []): string 
       break;
     }
   }
-  if (lead !== null) return lead;
-  const located =
-    body.match(/^(\S(?:(?!:\s).)*?\.[A-Za-z0-9]+):\d+(?:-\d+)?(?=[:\s,;]|$)/) ??
-    body.match(/^(\S(?:(?!:\s).)*?):\d+(?:-\d+)?(?=[:\s,;]|$)/);
-  if (located) return located[1] ?? null;
-  if (best !== null) return best.p;
-  return body.match(/^([^:\s][^:]*?\.[A-Za-z0-9]+):/)?.[1] ?? null;
+  return best?.p ?? null;
 }
 
 /** Why a receipt does not describe this content, or [] when it does. */
@@ -981,49 +1015,29 @@ function summary(r: Receipt): string {
 }
 
 /**
- * A numbered finding (`**title**: \`a.ts:12\` — nature — …`) as a triage line's
- * tail, file first (`a.ts:12: **title** — nature — …`), so findingFile reads
- * the file it names. Kept title-first, the finding named no file, and a later
- * round that changed only another file cleared it (Contextium v9.2.0 review).
- * The location is the first path followed by `:<line>`, backticked or not
- * (a bare one in the title holds a `.` or `/`; after the title any bare
- * `<name>:<line>` whose name holds a letter, `.` or `/`, such as
- * `Makefile:12`), as findingFile reads one; only without one is it the first
- * backticked file name — a title naming another file first bound the blocker
- * to that file (third review).
- * Both are looked for after the title (its closing `**`, else the first `: `
- * or ` — `), and in the title only when none follows: a title holding a
- * located path (`b.ts:5` callers break) bound the blocker to it (fourth
- * review). A location after the title written without backticks lost to a
- * title citation, which went to the front and so became the finding's file
- * (final review), and so did one with no extension (`Makefile:12`), which
- * needed a `.` or `/` to count. A bare one counts only in the location —
- * right after the title, up to the first ` — ` — never in the description:
- * `localhost:3000` there took the finding from its backticked `a.ts`. A line
- * with no path is returned as it came.
+ * A numbered finding of the fallback reviewer's format (`N. **title**: `a.ts:12` —
+ * nature — …`) with its location moved to the front (`a.ts:12: **title** — …`),
+ * so findingFile reads the file it names. Kept title-first, the finding named
+ * no file, and a later round that changed only another file cleared it.
+ * The location is what leadingPath — the one rule findingFile applies after a
+ * triage tag — reads right after the title (its closing `**`, else the first
+ * `: ` or ` — `): the first path-like token, backticked or bare, with or without
+ * a line, extension or not (`Makefile:12`). Searched for anywhere else, a
+ * later citation won: a title naming `b.ts:5`, a description citing it, or a
+ * description's `localhost:3000` each took the finding from its own file
+ * (Contextium v9.2.0 reviews). A line with nothing path-like after its title is
+ * returned as it came, and findingFile's own fallback reads it.
  */
 function fileFirst(l: string): string {
   const close = l.startsWith("**") ? l.indexOf("**", 2) : -1;
   const sep = /: | — /.exec(l);
-  const end = close >= 0 ? close + 2 : (sep?.index ?? 0);
-  const dash = l.indexOf(" — ", close >= 0 || !sep ? end : end + sep[0].length);
-  const locEnd = dash >= 0 ? dash : l.length;
-  const find = (from: number, bare: string): { at: number; whole: string; path: string } | null => {
-    const t = l.slice(from);
-    const re = new RegExp(
-      `\`([^\`\\s][^\`]*?:\\d+(?:-\\d+)?)\`|(?<![^\\s(])((?=[^\\s\`*():]*${bare})[^\\s\`*():]+:\\d+(?:-\\d+)?)(?=[\\s,;:)]|$)`,
-      "g",
-    );
-    let m = re.exec(t);
-    // A bare match (group 2) past the location is in the description: skip it.
-    while (m && m[1] === undefined && from + m.index >= locEnd) m = re.exec(t);
-    m ??= /`([^`\s][^`]*?\.[A-Za-z0-9]+(?::\d+(?:-\d+)?)?)`/.exec(t);
-    return m ? { at: from + m.index, whole: m[0], path: m[1] ?? m[2] ?? "" } : null;
-  };
-  const loc = find(end, "[./A-Za-z]") ?? find(0, "[./]");
+  const end = close >= 0 ? close + 2 : sep ? sep.index + sep[0].length : 0;
+  const at = end + (/^[\s:—]*/.exec(l.slice(end))?.[0].length ?? 0);
+  const loc = leadingPath(l.slice(at));
   if (!loc) return l;
-  const rest = `${l.slice(0, loc.at)}${l.slice(loc.at + loc.whole.length)}`.replace(/^(\*\*[^*]*\*\*)\s*:\s*(?=—|$)/, "$1 ");
-  return `${loc.path}: ${rest.trim()}`;
+  const head = l.slice(0, at).replace(/[\s:—]+$/, "");
+  const tail = l.slice(at + loc.end).replace(/^[\s:]+/, "");
+  return `${loc.loc}: ${tail === "" ? head : `${head} ${tail}`}`;
 }
 
 /**

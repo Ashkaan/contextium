@@ -53,7 +53,9 @@ only the deployed thing can answer in one `live-checks` block, one per line —
 `<id> | <target> | command | <shell command>` (the close runs it) or
 `<id> | <target> | evidence | <what the capture must show>` (judged by eye and
 recorded with a file). `<target>` is `workbench` (the repo holding the spec) or
-`repo:<owner>/<name>` (another repo this close lands in). The close holds until
+`repo:<owner>/<name>` (another repo this close lands in), either followed by
+`@<environment>` when the repo deploys to more than one GitHub environment
+(`workbench@docs`). The close holds until
 each passes on what is live; the form's owner is
 `.agents/skills/close/scripts/live-checks.ts`. Write the resolved command in the
 produced spec's `live-checks` fence; there is no generic command to copy before

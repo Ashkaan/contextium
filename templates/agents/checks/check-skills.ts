@@ -90,7 +90,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, posix, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { exit, runToExit } from "../packages/cli-exit/cli-exit.ts";
 import { yamlScalar } from "./yaml-scalar.ts";
@@ -645,12 +645,23 @@ function checkSkill(dir: string, validatorBin: string, home: string, peerRoot: P
             violation(name, "metadata.peers must be a non-empty string — name the peers or drop the key");
           } else {
             for (const peer of f.value.trim().split(/\s+/)) {
+              // The peer as an install reads it, before the template layout
+              // remaps it: remapped first, .agents/../../docs/guide.md landed on
+              // this repo's docs/ and passed, though installed it climbs out of
+              // the repo (Contextium v9.2.0 review).
+              const installed = posix.normalize(peer);
               const abs =
-                peerRoot.layer !== null && (peer.startsWith(".agents/") || peer === "AGENTS.md")
-                  ? join(peerRoot.layer, peer.replace(/^\.agents\//, ""))
-                  : resolve(peerRoot.root, peer);
+                peerRoot.layer !== null && (installed.startsWith(".agents/") || installed === "AGENTS.md")
+                  ? join(peerRoot.layer, installed.replace(/^\.agents\//, ""))
+                  : resolve(peerRoot.root, installed);
               const rel = relative(peerRoot.root, abs);
-              if (isAbsolute(peer) || rel === ".." || rel.startsWith("../")) {
+              if (
+                isAbsolute(peer) ||
+                installed === ".." ||
+                installed.startsWith("../") ||
+                rel === ".." ||
+                rel.startsWith("../")
+              ) {
                 violation(name, `metadata.peers path must stay relative to the repo root: ${peer}`);
                 continue;
               }

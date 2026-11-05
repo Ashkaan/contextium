@@ -428,6 +428,70 @@ test("a history longer than the read limit is refused, even with a success insid
   assert.deepEqual(JSON.parse(exact.out), { deploymentId: "deployment 1000", sourceCommit: C }, "exactly the limit is the whole history");
 });
 
+// Two production environments (a site and its docs, say) each serve their
+// own latest success, so with nothing to pick between them the newest success
+// across both was named, and a check could pass against the other site
+// (Contextium v9.2.0 review). Their commits differing is "cannot tell" unless
+// the target names one: `workbench@<environment>`, `repo:<owner>/<name>@<environment>`.
+test("two production environments serving different commits: cannot tell, unless the target names one", () => {
+  const two = (docsSha: string) =>
+    ghStub({
+      [`${DEPS}1`]: [
+        { id: 21, sha: D, environment: "docs", production_environment: true },
+        { id: 20, sha: C, environment: "production" },
+        { id: 19, sha: docsSha, environment: "github-pages" },
+      ],
+      [statuses(21)]: [{ id: 903, state: "inactive", created_at: "2026-11-03T00:00:00Z" }],
+      [statuses(20)]: [{ id: 901, state: "success", created_at: "2026-11-01T00:00:00Z" }],
+      [statuses(19)]: [{ id: 902, state: "success", created_at: "2026-11-02T00:00:00Z" }],
+    });
+  const repo = onGithub();
+  const differ = two(D);
+  const r = sut(["revision", "workbench", repo], differ);
+  assert.equal(r.rc, 0, r.err);
+  const rev = JSON.parse(r.out) as { deploymentId: string; sourceCommit: string | null };
+  assert.equal(rev.sourceCommit, null, "two environments, two commits: cannot tell");
+  assert.match(rev.deploymentId, /^none — .*production.*github-pages.*name one/);
+  assert.deepEqual(JSON.parse(sut(["revision", "workbench@production", repo], differ).out), {
+    deploymentId: "deployment 20",
+    sourceCommit: C,
+  });
+  assert.deepEqual(JSON.parse(sut(["revision", "workbench@github-pages", repo], differ).out), {
+    deploymentId: "deployment 19",
+    sourceCommit: D,
+  });
+  const same = JSON.parse(sut(["revision", "workbench", repo], two(C)).out);
+  assert.equal(same.sourceCommit, C, "both environments serve one commit: that commit");
+  assert.equal(sut(["source", "repo:acme/site@docs"]).out, "acme/site", "the environment is not part of the repo");
+  const bad = sut(["parse", tasks(block("a | workbench@ | command | true"))]);
+  assert.equal(bad.rc, 1, "an empty environment is refused at parse");
+});
+
+// Two successes stamped the same second: GitHub's created_at has no finer
+// grain, so the newer deployment was whichever was read first. The status ids
+// GitHub assigns in order decide; without them the close cannot tell.
+test("successes at the same time are ordered by status id, and without ids cannot be told apart", () => {
+  const tied = (ids: boolean) =>
+    ghStub({
+      [`${DEPS}1`]: [
+        { id: 12, sha: D, environment: "production" },
+        { id: 11, sha: C, environment: "production" },
+      ],
+      [statuses(12)]: [{ ...(ids ? { id: 700 } : {}), state: "success", created_at: "2026-11-01T10:00:00Z" }],
+      [statuses(11)]: [{ ...(ids ? { id: 701 } : {}), state: "success", created_at: "2026-11-01T10:00:00Z" }],
+    });
+  const repo = onGithub();
+  assert.deepEqual(JSON.parse(sut(["revision", "workbench", repo], tied(true)).out), {
+    deploymentId: "deployment 11",
+    sourceCommit: C,
+  });
+  const r = sut(["revision", "workbench", repo], tied(false));
+  assert.equal(r.rc, 0, r.err);
+  const rev = JSON.parse(r.out) as { deploymentId: string; sourceCommit: string | null };
+  assert.equal(rev.sourceCommit, null, "a tie no status id orders is cannot tell");
+  assert.match(rev.deploymentId, /^none — .*same time/);
+});
+
 // GitHub marks earlier successes inactive only outside production
 // (auto_inactive, "Create a deployment status"), so several production
 // deployments can all read success. The one serving is the one whose success

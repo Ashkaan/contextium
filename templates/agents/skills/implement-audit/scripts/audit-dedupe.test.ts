@@ -530,6 +530,34 @@ test("a located blocker citing another, changed file stays bound to its leading 
   assert.match(f1.err, /1 must-fix\/should-fix finding\(s\) unresolved/);
 });
 
+// A finding's file is the first path-like token after its tag, with or without
+// a line: one leading with .agents/skills/demo/a.ts and no line, citing the changed
+// .agents/skills/demo/b.ts:5 later, was bound to b.ts and closed by a round over b.ts
+// (Contextium v9.2.0 review); so was an extensionless apps/site/Makefile.
+for (const [tag, lead] of [
+  ["blkleadnoline", ".agents/skills/demo/a.ts"],
+  ["blkleadnoext", "apps/site/Makefile"],
+] as const) {
+  test(`a blocker leading with ${lead} and no line stays bound to it, not a later b.ts:5`, () => {
+    const d = repo(tag);
+    const env = owner(tag);
+    writeFileSync(join(d, ".agents/skills/demo/a.ts"), "export const a = 2;\n");
+    writeFileSync(join(d, ".agents/skills/demo/b.ts"), "export const b = 1;\n");
+    const t0 = snap(d);
+    assert.match(begin(env, d).out, /RECEIPT=review/);
+    const blocker = `[should-fix] ${lead}: incorrect call to .agents/skills/demo/b.ts:5 — fix — breaks`;
+    assert.equal(
+      run(env, "finish", "--repo", d, "--rc", "0", "--result", result(`${tag}0`, [blocker])).out,
+      "APPROVED=0",
+    );
+    writeFileSync(join(d, ".agents/skills/demo/b.ts"), "export const b = 2;\n");
+    begin(env, d, "since", ["--since", t0]);
+    const f1 = run(env, "finish", "--repo", d, "--rc", "0", "--result", result(`${tag}1`, []));
+    assert.equal(f1.out, "APPROVED=0", `a round over b.ts does not close a blocker leading with ${lead}`);
+    assert.match(f1.err, /1 must-fix\/should-fix finding\(s\) unresolved/);
+  });
+}
+
 // The control: a blocker with no location at all names no file, so it closes
 // on a round that changed something.
 test("a blocker with no location names no file", () => {
@@ -966,6 +994,32 @@ test("a fallback finding located at a bare extensionless Makefile:12 is bound to
   assert.match(items.openFindings[0] ?? "", /^\[must-fix\] Makefile:12: /, "the extensionless location leads the line");
   const f = run(env, "finish", "--repo", d, "--rc", "0", "--result", result("fallback-lead-noext-1", []));
   assert.equal(f.out, "APPROVED=0", "a round over b.ts alone does not clear the blocker located in Makefile");
+  assert.match(f.err, /1 must-fix\/should-fix finding\(s\) unresolved/);
+});
+
+// A finding's file is the first path-like token after its title, with or
+// without a line: a location written `a.ts` with no line, whose description
+// cites the backticked `b.ts:5`, was bound to b.ts and cleared by a round
+// over b.ts (Contextium v9.2.0 review). One rule reads every finding:
+// leadingPath, which findingFile applies after a triage tag.
+test("a fallback finding located at a.ts with no line stays bound to it, not a later `b.ts:5`", () => {
+  const d = repo("fallback-lead-noline");
+  const env = owner("fallback-lead-noline");
+  const t0 = snap(d);
+  assert.match(begin(env, d).out, /RECEIPT=review/);
+  run(env, "finish", "--repo", d, "--rc", "3");
+  const reply = join(TMP, "fallback-lead-noline.txt");
+  writeFileSync(
+    reply,
+    "1. **Bad call**: .agents/skills/demo/a.ts — calls `.agents/skills/demo/b.ts:5` with the old shape — verdict: **fix-now**\n",
+  );
+  assert.equal(run(env, "finish", "--repo", d, "--fallback", reply).out, "APPROVED=0");
+  writeFileSync(join(d, ".agents/skills/demo/b.ts"), "export const b = 2;\n");
+  const b1 = begin(env, d, "since", ["--since", t0]);
+  const items = JSON.parse(readFileSync(b1.out.match(/ITEMS_FILE=(.*)/)?.[1] ?? "", "utf8"));
+  assert.match(items.openFindings[0] ?? "", /^\[must-fix\] \.agents\/skills\/demo\/a\.ts: \*\*Bad call\*\* — calls /);
+  const f = run(env, "finish", "--repo", d, "--rc", "0", "--result", result("fallback-lead-noline-1", []));
+  assert.equal(f.out, "APPROVED=0", "a round over b.ts alone does not clear the blocker located in a.ts");
   assert.match(f.err, /1 must-fix\/should-fix finding\(s\) unresolved/);
 });
 

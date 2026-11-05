@@ -254,6 +254,33 @@ git(R1, "commit", "-qm", "init");
   test("a sibling doc no page imports is still not a target", () => assert.equal(unread.out, ""));
 }
 
+// ── A document a page imports, wherever it lives ──────────────────────
+{
+  // A changed file reaching no web app of its own entered the import walk only
+  // when it was code, so packages/docs/README.md, which an Astro page renders,
+  // sent no app to /qa (Contextium v9.2.0 review). Every such file is walked to
+  // its importers, documents included; one nothing imports still sends none.
+  const RX = newRepo("doc-shared");
+  makeAstro(join(RX, "apps/site"));
+  put(join(RX, "packages/docs/README.md"), "# shared docs\n");
+  put(join(RX, "packages/docs/guide.mdx"), "# guide\n");
+  put(join(RX, "packages/docs/notes.txt"), "notes\n");
+  put(join(RX, "packages/docs/unused.md"), "# unused\n");
+  put(
+    join(RX, "apps/site/src/pages/docs.astro"),
+    'import { Content } from "../../../../packages/docs/README.md";\nimport Guide from "../../../../packages/docs/guide.mdx";\nimport notes from "../../../../packages/docs/notes.txt?raw";\n<Content />\n',
+  );
+  git(RX, "add", "-A");
+  git(RX, "commit", "-qm", "init");
+  for (const doc of ["README.md", "guide.mdx", "notes.txt"]) {
+    const r = run(["--repo", RX, `packages/docs/${doc}`]);
+    test(`packages/docs/${doc}, which a page imports, makes that app a target`, () =>
+      assert.equal(r.out, join(RX, "apps/site"), r.err));
+  }
+  const none = run(["--repo", RX, "packages/docs/unused.md"]);
+  test("a shared document no page imports sends no app", () => assert.equal(none.out, ""));
+}
+
 // ── 2 targets ─────────────────────────────────────────────────────────
 
 const R2 = newRepo("two");

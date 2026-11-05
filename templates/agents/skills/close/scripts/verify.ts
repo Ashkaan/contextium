@@ -21,8 +21,10 @@
 // is a different animal — the narrow rule yields NOTHING, prints "no app files
 // changed", and exits 0 having verified precisely nothing, while the apps that
 // consume the change go unchecked. So when, and only when, the direct set is
-// empty, this falls back to the apps that import the changed files. The fan-out
-// is still capped — past IMPORTER_CAP the apps are NAMED as unverified rather
+// empty, this falls back to the units that import the changed files — apps,
+// integrations and packages, followed through shared code in turn by the
+// closure land.ts's merged-tree check also uses (importers.ts). The fan-out
+// is still capped — past IMPORTER_CAP the units are NAMED as unverified rather
 // than run, because a close that takes ten minutes is its own kind of failure.
 //
 // WHAT COUNTS AS VERIFIED. An app's own `check` and `test` scripts, run from its
@@ -112,6 +114,7 @@
 // and, halting at once with exit 1:
 //   FAIL verify — could not register <worktree>: <write-root's reason>
 //   FAIL verify — could not list the changed files in <worktree>: git <args>: <reason>
+//   FAIL verify — could not read the importers of the shared code <worktree> changed: <reason>
 //
 // and one line per skill unit (`<unit>` below is `.agents/skills/<folder>`,
 // `.agents/skills/(root)`, `.agents/checks` or `.agents/generators`):
@@ -151,6 +154,7 @@
 //
 // peers:
 //   .agents/skills/close/scripts/verify.test.ts
+//   .agents/skills/close/scripts/importers.ts    (who imports what changed; land.ts reads it too)
 //   .agents/skills/close/scripts/write-root.sh   (writes the ledger walked here)
 //
 // Exit: 0 all green (or nothing to verify) · 1 at least one FAIL · 2 no thread
@@ -178,6 +182,7 @@ import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { exit, runToExit } from "../../../packages/cli-exit/cli-exit.ts";
+import { importerClosure, sharedUnit } from "./importers.ts";
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const THREAD = join(SCRIPT_DIR, "thread.ts");
@@ -391,26 +396,19 @@ function sharedPathsFor(wt: string): string[] {
   });
 }
 
-// Which apps import this path? Imports in this repo are relative and carry the
-// extension (`../../../../integrations/komodo/komodo.ts` from an app's `src/`,
-// four levels below the root), so the repo-relative path is a literal substring
-// of the import specifier. A fixed-string grep is therefore both sufficient and
-// immune to the path's dots being read as regex.
-function importersOf(wt: string, rel: string): string[] {
-  if (!isDir(`${wt}/apps`)) return [];
-  const g = out("grep", [
-    "-rlF",
-    "--include=*.ts",
-    "--include=*.tsx",
-    "--include=*.mjs",
-    "--include=*.js",
-    "--",
-    rel,
-    `${wt}/apps`,
-  ]);
-  return sortUnique(
-    g.stdout.split("\n").flatMap((line) => appOf(wt, line.startsWith(`${wt}/`) ? line.slice(wt.length + 1) : line)),
-  );
+// Which units import what changed? importers.ts answers for land.ts's
+// merged-tree check too: every code file under apps/, integrations/ and
+// packages/ reading a changed shared file, through a barrel or another shared
+// module in turn. Each importer's unit is its app (appOf) or its
+// `integrations/<name>` / `packages/<name>`. Matched only by the changed file's
+// own path, and only in apps/, an app importing a package's index.ts, which
+// re-exports the changed p.ts, was never verified (Contextium v9.2.0 review).
+function importerUnitsOf(wt: string, changed: string[]): { apps: string[]; shared: string[] } {
+  const files = importerClosure(wt, changed);
+  return {
+    apps: sortUnique(files.flatMap((p) => appOf(wt, p))),
+    shared: sortUnique(files.flatMap((p) => sharedUnit(p) ?? [])),
+  };
 }
 
 /** Run `argv` in `cwd` with stdout and stderr both in `log`; its exit status. */
@@ -1118,15 +1116,21 @@ async function main(): Promise<void> {
   mkdirSync(LOGS, { recursive: true });
   const rows = ledgerRows(LEDGER);
   const SEEN: string[] = [];
-  // The second app of one name (another repo's apps/web/site) logs under its
-  // repo's folder, so its log does not overwrite the first one's.
-  const NAMES = new Set<string>();
-  const logsFor = (wt: string, app: string): string => {
-    if (!NAMES.has(app)) {
-      NAMES.add(app);
-      return LOGS;
-    }
-    const dir = join(LOGS, basename(wt));
+  // The integrations and packages pass 1 verified, so pass 2 runs none twice.
+  const SHARED_SEEN = new Set<string>();
+  // The first worktree to log a unit's name logs in LOGS; another worktree
+  // logging the same name (another repo's apps/web/site) logs under a folder
+  // keyed by its full path, so neither overwrites the other. Keyed by the
+  // folder's basename, two product worktrees of one name shared a folder and
+  // the second FAIL line's log held the third repo's output (Contextium
+  // v9.2.0 review).
+  const NAMES = new Map<string, string>();
+  const logsFor = (wt: string, unit: string): string => {
+    const first = NAMES.get(unit);
+    if (first === undefined) NAMES.set(unit, wt);
+    if (first === undefined || first === wt) return LOGS;
+    const id = createHash("sha256").update(resolve(wt)).digest("hex").slice(0, 12);
+    const dir = join(LOGS, `${basename(wt)}-${id}`);
     mkdirSync(dir, { recursive: true });
     return dir;
   };
@@ -1166,7 +1170,8 @@ async function main(): Promise<void> {
         const found = findSuites(`${wt}/${integ}`, false, "*.test.ts");
         if (!isDir(`${wt}/${integ}`) || (found.rc === 0 && found.suites.length === 0)) continue;
       }
-      await verifyUnit(LOGS, wt, integ, integ);
+      await verifyUnit(logsFor(wt, integ), wt, integ, integ);
+      SHARED_SEEN.add(`${wt}\0${integ}`);
     }
   }
 
@@ -1201,7 +1206,7 @@ async function main(): Promise<void> {
       };
       if (!moved.some((p) => !ownSuite(p))) continue;
     }
-    await verifyUnit(LOGS, wt, ".", basename(shared || wt));
+    await verifyUnit(logsFor(wt, basename(shared || wt)), wt, ".", basename(shared || wt));
   }
 
   // ── Pass 2: nothing moved in any app, but shared code did ──────────────────
@@ -1212,19 +1217,35 @@ async function main(): Promise<void> {
   if (SEEN.length === 0) {
     const CAP = process.env.VERIFY_IMPORTER_CAP || "8";
     const candidates: { wt: string; app: string }[] = [];
+    const sharedCandidates: { wt: string; unit: string }[] = [];
     for (const { wt } of rows) {
       if (wt === "" || !isDir(wt)) continue;
-      for (const rel of sharedPathsFor(wt)) {
-        for (const app of importersOf(wt, rel)) {
-          if (candidates.some((c) => c.wt === wt && c.app === app)) continue;
-          candidates.push({ wt, app });
+      const changedShared = sharedPathsFor(wt);
+      if (changedShared.length === 0) continue;
+      let units: { apps: string[]; shared: string[] };
+      try {
+        units = importerUnitsOf(wt, changedShared);
+      } catch (e) {
+        say(`FAIL verify — could not read the importers of the shared code ${wt} changed: ${(e as Error).message}`);
+        exit(1);
+      }
+      for (const app of units.apps) candidates.push({ wt, app });
+      for (const unit of units.shared) {
+        if (SHARED_SEEN.has(`${wt}\0${unit}`)) continue;
+        // The silence rule pass 1 applies: a unit with nothing to run says nothing.
+        const pkg = `${wt}/${unit}/package.json`;
+        const declares = isFile(pkg) && !(hasScript(pkg, "test") === 1 && hasScript(pkg, "check") === 1);
+        if (!declares) {
+          const found = findSuites(`${wt}/${unit}`, false, "*.test.ts");
+          if (found.rc === 0 && found.suites.length === 0) continue;
         }
+        sharedCandidates.push({ wt, unit });
       }
     }
 
-    const COUNT = candidates.length;
+    const COUNT = candidates.length + sharedCandidates.length;
     if (COUNT > 0) {
-      say(`verify: no app files changed — verifying ${COUNT} app(s) that import the shared code this thread touched`);
+      say(`verify: no app files changed — verifying ${COUNT} unit(s) that import the shared code this thread touched`);
       for (const { wt, app } of candidates) {
         SEEN.push(`${wt}\0${app}`);
         if (COUNT > Number(CAP)) {
@@ -1234,6 +1255,11 @@ async function main(): Promise<void> {
         } else {
           await verifyApp(logsFor(wt, app), wt, app, " (imports shared code this thread changed)");
         }
+      }
+      for (const { wt, unit } of sharedCandidates) {
+        if (COUNT > Number(CAP))
+          say(`unverified ${unit} — imports shared code, and ${COUNT} importers is past the cap of ${CAP}`);
+        else await verifyUnit(logsFor(wt, unit), wt, unit, unit);
       }
     }
   }

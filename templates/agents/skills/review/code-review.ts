@@ -13,7 +13,7 @@
 // Usage:
 //   code-review.ts <base-sha> <head-sha>      full review (round 1)
 //   code-review.ts --since <tree>             follow-up round: ONLY what changed
-//   code-review.ts --since <tree> --final     the one review past the round-4
+//   code-review.ts --since <tree> --final     the one review past the round
 //                                             ceiling, of the fixes still unreviewed
 //                                             since <tree>
 //   code-review.ts --snapshot                 print a tree SHA capturing the
@@ -60,7 +60,7 @@
 //        to review and the fix loop has converged. NOT a failure — the caller
 //        stops the loop and approves. Distinct from the empty-diff exit 1 below,
 //        which means a FULL review was pointed at the wrong tree.
-//   5    `--since` only: the fix loop hit the round-4 ceiling, or `--final`
+//   5    `--since` only: the fix loop hit the MAX_ROUNDS ceiling, or `--final`
 //        already ran once in this loop
 //        Also not a failure — the caller stops
 //        the loop and reports what is still open. Session-keyed (the
@@ -138,6 +138,7 @@ import { exit, runToExit } from "../../packages/cli-exit/cli-exit.ts";
 import { inT3ReviewContext } from "../close/scripts/t3-db.ts";
 import {
   type Bucket,
+  leadingPath,
   loopKey,
   parseStrictJson,
   readSpend,
@@ -156,6 +157,55 @@ const err = (line: string): void => {
 };
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
+
+// The fix loop's round ceiling: round 1 is the full review, so the ninth
+// `--since` round is round 10 and the tenth is refused. A receipt approves
+// nothing while a finding is open, and a reviewer returns about one finding a
+// round however deep the loop runs, so a low ceiling stopped every long build
+// to ask the user for one more review, which they then granted. Repeated
+// findings are answered by a redesign (REPEAT SPOT, below), not a stop, and the
+// ceiling is only a guard against a loop that never ends.
+const MAX_ROUNDS = 10;
+// CODE_REVIEW_MAX_ROUNDS may only LOWER it (2..MAX_ROUNDS-1), so a test suite can
+// walk a short loop; a value that would raise it, or is not a whole number, is
+// ignored, so no caller can buy rounds with it.
+const LOWERED = Number(process.env.CODE_REVIEW_MAX_ROUNDS);
+const CEILING = Number.isInteger(LOWERED) && LOWERED >= 2 && LOWERED < MAX_ROUNDS ? LOWERED : MAX_ROUNDS;
+
+// ── REPEAT SPOT ──
+// A must-fix or should-fix within REPEAT_SPOT_LINES of one the last review left
+// open, in the same file, means the fix did not close the defect, or its patch
+// opened the next hole beside it: a handler patched through seven reviews drew
+// a new finding a few lines from the last each time, and only replacing the
+// patches with one design came back clean. The line goes to stderr, which the
+// build reads; stdout stays triage lines only.
+const REPEAT_SPOT_LINES = 25;
+// The spot is the finding's file and line, read by the one rule every reader
+// of a finding uses (audit-dedupe.ts leadingPath): bare, backticked or a
+// markdown link (`[f.ts:9](/abs/f.ts:9)`), a path holding a colon included. A
+// regex of its own cut such a path at the colon, so its repeat went unseen.
+function spotOf(finding: string): { file: string; line: number } | null {
+  const t = finding.trim();
+  const tag = /^\[(?:must-fix|should-fix)\]\s+/.exec(t);
+  const lead = tag ? leadingPath(t.slice(tag[0].length)) : null;
+  const line = lead ? /^:(\d+)/.exec(lead.loc.slice(lead.path.length)) : null;
+  return lead && line ? { file: lead.path, line: Number(line[1]) } : null;
+}
+function repeatSpots(findings: string, open: string[]): string[] {
+  const earlier = open.flatMap((f) => spotOf(f) ?? []);
+  const out: string[] = [];
+  for (const f of findings.split("\n")) {
+    const spot = spotOf(f);
+    if (!spot) continue;
+    const { file, line } = spot;
+    const prev = earlier.find((e) => e.file === file && Math.abs(e.line - line) <= REPEAT_SPOT_LINES);
+    if (prev)
+      out.push(
+        `[code-review] REPEAT SPOT: ${file}:${line} — the last review flagged ${file}:${prev.line} too. Stop patching this piece: redesign it as a whole, then review the redesign.`,
+      );
+  }
+  return out;
+}
 
 // `$(...)` drops trailing newlines; every captured read below goes through it.
 const chomp = (s: string): string => s.replace(/\n+$/, "");
@@ -740,7 +790,7 @@ the committed range PLUS uncommitted work; you are NOT reviewing a clean tree.`;
     // spent only after the empty-diff and byte-budget refusals below. A
     // refused review made no call, and refusing it again is deterministic, so
     // spending on it bought nothing — and a misjudged piece would burn one of
-    // the four rounds a piece set has. The `--since` branch already refused
+    // the rounds a piece set has. The `--since` branch already refused
     // before it spent.
     const BUCKET: Bucket = process.env.CODE_REVIEW_BUCKET === "qa" ? "qa" : "build";
     let repeatSpend: (() => void) | null = null;
@@ -753,8 +803,8 @@ the committed range PLUS uncommitted work; you are NOT reviewing a clean tree.`;
       }
       if (spent !== null && (spent.full || spent.rounds > 0)) {
         const round = spent.rounds + 2;
-        if (round > 4) {
-          err(`Error: a repeated full review would be round ${round}; the fix loop's ceiling is 4.`);
+        if (round > CEILING) {
+          err(`Error: a repeated full review would be round ${round}; the fix loop's ceiling is ${CEILING}.`);
           err("A full review does not start a new loop for the same change. Review the fixes made");
           err("since the last round with --since <tree> --final (once per loop), then report what is still open.");
           if (PIECE) err("A piece set fits in four pieces; the files no piece has read stay unreviewed.");
@@ -762,7 +812,7 @@ the committed range PLUS uncommitted work; you are NOT reviewing a clean tree.`;
         }
         repeatSpend = () => {
           writeSpend(REPO_ROOT, BUCKET, { ...spent, rounds: spent.rounds + 1 });
-          err(`[code-review] a repeated full review — round ${round} of at most 4`);
+          err(`[code-review] a repeated full review — round ${round} of at most ${CEILING}`);
         };
       } else {
         FULL_PENDING = spent !== null;
@@ -968,13 +1018,13 @@ ${diffBody}`;
       exit(1);
     }
 
-    // ── The round-4 ceiling, enforced here rather than only in the skill ──
+    // ── The round ceiling, enforced here rather than only in the skill ──
     //
-    // A review fix loop ends at 4 rounds. Leaving
+    // A review fix loop ends at CEILING rounds. Leaving
     // that to the skill's prose alone is what the 34-round audit did: the
     // instruction existed, the loop ran anyway, and nothing could observe it until
     // the vendor calls were already spent. Round 1 is the two-arg full review, so
-    // the Nth `--since` call is round N+1 and the 4th one is round 5 — refused.
+    // the Nth `--since` call is round N+1, and round CEILING + 1 is refused.
     //
     // Keyed on `loopKey`: the session id (or the worktree when a harness sets
     // none, so the cap holds on every harness) and the repo under review.
@@ -995,14 +1045,14 @@ ${diffBody}`;
       const prior = spent.rounds;
       const round = prior + 2;
       // ── One final review past the ceiling ──
-      // The ceiling stops the CHURN, but without this round 4's own fixes ship
-      // with no review at all, or the loop stalls on them. `--final` reviews
+      // The ceiling stops the CHURN, but without this the last round's own fixes
+      // ship with no review at all, or the loop stalls on them. `--final` reviews
       // exactly those fixes, once per
       // loop; its findings are fixed and reported, never another round.
       if (FINAL) {
-        if (round <= 4) {
+        if (round <= CEILING) {
           err(
-            `Error: --final is the one review past the round-4 ceiling, and this loop is at round ${round} — a normal round is the call.`,
+            `Error: --final is the one review past the round-${CEILING} ceiling, and this loop is at round ${round} — a normal round is the call.`,
           );
           exit(2);
         }
@@ -1012,21 +1062,21 @@ ${diffBody}`;
           exit(5);
         }
         writeSpend(REPO_ROOT, BUCKET, { ...spent, final: true });
-        err("[code-review] final review past the round-4 ceiling — the loop ends after it");
-      } else if (round > 4) {
+        err(`[code-review] final review past the round-${CEILING} ceiling — the loop ends after it`);
+      } else if (round > CEILING) {
         err(
-          "Error: the fix loop has reached the round-4 ceiling — a fifth round mostly re-opens ground earlier rounds already touched.",
+          `Error: the fix loop has reached the round-${CEILING} ceiling — another round mostly re-opens ground earlier rounds already touched.`,
         );
         err(`Refusing round ${round}. Stop the loop: fix any held nits, then report`);
         err("what is still open in the implement-audit: trailer and the summary.");
-        err("Past round 4 the majority of findings re-open ground an earlier round");
+        err("Past round 5 the majority of findings re-open ground an earlier round");
         err("already touched — measured across 225 audits — so another");
         err("vendor call buys churn, not coverage. The fixes made since the last round");
         err("still get one review: --since <tree> --final, once per loop.");
         exit(5);
       } else {
         writeSpend(REPO_ROOT, BUCKET, { ...spent, rounds: prior + 1 });
-        err(`[code-review] round ${round} of at most 4`);
+        err(`[code-review] round ${round} of at most ${CEILING}`);
       }
     }
 
@@ -1064,7 +1114,7 @@ recorded as closed by these fixes.
 ${OPEN_FINDINGS.map((f) => `  ${f}`).join("\n")}`;
     }
     if (FINAL) {
-      ROUND_NOTE = `THIS IS THE FINAL REVIEW of this fix loop: the round-4 ceiling has been
+      ROUND_NOTE = `THIS IS THE FINAL REVIEW of this fix loop: the round-${CEILING} ceiling has been
 reached and no further round will run. Report only real defects in these
 fixes — anything you report is fixed and closed without another review.
 
@@ -1435,6 +1485,7 @@ narration and no review output. Do the review and reply with ONLY ${
         writeResult(findings, coverage, attempt);
         process.stdout.write(findings);
         if (sentinel) err("[code-review] both findings and NO_FINDINGS present; findings win.");
+        for (const line of repeatSpots(findings, OPEN_FINDINGS)) err(line);
         const via = attempt === 2 ? " (on the re-ask)" : "";
         err(`[code-review] complete — ${count} finding(s) from ${vendor}${via}.`);
         exit(0);

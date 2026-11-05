@@ -390,9 +390,10 @@ UI change would get `skipped-not-web` for a diff that was all pixels.
 
 `qa-targets.ts` walks up from each changed file to the nearest directory owning a
 `package.json`, asks `detect-app.ts` what it is, and keeps the ones it calls web
-(`astro-cf`, `astro`, `next`, `vite`, `static`, `node-server`). A change in a
-shared package that is not itself web fans out to the web apps that import it, so
-one edit to a shared component still sends both consumers through `/qa`. A
+(`astro-cf`, `astro`, `next`, `vite`, `static`, `node-server`). A change outside
+any web app — a shared component, or a document a page imports — fans out to the
+web apps that import it, so one edit to a shared component still sends both
+consumers through `/qa`. A
 detector that CRASHES is a HALT, never "not web" — reading a failure as "no UI
 here" is how a UI ships with no QA and a green run.
 
@@ -423,7 +424,7 @@ the review receipt still covers the content and no review call is made;
 anything else it moved is reviewed against the receipt before it can approve
 the content again. **One** qa-revalidate round: still dirty, or still
 `NEED_FIX=1`, is a HALT. That round spends the qa bucket, not the build one —
-the implementation fix loop can have spent all four rounds, and a post-QA
+the implementation fix loop can have spent all its rounds, and a post-QA
 review that returns "ceiling reached" without calling a vendor would ship
 `/qa`'s own source edits unreviewed behind a note. When several `/qa` passes
 spend that bucket too, `qa-revalidate` runs the one `--final` review of the

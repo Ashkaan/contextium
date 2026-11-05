@@ -507,7 +507,7 @@ async function main(): Promise<void> {
           out(
             bucket === "qa"
               ? "NOTE: the post-QA round ceiling was reached — this is the final review of /qa's newest edits"
-              : "NOTE: the round-4 ceiling was reached — this is the final review of the fixes since the last round",
+              : "NOTE: the round ceiling was reached — this is the final review of the fixes since the last round",
           );
           review = fin;
           rc = statusOf(fin);
@@ -776,7 +776,7 @@ async function main(): Promise<void> {
         PENDING_FALLBACK = true;
         break;
       case 5:
-        out("NOTE: the fix loop hit the round-4 ceiling and its final review already ran — report what is still open");
+        out("NOTE: the fix loop hit the round ceiling and its final review already ran — report what is still open");
         NEED_FIX = 1;
         break;
       case 2:
@@ -931,11 +931,11 @@ async function main(): Promise<void> {
     }
 
     // ITS OWN ROUND BUDGET: the qa bucket. The implementation fix loop that
-    // ran before this may have spent all four build rounds — at which point the
+    // ran before this may have spent every build round — at which point the
     // post-QA review would return exit 5 without ever calling a vendor, and
     // /qa's own source edits would ship unreviewed behind a "ceiling reached"
     // note. /qa can take several fix passes, each its own qa-revalidate, and
-    // they can spend the qa bucket's four rounds too; the newest edits then
+    // they can spend the qa bucket's rounds too; the newest edits then
     // still get the one final review, as the implementation loop's do — never a
     // halt over code one more call would have reviewed (a fifth /qa pass was
     // refused that way). Edits to records alone reuse the receipt and spend nothing.

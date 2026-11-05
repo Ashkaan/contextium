@@ -122,9 +122,14 @@ const isFile = (p: string): boolean => {
 /** Collapse whitespace, so a reply that rewraps a line still carries it. */
 const flat = (s: string): string => s.replace(/\s+/g, " ").trim();
 
-/** The thread a directory belongs to, or an Allow naming why not. */
+/** The thread a directory belongs to, or an Allow naming why not. `--keep`: a
+ *  session whose harness exports no id is named by its checkout, and once its
+ *  close lands the next thread.ts call starts a new id — this check, and a
+ *  --pause after the close, are about the session that closed, so they ask
+ *  for the id the checkout names now. A new id read an empty state, and a
+ *  reply without the close's proof passed. */
 function threadOf(cwd: string): string {
-  const r = spawnSync(process.execPath, ["--experimental-strip-types", THREAD, "--id"], {
+  const r = spawnSync(process.execPath, ["--experimental-strip-types", THREAD, "--id", "--keep"], {
     cwd,
     encoding: "utf8",
     timeout: 5_000,

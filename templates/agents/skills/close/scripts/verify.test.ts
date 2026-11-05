@@ -19,6 +19,7 @@
 
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import {
   appendFileSync,
   chmodSync,
@@ -433,6 +434,34 @@ test("past the cap the importers are named, not run", () => {
   is("past the cap the close still exits 0", String(RC), "0");
   has("the apps are named rather than run", OUT, "past the cap");
   hasnt("and none of them is reported ok", OUT, "ok health/green");
+});
+
+// An app importing a package's index.ts, which re-exports the changed p.ts,
+// was never verified: the importer pass matched only the changed file's own
+// path (Contextium v9.2.0 review). The importers are followed through shared
+// code, and an integration importing the package is verified as its unit.
+test("a shared-only change verifies importers through a barrel, and an importing integration", () => {
+  mkdirSync(join(CLEAN, "packages/p"), { recursive: true });
+  writeFileSync(join(CLEAN, "packages/p/p.ts"), "export const p = (a: number): number => a;\n");
+  writeFileSync(join(CLEAN, "packages/p/index.ts"), 'export * from "./p.ts";\n');
+  writeFileSync(
+    join(CLEAN, "apps/health/green/src/barrel.ts"),
+    'import { p } from "../../../../packages/p/index.ts";\n',
+  );
+  mkdirSync(join(CLEAN, "integrations/q"), { recursive: true });
+  writeFileSync(join(CLEAN, "integrations/q/q.ts"), 'import { p } from "../../packages/p/p.ts";\np(1);\n');
+  writeFileSync(
+    join(CLEAN, "integrations/q/package.json"),
+    '{ "name": "q", "scripts": { "check": "true", "test": "true" } }\n',
+  );
+  commitPush(CLEAN, "a package, its barrel, an app and an integration reading it");
+  writeFileSync(join(CLEAN, "packages/p/p.ts"), "export const p = (a: number, b: number): number => a + b;\n");
+  go();
+  is("the barrel's importer passes", String(RC), "0");
+  has("the app importing the barrel is verified", OUT, "ok health/green");
+  has("the integration importing the package is verified", OUT, "ok integrations/q");
+  hasnt("an app that imports nothing is left alone", OUT, "health/untouched");
+  commitPush(CLEAN, "the package change");
 });
 
 test("an app edit keeps the narrow scope, cap or no cap", () => {
@@ -1493,12 +1522,58 @@ test("an app name changed in two repos verifies each repo's app", () => {
   has(
     "…logged apart from the workbench app of the same name",
     OUT,
-    `log: ${join(LEDGER_DIR, "verify", basename(PRODWT), "web-site-test.log")}`,
+    `log: ${join(LEDGER_DIR, "verify", `${basename(PRODWT)}-${createHash("sha256").update(PRODWT).digest("hex").slice(0, 12)}`, "web-site-test.log")}`,
   );
   rmSync(join(WT, "apps/web"), { recursive: true, force: true });
   git("-C", PRODWT, "checkout", "-q", "--", "apps");
   git("-C", PRODWT, "rm", "-q", "-r", "apps");
   git("-C", PRODWT, "commit", "-q", "-m", "no app");
+});
+
+// Logs were kept apart by the worktree's folder name, so two product repos
+// whose worktrees share a basename (every T3 worktree of a repo is named for its
+// thread) wrote one log and the second FAIL line pointed at the third repo's
+// output (Contextium v9.2.0 review). Each worktree's logs sit under its full path.
+test("three repos each holding a red web/site keep three logs", () => {
+  const repos = [join(TMP, "one", "repo"), join(TMP, "two", "repo")];
+  for (const [i, dir] of repos.entries()) {
+    mkdirSync(join(dir, "apps/web/site"), { recursive: true });
+    git("init", "-q", "-b", "main", dir);
+    git("-C", dir, "config", "user.email", "t@example.com");
+    git("-C", dir, "config", "user.name", "tester");
+    writeFileSync(
+      join(dir, "apps/web/site/package.json"),
+      `{ "name": "site", "scripts": { "test": "echo product-${i}; exit 1" } }\n`,
+    );
+    writeFileSync(join(dir, "apps/web/site/index.ts"), "x\n");
+    git("-C", dir, "add", "-A");
+    git("-C", dir, "commit", "-q", "-m", "a red app");
+    writeFileSync(join(dir, "apps/web/site/index.ts"), "y\n");
+  }
+  mkdirSync(join(WT, "apps/web/site/src"), { recursive: true });
+  writeFileSync(
+    join(WT, "apps/web/site/package.json"),
+    '{ "name": "site", "scripts": { "test": "echo workbench; exit 1" } }\n',
+  );
+  writeFileSync(join(WT, "apps/web/site/src/index.ts"), "x\n");
+  writeFileSync(
+    LEDGER,
+    row(WT, join(TMP, "shared"), `t3/${TID}`) +
+      row(repos[0] as string, join(TMP, "one-shared"), `t3/${TID}`) +
+      row(repos[1] as string, join(TMP, "two-shared"), `t3/${TID}`),
+  );
+  go();
+  is("the three red apps fail the close", String(RC), "1");
+  const logs = [...OUT.matchAll(/log: (\S+web-site-test\.log)/g)].map((m) => m[1] as string);
+  is("three FAIL lines name a log each", String(logs.length), "3");
+  is("…three different logs", String(new Set(logs).size), "3");
+  for (const [log, want] of [
+    [logs[0], "workbench"],
+    [logs[1], "product-0"],
+    [logs[2], "product-1"],
+  ] as const)
+    has(`${log} holds its own repo's output`, readFileSync(log ?? "", "utf8"), want);
+  rmSync(join(WT, "apps/web"), { recursive: true, force: true });
 });
 
 // ── The record and --stamped ──────────────────────────────────────────────

@@ -298,6 +298,14 @@ test("metadata.peers in the template layout: .agents/… is read beneath templat
   assert.ok(missing.out.includes("does not exist from the repo root: .agents/skills/beta/scripts/gone.ts"), missing.out);
   write(".agents/../../../outside.ts");
   assert.equal(check().rc, 1);
+  // Installed, .agents/../../docs/guide.md climbs out of the repo; remapped
+  // onto templates/agents/ first, it landed on this repo's docs/guide.md and
+  // was accepted (Contextium v9.2.0 review). The peer as written is checked
+  // against the install before it is remapped.
+  write(".agents/../../docs/guide.md");
+  const climbs = check();
+  assert.equal(climbs.rc, 1, climbs.out);
+  assert.ok(climbs.out.includes("must stay relative to the repo root: .agents/../../docs/guide.md"), climbs.out);
 });
 
 test("metadata.peers refuses missing, absolute and escaping paths", () => {
@@ -305,6 +313,9 @@ test("metadata.peers refuses missing, absolute and escaping paths", () => {
     makeSkill("alpha", `${MINIMAL}\nmetadata:\n  peers: "${peer}"`);
     expect("violation", "metadata.peers path", "alpha");
   }
+  // The same climb the template layout must refuse, in the installed one.
+  makeSkill("alpha", `${MINIMAL}\nmetadata:\n  peers: ".agents/../../docs/guide.md"`);
+  expect("violation", "must stay relative to the repo root: .agents/../../docs/guide.md", "alpha");
 });
 // The published validator reads strictyaml, which rejects flow syntax
 // outright — so an inline `{…}` map is a validator violation before the local

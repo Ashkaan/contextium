@@ -80,6 +80,21 @@ describe("parkedOnUser", () => {
   });
 });
 
+// A possessive wait parks a ruling as surely as "waiting on you": "pending
+// your approval" and "waiting for your answer" read as nothing (Contextium
+// v9.2.0 review).
+describe("parkedOnUser, possessive", () => {
+  it("catches a wait on the user's ruling, written as a possessive", () => {
+    assert.equal(parkedOnUser("the rename is pending your approval"), "pending your");
+    assert.equal(parkedOnUser("Not merged: waiting for your answer on the copy"), "waiting for your");
+    assert.equal(parkedOnUser("held for the user's go-ahead"), "held for the user");
+  });
+  it("leaves a wait that is over alone", () => {
+    assert.equal(parkedOnUser("no longer pending your approval"), null);
+    assert.equal(parkedOnUser("waiting on younger runners"), null);
+  });
+});
+
 describe("parkedOnUser, round 3", () => {
   it("reads every wait in the line, not only the first", () => {
     assert.equal(

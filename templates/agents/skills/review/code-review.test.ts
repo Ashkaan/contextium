@@ -46,7 +46,9 @@ import { createHash } from "node:crypto";
 import { dirname, join } from "node:path";
 import { after, test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { DatabaseSync } from "node:sqlite";
+// node:sqlite through a child Node that has it (tests/sqlite-child.ts): on
+// Node 22.5–22.12 it loads only behind a flag this suite cannot give itself.
+import { DatabaseSync } from "../close/scripts/tests/sqlite-child.ts";
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const REVIEW = join(SCRIPT_DIR, "code-review.ts");
@@ -105,6 +107,9 @@ const BASE_ENV: NodeJS.ProcessEnv = {
   WORKBENCH_THREAD_ID: "",
   POLICY_CHAIN_RESOLVER: `${TMP}/resolve-model.sh`,
   CODE_REVIEW_SNAP_STATE_DIR: `${TMP}/snaps`,
+  // Every loop below walks a 4-round ceiling, which keeps this suite inside the
+  // close's 180 s per suite; "the shipped ceiling" walks the real one.
+  CODE_REVIEW_MAX_ROUNDS: "4",
 };
 
 // A scratch repo standing in for a session worktree: two committed files, so a
@@ -160,6 +165,15 @@ test("original-author exclusion reaches the executable review and missing proven
 // the reviewer must not share a counter, or the sixth full review in the file
 // would be refused at the ceiling for a reason unrelated to its assertion.
 let LOOP = 0;
+// The shipped ceiling as the program states it — read from its text, never
+// imported — and the lowered one BASE_ENV sets for every other loop here.
+const SHIPPED = Number(
+  /^const MAX_ROUNDS = (\d+);$/m.exec(readFileSync(new URL("./code-review.ts", import.meta.url), "utf8"))?.[1],
+);
+assert.ok(SHIPPED > 4, "code-review.ts states a MAX_ROUNDS ceiling above the suite's lowered one");
+const MAX = 4;
+/** Round numbers a..b, inclusive. */
+const upTo = (a: number, b: number): number[] => Array.from({ length: b - a + 1 }, (_, i) => a + i);
 function runReview(args: string[], extra: NodeJS.ProcessEnv = {}): Result {
   LOOP += 1;
   return review(args, {
@@ -189,12 +203,12 @@ test("T3 identity enforces the review ceiling and isolates another thread withou
     CODEX_BIN: STUB,
     GROK_BIN: STUB,
   };
-  for (const round of [2, 3, 4, 5]) {
+  for (const round of upTo(2, MAX + 1)) {
     const snap = review(["--snapshot"], env);
     assert.equal(snap.rc, 0, snap.err);
     appendFileSync(`${REPO}/alpha.txt`, `T3 round ${round}\n`);
     const result = review(["--since", snap.out.trim()], env);
-    assert.equal(result.rc, round === 5 ? 5 : 0, result.err);
+    assert.equal(result.rc, round === MAX + 1 ? 5 : 0, result.err);
   }
   const other = { ...env, WORKBENCH_THREAD_ID: "t3-other-thread" };
   const snap = review(["--snapshot"], other);
@@ -215,12 +229,12 @@ test("fresh T3 review children share only their declared audit owner's round bud
     CODE_REVIEW_LOOP_ID: "original-audit-owner",
     CODE_REVIEW_ROUND_STATE_DIR: `${TMP}/delegated-rounds`,
   };
-  for (const round of [2, 3, 4, 5]) {
+  for (const round of upTo(2, MAX + 1)) {
     const env = { ...base, WORKBENCH_THREAD_ID: `thread:fresh-review-child:${round}` };
     const snap = review(["--snapshot"], env);
     appendFileSync(`${REPO}/alpha.txt`, `delegated review round ${round}\n`);
     const result = review(["--since", snap.out.trim()], env);
-    assert.equal(result.rc, round === 5 ? 5 : 0, result.err);
+    assert.equal(result.rc, round === MAX + 1 ? 5 : 0, result.err);
   }
   const other = { ...base, CODE_REVIEW_LOOP_ID: "another-audit-owner", WORKBENCH_THREAD_ID: "thread:another-review" };
   const snap = review(["--snapshot"], other);
@@ -467,7 +481,7 @@ test("--since: caller errors, and the byte budget", () => {
   has("the refusal says why", "Refusing rather than reviewing a truncated slice", r.err);
 });
 
-// ── The round-4 ceiling ───────────────────────────────────────────────
+// ── The round ceiling ───────────────────────────────────────────────────
 //
 // The skill's prose said "stop" before this script did, and a 34-round audit is
 // what that was worth. These cases assert the mechanism, not the instruction.
@@ -494,17 +508,16 @@ function ceilRound(n: number | string): number | null {
   return r.rc;
 }
 
-test("the round-4 ceiling", () => {
-  rcIs("round 2 is allowed", 0, ceilRound(2));
-  rcIs("round 3 is allowed", 0, ceilRound(3));
-  rcIs("round 4 is allowed", 0, ceilRound(4));
-  rcIs("round 5 is refused", 5, ceilRound(5));
+test("the round ceiling", () => {
+  for (const n of upTo(2, MAX)) rcIs(`round ${n} is allowed`, 0, ceilRound(n));
+  has("the last allowed round says it is the last", `round ${MAX} of at most ${MAX}`, CEIL_ERR);
+  rcIs(`round ${MAX + 1} is refused`, 5, ceilRound(MAX + 1));
   has("the refusal names the reason", "re-opens ground", CEIL_ERR);
   has("the refusal says what to do instead", "what is still open", CEIL_ERR);
 
   // A refused round must not have spent the call it was refusing.
   writeFileSync(SEEN, "");
-  ceilRound(6);
+  ceilRound(MAX + 2);
   eq("a refused round spends no vendor call", "", seen());
 
   // A converged round is not a round — otherwise a clean loop would burn ceiling
@@ -552,10 +565,36 @@ test("the round-4 ceiling", () => {
 
   // Sessions are independent: one session's loop cannot exhaust another's budget.
   rmSync(CEIL_STATE, { recursive: true, force: true });
-  for (const n of [2, 3, 4]) ceilRound(n);
+  for (const n of upTo(2, MAX)) ceilRound(n);
   const SNAP_OTHER = snapshot();
   appendFileSync(`${REPO}/alpha.txt`, "other session edit\n");
   rcIs("a second session starts at round 2", 0, ceilReview(SNAP_OTHER, "a-different-session").rc);
+});
+
+test("the shipped ceiling is MAX_ROUNDS, and the override cannot raise it", () => {
+  rmSync(CEIL_STATE, { recursive: true, force: true });
+  const walk = (n: number): Result => {
+    const snap = snapshot();
+    appendFileSync(`${REPO}/alpha.txt`, `shipped round ${n} edit\n`);
+    return review(["--since", snap], {
+      ...BASE_ENV,
+      CODE_REVIEW_MAX_ROUNDS: "50",
+      CODE_REVIEW_ROUND_STATE_DIR: CEIL_STATE,
+      CLAUDE_CODE_SESSION_ID: "shipped-ceiling",
+      CODEX_REVIEW_REPO: REPO,
+      POLICY_JSON: POLICY,
+      CODEX_BIN: STUB,
+      GROK_BIN: STUB,
+    });
+  };
+  let last: Result | null = null;
+  for (const n of upTo(2, SHIPPED)) {
+    last = walk(n);
+    rcIs(`shipped round ${n} is allowed`, 0, last.rc);
+  }
+  has("the last one says the shipped ceiling", `round ${SHIPPED} of at most ${SHIPPED}`, last?.err ?? "");
+  rcIs("a value that would raise the ceiling is ignored", 5, walk(SHIPPED + 1).rc);
+  rmSync(CEIL_STATE, { recursive: true, force: true });
 });
 
 // ── One final review past the ceiling ─────────────────────────────────
@@ -574,8 +613,8 @@ test("past the ceiling, --final reviews the outstanding fixes exactly once", () 
   has("and says a normal round is the call", "normal round", early.err);
 
   rmSync(CEIL_STATE, { recursive: true, force: true });
-  for (const n of [2, 3, 4]) ceilRound(n);
-  rcIs("round 5 is still refused", 5, ceilRound(5));
+  for (const n of upTo(2, MAX)) ceilRound(n);
+  rcIs("the round past the ceiling is still refused", 5, ceilRound(MAX + 1));
   has("the refusal points at the final review", "--final", CEIL_ERR);
 
   writeFileSync(SEEN, "");
@@ -625,12 +664,12 @@ test("each repo's fix loop has its own ceiling", () => {
     return review(["--since", snap], env2).rc;
   };
   rcIs("the first repo's loop runs to its ceiling", 0, ceilRound(2));
-  ceilRound(3);
-  ceilRound(4);
-  rcIs("the second repo's first fix round is round 2, not 5", 0, round2(2));
-  rcIs("and its own fourth round is allowed", 0, (round2(3), round2(4)));
-  rcIs("its fifth is refused like any other", 5, round2(5));
-  rcIs("the first repo is still at its own ceiling", 5, ceilRound(5));
+  for (const n of upTo(3, MAX)) ceilRound(n);
+  rcIs("the second repo's first fix round is round 2, not past the ceiling", 0, round2(2));
+  for (const n of upTo(3, MAX - 1)) round2(n);
+  rcIs("and its own last round is allowed", 0, round2(MAX));
+  rcIs("the round past it is refused like any other", 5, round2(MAX + 1));
+  rcIs("the first repo is still at its own ceiling", 5, ceilRound(MAX + 1));
 });
 
 // ── Round 1 is unchanged ──────────────────────────────────────────────
@@ -671,10 +710,10 @@ test("a repeated full review spends a round and never resets the loop", () => {
   rcIs("the first full review is round 1", 0, fullReview().rc);
   const retry = fullReview();
   rcIs("a full retry of the same loop runs", 0, retry.rc);
-  has("and is counted as round 2", "round 2 of at most 4", retry.err);
+  has("and is counted as round 2", `round 2 of at most ${MAX}`, retry.err);
   rcIs("so the next follow-up is round 3", 0, ceilRound(3));
-  rcIs("and round 4", 0, ceilRound(4));
-  rcIs("and round 5 is refused, as without the retry", 5, ceilRound(5));
+  for (const n of upTo(4, MAX)) rcIs(`and round ${n}`, 0, ceilRound(n));
+  rcIs("and the round past the ceiling is refused, as without the retry", 5, ceilRound(MAX + 1));
   writeFileSync(SEEN, "");
   const again = fullReview();
   rcIs("a full review cannot renew a spent budget", 5, again.rc);
@@ -718,20 +757,20 @@ test("the counters are durable under the owner's thread cache and carry a /tmp c
   const sid = `loop-${createHash("sha256").update(owner).digest("hex")}`;
   const key = `${sid}-${createHash("sha256").update(realpathSync(REPO)).digest("hex").slice(0, 12)}`;
   mkdirSync(legacyDir, { recursive: true });
-  writeFileSync(`${legacyDir}/${key}`, "2\n");
+  writeFileSync(`${legacyDir}/${key}`, `${MAX - 2}\n`);
   try {
     const snap = review(["--snapshot"], env).out.trim();
     appendFileSync(`${REPO}/alpha.txt`, "durable edit\n");
     const r = review(["--since", snap], env);
-    rcIs("a /tmp counter at 2 makes the next follow-up round 4", 0, r.rc);
-    has("and says so", "round 4 of at most 4", r.err);
+    rcIs("a /tmp counter at MAX - 2 makes the next follow-up the last round", 0, r.rc);
+    has("and says so", `round ${MAX} of at most ${MAX}`, r.err);
     const durable = `${home}/.cache/workbench/threads/${owner}/review-rounds/${key}`;
-    eq("the spend is written durably under the owner", "3", readFileSync(durable, "utf8").trim());
+    eq("the spend is written durably under the owner", String(MAX - 1), readFileSync(durable, "utf8").trim());
     rmSync(`${legacyDir}/${key}`, { force: true });
     const snap2 = review(["--snapshot"], env).out.trim();
     appendFileSync(`${REPO}/alpha.txt`, "durable edit 2\n");
     rcIs(
-      "with /tmp cleared (a reboot) the durable counter still refuses round 5",
+      `with /tmp cleared (a reboot) the durable counter still refuses round ${MAX + 1}`,
       5,
       review(["--since", snap2], env).rc,
     );
@@ -1241,6 +1280,73 @@ test("receipt mode: a follow-up round is shown the findings still open", () => {
   rcIs("the follow-up runs", 0, r.rc);
   has("the open finding is in the prompt", "EARLIER FINDINGS STILL OPEN", seen());
   has("verbatim", "[must-fix] alpha.txt:1: still wrong", seen());
+});
+
+// ── REPEAT SPOT: the same place flagged two reviews running ───────────────
+// A save handler patched through seven reviews drew a new finding beside the
+// last each time; the warning tells the build to redesign the piece instead.
+function repeatRound(name: string, open: string[], findings: string): Result {
+  const items = `${TMP}/repeat-${name}.json`;
+  writeFileSync(items, JSON.stringify({ items: [{ id: "E1", text: "e" }], openFindings: open }));
+  const snap = snapshot();
+  appendFileSync(`${REPO}/alpha.txt`, `repeat ${name} edit\n`);
+  const stub = `${TMP}/repeat-${name}.sh`;
+  const frame = JSON.stringify({ findings, coverage: [{ id: "E1", status: "checked", evidence: ["r"] }] });
+  writeFileSync(`${TMP}/repeat-${name}.frame`, `BEGIN_REVIEW_V1\n${frame}\nEND_REVIEW_V1\n`);
+  exe(stub, `#!/usr/bin/env bash\ncat >/dev/null\ncat "${TMP}/repeat-${name}.frame"\n`);
+  return runReview(["--since", snap], {
+    CODEX_BIN: stub,
+    GROK_BIN: stub,
+    CODE_REVIEW_RESULT_FILE: `${TMP}/repeat-${name}-result.json`,
+    CODE_REVIEW_COVERAGE_FILE: items,
+  });
+}
+test("a finding beside one the last review left open is a repeat spot", () => {
+  const open = ["[must-fix] src/Editor.tsx:153: readKey advances early — x — y"];
+  const near = repeatRound("near", open, "[must-fix] src/Editor.tsx:165: the race remains — x — y");
+  rcIs("the review completes", 0, near.rc);
+  has(
+    "the warning names both spots",
+    "REPEAT SPOT: src/Editor.tsx:165 — the last review flagged src/Editor.tsx:153 too",
+    near.err,
+  );
+  has("and says what to do", "redesign it as a whole", near.err);
+  eq("stdout stays triage lines only", "[must-fix] src/Editor.tsx:165: the race remains — x — y\n", near.out);
+  const edge = repeatRound("edge", open, "[should-fix] src/Editor.tsx:178: still stale — x");
+  has("25 lines away still counts", "REPEAT SPOT: src/Editor.tsx:178", edge.err);
+  const far = repeatRound("far", open, "[must-fix] src/Editor.tsx:179: a new hole — x — y");
+  lacks("26 lines away is a new spot", "REPEAT SPOT", far.err);
+  const other = repeatRound("other", open, "[must-fix] src/Invoice.tsx:153: same line, other file — x — y");
+  lacks("the same line in another file is a new spot", "REPEAT SPOT", other.err);
+  const nit = repeatRound("nit", open, "[nit] src/Editor.tsx:154: wording");
+  lacks("a nit is never a repeat spot", "REPEAT SPOT", nit.err);
+  const ticked = repeatRound("ticked", open, "[must-fix] `src/Editor.tsx:160`: backticked — x — y");
+  has("a backticked location is read", "REPEAT SPOT: src/Editor.tsx:160", ticked.err);
+  const linked = repeatRound(
+    "linked",
+    ["[must-fix] [src/Editor.tsx:153](/abs/src/Editor.tsx:153): linked — x — y"],
+    "[should-fix] [src/Editor.tsx:170](/abs/src/Editor.tsx:170): linked again — x",
+  );
+  has(
+    "a markdown-link location is read on both sides",
+    "REPEAT SPOT: src/Editor.tsx:170 — the last review flagged src/Editor.tsx:153",
+    linked.err,
+  );
+  const none = repeatRound("none", [], "[must-fix] src/Editor.tsx:153: first sighting — x — y");
+  lacks("with nothing open there is nothing to repeat", "REPEAT SPOT", none.err);
+  // The spot's file is the finding's file, read by the one rule every reader
+  // of a finding uses (audit-dedupe.ts leadingPath): a path holding a colon was
+  // cut at it, so its repeat was never seen.
+  const colon = repeatRound(
+    "colon",
+    ["[must-fix] src/x:y.tsx:153: first — x — y"],
+    "[must-fix] src/x:y.tsx:160: again — x — y",
+  );
+  has(
+    "a path holding a colon is one file",
+    "REPEAT SPOT: src/x:y.tsx:160 — the last review flagged src/x:y.tsx:153",
+    colon.err,
+  );
 });
 
 test("receipt mode: a primary whose findings are narration falls through to a working backup", () => {

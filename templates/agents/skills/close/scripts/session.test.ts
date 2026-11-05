@@ -12,7 +12,9 @@ import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { DatabaseSync } from "node:sqlite";
+// node:sqlite through a child Node that has it (tests/sqlite-child.ts): on
+// Node 22.5–22.12 it loads only behind a flag this suite cannot give itself.
+import { DatabaseSync } from "./tests/sqlite-child.ts";
 import { after, test } from "node:test";
 import { fileURLToPath } from "node:url";
 

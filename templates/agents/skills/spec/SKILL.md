@@ -95,7 +95,8 @@ UNCONDITIONAL — fires on every spec `/spec` writes. Dispatch `/spec-audit <spe
 - **review round-1 consensus**: all findings accepted by the authoring agent and folded (edit the spec's files); proceed.
 - **review round-2 with pushbacks**: the reviewer conceded (`[concede]`) or held (`[disagree]`); disagreements that hold are an escalation.
 - **Spirit-check MATCH**: no drift; proceed.
-- **Spirit-check DRIFT / AMBIGUOUS, or a held reviewer escalation**: surface to the user. This is a hard stop — `step-3-auto-close` does NOT fire while it is outstanding (per the auto-close gate's precondition (i)).
+- **Spirit-check DRIFT / AMBIGUOUS**: fold every point that changing the spec back to the user's words settles, and name each in the summary; the check is not run again in that audit (`/spec-audit` § step-3). Only a point that needs a choice they alone can make is surfaced.
+- **A surfaced DRIFT point, or a held reviewer escalation**: surface to the user. This is a hard stop — `step-3-auto-close` does NOT fire while it is outstanding (per the auto-close gate's precondition (i)).
 
 **Skip-clause** (handled inside `/spec-audit` via `check-materiality.ts`, which diffs the whole folder): trivial wording iteration of an already-audited spec skips the machine review and writes a `spec-audit: skipped — non-material` line there.
 
@@ -157,7 +158,7 @@ Working together, it turns out a small change needs a spec. `/spec "<scope hint>
 
 ### Example 3 — spirit DRIFT halts auto-close
 
-`step-2` returns spirit-check DRIFT (the interpretation in spec.md's Clarifications diverged from the ask in its `**Input**`). `/spec` surfaces the DRIFT to the user as a decision. `step-3-auto-close`'s precondition (i) is unmet → it does NOT fire. The user adjudicates; `/spec` folds the resolution; on resume the gate fires and auto-closes.
+`step-2` returns spirit-check DRIFT (the interpretation in spec.md's Clarifications diverged from the ask in its `**Input**`), and putting it back needs a choice between two readings of the user's words. `/spec` surfaces that point to the user as a decision. `step-3-auto-close`'s precondition (i) is unmet → it does NOT fire. The user adjudicates; `/spec` folds the resolution; on resume the gate fires and auto-closes.
 
 ## Troubleshooting
 

@@ -32,6 +32,9 @@
 //   repo:<owner>/<name> — another repo this close lands in, named as GitHub
 //                        names it (land.ts finds its checkout in the ledger by
 //                        its origin)
+// either one followed by `@<environment>` (`workbench@docs`) to name the GitHub
+// deployment environment that serves what the check reads, when the repo
+// deploys to more than one.
 //
 // WHAT IS LIVE — each target has one reader of what serves now, and when it
 // cannot tell, the close refuses rather than guesses.
@@ -42,12 +45,21 @@
 // marks earlier successes inactive only outside production (`auto_inactive`,
 // "Create a deployment status", read 2026-11-04), so after a rollback the
 // older deployment holds the newest success and the newer one still reads
-// success. One still building, or whose latest status failed, does not count,
+// success. Two successes stamped the same second are ordered by their status
+// ids, which GitHub assigns in order; with no ids to order them the close
+// cannot tell which came last. One still building, or whose latest status failed, does not count,
 // so a capture taken while a deploy builds names the deployment that served
 // it, and a release after the new one lands refuses that capture. The whole
 // history is read or none of it counts: a deployment older than the read limit
 // may be what serves, so a longer history is a failure, never an answer from
 // part of it.
+//
+// MORE THAN ONE PRODUCTION ENVIRONMENT (a site and its docs, each a
+// production environment) means more than one thing is live. Each serves its
+// own latest success; when their commits differ, a target that names no
+// environment cannot tell which one its check reads, so the answer is "cannot
+// tell" until it names one (`<target>@<environment>`). A named environment is
+// read alone, production or not.
 //
 // When nothing records what serves — an origin not on GitHub, no production
 // deployment, none whose latest status is success — the answer is
@@ -99,11 +111,23 @@ const ID = /^[a-z0-9-]+$/;
 const DEPLOY_PAGES = 10;
 const HEX = /^[0-9a-f]{7,40}$/;
 
-/** Is <target> one of the two kinds, with a repo where the kind needs one? */
+/** <target> split into its kind (`workbench` or `repo:<owner>/<name>`) and the
+ *  deployment environment it names after `@`, or null for none — the one
+ *  reading land.ts and this file share. */
+export function targetParts(target: string): { base: string; environment: string | null } {
+  const at = target.lastIndexOf("@");
+  return at < 0 ? { base: target, environment: null } : { base: target.slice(0, at), environment: target.slice(at + 1) };
+}
+
+/** Is <target> one of the two kinds, with a repo where the kind needs one,
+ *  and a well-formed environment when it names one? */
 export function targetError(target: string): string | null {
-  if (target === "workbench") return null;
-  const m = /^repo:(.*)$/.exec(target);
-  if (!m) return `unknown target "${target}" — workbench or repo:<owner>/<name>`;
+  const { base, environment } = targetParts(target);
+  if (environment !== null && !/^[A-Za-z0-9][A-Za-z0-9 ._-]*$/.test(environment))
+    return `target "${target}" names no environment after its @`;
+  if (base === "workbench") return null;
+  const m = /^repo:(.*)$/.exec(base);
+  if (!m) return `unknown target "${target}" — workbench or repo:<owner>/<name>, either with @<environment>`;
   if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(m[1] ?? "")) return `target "${target}" names no <owner>/<name>`;
   return null;
 }
@@ -191,8 +215,9 @@ export type Sources = {
    *  or why none can be named: the origin is not on GitHub, or records no
    *  production deployment whose latest status is success. Throws when it
    *  cannot be read (no gh, an unreadable or malformed answer, a history
-   *  longer than the read limit). */
-  deployment(repo: string): Promise<Deployment | { none: string }>;
+   *  longer than the read limit). <environment> reads that environment
+   *  alone; null reads every production one. */
+  deployment(repo: string, environment: string | null): Promise<Deployment | { none: string }>;
 };
 
 /**
@@ -242,15 +267,16 @@ function ghJson(path: string): unknown {
 }
 
 const realSources: Sources = {
-  async deployment(repo) {
+  async deployment(repo, environment) {
     const gh = githubRepoOf(repo);
+    const want = environment === null ? null : environment.toLowerCase();
     if (gh === null) return { none: "its origin is not on GitHub, so no deployment records what serves" };
     // Only production deployments serve the site: a newer preview is not what
     // is live. One still building, failed, inactive or never marked is skipped.
     // Every production one is read, because the one serving is the success
     // that came last, not the newest deployment (a rollback puts an older one
     // back by giving it a new success; see the header).
-    let best: { id: string; sha: string; at: number } | null = null;
+    const wins: { id: string; sha: string; env: string; at: number; statusId: number | null }[] = [];
     for (let page = 1; ; page++) {
       const list = ghJson(`repos/${gh}/deployments?per_page=100&page=${page}`);
       if (!Array.isArray(list)) throw new Error(`repos/${gh}/deployments: not a list`);
@@ -265,7 +291,11 @@ const realSources: Sources = {
       for (const d of list) {
         if (d === null || typeof d !== "object" || Array.isArray(d)) throw new Error(`repos/${gh}/deployments: a malformed deployment`);
         const { id, sha, environment, production_environment } = d as Record<string, unknown>;
-        const prod = production_environment === true || (typeof environment === "string" && /^(production|github-pages)$/i.test(environment));
+        const env = typeof environment === "string" ? environment : "";
+        const prod =
+          want !== null
+            ? env.toLowerCase() === want
+            : production_environment === true || /^(production|github-pages)$/i.test(env);
         if (!prod) continue;
         if ((typeof id !== "number" && typeof id !== "string") || typeof sha !== "string" || !HEX.test(sha))
           throw new Error(`repos/${gh}/deployments: a production deployment without an id or commit`);
@@ -278,11 +308,33 @@ const realSources: Sources = {
         if ((latest as { state: string }).state !== "success") continue;
         const at = Date.parse(String((latest as { created_at?: unknown }).created_at ?? ""));
         if (Number.isNaN(at)) throw new Error(`repos/${gh}/deployments/${id}/statuses: a malformed status (no created_at)`);
-        if (best === null || at > best.at) best = { id: String(id), sha, at };
+        const sid = (latest as { id?: unknown }).id;
+        wins.push({ id: String(id), sha, env: env.toLowerCase(), at, statusId: typeof sid === "number" ? sid : null });
       }
       if (list.length < 100) break;
     }
-    if (best === null) return { none: `${gh} records no production deployment whose latest status is success` };
+    const where = want === null ? "production deployment" : `deployment to ${want}`;
+    if (wins.length === 0) return { none: `${gh} records no ${where} whose latest status is success` };
+    // Per environment, the success that came last; a tie GitHub's status ids
+    // cannot order is "cannot tell", never the first one read.
+    const live = new Map<string, (typeof wins)[number]>();
+    for (const env of new Set(wins.map((w) => w.env))) {
+      const mine = wins.filter((w) => w.env === env);
+      const latestAt = Math.max(...mine.map((w) => w.at));
+      const tied = mine.filter((w) => w.at === latestAt);
+      const ids = tied.map((w) => w.statusId);
+      if (tied.length > 1 && (ids.some((x) => x === null) || new Set(ids).size < ids.length))
+        return {
+          none: `${gh}'s deployments ${tied.map((w) => w.id).join(" and ")} reached success at the same time, and no status id orders them`,
+        };
+      live.set(env, tied.reduce((a, b) => ((b.statusId ?? 0) > (a.statusId ?? 0) ? b : a)));
+    }
+    const served = [...live.values()];
+    if (new Set(served.map((w) => w.sha)).size > 1)
+      return {
+        none: `${gh} serves different commits in the production environments ${[...live.keys()].sort().join(" and ")} — name one in the target (<target>@<environment>)`,
+      };
+    const best = served.reduce((a, b) => (b.at > a.at || (b.at === a.at && (b.statusId ?? 0) > (a.statusId ?? 0)) ? b : a));
     return { id: best.id, sha: best.sha };
   },
 };
@@ -291,10 +343,10 @@ const realSources: Sources = {
  *  does not name falls through to the real read. */
 function fileSources(path: string, target: string): Sources {
   return {
-    deployment: async (repo) => {
+    deployment: async (repo, environment) => {
       // No file yet is a stub that names nothing: every target is read for real.
       const all = (existsSync(path) ? JSON.parse(readFileSync(path, "utf8")) : {}) as Record<string, unknown>;
-      if (!(target in all)) return realSources.deployment(repo);
+      if (!(target in all)) return realSources.deployment(repo, environment);
       const v = all[target];
       if (v === null) return { none: "no production deployment is recorded" };
       if (typeof v === "object" && "throw" in v) throw new Error(String((v as { throw: unknown }).throw));
@@ -317,7 +369,7 @@ export function sources(target: string): Sources {
 export async function liveRevision(target: string, repo: string, src: Sources = sources(target)): Promise<Revision> {
   const te = targetError(target);
   if (te) throw new Error(te);
-  const dep = await src.deployment(repo);
+  const dep = await src.deployment(repo, targetParts(target).environment);
   if ("none" in dep) return { deploymentId: `none — ${dep.none}`, sourceCommit: null };
   if (!HEX.test(dep.sha)) throw new Error(`${target}'s live deployment names no commit: ${String(dep.sha).slice(0, 60)}`);
   return { deploymentId: `deployment ${dep.id}`, sourceCommit: dep.sha };
@@ -331,8 +383,9 @@ export async function liveRevision(target: string, repo: string, src: Sources = 
 export function sourceRepo(target: string): string {
   const te = targetError(target);
   if (te) throw new Error(te);
-  if (!target.startsWith("repo:")) throw new Error(`${target} is served by a repo the close knows already`);
-  return target.slice("repo:".length);
+  const { base } = targetParts(target);
+  if (!base.startsWith("repo:")) throw new Error(`${target} is served by a repo the close knows already`);
+  return base.slice("repo:".length);
 }
 
 /**

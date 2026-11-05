@@ -60,8 +60,11 @@ const USER = new RegExp(
  *  "pending the user's call", "the user to decide", "until you answer". Read
  *  over every line a close writes, not only the two places a question had been
  *  parked before: a report can park a question as "waiting on the user" and
- *  close. History ("the user chose …") and other people's waits do not match. */
-const WAITING_ON_USER = String.raw`${B0}(?:wait(?:s|ing)?\s+(?:on|for)|pending|awaiting|held\s+for)\s+${WHO}${B1}`;
+ *  close. History ("the user chose …") and other people's waits do not match.
+ *  A possessive counts too: "pending your approval" and "waiting for your
+ *  answer" parked a question and read as nothing, because "you" ended at its
+ *  word boundary (Contextium v9.2.0 review). */
+const WAITING_ON_USER = String.raw`${B0}(?:wait(?:s|ing)?\s+(?:on|for)|pending|awaiting|held\s+for)\s+(?:${WHO}|your)${B1}`;
 /** The half that is a ruling, not a deed: true of an `act:` line too, where
  *  "waiting on the user to send it" is fine and "until the user rules" is not. */
 const FOR_USER_RULING = String.raw`${B0}${WHO}\s+to\s+(?:decide|choose|rule\s+on|confirm|approve|pick|answer)${B1}|${B0}until\s+${WHO}\s+(?:decides?|chooses?|answers?|rules?|confirms?|approves?|picks?)${B1}`;

@@ -44,6 +44,11 @@
 // Usage:
 //   thread.ts                  — the thread id
 //   thread.ts --id             — same
+//   thread.ts --keep           — with any mode: an id-less session's id as this
+//                                tree names it now, even when its close has
+//                                landed, rather than a new one — for the
+//                                end-of-turn check, which asks about the
+//                                session that just closed
 //   thread.ts --require-unique — refuse a cwd shared by several tasks; a review
 //                                caller supplies its actual WORKBENCH_THREAD_ID
 //   thread.ts --branch         — the branch T3 gave the thread's worktree
@@ -200,7 +205,7 @@ function harnessSessionId(): string {
 // checkout and kept until a close of it lands. Its start is recorded the first
 // time it is seen, and its own worktree is the linked worktree it started in —
 // the harness made that one — recorded the same way.
-function harnessSession(SESSIONS_HOME: string, LEDGER_HOME: string): string | null {
+function harnessSession(SESSIONS_HOME: string, LEDGER_HOME: string, keep: boolean): string | null {
   let sid = harnessSessionId();
   if (sid !== "") return sid;
   // Keyed on the tree the shell stands in: the main checkout, or a linked
@@ -222,7 +227,11 @@ function harnessSession(SESSIONS_HOME: string, LEDGER_HOME: string): string | nu
   if (ck.status !== 0 || key === "") return null;
   const file = join(SESSIONS_HOME, key);
   sid = readTrim(file);
-  if (sid === "" || existsSync(join(LEDGER_HOME, sid, "closed"))) {
+  // A landed close starts the next session's id — except for --keep: the
+  // end-of-turn check runs right after that close, and a new id there read an
+  // empty state and let a reply without the close's proof through
+  // (Contextium v9.2.0 review).
+  if (sid === "" || (!keep && existsSync(join(LEDGER_HOME, sid, "closed")))) {
     const n = new Date();
     const stamp = `${n.getFullYear()}${pad(n.getMonth() + 1)}${pad(n.getDate())}-${pad(n.getHours())}${pad(n.getMinutes())}${pad(n.getSeconds())}`;
     sid = `session-${stamp}-${randomBytes(3).toString("hex")}`;
@@ -270,6 +279,7 @@ async function main(): Promise<void> {
   let MODE = "id";
   let LOCAL: "" | "time" | "day" = "";
   let requireUnique = false;
+  let keep = false;
   for (const arg of process.argv.slice(2)) {
     switch (arg) {
       case "--id":
@@ -297,8 +307,11 @@ async function main(): Promise<void> {
       case "--require-unique":
         requireUnique = true;
         break;
+      case "--keep":
+        keep = true;
+        break;
       default:
-        fail("usage: thread.ts [--id | --branch | --worktree | --source | --started [--local | --local-day]] [--require-unique]");
+        fail("usage: thread.ts [--id | --branch | --worktree | --source | --started [--local | --local-day]] [--require-unique] [--keep]");
     }
   }
 
@@ -371,7 +384,7 @@ async function main(): Promise<void> {
       const count = found.length;
       if (count === 0) {
         // Not T3, and no ledger claims this tree: the harness's own session.
-        const TID = harnessSession(SESSIONS_HOME, LEDGER_HOME);
+        const TID = harnessSession(SESSIONS_HOME, LEDGER_HOME, keep);
         if (TID === null) fail(`cannot name a session for ${TOP}`);
         row = harnessRow(LEDGER_HOME, TID, true);
       } else {

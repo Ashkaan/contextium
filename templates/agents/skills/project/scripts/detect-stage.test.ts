@@ -541,7 +541,9 @@ test("a crashed rows-taken helper routes as without it, and says so on stderr", 
 // a second thread's /project must not be sent to R12 too. Here the real
 // rows-taken.ts reads a fixture T3 database and the first thread's worktree.
 test("two threads at once: the second thread is not sent to the row the first is building", async () => {
-  const { DatabaseSync } = await import("node:sqlite");
+  // node:sqlite through a child Node that has it (tests/sqlite-child.ts): on
+  // Node 22.5–22.12 it loads only behind a flag this suite cannot give itself.
+    const { DatabaseSync } = await import("../../close/scripts/tests/sqlite-child.ts");
   const p = mk("tk-replay", "active");
   const rows = [
     "| R12 | a | i | s | — | planned | `specs/012-a/` |",

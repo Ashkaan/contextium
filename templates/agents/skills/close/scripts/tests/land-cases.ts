@@ -2317,6 +2317,31 @@ kase("Case 14g: the workbench roadmap gate and an app's check on the merged tree
   );
   is("…and nothing of it was pushed", onMain(F.CODE, "packages/p/p.ts"), "no");
 
+  // 8e. The same through an integration: the trunk adds integrations/q
+  //     calling the package's old signature. Only apps were checked, so q's
+  //     own check never ran on the merged tree (Contextium v9.2.0 review); every
+  //     importing unit — app, integration or package — runs its check.
+  fixture("c14gn");
+  gDo(F.WT2, "pull", "-q", "origin", "main");
+  const qsig = `node -e "if(require('fs').readFileSync('../../packages/p/p.ts','utf8').includes('b: number')){console.error('q.ts(2,1): error TS2554: Expected 2 arguments, but got 1.');process.exit(2)}"`;
+  write(
+    join(F.WT2, "integrations/q/package.json"),
+    `${JSON.stringify({ name: "q", private: true, scripts: { check: qsig } }, null, 2)}\n`,
+  );
+  write(join(F.WT2, "integrations/q/q.ts"), 'import { p } from "../../packages/p/p.ts";\np(1);\n');
+  gDo(F.WT2, "add", "-A");
+  gDo(F.WT2, "commit", "-q", "-m", "the trunk adds an integration calling the package");
+  gDo(F.WT2, "push", "-q", "origin", "HEAD:main");
+  write(join(F.WT1, "packages/p/p.ts"), "export const p = (a: number, b: number): number => a + b;\n");
+  r = land(1, ["thread one"], { merge: true });
+  is("a package change that breaks a trunk integration only on the merged tree exits 3", r.rc, "3");
+  has(
+    "…naming the integration and its check's error line",
+    r.out,
+    `NOT CLOSED: integrations/q's check fails on the merged tree in ${F.WT1}: q.ts(2,1): error TS2554: Expected 2 arguments, but got 1.`,
+  );
+  is("…and nothing of it was pushed", onMain(F.CODE, "packages/p/p.ts"), "no");
+
   // 3. The REAL roadmap gate over a row-by-row ROADMAP merge: two threads each add
   //    a row to one project, the second landing after the first. Thread one
   //    also finishes R1, so thread two's own table still says R1 is next while

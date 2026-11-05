@@ -4,6 +4,40 @@ A newer version of the template will ship better skills, refined standards, new 
 Pulling those in should never put your own work at risk. The installer is built around exactly that
 split: it refreshes the methodology layer and leaves your data alone.
 
+## Upgrading to v9.2.1: the review loop stops asking, and fixes to the close
+
+Re-run the installer. Nothing of yours changes, and there is no step to take.
+
+- **The review loop runs up to ten rounds on its own.** A build no longer stops after four rounds to
+  ask whether to review again; the ceiling is ten, a guard against a loop that never ends, and the
+  last round's fixes still get one final review. When a reviewer flags the same place the last review
+  left open, the driver prints `REPEAT SPOT: <file:line>`, and the build rewrites that piece as a
+  whole instead of patching it again. `/spec-audit` runs its fidelity check once per run, in the
+  same child as its first review.
+- **A review finding stays with the file it names first.** A finding such as
+  `a.ts: incorrect call to b.ts:5` is bound to `a.ts`, with or without a line number, so a later round
+  that only changed `b.ts` no longer clears it. One rule reads every finding, the fallback
+  reviewer's numbered ones included.
+- **A change to shared code checks everything that reads it.** When a session changes only
+  `integrations/` or `packages/`, the close verifies every app, integration and package that imports
+  the change, through a package's index file and other shared modules in turn; after merging the
+  trunk, each of those runs its own `check` on the merged tree.
+- **A document a page imports sends its app to `/qa`.** A Markdown file outside any web app, such as
+  `packages/docs/README.md` rendered by a page, makes that app a QA target.
+- **Live checks on a repo with more than one production environment.** When two production
+  environments serve different commits, the close says it cannot tell which one a check reads until
+  the target names one: `workbench@<environment>` or `repo:<owner>/<name>@<environment>`. Two
+  successes stamped the same second are ordered by GitHub's status ids.
+- **The end-of-turn check after a close in a session with no session id.** A session whose harness
+  exports no id is checked against the close it just made, so a reply that leaves out the close's
+  report is refused there too.
+- **"Pending your approval" is a question.** A journal entry or report line that waits on "your
+  approval" or "your answer" is refused like one that waits on you.
+- **Verify logs stay apart.** Two repos with an app of the same name, in worktrees of the same folder
+  name, each keep their own log.
+- **The suites run on Node 22.5 to 22.12.** Tests that build a T3 database fixture no longer load
+  `node:sqlite` themselves, which those versions allow only behind a flag.
+
 ## Upgrading to v9.2.0: choose how much guidance AGENTS.md carries
 
 Re-run the installer. Without `--rules`, your `AGENTS.md` keeps the guidance it already carried; one

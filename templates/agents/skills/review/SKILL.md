@@ -26,7 +26,9 @@ holds every folder here to.
 
 - **T3 execution lineage:** in T3 Code, run each live review command in a
   fresh delegated child (T3's `delegate_task`), with the exact command in its
-  task, so the review belongs to the owning thread's lineage. The child runs
+  task, so the review belongs to the owning thread's lineage;
+  `/spec-audit`'s fidelity check and round-1 review share one child
+  (`.agents/skills/spec-audit/SKILL.md` § step-4). The child runs
   the existing program and returns stdout/stderr; it does not fix source or
   mark the owning audit complete. The parent owns fixes and the audit marker.
   Outside T3, run the command directly. Stub-only unit tests need no child. No

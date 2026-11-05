@@ -148,10 +148,19 @@ import {
   symlinkSync,
   writeFileSync,
 } from "node:fs";
-import { basename, dirname, join, posix, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Exit, exit, runToExit } from "../../../packages/cli-exit/cli-exit.ts";
-import { contains, githubRepoOf as readGithubRepo, liveRevision, parseLiveChecks, type Revision, sourceRepo } from "./live-checks.ts";
+import { importerClosure, sharedUnit } from "./importers.ts";
+import {
+  contains,
+  githubRepoOf as readGithubRepo,
+  liveRevision,
+  parseLiveChecks,
+  type Revision,
+  sourceRepo,
+  targetParts,
+} from "./live-checks.ts";
 import { listRows } from "./roadmap.ts";
 import { reportClaimsComplete } from "./spec-state.ts";
 
@@ -1484,7 +1493,7 @@ async function main(): Promise<void> {
   // repo this thread lands nothing in has no commit to check, and is refused
   // before the push.
   const targetRepo = async (target: string, declShared: string, where: string): Promise<string> => {
-    if (target === "workbench") return declShared;
+    if (targetParts(target).base === "workbench") return declShared;
     const ledgerShared = LEDGER_LINES.map((l) => (tabFields(l, 3)[1] ?? "").replace(/\/+$/, "")).filter(Boolean);
     let repo = "";
     try {
@@ -2163,21 +2172,27 @@ c.on("exit", (code, sig) => {
     //
     // A branch that changes shared code (`integrations/`, `packages/`) breaks
     // the same way through a caller the trunk brought in, and touches no app at
-    // all; so every app in the merged tree that imports a changed shared code
-    // file is checked too. Imports here are relative and carry the extension, so
-    // the repo-relative path is a literal substring of the specifier — the rule
-    // verify.ts's importer pass reads by. Inside shared code it is not: a
-    // package's index.ts names its p.ts as `./p.ts`, so an app importing the
-    // index reached no check when p.ts changed (Contextium v9.2.0 review). So
-    // each shared file importing a changed one, its relative specifiers
-    // resolved, joins the changed set in turn until none is new — the set only
-    // grows and is bounded by the shared files, so a cycle ends it.
+    // all; so every unit in the merged tree importing a changed shared file —
+    // an app, an integration or a package, followed through barrels and other
+    // shared modules in turn — runs its check too, and so does each
+    // integration or package the branch changed. Who imports what is
+    // importers.ts's answer, the one verify.ts's importer pass also reads: an
+    // app importing a package's index.ts reached no check when p.ts changed
+    // (third v9.2.0 review), and a trunk integration calling a package whose
+    // signature this branch changed reached none either, because only apps
+    // were checked (Contextium v9.2.0 review).
     const mergedAppChecks = (base: string): void => {
       if (!IS_WORKBENCH) return;
       // Each changed file's app is the nearest folder under apps/ holding a
-      // package.json, as verify.ts finds it.
+      // package.json, as verify.ts finds it; an integration's or package's is
+      // its `integrations/<name>` or `packages/<name>` folder.
       const apps = new Set<string>();
       const appOf = (p: string): void => {
+        const unit = sharedUnit(p);
+        if (unit !== null) {
+          if (isFile(`${WT}/${unit}/package.json`)) apps.add(unit);
+          return;
+        }
         for (let dir = dirname(p); dir.startsWith("apps/"); dir = dirname(dir)) {
           if (isFile(`${WT}/${dir}/package.json`)) {
             apps.add(dir);
@@ -2185,67 +2200,17 @@ c.on("exit", (code, sig) => {
           }
         }
       };
-      const shared: string[] = [];
-      for (const p of changedPaths(WT, base)) {
-        if (p.startsWith("apps/")) appOf(p);
-        else if (/^(integrations|packages)\/[^/]+\/.+\.(ts|tsx|mts|mjs|js)$/.test(p)) shared.push(p);
-      }
-      if (shared.length > 0) {
-        const specs = new Map<string, string[]>();
-        const walk = (dir: string): void => {
-          for (const e of readdirSync(`${WT}/${dir}`, { withFileTypes: true })) {
-            const p = `${dir}/${e.name}`;
-            if (e.isDirectory() && e.name !== "node_modules") walk(p);
-            else if (e.isFile() && /\.(ts|tsx|mts|mjs|js)$/.test(e.name)) {
-              const to: string[] = [];
-              for (const m of readFileSync(`${WT}/${p}`, "utf8").matchAll(
-                /\b(?:from|import|require)\s*\(?\s*["'](\.{1,2}\/[^"']+)["']/g,
-              ))
-                to.push(posix.normalize(posix.join(posix.dirname(p), m[1] ?? "")));
-              specs.set(p, to);
-            }
-          }
-        };
-        try {
-          for (const top of ["integrations", "packages"]) if (isDir(`${WT}/${top}`)) walk(top);
-        } catch (e) {
-          notClosed(`could not read the shared code in ${WT} for importers of what changed — ${(e as Error).message}`);
-        }
-        const seen = new Set(shared);
-        for (let grew = true; grew; ) {
-          grew = false;
-          for (const [p, to] of specs) {
-            if (seen.has(p) || !to.some((x) => seen.has(x))) continue;
-            seen.add(p);
-            shared.push(p);
-            grew = true;
-          }
-        }
-      }
-      if (shared.length > 0 && isDir(`${WT}/apps`)) {
-        const g = run(
-          "grep",
-          [
-            "-rlF",
-            "--include=*.ts",
-            "--include=*.tsx",
-            "--include=*.mts",
-            "--include=*.mjs",
-            "--include=*.js",
-            "--exclude-dir=node_modules",
-            ...shared.flatMap((p) => ["-e", p]),
-            "--",
-            `${WT}/apps`,
-          ],
-          { out: "pipe", err: "pipe" },
+      const changed = changedPaths(WT, base);
+      for (const p of changed) appOf(p);
+      let importers: string[] = [];
+      try {
+        importers = importerClosure(WT, changed);
+      } catch (e) {
+        notClosed(
+          `could not read the code in ${WT} for importers of the shared code it changed — ${(e as Error).message}`,
         );
-        // grep exits 1 for no match; anything above that is a failed read.
-        if (g.status > 1)
-          notClosed(`could not list the apps importing the shared code ${WT} changed — grep failed; re-run`);
-        for (const line of g.stdout.split("\n")) {
-          if (line.startsWith(`${WT}/`)) appOf(line.slice(WT.length + 1));
-        }
       }
+      for (const p of importers) appOf(p);
       for (const app of [...apps].sort()) {
         const pkg = `${WT}/${app}/package.json`;
         let check: unknown;

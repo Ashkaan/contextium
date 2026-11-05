@@ -70,6 +70,8 @@
 //   - deleted file:               kept; its app is still a target if it survives
 //   - an app's root AGENTS/CLAUDE/DESIGN/README.md alone: no target, unless
 //     a page imports it; then its importers' apps
+//   - a document outside any web app (packages/docs/README.md): its
+//     importers' apps, like a shared module; none when nothing imports it
 //   - detect-app.ts missing:      exit 2
 //   - detect-app.ts exit 2 / >3:  exit 2
 
@@ -307,8 +309,11 @@ async function main(): Promise<void> {
 
   // ── Shared-package fan-out ────────────────────────────────────────────
   //
-  // Only for files that reached no web target of their own, and only for the
-  // languages an import graph exists in. A changed README in packages/ has no
+  // Only for files that reached no web target of their own — every one of them,
+  // whatever its extension. A page imports documents as surely as code (an
+  // Astro page rendering packages/docs/README.md, a ?raw text file), and a walk
+  // admitting only code extensions sent no app to /qa for a change to that
+  // README (Contextium v9.2.0 review). A changed file nothing imports has no
   // importers and produces nothing, which is correct.
 
   // The reverse-import map, built ONCE per run by import-map.ts, which carries
@@ -381,7 +386,6 @@ async function main(): Promise<void> {
   const VISITED = new Set<string>(IMPORTED_DOCS);
   let frontier: string[] = [...IMPORTED_DOCS];
   for (const f of ORPHANS) {
-    if (!/\.(ts|tsx|js|jsx|mjs|cjs|mts|cts|css|astro|svelte|vue)$/.test(f)) continue;
     frontier.push(f);
     VISITED.add(f);
   }
