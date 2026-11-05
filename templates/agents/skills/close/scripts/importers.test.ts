@@ -82,13 +82,65 @@ test("nothing shared changed, or no tree at all: no importers", () => {
   assert.deepEqual(importerClosure(join(TMP, "absent"), ["packages/p/p.ts"]), []);
 });
 
-test("node_modules and dot folders are not read", () => {
+test("git's folder and installed-package folders are not read", () => {
   const root = tree("skip", {
     "packages/p/p.ts": "export const p = 1;\n",
     "packages/p/node_modules/x/i.ts": 'import "../../p.ts";\n',
-    "apps/a/.cache/i.ts": 'import "../../../packages/p/p.ts";\n',
+    "apps/a/b/.git/hooks/i.ts": 'import "../../../../../packages/p/p.ts";\n',
+    "apps/a/b/.yarn/releases/y.cjs": 'require("../../../../../packages/p/p.ts");\n',
+    "apps/a/b/.pnpm-store/v3/i.ts": 'import "../../../../../packages/p/p.ts";\n',
+    "apps/a/b/bower_components/x/i.js": 'import "../../../../../packages/p/p.ts";\n',
+    "apps/a/b/jspm_packages/x/i.js": 'import "../../../../../packages/p/p.ts";\n',
   });
   assert.deepEqual(importerClosure(root, ["packages/p/p.ts"]), []);
+});
+
+// The Contextium v9.2.1 review: every dot folder was skipped, so a Storybook
+// config in an app's .storybook/ importing a changed package was no importer.
+test("source in any other dot folder is read: an app's .storybook config is an importer", () => {
+  const root = tree("dot", {
+    "packages/p/p.ts": "export const p = 1;\n",
+    "apps/web/site/.storybook/main.ts": 'import { p } from "../../../../packages/p/p.ts";\n',
+  });
+  assert.deepEqual(importerClosure(root, ["packages/p/p.ts"]), ["apps/web/site/.storybook/main.ts"]);
+});
+
+test("an .astro, .vue or .svelte file importing a changed package is an importer", () => {
+  const root = tree("sfc", {
+    "packages/p/p.ts": "export const p = 1;\n",
+    "apps/web/a/src/pages/index.astro": '---\nimport { p } from "../../../../../packages/p/p.ts";\n---\n<p>{p}</p>\n',
+    "apps/web/v/src/App.vue": '<script setup lang="ts">\nimport { p } from "../../../../packages/p/p";\n</script>\n',
+    "apps/web/s/src/App.svelte": '<script>\n  import { p } from "../../../../packages/p/p.js";\n</script>\n',
+  });
+  assert.deepEqual(importerClosure(root, ["packages/p/p.ts"]), [
+    "apps/web/a/src/pages/index.astro",
+    "apps/web/s/src/App.svelte",
+    "apps/web/v/src/App.vue",
+  ]);
+});
+
+// The Contextium v9.2.1 review: an extensionless specifier resolved only to
+// TypeScript, so index.cjs requiring './p' was no importer when p.js changed.
+test("an extensionless specifier resolves to the JavaScript file and index forms too", () => {
+  const root = tree("jsforms", {
+    "packages/p/p.js": "module.exports = 1;\n",
+    "packages/p/index.cjs": 'module.exports = require("./p");\n',
+    "packages/q/lib/index.mjs": "export const l = 1;\n",
+    "packages/q/q.cjs": 'const l = require("./lib");\n',
+    "packages/r/r.mjs": "export const r = 1;\n",
+    "packages/r/use.js": 'import { r } from "./r";\n',
+    "packages/s/lib/index.js": "export const s = 1;\n",
+    "packages/s/use.ts": 'import { s } from "./lib";\n',
+  });
+  assert.deepEqual(
+    importerClosure(root, [
+      "packages/p/p.js",
+      "packages/q/lib/index.mjs",
+      "packages/r/r.mjs",
+      "packages/s/lib/index.js",
+    ]),
+    ["packages/p/index.cjs", "packages/q/q.cjs", "packages/r/use.js", "packages/s/use.ts"],
+  );
 });
 
 test("past the bound it throws rather than answer in part", () => {

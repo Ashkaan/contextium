@@ -26,6 +26,9 @@ Re-run the installer. Nothing of yours changes, and there is no step to take.
   `integrations/` or `packages/`, the close verifies every app, integration and package that imports
   the change, through a package's index file and other shared modules in turn; after merging the
   trunk, each of those runs its own `check` on the merged tree.
+- **That check finds importers it used to miss.** It reads `.astro`, `.vue` and `.svelte` files
+  and dot folders such as an app's `.storybook/`, skipping only `.git` and installed-package
+  folders, and follows an import with no extension to a `.js`, `.mjs` or `.cjs` file or index.
 - **A document a page imports sends its app to `/qa`.** A Markdown file outside any web app, such as
   `packages/docs/README.md` rendered by a page, makes that app a QA target.
 - **Live checks on a repo with more than one production environment.** When two production

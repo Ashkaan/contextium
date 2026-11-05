@@ -8,9 +8,15 @@
 // so an app importing a package's index.ts, which re-exports the changed p.ts,
 // was never verified.
 //
+// The files read are qa's source files (import-map.ts's SOURCE: code, and the
+// .astro, .vue and .svelte formats whose script blocks import), in every folder
+// but git's own and those holding installed packages (SKIP_DIRS): an app's
+// .storybook/ config is its code too (Contextium v9.2.1 review).
+//
 // A file imports a target when one of its relative specifiers (`from`,
-// `import`, `import(`, `require(`) resolves to it — an extensionless or `.js`
-// specifier also to its `.ts`/`.tsx` and `index` forms — or when the file
+// `import`, `import(`, `require(`) resolves to it — a `.js`, `.mjs` or
+// `.cjs` specifier also to its TypeScript forms, and an extensionless one to
+// the file or `index` with any code extension — or when the file
 // names the target's repo-relative path outright (`../../../integrations/x/x.ts`
 // from an app holds it, and so does a script that runs it by path). An
 // importer under `integrations/` or `packages/` is itself shared code, so it
@@ -20,6 +26,7 @@
 
 import { readdirSync, readFileSync } from "node:fs";
 import { posix } from "node:path";
+import { CODE_EXTS, SOURCE } from "../../qa/scripts/import-map.ts";
 
 /** The folders whose code can be shared: an importer here is followed in turn. */
 export const SHARED_TOPS = ["integrations", "packages"] as const;
@@ -29,7 +36,15 @@ export const IMPORTER_TOPS = ["apps", ...SHARED_TOPS] as const;
  *  not this repo, and a partial answer would read as "no importers". */
 export const MAX_FILES = 50_000;
 
-const CODE = /\.(?:ts|tsx|mts|cts|js|jsx|mjs|cjs)$/;
+/** Folders never read: git's own, and those holding installed packages. */
+export const SKIP_DIRS: ReadonlySet<string> = new Set([
+  ".git",
+  "node_modules",
+  ".pnpm-store",
+  ".yarn",
+  "bower_components",
+  "jspm_packages",
+]);
 const SPEC = /(?:\bfrom\s*|\bimport\s*\(?\s*|\brequire\s*\(\s*)["'](\.{1,2}\/[^"'?#]+)/g;
 
 /** `integrations/<name>` or `packages/<name>` for a path inside one, else null. */
@@ -47,7 +62,7 @@ function targetsOf(from: string, spec: string): string[] {
     const stem = r.slice(0, -js[0].length);
     out.push(`${stem}.${js[1] ?? ""}ts`, `${stem}.tsx`);
   }
-  if (!CODE.test(r)) for (const e of [".ts", ".tsx", "/index.ts", "/index.tsx"]) out.push(r + e);
+  if (!SOURCE.test(r)) for (const e of CODE_EXTS) out.push(`${r}.${e}`, `${r}/index.${e}`);
   return out;
 }
 
@@ -65,10 +80,10 @@ export function importerClosure(root: string, changed: string[], maxFiles = MAX_
   const files = new Map<string, { text: string; to: string[] }>();
   const walk = (dir: string): void => {
     for (const e of readdirSync(`${root}/${dir}`, { withFileTypes: true })) {
-      if (e.name === "node_modules" || e.name.startsWith(".")) continue;
+      if (SKIP_DIRS.has(e.name)) continue;
       const p = `${dir}/${e.name}`;
       if (e.isDirectory()) walk(p);
-      else if (e.isFile() && CODE.test(e.name)) {
+      else if (e.isFile() && SOURCE.test(e.name)) {
         if (files.size >= maxFiles)
           throw new Error(
             `more than ${maxFiles} code files under ${IMPORTER_TOPS.join(", ")} — refusing a partial answer`,

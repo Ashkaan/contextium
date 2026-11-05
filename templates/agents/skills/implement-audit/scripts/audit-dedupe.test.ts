@@ -436,6 +436,100 @@ test("a gap the last receipt left stays until a round's delta carries it", () =>
   assert.match(f.err, /not reviewed: \.agents\/skills\/demo\/a\.ts/);
 });
 
+// After a release the public trunk takes the released commits and the branch
+// base moves past them, so every file they touched leaves the change. Such a
+// file is not a gap on a later --since round, nor is a gap an earlier round
+// left on it: otherwise every file a release touched reads "not reviewed" on
+// every round after it. A file the change deletes is still part of it and is
+// judged as before.
+function trunkRepo(tag: string): { d: string; env: NodeJS.ProcessEnv; base0: string } {
+  const d = repo(tag);
+  const bare = join(TMP, `${tag}-origin.git`);
+  git(TMP, "init", "-q", "--bare", "-b", "main", bare);
+  git(d, "remote", "add", "origin", bare);
+  git(d, "push", "-q", "origin", "main");
+  git(d, "fetch", "-q", "origin");
+  const base0 = git(d, "rev-parse", "HEAD");
+  git(d, "checkout", "-q", "-b", "feat");
+  return { d, env: owner(tag), base0 };
+}
+function commitAll(d: string, msg: string): void {
+  git(d, "add", "-A");
+  git(d, "commit", "-qm", msg);
+}
+/** The trunk takes the branch's commits, as origin/main does when a release is published. */
+function release(d: string): void {
+  git(d, "push", "-q", "origin", "HEAD:main");
+  git(d, "fetch", "-q", "origin");
+}
+function approveRange(env: NodeJS.ProcessEnv, d: string, base0: string, name: string): void {
+  const b = begin(env, d, "range", ["--base", base0]);
+  assert.match(b.out, /RECEIPT=review/, b.err);
+  const f = run(env, "finish", "--repo", d, "--rc", "0", "--result", result(name, []));
+  assert.equal(f.out, "APPROVED=1", f.err);
+}
+
+test("a file the trunk absorbed after a release is no longer part of the change, and no gap", () => {
+  const { d, env, base0 } = trunkRepo("absorbed");
+  writeFileSync(join(d, ".agents/skills/demo/a.ts"), "export const a = 2;\n");
+  commitAll(d, "released change");
+  approveRange(env, d, base0, "abs0");
+  release(d);
+  const t = snap(d);
+  writeFileSync(join(d, ".agents/skills/demo/b.ts"), "export const b = 2;\n");
+  begin(env, d, "since", ["--since", t]);
+  const f = run(env, "finish", "--repo", d, "--rc", "0", "--result", result("abs1", []));
+  assert.doesNotMatch(f.err, /not reviewed: \.agents\/skills\/demo\/a\.ts/, "the released a.ts is not a gap");
+  assert.equal(f.out, "APPROVED=1", f.err);
+});
+
+test("a gap an earlier round left on a file the trunk then absorbed is not carried", () => {
+  const { d, env, base0 } = trunkRepo("absorbedgap");
+  writeFileSync(join(d, ".agents/skills/demo/a.ts"), "export const a = 2;\n");
+  commitAll(d, "first");
+  approveRange(env, d, base0, "ag0");
+  writeFileSync(join(d, ".agents/skills/demo/a.ts"), "export const a = 3;\n");
+  commitAll(d, "second");
+  const s1 = snap(d);
+  writeFileSync(join(d, ".agents/skills/demo/b.ts"), "export const b = 2;\n");
+  begin(env, d, "since", ["--since", s1]);
+  const g = run(env, "finish", "--repo", d, "--rc", "0", "--result", result("ag1", []));
+  assert.match(g.err, /not reviewed: \.agents\/skills\/demo\/a\.ts/, "before the release a.ts is a gap");
+  commitAll(d, "b");
+  release(d);
+  const s2 = snap(d);
+  writeFileSync(join(d, ".agents/skills/demo/b.ts"), "export const b = 3;\n");
+  begin(env, d, "since", ["--since", s2]);
+  const f = run(env, "finish", "--repo", d, "--rc", "0", "--result", result("ag2", []));
+  assert.doesNotMatch(f.err, /not reviewed: \.agents\/skills\/demo\/a\.ts/, "the carried gap left with the release");
+  assert.equal(f.out, "APPROVED=1", f.err);
+});
+
+test("a file the change deletes is still judged: a gap unless the round's diff carries it", () => {
+  const { d, env, base0 } = trunkRepo("deleted");
+  writeFileSync(join(d, ".agents/skills/demo/a.ts"), "export const a = 2;\n");
+  writeFileSync(join(d, ".agents/skills/demo/b.ts"), "export const b = 2;\n");
+  commitAll(d, "change");
+  approveRange(env, d, base0, "del0");
+  rmSync(join(d, ".agents/skills/demo/b.ts"));
+  const s1 = snap(d);
+  writeFileSync(join(d, ".agents/skills/demo/a.ts"), "export const a = 3;\n");
+  begin(env, d, "since", ["--since", s1]);
+  const gap = run(env, "finish", "--repo", d, "--rc", "0", "--result", result("del1", []));
+  assert.equal(gap.out, "APPROVED=0", "a deletion the round never read is not approved");
+  assert.match(gap.err, /not reviewed: \.agents\/skills\/demo\/b\.ts/);
+
+  const { d: d2, env: env2, base0: b2 } = trunkRepo("deleted2");
+  writeFileSync(join(d2, ".agents/skills/demo/b.ts"), "export const b = 2;\n");
+  commitAll(d2, "change");
+  approveRange(env2, d2, b2, "del2");
+  const t = snap(d2);
+  rmSync(join(d2, ".agents/skills/demo/b.ts"));
+  begin(env2, d2, "since", ["--since", t]);
+  const ok = run(env2, "finish", "--repo", d2, "--rc", "0", "--result", result("del3", []));
+  assert.equal(ok.out, "APPROVED=1", `a deletion the round's diff carries is reviewed: ${ok.err}`);
+});
+
 // An open blocker closes when a follow-up round that was shown it completes
 // without re-raising it, whatever file the fix touched: the prompt lists
 // every open blocker and says one not re-reported is recorded as closed.

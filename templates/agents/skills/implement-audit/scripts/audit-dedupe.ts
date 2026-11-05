@@ -1506,15 +1506,26 @@ async function main(): Promise<void> {
               : r.itemKeys?.[k];
             return id !== undefined && checked.has(id);
           };
+          // A path the change no longer holds needs no review. When a release
+          // is published the trunk takes the released commits and the branch
+          // base moves past them, so each file they touched leaves the change,
+          // and judged here it would read "not reviewed" on every later round
+          // although nothing in it changed. This round's coverage
+          // holds every path changed since the branch base, a file the change
+          // deletes included (as absent), so a repo path missing from it has
+          // left the change. The behavior contract and another repo's paths
+          // are not paths of this change and are judged as before.
+          const leftChange = (k: string): boolean =>
+            !Object.hasOwn(r.covered, k) && !k.startsWith("#") && !k.startsWith("contract:") && !k.includes("::");
           for (const k of [...new Set([...Object.keys(r.covered), ...Object.keys(prev.covered)])].sort()) {
-            if (r.covered[k] === prev.covered[k]) continue;
+            if (r.covered[k] === prev.covered[k] || leftChange(k)) continue;
             if (!reviewed(k)) gaps.push(k);
           }
           if (r.block !== prev.block && !delta.has(rel(rs.report ?? ""))) gaps.push("#declaration");
           // What the earlier receipt left unreviewed stays unreviewed until a
-          // round's delta actually carries it.
+          // round's delta actually carries it, or the change no longer holds it.
           for (const g of prev.gaps ?? []) {
-            if (g === "#checks" || gaps.includes(g)) continue;
+            if (g === "#checks" || gaps.includes(g) || leftChange(g)) continue;
             if (g === "#declaration" ? delta.has(rel(rs.report ?? "")) : !g.startsWith("#") && reviewed(g)) continue;
             gaps.push(g);
           }

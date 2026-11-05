@@ -464,6 +464,32 @@ test("a shared-only change verifies importers through a barrel, and an importing
   commitPush(CLEAN, "the package change");
 });
 
+// The Contextium v9.2.1 review: the importer walk read no .astro, .vue or
+// .svelte file and skipped every dot folder, so an app whose only import of a
+// changed package was in one of those ran no check.
+test("an app importing a changed package from an .astro, .vue, .svelte or .storybook file is verified", () => {
+  const apps: Record<string, [string, string]> = {
+    astro: ["src/pages/index.astro", '---\nimport { p } from "../../../../../packages/p/p.ts";\n---\n<p>{p(1)}</p>\n'],
+    vue: ["src/App.vue", '<script setup lang="ts">\nimport { p } from "../../../../packages/p/p";\n</script>\n'],
+    svelte: ["src/App.svelte", '<script>\n  import { p } from "../../../../packages/p/p.js";\n</script>\n'],
+    story: [".storybook/main.ts", 'import { p } from "../../../../packages/p/p.ts";\n'],
+  };
+  for (const [name, [file, text]] of Object.entries(apps)) {
+    mkdirSync(dirname(join(CLEAN, "apps/web", name, file)), { recursive: true });
+    writeFileSync(join(CLEAN, "apps/web", name, file), text);
+    writeFileSync(
+      join(CLEAN, "apps/web", name, "package.json"),
+      `{ "name": "${name}", "scripts": { "check": "true", "test": "true" } }\n`,
+    );
+  }
+  commitPush(CLEAN, "apps reading the package from component and dot-folder files");
+  writeFileSync(join(CLEAN, "packages/p/p.ts"), "export const p = (a: number, b = 0): number => a + b;\n");
+  go();
+  is("the importers pass", String(RC), "0");
+  for (const name of Object.keys(apps)) has(`the ${name} app is verified`, OUT, `ok web/${name}`);
+  commitPush(CLEAN, "the package change");
+});
+
 test("an app edit keeps the narrow scope, cap or no cap", () => {
   appendFileSync(join(CLEAN, "apps/health/green/src/index.ts"), "// touched\n");
   go();

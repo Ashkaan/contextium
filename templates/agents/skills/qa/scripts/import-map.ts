@@ -40,8 +40,13 @@ import { posix, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { exit, runToExit } from "../../../packages/cli-exit/cli-exit.ts";
 
-const SOURCE = /\.(ts|tsx|js|jsx|mjs|cjs|mts|cts|astro|svelte|vue)$/;
-const CODE_EXT = /\.(ts|tsx|mts|cts|js|jsx|mjs|cjs)$/;
+/** The code extensions: a specifier may leave one out, and a target is keyed without it. */
+export const CODE_EXTS = ["ts", "tsx", "mts", "cts", "js", "jsx", "mjs", "cjs"] as const;
+/** The source files read for imports: code, and the component formats whose script blocks import. */
+export const SOURCE_EXTS = [...CODE_EXTS, "astro", "svelte", "vue"] as const;
+/** A source file's path; .agents/skills/close/scripts/importers.ts reads the same files. */
+export const SOURCE = new RegExp(`\\.(?:${SOURCE_EXTS.join("|")})$`);
+const CODE_EXT = new RegExp(`\\.(?:${CODE_EXTS.join("|")})$`);
 // Matched LINE BY LINE, as `grep -o` did. Across the whole text, a prose
 // "from the import" in a comment ran on to the next line's quote and swallowed
 // the real import there — found by diffing both walks' importers.
