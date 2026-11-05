@@ -97,7 +97,7 @@ and a headless run elsewhere needs `GEMINI_CLI_TRUST_WORKSPACE=true`.
   your own, and its recorded line says `claude-fallback (fresh context, NOT independent)`. A weaker
   review is fine; a weaker review reported as a strong one is not.
 - **Each review runs once and leaves a record.** `/implement-audit` reviews each content once — its
-  verdict is reused only while the content it read is unchanged — later rounds read only the fixes, and it stops at a clean round, or at round four at the latest. Each
+  verdict is reused only while the content it read is unchanged — later rounds read only the fixes, and it stops at a clean round, or at round ten at the latest. Each
   reviewer writes its verdict where the work lives — `spec-audit:` into the spec's `plan.md`, `implement-audit:` into the
   row's `report.md` — and the journal quotes it.
 - **The skills ship with their machinery, not a description of it.** Stage detection, roadmap edits,

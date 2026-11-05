@@ -1280,6 +1280,13 @@ test("receipt mode: a follow-up round is shown the findings still open", () => {
   rcIs("the follow-up runs", 0, r.rc);
   has("the open finding is in the prompt", "EARLIER FINDINGS STILL OPEN", seen());
   has("verbatim", "[must-fix] alpha.txt:1: still wrong", seen());
+  // The result names what the prompt showed: a finding the round was shown and
+  // did not re-raise is closed by the receipt, one it never saw stays open.
+  eq(
+    "the result records the open findings the prompt listed",
+    JSON.stringify(["[must-fix] alpha.txt:1: still wrong — x — y"]),
+    JSON.stringify(JSON.parse(readFileSync(`${TMP}/open-result.json`, "utf8")).shown),
+  );
 });
 
 // ── REPEAT SPOT: the same place flagged two reviews running ───────────────
@@ -1334,6 +1341,11 @@ test("a finding beside one the last review left open is a repeat spot", () => {
   );
   const none = repeatRound("none", [], "[must-fix] src/Editor.tsx:153: first sighting — x — y");
   lacks("with nothing open there is nothing to repeat", "REPEAT SPOT", none.err);
+  eq(
+    "a round shown nothing records an empty shown list",
+    "[]",
+    JSON.stringify(JSON.parse(readFileSync(`${TMP}/repeat-none-result.json`, "utf8")).shown),
+  );
   // The spot's file is the finding's file, read by the one rule every reader
   // of a finding uses (audit-dedupe.ts leadingPath): a path holding a colon was
   // cut at it, so its repeat was never seen.

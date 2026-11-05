@@ -709,42 +709,28 @@ const GAP_WORDS: Record<string, string> = {
   "#pieces": "the rest of the change: this round built on one piece of an incomplete piece set",
 };
 
-/** The path-like token leading <text>, or null: the one rule for the file a
- *  finding names, used by findingFile here and by every caller that reads a
- *  finding's location (a fallback reviewer's numbered line, read after its
- *  title). Reading a location anywhere else let a later citation win:
- *  `a.ts: incorrect call to b.ts:5` was bound to b.ts and closed by a round
- *  over b.ts (Contextium v9.2.0 review). The token is the text up to the first
+/** The path-like token leading <text>, or null: the one rule for where a
+ *  finding points, used by the REPEAT SPOT detector below. It decides no
+ *  finding's closure: a blocker closes when a round that was shown it leaves it
+ *  out (finish), never by the file it names. The token is the text up to the first
  *  whitespace, backtick or quote, an opening backtick or quote skipped: with a
  *  `:<line>` it is whatever precedes the line (`Makefile:12`, `localhost:3000`);
  *  without one it is a path when it holds a `/` or ends in an extension and
- *  holds no colon, so prose (`Note:`) and `node:sqlite` lead with none. A name
- *  holding a space or colon (`x: y é.ts`) is only ever one of <known> (the
- *  paths the review covered or changed), matched at the same leading position,
- *  longest first. A markdown link (`[a.ts:9](/abs/a.ts:9)`) is read by its text.
+ *  holds no colon, so prose (`Note:`) and `node:sqlite` lead with none; a
+ *  colon inside a lined path is the path's (`src/x:y.tsx:160`). A markdown link
+ *  (`[a.ts:9](/abs/a.ts:9)`) is read by its text.
  *  `loc` is the path with its line; `end` is where the token, with any
  *  closing backtick, quote or link target, ends in <text>. */
-export function leadingPath(
-  text: string,
-  known: Iterable<string> = [],
-): { path: string; loc: string; end: number } | null {
+export function leadingPath(text: string): { path: string; loc: string; end: number } | null {
   const link = /^\[([^\]\s][^\]]*)\]\([^)\s]*\)/.exec(text);
   if (link) {
-    const inner = leadingPath(link[1] ?? "", known);
+    const inner = leadingPath(link[1] ?? "");
     return inner ? { ...inner, end: link[0].length } : null;
   }
   const open = /^[`'"(]?/.exec(text)?.[0].length ?? 0;
   const t = text.slice(open);
   const shut = open > 0 ? (text[0] === "(" ? ")" : text[0]) : "";
   const close = (n: number): number => open + n + (shut !== "" && t[n] === shut ? 1 : 0);
-  let spaced: { path: string; loc: string; n: number } | null = null;
-  for (const p of known) {
-    if (!/[\s:]/.test(p) || !t.startsWith(p)) continue;
-    const m = /^(?::\d+(?:[-:]\d+)*)?(?=[`'",;:)\s]|$)/.exec(t.slice(p.length));
-    if (m && (spaced === null || p.length > spaced.path.length))
-      spaced = { path: p, loc: p + m[0], n: p.length + m[0].length };
-  }
-  if (spaced) return { path: spaced.path, loc: spaced.loc, end: close(spaced.n) };
   const raw = /^[^\s`'",;]+/.exec(t)?.[0] ?? "";
   // Trailing punctuation is not the path's: a sentence's `.` or `:`, and a `)`
   // that closes nothing the token opened (`app/(group)/page.tsx` keeps its own).
@@ -759,25 +745,45 @@ export function leadingPath(
   return null;
 }
 
-/** The file a triage line names (`[must-fix] a.ts:12: …`), or null: the path
- *  leadingPath reads right after its tag. Only a line with no leading
- *  path-like token falls back to the first <known> path it names followed by
- *  `:<line>` anywhere in it. */
-export function findingFile(line: string, known: Iterable<string> = []): string | null {
-  const body = line.replace(/^\[[a-z-]+\]\s*/, "");
-  const lead = leadingPath(body, known);
-  if (lead) return lead.path;
-  let best: { at: number; p: string } | null = null;
-  for (const p of known) {
-    if (p === "") continue;
-    for (let at = body.indexOf(p); at >= 0; at = body.indexOf(p, at + 1)) {
-      if (at > 0 && !/[\s`'"(\[]/.test(body[at - 1] ?? "")) continue;
-      if (!/^:\d/.test(body.slice(at + p.length))) continue;
-      if (best === null || at < best.at || (at === best.at && p.length > best.p.length)) best = { at, p };
-      break;
-    }
+// ── REPEAT SPOT ──
+// A must-fix or should-fix within REPEAT_SPOT_LINES of one the last review left
+// open, in the same file, means the fix did not close the defect, or its patch
+// opened the next hole beside it: a handler patched through seven reviews drew
+// a new finding a few lines from the last each time, and only replacing the
+// patches with one design came back clean. The warning is a line for the build
+// to read on stderr; it changes no receipt. code-review.ts prints it for a
+// vendor's answer, and finish --fallback for the fresh-context fallback's.
+const REPEAT_SPOT_LINES = 25;
+// The spot is the finding's file and line, read by leadingPath: bare,
+// backticked or a markdown link (`[f.ts:9](/abs/f.ts:9)`), a path holding a
+// colon included. A regex of its own cut such a path at the colon.
+function spotOf(finding: string): { file: string; line: number } | null {
+  const t = finding.trim();
+  const tag = /^\[(?:must-fix|should-fix)\]\s+/.exec(t);
+  const lead = tag ? leadingPath(t.slice(tag[0].length)) : null;
+  const line = lead ? /^:(\d+)/.exec(lead.loc.slice(lead.path.length)) : null;
+  return lead && line ? { file: lead.path, line: Number(line[1]) } : null;
+}
+/** One REPEAT SPOT warning per finding in <findings> beside one of <open>, the findings the last review left open. */
+export function repeatSpots(findings: string[], open: string[]): string[] {
+  const earlier = open.flatMap((f) => spotOf(f) ?? []);
+  const out: string[] = [];
+  for (const f of findings) {
+    const spot = spotOf(f);
+    if (!spot) continue;
+    const { file, line } = spot;
+    const prev = earlier.find((e) => e.file === file && Math.abs(e.line - line) <= REPEAT_SPOT_LINES);
+    if (prev)
+      out.push(
+        `[code-review] REPEAT SPOT: ${file}:${line} — the last review flagged ${file}:${prev.line} too. Stop patching this piece: redesign it as a whole, then review the redesign.`,
+      );
   }
-  return best?.p ?? null;
+  return out;
+}
+
+/** The form two finding lines are compared in: runs of whitespace collapsed, ends trimmed. */
+export function findingKey(line: string): string {
+  return line.replace(/\s+/g, " ").trim();
 }
 
 /** Why a receipt does not describe this content, or [] when it does. */
@@ -1017,16 +1023,12 @@ function summary(r: Receipt): string {
 /**
  * A numbered finding of the fallback reviewer's format (`N. **title**: `a.ts:12` —
  * nature — …`) with its location moved to the front (`a.ts:12: **title** — …`),
- * so findingFile reads the file it names. Kept title-first, the finding named
- * no file, and a later round that changed only another file cleared it.
- * The location is what leadingPath — the one rule findingFile applies after a
- * triage tag — reads right after the title (its closing `**`, else the first
- * `: ` or ` — `): the first path-like token, backticked or bare, with or without
- * a line, extension or not (`Makefile:12`). Searched for anywhere else, a
- * later citation won: a title naming `b.ts:5`, a description citing it, or a
- * description's `localhost:3000` each took the finding from its own file
- * (Contextium v9.2.0 reviews). A line with nothing path-like after its title is
- * returned as it came, and findingFile's own fallback reads it.
+ * the shape a vendor's triage line has, so the REPEAT SPOT detector reads where
+ * it points. Where it points decides nothing else: a blocker closes when a
+ * round shown it leaves it out (finish). The location is what leadingPath reads
+ * right after the title (its closing `**`, else the first `: ` or ` — `): the
+ * first path-like token, backticked or bare, with or without a line. A line
+ * with nothing path-like after its title is returned as it came.
  */
 function fileFirst(l: string): string {
   const close = l.startsWith("**") ? l.indexOf("**", 2) : -1;
@@ -1312,7 +1314,8 @@ async function main(): Promise<void> {
       try {
         writeState(owner, state);
         // A follow-up is shown the findings still open, so a fix that does not
-        // close one is re-reported rather than taken as settled.
+        // close one is re-reported rather than taken as settled, and one the
+        // round leaves out is closed (finish).
         const openFindings = mode === "range" ? [] : (rs.last?.blocking ?? []);
         writeAtomic(
           itemsFile,
@@ -1387,7 +1390,7 @@ async function main(): Promise<void> {
         say("APPROVED=0");
         return;
       }
-      let res: { vendor?: unknown; findings?: unknown; coverage?: unknown };
+      let res: { vendor?: unknown; findings?: unknown; coverage?: unknown; shown?: unknown };
       if (fallback !== undefined) {
         let parsed: ReturnType<typeof parseFallbackReply>;
         try {
@@ -1400,7 +1403,12 @@ async function main(): Promise<void> {
           say("APPROVED=0");
           exit(1);
         }
-        res = { vendor: "fresh-context/claude-fallback", ...parsed };
+        // The fallback reviewer was handed the items file, whose openFindings
+        // are what begin wrote for this round (none for a full review): those
+        // are what it was shown, and what a repeat spot is measured against.
+        const handed = r.mode === "range" ? [] : (rs.last?.blocking ?? []);
+        for (const line of repeatSpots(parsed.findings, handed)) warn(line);
+        res = { vendor: "fresh-context/claude-fallback", ...parsed, shown: handed };
         r.independent = false;
         delete r.pendingFallback;
         // The chain's exit 3 charged nothing, as code-review.ts charges a first
@@ -1421,6 +1429,11 @@ async function main(): Promise<void> {
         }
       }
       const lines = Array.isArray(res.findings) ? (res.findings as string[]) : [];
+      // The open findings the round was shown: what a vendor's prompt listed
+      // (code-review.ts writes them), or what the fallback was handed; anything
+      // else is a round shown nothing.
+      const shownList =
+        Array.isArray(res.shown) && res.shown.every((x) => typeof x === "string") ? (res.shown as string[]) : [];
       r.reviewer = typeof res.vendor === "string" && res.vendor.trim() !== "" ? res.vendor : undefined;
       if (r.slice && !r.reviewer) {
         // A piece is kept only as a completed review; with no answering
@@ -1498,20 +1511,24 @@ async function main(): Promise<void> {
             if (g === "#declaration" ? delta.has(rel(rs.report ?? "")) : !g.startsWith("#") && reviewed(g)) continue;
             gaps.push(g);
           }
-          // An earlier blocker stands until a round reviews a change to the file
-          // it names (the round is shown it, and re-reports it if unfixed). A
-          // blocker carrying a location (`<path>:<line>`) that resolves to no
-          // file — unchanged, undeclared, no extension — stands too: dropping
-          // it closed `Makefile:12` on a round over b.ts (fourth v9.2.0
-          // review). Only a blocker with no location closes on a round that
-          // changed something.
+          // An earlier blocker stands until a round that was shown it completes
+          // without re-raising it. The follow-up prompt lists every open
+          // blocker and says one it does not re-report is recorded as closed,
+          // and the result names what that prompt listed, so a fix in any file
+          // can close it. Re-raised is the same line by findingKey; a re-raised
+          // blocker is kept once. A blocker the round was not shown — a result
+          // that lists other findings or none — stands. Closing a blocker only
+          // when the file it seemed to name changed kept a fix in a neighbouring
+          // file from ever closing it, and guessing that file from free text
+          // went wrong one new way per review (a later citation, a space or
+          // colon in the name, an extensionless or unknown file).
+          const shown = new Set(shownList.map(findingKey));
+          const open = new Set(r.blocking.map(findingKey));
           for (const b of prev.blocking ?? []) {
-            if (r.blocking.includes(b)) continue;
-            const known = [...Object.keys(r.covered), ...Object.keys(prev.covered), ...delta].filter(
-              (k) => !k.startsWith("contract:") && !k.includes("::"),
-            );
-            const file = findingFile(b, known);
-            if (file ? !delta.has(file) : delta.size === 0 || /[^\s:]:\d/.test(b)) r.blocking.push(b);
+            const k = findingKey(b);
+            if (open.has(k) || shown.has(k)) continue;
+            r.blocking.push(b);
+            open.add(k);
           }
           // The base this round builds on was read by the fresh-context
           // fallback: what the round inherits is NOT independent, as one such

@@ -86,6 +86,12 @@ function result(name: string, findings: string[], coverage: unknown[] = [], vend
   writeFileSync(f, JSON.stringify({ vendor, findings, coverage }));
   return f;
 }
+/** A follow-up round's result as code-review.ts writes it: <shown> is the open findings its prompt listed. */
+function shownResult(name: string, findings: string[], shown: string[]): string {
+  const f = join(TMP, `${name}.json`);
+  writeFileSync(f, JSON.stringify({ vendor: "grok/grok-4", findings, coverage: [], shown }));
+  return f;
+}
 const owner = (id: string): NodeJS.ProcessEnv => ({
   CODE_REVIEW_LOOP_ID: id,
   CODE_REVIEW_ROUND_STATE_DIR: join(TMP, `rounds-${id}`),
@@ -430,151 +436,124 @@ test("a gap the last receipt left stays until a round's delta carries it", () =>
   assert.match(f.err, /not reviewed: \.agents\/skills\/demo\/a\.ts/);
 });
 
-test("an open blocker stands until a round reviews a change to its file, and the round is shown it", () => {
-  const d = repo("blkcarry");
-  const env = owner("blkcarry");
-  writeFileSync(join(d, ".agents/skills/demo/a.ts"), "export const a = 2;\n");
+// An open blocker closes when a follow-up round that was shown it completes
+// without re-raising it, whatever file the fix touched: the prompt lists
+// every open blocker and says one not re-reported is recorded as closed.
+// "Re-raised" is the round returning the same finding line, runs of whitespace
+// collapsed. Guessing the file a blocker named, and closing it only when that
+// file changed, went wrong one new way per review: a later citation, a space or
+// colon in the name, an extensionless file, a file neither changed nor covered.
+const OPEN_MAKEFILE = "[must-fix] Makefile: incorrect call to .agents/skills/demo/b.ts:5 — fix — breaks";
+const MAKEFILE_12 = "[must-fix] Makefile:12: wrong target — fix — breaks";
+function openBlocker(tag: string, ...blockers: string[]): { d: string; env: NodeJS.ProcessEnv; t0: string } {
+  const d = repo(tag);
+  const env = owner(tag);
   const t0 = snap(d);
   assert.match(begin(env, d).out, /RECEIPT=review/);
-  const blocker = "[must-fix] .agents/skills/demo/a.ts:1: wrong — fix — breaks";
-  assert.equal(run(env, "finish", "--repo", d, "--rc", "0", "--result", result("bc0", [blocker])).out, "APPROVED=0");
+  assert.equal(run(env, "finish", "--repo", d, "--rc", "0", "--result", result(`${tag}0`, blockers)).out, "APPROVED=0");
+  return { d, env, t0 };
+}
+test("a blocker closes on a round that was shown it and did not re-raise it, whatever file changed", () => {
+  const { d, env, t0 } = openBlocker("blkshown", OPEN_MAKEFILE, MAKEFILE_12);
   writeFileSync(join(d, ".agents/skills/demo/b.ts"), "export const b = 2;\n");
   const b1 = begin(env, d, "since", ["--since", t0]);
   const items = JSON.parse(readFileSync(b1.out.match(/ITEMS_FILE=(.*)/)?.[1] ?? "", "utf8"));
-  assert.deepEqual(items.openFindings, [blocker], "the follow-up is shown the open finding");
-  const f1 = run(env, "finish", "--repo", d, "--rc", "0", "--result", result("bc1", []));
-  assert.equal(f1.out, "APPROVED=0", "a clean round over b.ts does not close a blocker in a.ts");
-  assert.match(f1.err, /1 must-fix\/should-fix finding\(s\) unresolved/);
+  assert.deepEqual(items.openFindings, [OPEN_MAKEFILE, MAKEFILE_12], "the follow-up is shown the open findings");
+  const f1 = run(
+    env,
+    "finish",
+    "--repo",
+    d,
+    "--rc",
+    "0",
+    "--result",
+    shownResult("bs1", [], [OPEN_MAKEFILE, MAKEFILE_12]),
+  );
+  assert.equal(f1.out, "APPROVED=1", `a fix in b.ts closes a blocker naming Makefile: ${f1.err}`);
+});
+test("a blocker the shown round re-raises stays open, once, until a shown round leaves it out", () => {
+  const { d, env, t0 } = openBlocker("blkraised", MAKEFILE_12);
+  writeFileSync(join(d, ".agents/skills/demo/b.ts"), "export const b = 2;\n");
+  begin(env, d, "since", ["--since", t0]);
+  const again = MAKEFILE_12.replace(" — ", "  —  ");
+  const f1 = run(env, "finish", "--repo", d, "--rc", "0", "--result", shownResult("br1", [again], [MAKEFILE_12]));
+  assert.equal(f1.out, "APPROVED=0", "a re-raised blocker stays open");
+  assert.match(
+    f1.err,
+    /\b1 must-fix\/should-fix finding\(s\) unresolved/,
+    "re-raised with other spacing, it is one finding",
+  );
   const t1 = snap(d);
-  writeFileSync(join(d, ".agents/skills/demo/a.ts"), "export const a = 4;\n");
+  writeFileSync(join(d, ".agents/skills/demo/b.ts"), "export const b = 3;\n");
   begin(env, d, "since", ["--since", t1]);
+  const f2 = run(env, "finish", "--repo", d, "--rc", "0", "--result", shownResult("br2", [], [again]));
+  assert.equal(f2.out, "APPROVED=1", `the next shown round that leaves it out closes it: ${f2.err}`);
+});
+test("a blocker stays open through a round that was not shown it", () => {
+  const { d, env, t0 } = openBlocker("blkunshown", OPEN_MAKEFILE);
+  writeFileSync(join(d, ".agents/skills/demo/b.ts"), "export const b = 2;\n");
+  begin(env, d, "since", ["--since", t0]);
+  assert.equal(run(env, "finish", "--repo", d, "--rc", "1").out, "APPROVED=0", "a failed call closes nothing");
+  begin(env, d, "since", ["--since", t0]);
+  const blind = run(env, "finish", "--repo", d, "--rc", "0", "--result", result("bu1", []));
+  assert.equal(blind.out, "APPROVED=0", "a result that lists nothing as shown closes nothing");
+  assert.match(blind.err, /\b1 must-fix\/should-fix finding\(s\) unresolved/);
+  const t1 = snap(d);
+  writeFileSync(join(d, ".agents/skills/demo/b.ts"), "export const b = 3;\n");
+  begin(env, d, "since", ["--since", t1]);
+  const other = run(
+    env,
+    "finish",
+    "--repo",
+    d,
+    "--rc",
+    "0",
+    "--result",
+    shownResult("bu2", [], ["[must-fix] x.ts:1: another"]),
+  );
+  assert.equal(other.out, "APPROVED=0", "a round shown other findings does not close this one");
+  const bad = run(env, "finish", "--repo", d, "--rc", "0", "--result", shownResult("bu3", [], [OPEN_MAKEFILE]));
+  assert.equal(bad.rc, 1, "finish with no open attempt is refused");
+  begin(env, d, "since", ["--since", t1]);
+  const malformed = join(TMP, "bu4.json");
+  writeFileSync(malformed, JSON.stringify({ vendor: "grok/grok-4", findings: [], coverage: [], shown: OPEN_MAKEFILE }));
   assert.equal(
-    run(env, "finish", "--repo", d, "--rc", "0", "--result", result("bc2", [])).out,
-    "APPROVED=1",
-    "a round that reviewed the fix to a.ts and did not re-report it closes it",
+    run(env, "finish", "--repo", d, "--rc", "0", "--result", malformed).out,
+    "APPROVED=0",
+    "a shown list that is not a list of strings shows nothing",
   );
 });
-
-// A path with a space was read as naming no file, so its blocker closed on any
-// round that changed anything, an unrelated file included (Contextium v9.2.0
-// review); so was one with a colon, which the review pack also carries
-// (`src/x:y é.ts`, second v9.2.0 review). A path with no extension
-// (`Makefile`) or holding a colon and a space (`x: y é.ts`) is found by the
-// changed path the line names before its `:<line>` (third v9.2.0 review).
-for (const [tag, name] of [
-  ["blkspace", "my file.ts"],
-  ["blkcolon", "x:y é.ts"],
-  ["blkmake", "Makefile"],
-  ["blkcolonsp", "x: y é.ts"],
+test("a full review replaces the open set", () => {
+  const { d, env } = openBlocker("blkfull", OPEN_MAKEFILE);
+  writeFileSync(join(d, ".agents/skills/demo/b.ts"), "export const b = 2;\n");
+  assert.equal(approve(env, d).out, "APPROVED=1", "a clean full review carries no earlier blocker");
+});
+// How a blocker names its file no longer decides whether it closes: each of
+// these was once misread, and each now stays open until a round shown it
+// leaves it out, and closes then, on a round that changed only b.ts.
+for (const [tag, blocker] of [
+  ["blkspace", "[must-fix] .agents/skills/demo/my file.ts:12: wrong — fix — breaks"],
+  ["blkcolon", "[must-fix] .agents/skills/demo/x:y é.ts:12: wrong — fix — breaks"],
+  ["blkcolonsp", "[must-fix] .agents/skills/demo/x: y é.ts:12: wrong — fix — breaks"],
+  ["blkquoted", "[must-fix] `.agents/skills/demo/my file.ts:12`: quoted — fix — breaks"],
+  ["blkunknown", "[must-fix] apps/site/Makefile:12: caller not updated — fix — breaks"],
+  ["blkcites", "[must-fix] apps/site/Makefile:12: calls .agents/skills/demo/b.ts:5 — fix — breaks"],
+  ["blkleadnoline", "[should-fix] .agents/skills/demo/a.ts: incorrect call to .agents/skills/demo/b.ts:5 — fix — breaks"],
+  ["blkprose", "[must-fix] Note: the summary is wrong — fix — breaks"],
 ] as const) {
-  test(`a blocker whose path is '${name}' stands until a round reviews a change to that file`, () => {
-    const d = repo(tag);
-    const env = owner(tag);
-    writeFileSync(join(d, ".agents/skills/demo", name), "export const m = 1;\n");
-    const t0 = snap(d);
-    assert.match(begin(env, d).out, /RECEIPT=review/);
-    const blocker = `[must-fix] .agents/skills/demo/${name}:12: wrong — fix — breaks`;
-    assert.equal(
-      run(env, "finish", "--repo", d, "--rc", "0", "--result", result(`${tag}0`, [blocker])).out,
-      "APPROVED=0",
-    );
+  test(`'${blocker.slice(0, 48)}…' stays open unshown and closes shown, on a round over b.ts`, () => {
+    const { d, env, t0 } = openBlocker(tag, blocker);
     writeFileSync(join(d, ".agents/skills/demo/b.ts"), "export const b = 2;\n");
     begin(env, d, "since", ["--since", t0]);
     const f1 = run(env, "finish", "--repo", d, "--rc", "0", "--result", result(`${tag}1`, []));
-    assert.equal(f1.out, "APPROVED=0", `a clean round over b.ts does not close a blocker in '${name}'`);
-    assert.match(f1.err, /1 must-fix\/should-fix finding\(s\) unresolved/);
+    assert.equal(f1.out, "APPROVED=0", "not shown, it stays open");
     const t1 = snap(d);
-    writeFileSync(join(d, ".agents/skills/demo", name), "export const m = 2;\n");
+    writeFileSync(join(d, ".agents/skills/demo/b.ts"), "export const b = 3;\n");
     begin(env, d, "since", ["--since", t1]);
-    assert.equal(
-      run(env, "finish", "--repo", d, "--rc", "0", "--result", result(`${tag}2`, [])).out,
-      "APPROVED=1",
-      `a round that reviewed the fix to '${name}' and did not re-report it closes it`,
-    );
+    const f2 = run(env, "finish", "--repo", d, "--rc", "0", "--result", shownResult(`${tag}2`, [], [blocker]));
+    assert.equal(f2.out, "APPROVED=1", `shown and left out, it closes: ${f2.err}`);
   });
 }
-
-// A located blocker whose file is neither changed nor covered resolves to no
-// known path, and one with no extension (`Makefile`) matches no other reading:
-// it was dropped on a round that changed only b.ts (fourth v9.2.0 review). A
-// blocker carrying a location stands until a round reviews its file.
-test("a located blocker in an unchanged, undeclared file stands on a round over another file", () => {
-  const d = repo("blkunknown");
-  const env = owner("blkunknown");
-  const t0 = snap(d);
-  assert.match(begin(env, d).out, /RECEIPT=review/);
-  const blocker = "[must-fix] apps/site/Makefile:12: caller not updated — fix — breaks";
-  assert.equal(run(env, "finish", "--repo", d, "--rc", "0", "--result", result("bu0", [blocker])).out, "APPROVED=0");
-  writeFileSync(join(d, ".agents/skills/demo/b.ts"), "export const b = 2;\n");
-  begin(env, d, "since", ["--since", t0]);
-  const f1 = run(env, "finish", "--repo", d, "--rc", "0", "--result", result("bu1", []));
-  assert.equal(f1.out, "APPROVED=0", "a round over b.ts does not close a blocker located in apps/site/Makefile");
-  assert.match(f1.err, /1 must-fix\/should-fix finding\(s\) unresolved/);
-});
-
-// The first location in a finding decides its file: one in the undeclared
-// apps/site/Makefile that cites the changed .agents/skills/demo/b.ts:5 later in the line
-// was resolved to b.ts and closed by a round over b.ts (final v9.2.0 review).
-// A path known to the review counts as the finding's file only when it leads.
-test("a located blocker citing another, changed file stays bound to its leading location", () => {
-  const d = repo("blkcites");
-  const env = owner("blkcites");
-  const t0 = snap(d);
-  assert.match(begin(env, d).out, /RECEIPT=review/);
-  const blocker = "[must-fix] apps/site/Makefile:12: calls .agents/skills/demo/b.ts:5 — fix — breaks";
-  assert.equal(run(env, "finish", "--repo", d, "--rc", "0", "--result", result("bc0", [blocker])).out, "APPROVED=0");
-  writeFileSync(join(d, ".agents/skills/demo/b.ts"), "export const b = 2;\n");
-  begin(env, d, "since", ["--since", t0]);
-  const f1 = run(env, "finish", "--repo", d, "--rc", "0", "--result", result("bc1", []));
-  assert.equal(f1.out, "APPROVED=0", "a round over b.ts does not close a blocker located in apps/site/Makefile");
-  assert.match(f1.err, /1 must-fix\/should-fix finding\(s\) unresolved/);
-});
-
-// A finding's file is the first path-like token after its tag, with or without
-// a line: one leading with .agents/skills/demo/a.ts and no line, citing the changed
-// .agents/skills/demo/b.ts:5 later, was bound to b.ts and closed by a round over b.ts
-// (Contextium v9.2.0 review); so was an extensionless apps/site/Makefile.
-for (const [tag, lead] of [
-  ["blkleadnoline", ".agents/skills/demo/a.ts"],
-  ["blkleadnoext", "apps/site/Makefile"],
-] as const) {
-  test(`a blocker leading with ${lead} and no line stays bound to it, not a later b.ts:5`, () => {
-    const d = repo(tag);
-    const env = owner(tag);
-    writeFileSync(join(d, ".agents/skills/demo/a.ts"), "export const a = 2;\n");
-    writeFileSync(join(d, ".agents/skills/demo/b.ts"), "export const b = 1;\n");
-    const t0 = snap(d);
-    assert.match(begin(env, d).out, /RECEIPT=review/);
-    const blocker = `[should-fix] ${lead}: incorrect call to .agents/skills/demo/b.ts:5 — fix — breaks`;
-    assert.equal(
-      run(env, "finish", "--repo", d, "--rc", "0", "--result", result(`${tag}0`, [blocker])).out,
-      "APPROVED=0",
-    );
-    writeFileSync(join(d, ".agents/skills/demo/b.ts"), "export const b = 2;\n");
-    begin(env, d, "since", ["--since", t0]);
-    const f1 = run(env, "finish", "--repo", d, "--rc", "0", "--result", result(`${tag}1`, []));
-    assert.equal(f1.out, "APPROVED=0", `a round over b.ts does not close a blocker leading with ${lead}`);
-    assert.match(f1.err, /1 must-fix\/should-fix finding\(s\) unresolved/);
-  });
-}
-
-// The control: a blocker with no location at all names no file, so it closes
-// on a round that changed something.
-test("a blocker with no location names no file", () => {
-  const d = repo("blkprose");
-  const env = owner("blkprose");
-  const t0 = snap(d);
-  assert.match(begin(env, d).out, /RECEIPT=review/);
-  const blocker = "[must-fix] Note: the summary is wrong — fix — breaks";
-  assert.equal(run(env, "finish", "--repo", d, "--rc", "0", "--result", result("bp0", [blocker])).out, "APPROVED=0");
-  writeFileSync(join(d, ".agents/skills/demo/b.ts"), "export const b = 2;\n");
-  begin(env, d, "since", ["--since", t0]);
-  assert.equal(
-    run(env, "finish", "--repo", d, "--rc", "0", "--result", result("bp1", [])).out,
-    "APPROVED=1",
-    "a round that changed something closes a blocker naming no file",
-  );
-});
 
 test("a completed review of the same bytes supersedes an older approval; writer order is not a new writer", () => {
   const d = repo("supersede");
@@ -869,12 +848,11 @@ test("no independent vendor: pending, then the fresh-context fallback is recorde
   assert.match(begin(env, d).out, /NOTE: .*NOT independent/, "reuse says so too");
 });
 
-// The reviewer's numbered format puts its title before the file. Kept as it
-// came, the finding named no file, so a later round that changed only b.ts
-// cleared a blocker against a.ts and approved (Contextium v9.2.0 review). And
-// a round built on a fallback-reviewed base is not independent either: the
-// base it inherits was read by the fresh-context reviewer.
-test("a fallback's numbered finding names its file, and a follow-up keeps NOT independent", () => {
+// A fallback's blocker closes like any other: when a round shown it leaves it
+// out, never because some file changed. And a round built on a
+// fallback-reviewed base is not independent either: the base it inherits was
+// read by the fresh-context reviewer.
+test("a fallback's blocker stays open until a round shown it leaves it out, and a follow-up keeps NOT independent", () => {
   const d = repo("fallback-file");
   const env = owner("fallback-file");
   writeFileSync(join(d, ".agents/skills/demo/a.ts"), "export const a = 2;\n");
@@ -891,23 +869,62 @@ test("a fallback's numbered finding names its file, and a follow-up keeps NOT in
   writeFileSync(join(d, ".agents/skills/demo/b.ts"), "export const b = 2;\n");
   begin(env, d, "since", ["--since", t0]);
   f = run(env, "finish", "--repo", d, "--rc", "0", "--result", result("fallback-file-1", []));
-  assert.equal(f.out, "APPROVED=0", "a round over b.ts alone does not clear the fallback's blocker in a.ts");
+  assert.equal(f.out, "APPROVED=0", "a round not shown the fallback's blocker does not clear it");
   assert.match(f.err, /1 must-fix\/should-fix finding\(s\) unresolved/);
   const t1 = snap(d);
   writeFileSync(join(d, ".agents/skills/demo/a.ts"), "export const a = 3;\n");
-  begin(env, d, "since", ["--since", t1]);
-  f = run(env, "finish", "--repo", d, "--rc", "0", "--result", result("fallback-file-2", []));
+  const b2 = begin(env, d, "since", ["--since", t1]);
+  const open = JSON.parse(readFileSync(b2.out.match(/ITEMS_FILE=(.*)/)?.[1] ?? "", "utf8")).openFindings;
+  f = run(env, "finish", "--repo", d, "--rc", "0", "--result", shownResult("fallback-file-2", [], open));
   assert.equal(f.out, "APPROVED=1", f.err);
   const st = run(env, "status", "--repo", d);
   assert.match(st.out, /NOT independent/, "a follow-up on a fallback-reviewed base is still NOT independent");
   assert.match(run({}, "check", "--owner", "fallback-file", d).out, /NOT independent/);
 });
 
-// A title that mentions another file before the finding's location: the
-// first backticked name was taken, so the blocker in a.ts was bound to b.ts and
-// a round that changed only b.ts cleared it (third v9.2.0 review). A title
-// holding a located path (`b.ts:5`) was still searched first (fourth review).
-// The location after the title is the file.
+// The fresh-context fallback of a follow-up round is handed the open
+// findings (the items file) like a vendor: a clean reply closes them, and a
+// finding beside one of them prints the same REPEAT SPOT warning code-review.ts
+// prints for a vendor's answer. The fallback path once skipped the detector.
+function pendingFollowUp(tag: string, blocker: string): { d: string; env: NodeJS.ProcessEnv } {
+  const d = repo(tag);
+  const env = owner(tag);
+  const t0 = snap(d);
+  assert.match(begin(env, d).out, /RECEIPT=review/);
+  assert.equal(run(env, "finish", "--repo", d, "--rc", "0", "--result", result(`${tag}0`, [blocker])).out, "APPROVED=0");
+  writeFileSync(join(d, ".agents/skills/demo/b.ts"), "export const b = 2;\n");
+  assert.match(begin(env, d, "since", ["--since", t0]).out, /RECEIPT=review/);
+  run(env, "finish", "--repo", d, "--rc", "3");
+  return { d, env };
+}
+test("a follow-up's fallback closes an open blocker it leaves out", () => {
+  const { d, env } = pendingFollowUp("fb-shown", "[must-fix] Makefile:12: wrong target — fix — breaks");
+  const reply = join(TMP, "fb-shown.txt");
+  writeFileSync(reply, "NO_FINDINGS\n");
+  const f = run(env, "finish", "--repo", d, "--fallback", reply);
+  assert.equal(f.out, "APPROVED=1", `a clean fallback shown the blocker closes it: ${f.err}`);
+});
+test("a follow-up's fallback finding beside an open one is a repeat spot", () => {
+  const open = "[must-fix] .agents/skills/demo/b.ts:10: the save races — fix — breaks";
+  const near = pendingFollowUp("fb-repeat", open);
+  const reply = join(TMP, "fb-repeat.txt");
+  writeFileSync(reply, "1. **still racy**: `.agents/skills/demo/b.ts:20` — x — verdict: **fix-now** — failure: y — fix it\n");
+  const f = run(near.env, "finish", "--repo", near.d, "--fallback", reply);
+  assert.equal(f.out, "APPROVED=0", f.err);
+  assert.match(
+    f.err,
+    /REPEAT SPOT: \.agents\/skills\/demo\/b\.ts:20 — the last review flagged \.agents\/skills\/demo\/b\.ts:10 too/,
+  );
+  const far = pendingFollowUp("fb-far", open);
+  const farReply = join(TMP, "fb-far.txt");
+  writeFileSync(farReply, "[must-fix] .agents/skills/demo/b.ts:90: a new hole — x — y\n");
+  assert.doesNotMatch(run(far.env, "finish", "--repo", far.d, "--fallback", farReply).err, /REPEAT SPOT/);
+});
+
+// A fallback finding is rewritten location first, the shape a vendor's
+// triage line has, so the REPEAT SPOT detector reads where it points. The
+// location is the one after the title, even when the title names another file
+// (backticked, or with a line); where it points decides no closure.
 for (const [tag, title] of [
   ["fallback-title", "**`.agents/skills/demo/b.ts` callers break**"],
   ["fallback-title-loc", "**`.agents/skills/demo/b.ts:5` callers break**"],
@@ -933,23 +950,18 @@ for (const [tag, title] of [
       /^\[must-fix\] \.agents\/skills\/demo\/a\.ts:12: /,
       "the location leads the line",
     );
-    const f = run(env, "finish", "--repo", d, "--rc", "0", "--result", result(`${tag}-1`, []));
-    assert.equal(f.out, "APPROVED=0", "a round over b.ts alone does not clear the blocker located in a.ts");
-    assert.match(f.err, /1 must-fix\/should-fix finding\(s\) unresolved/);
+    const f = run(env, "finish", "--repo", d, "--rc", "0", "--result", shownResult(`${tag}-1`, [], items.openFindings));
+    assert.equal(f.out, "APPROVED=1", `a round over b.ts that was shown it and left it out closes it: ${f.err}`);
   });
 }
 
-// The first location in a finding decides its file. With a.ts unchanged and
-// undeclared, the rewritten line `a.ts:12: **\`b.ts:5\` callers break** …`
-// was bound to b.ts, the only path the review knew, and a round over b.ts
-// cleared it (final v9.2.0 review); and a location after the title written
-// without backticks lost to the title's citation, which fileFirst moved to
-// the front. The location after the title leads, and the blocker stays.
+// The location after the title leads the rewritten line, backticked or bare,
+// even in an undeclared, unchanged file whose title cites a changed one.
 for (const [tag, loc] of [
   ["fallback-lead", "`.agents/skills/demo/a.ts:12`"],
   ["fallback-lead-bare", ".agents/skills/demo/a.ts:12"],
 ] as const) {
-  test(`a fallback finding located at ${loc} in an undeclared file is bound to it, not its title's b.ts:5`, () => {
+  test(`a fallback finding located at ${loc} in an undeclared file leads with it, not its title's b.ts:5`, () => {
     const d = repo(tag);
     const env = owner(tag);
     const t0 = snap(d);
@@ -969,17 +981,14 @@ for (const [tag, loc] of [
       /^\[must-fix\] \.agents\/skills\/demo\/a\.ts:12: /,
       "the location after the title leads the line",
     );
-    const f = run(env, "finish", "--repo", d, "--rc", "0", "--result", result(`${tag}-1`, []));
-    assert.equal(f.out, "APPROVED=0", "a round over b.ts alone does not clear the blocker located in a.ts");
-    assert.match(f.err, /1 must-fix\/should-fix finding\(s\) unresolved/);
+    const f = run(env, "finish", "--repo", d, "--rc", "0", "--result", shownResult(`${tag}-1`, [], items.openFindings));
+    assert.equal(f.out, "APPROVED=1", `a round over b.ts that was shown it and left it out closes it: ${f.err}`);
   });
 }
 
-// A bare location with no extension after the title (`Makefile:12`) lost to
-// the title's `b.ts:5`, because a bare location needed a `.` or `/`: the
-// blocker was bound to b.ts and a round over b.ts cleared it (final v9.2.0
-// review). After the title, any bare `<name>:<line>` is the location.
-test("a fallback finding located at a bare extensionless Makefile:12 is bound to it, not its title's b.ts:5", () => {
+// After the title, any bare `<name>:<line>` is the location, extensionless
+// included.
+test("a fallback finding located at a bare extensionless Makefile:12 leads with it, not its title's b.ts:5", () => {
   const d = repo("fallback-lead-noext");
   const env = owner("fallback-lead-noext");
   const t0 = snap(d);
@@ -992,17 +1001,13 @@ test("a fallback finding located at a bare extensionless Makefile:12 is bound to
   const b1 = begin(env, d, "since", ["--since", t0]);
   const items = JSON.parse(readFileSync(b1.out.match(/ITEMS_FILE=(.*)/)?.[1] ?? "", "utf8"));
   assert.match(items.openFindings[0] ?? "", /^\[must-fix\] Makefile:12: /, "the extensionless location leads the line");
-  const f = run(env, "finish", "--repo", d, "--rc", "0", "--result", result("fallback-lead-noext-1", []));
-  assert.equal(f.out, "APPROVED=0", "a round over b.ts alone does not clear the blocker located in Makefile");
-  assert.match(f.err, /1 must-fix\/should-fix finding\(s\) unresolved/);
+  const f = run(env, "finish", "--repo", d, "--rc", "0", "--result", shownResult("fallback-lead-noext-1", [], items.openFindings));
+  assert.equal(f.out, "APPROVED=1", `a round over b.ts that was shown it and left it out closes it: ${f.err}`);
 });
 
-// A finding's file is the first path-like token after its title, with or
-// without a line: a location written `a.ts` with no line, whose description
-// cites the backticked `b.ts:5`, was bound to b.ts and cleared by a round
-// over b.ts (Contextium v9.2.0 review). One rule reads every finding:
-// leadingPath, which findingFile applies after a triage tag.
-test("a fallback finding located at a.ts with no line stays bound to it, not a later `b.ts:5`", () => {
+// The location is the first path-like token after the title, with or without
+// a line, not a later citation in the description: one rule, leadingPath.
+test("a fallback finding located at a.ts with no line leads with it, not a later `b.ts:5`", () => {
   const d = repo("fallback-lead-noline");
   const env = owner("fallback-lead-noline");
   const t0 = snap(d);
@@ -1018,15 +1023,14 @@ test("a fallback finding located at a.ts with no line stays bound to it, not a l
   const b1 = begin(env, d, "since", ["--since", t0]);
   const items = JSON.parse(readFileSync(b1.out.match(/ITEMS_FILE=(.*)/)?.[1] ?? "", "utf8"));
   assert.match(items.openFindings[0] ?? "", /^\[must-fix\] \.agents\/skills\/demo\/a\.ts: \*\*Bad call\*\* — calls /);
-  const f = run(env, "finish", "--repo", d, "--rc", "0", "--result", result("fallback-lead-noline-1", []));
-  assert.equal(f.out, "APPROVED=0", "a round over b.ts alone does not clear the blocker located in a.ts");
-  assert.match(f.err, /1 must-fix\/should-fix finding\(s\) unresolved/);
+  const f = run(env, "finish", "--repo", d, "--rc", "0", "--result", shownResult("fallback-lead-noline-1", [], items.openFindings));
+  assert.equal(f.out, "APPROVED=1", `a round over b.ts that was shown it and left it out closes it: ${f.err}`);
 });
 
 // A bare `<name>:<line>` counts only in the location, right after the title
-// up to the first ` — `: one in the description (an endpoint such as
-// localhost:3000) took the finding from its backticked file (v9.2.0 review).
-test("a fallback finding whose description names localhost:3000 stays bound to its backticked a.ts", () => {
+// up to the first ` — `, never in the description (an endpoint such as
+// localhost:3000).
+test("a fallback finding whose description names localhost:3000 leads with its backticked a.ts", () => {
   const d = repo("fallback-desc-endpoint");
   const env = owner("fallback-desc-endpoint");
   assert.match(begin(env, d).out, /RECEIPT=review/);
@@ -1351,7 +1355,10 @@ test("pieces: a blocker in one piece rides into the combined receipt and a --sin
   const b = begin(env, d, "since", ["--since", t]);
   const open = JSON.parse(readFileSync(b.out.match(/ITEMS_FILE=(.*)/)?.[1] ?? "", "utf8")).openFindings;
   assert.deepEqual(open, [blocker], "the follow-up is shown the combined receipt's open finding");
-  assert.match(run(env, "finish", "--repo", d, "--rc", "0", "--result", result("pcb", [])).out, /^APPROVED=1$/m);
+  assert.match(
+    run(env, "finish", "--repo", d, "--rc", "0", "--result", shownResult("pcb", [], [blocker])).out,
+    /^APPROVED=1$/m,
+  );
   const s = run(env, "status", "--repo", d);
   assert.equal(s.out.split("\n")[0], "done", s.err);
 });

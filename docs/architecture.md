@@ -318,9 +318,11 @@ later call reuses it only while that content is unchanged; anything that moved s
 held nit included, is reviewed before the close will land it. Later rounds review only the fixes:
 re-reading everything each round makes the reviewer re-decide settled code and turns each round's own
 fixes into the next round's findings. Held nits are fixed inside a reviewed round, never after the
-last review. The loop stops when nothing changed since the last round, at a clean round, when a round
-is mostly re-opening its own fixes, or at round four, which the script enforces; round four's fixes
-get one final review.
+last review. A finding closes when a round shown it finishes without raising it again. The loop
+stops when nothing changed since the last round, at a clean round, or at round ten, which the script
+enforces; round ten's fixes get one final review. A finding beside one the last review left open
+prints `REPEAT SPOT`, and the build rewrites that piece as a whole instead of stopping or patching it
+again.
 
 Each reviewer records a one-line verdict where the artifact lives: `spec-audit:` into the spec's
 `plan.md`, and `implement-audit:` into the row's `report.md`, naming who reviewed and what is still

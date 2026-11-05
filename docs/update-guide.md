@@ -14,10 +14,14 @@ Re-run the installer. Nothing of yours changes, and there is no step to take.
   left open, the driver prints `REPEAT SPOT: <file:line>`, and the build rewrites that piece as a
   whole instead of patching it again. `/spec-audit` runs its fidelity check once per run, in the
   same child as its first review.
-- **A review finding stays with the file it names first.** A finding such as
-  `a.ts: incorrect call to b.ts:5` is bound to `a.ts`, with or without a line number, so a later round
-  that only changed `b.ts` no longer clears it. One rule reads every finding, the fallback
-  reviewer's numbered ones included.
+- **A fix anywhere can close a review finding.** Each round of fixes is shown every finding still
+  open, and a finding closes when that round finishes without raising it again, whichever file the
+  fix touched. A round that failed, or was not shown the finding, leaves it open. The review no
+  longer guesses which file a finding is about from its wording, which went wrong a new way each
+  time (a name with a space, a second file cited later in the line).
+- **The fallback reviewer gets the repeat-spot warning too.** When no outside reviewer is available
+  and a fresh-context reviewer answers instead, a finding beside one the last review left open now
+  prints `REPEAT SPOT` as well.
 - **A change to shared code checks everything that reads it.** When a session changes only
   `integrations/` or `packages/`, the close verifies every app, integration and package that imports
   the change, through a package's index file and other shared modules in turn; after merging the

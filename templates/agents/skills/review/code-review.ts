@@ -138,10 +138,10 @@ import { exit, runToExit } from "../../packages/cli-exit/cli-exit.ts";
 import { inT3ReviewContext } from "../close/scripts/t3-db.ts";
 import {
   type Bucket,
-  leadingPath,
   loopKey,
   parseStrictJson,
   readSpend,
+  repeatSpots,
   writeSpend,
 } from "../implement-audit/scripts/audit-dedupe.ts";
 import {
@@ -173,39 +173,9 @@ const LOWERED = Number(process.env.CODE_REVIEW_MAX_ROUNDS);
 const CEILING = Number.isInteger(LOWERED) && LOWERED >= 2 && LOWERED < MAX_ROUNDS ? LOWERED : MAX_ROUNDS;
 
 // ── REPEAT SPOT ──
-// A must-fix or should-fix within REPEAT_SPOT_LINES of one the last review left
-// open, in the same file, means the fix did not close the defect, or its patch
-// opened the next hole beside it: a handler patched through seven reviews drew
-// a new finding a few lines from the last each time, and only replacing the
-// patches with one design came back clean. The line goes to stderr, which the
-// build reads; stdout stays triage lines only.
-const REPEAT_SPOT_LINES = 25;
-// The spot is the finding's file and line, read by the one rule every reader
-// of a finding uses (audit-dedupe.ts leadingPath): bare, backticked or a
-// markdown link (`[f.ts:9](/abs/f.ts:9)`), a path holding a colon included. A
-// regex of its own cut such a path at the colon, so its repeat went unseen.
-function spotOf(finding: string): { file: string; line: number } | null {
-  const t = finding.trim();
-  const tag = /^\[(?:must-fix|should-fix)\]\s+/.exec(t);
-  const lead = tag ? leadingPath(t.slice(tag[0].length)) : null;
-  const line = lead ? /^:(\d+)/.exec(lead.loc.slice(lead.path.length)) : null;
-  return lead && line ? { file: lead.path, line: Number(line[1]) } : null;
-}
-function repeatSpots(findings: string, open: string[]): string[] {
-  const earlier = open.flatMap((f) => spotOf(f) ?? []);
-  const out: string[] = [];
-  for (const f of findings.split("\n")) {
-    const spot = spotOf(f);
-    if (!spot) continue;
-    const { file, line } = spot;
-    const prev = earlier.find((e) => e.file === file && Math.abs(e.line - line) <= REPEAT_SPOT_LINES);
-    if (prev)
-      out.push(
-        `[code-review] REPEAT SPOT: ${file}:${line} — the last review flagged ${file}:${prev.line} too. Stop patching this piece: redesign it as a whole, then review the redesign.`,
-      );
-  }
-  return out;
-}
+// A must-fix or should-fix beside one the last review left open is printed as
+// a REPEAT SPOT line on stderr, which the build reads; stdout stays triage
+// lines only. The detector is audit-dedupe.ts repeatSpots, the one copy.
 
 // `$(...)` drops trailing newlines; every captured read below goes through it.
 const chomp = (s: string): string => s.replace(/\n+$/, "");
@@ -600,6 +570,11 @@ async function main(): Promise<void> {
   let ITEMS: { id: string; text: string }[] = [];
   /** Must-fix/should-fix lines the last receipt left open, shown to a follow-up round. */
   let OPEN_FINDINGS: string[] = [];
+  /**
+   * The open findings this round's prompt actually listed, written into the
+   * result: the receipt closes one the round was shown and did not re-raise.
+   */
+  let SHOWN: string[] = [];
   if (RECEIPT && process.env.CODE_REVIEW_COVERAGE_FILE) {
     try {
       const v = JSON.parse(readFileSync(process.env.CODE_REVIEW_COVERAGE_FILE, "utf8")) as {
@@ -1112,6 +1087,7 @@ seen them closed. For each, judge whether the fixes below close it; re-report
 it (as written, or updated) if they do not. One you do not re-report is
 recorded as closed by these fixes.
 ${OPEN_FINDINGS.map((f) => `  ${f}`).join("\n")}`;
+      SHOWN = OPEN_FINDINGS;
     }
     if (FINAL) {
       ROUND_NOTE = `THIS IS THE FINAL REVIEW of this fix loop: the round-${CEILING} ceiling has been
@@ -1421,6 +1397,7 @@ narration and no review output. Do the review and reply with ONLY ${
             attempt,
             findings: readLines(lines),
             coverage,
+            shown: SHOWN,
           })}\n`,
         );
       } catch (e) {
@@ -1485,7 +1462,7 @@ narration and no review output. Do the review and reply with ONLY ${
         writeResult(findings, coverage, attempt);
         process.stdout.write(findings);
         if (sentinel) err("[code-review] both findings and NO_FINDINGS present; findings win.");
-        for (const line of repeatSpots(findings, OPEN_FINDINGS)) err(line);
+        for (const line of repeatSpots(findings.split("\n"), OPEN_FINDINGS)) err(line);
         const via = attempt === 2 ? " (on the re-ask)" : "";
         err(`[code-review] complete — ${count} finding(s) from ${vendor}${via}.`);
         exit(0);

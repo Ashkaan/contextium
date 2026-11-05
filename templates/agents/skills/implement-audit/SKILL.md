@@ -131,6 +131,8 @@ Fix EVERY finding whose fix is **ready in this session** — `fix-now` AND `defe
 
 **A finding you believe is wrong is not dismissed by converging.** An open must-fix or should-fix keeps the receipt from approving, and a round with nothing changed resolves nothing. Change the code so the next round can review your answer, or ask the user, as a numbered question, to accept it.
 
+**How a blocker closes.** A `--since` round is shown every must-fix and should-fix still open and re-reports each one its fixes do not close. An open blocker closes when a round that was shown it completes without re-raising it — the same finding line, spacing aside — wherever the fix landed. A round that failed, or whose prompt did not list the blocker, leaves it open; a full review replaces the open set with its own findings. Closing a blocker only when a round changed the file it seemed to name kept a fix in a neighbouring file from ever closing it, and guessing that file from free text went wrong one new way per review.
+
 Then re-enter step 2 with `--since` for the fixes alone; the driver re-runs the deterministic checks.
 
 **A piece set is read whole before any fix round.** While the last piece printed `SLICE_PENDING` > 0, run the next piece (step-2), even when a piece reported a finding: fixing first moves the files an earlier piece read and costs another piece to re-read them. Once the set is complete, fix what the combined receipt holds open and review the fixes with `--since` the PRE_TREE of the last piece.
