@@ -42,8 +42,9 @@ Re-run the installer. Nothing of yours changes, and there is no step to take.
   approval" or "your answer" is refused like one that waits on you.
 - **Verify logs stay apart.** Two repos with an app of the same name, in worktrees of the same folder
   name, each keep their own log.
-- **The suites run on Node 22.5 to 22.12.** Tests that build a T3 database fixture no longer load
-  `node:sqlite` themselves, which those versions allow only behind a flag.
+- **Tests no longer load `node:sqlite` themselves.** Tests that build a T3 database fixture reach
+  it through a child Node started with `--experimental-sqlite`, for the Node versions that allow it
+  only behind that flag (checked with the module switched off on Node 26, not on those versions).
 
 ## Upgrading to v9.2.0: choose how much guidance AGENTS.md carries
 
