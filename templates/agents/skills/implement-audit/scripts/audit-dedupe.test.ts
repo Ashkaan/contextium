@@ -489,6 +489,60 @@ test("a blocker the shown round re-raises stays open, once, until a shown round 
   const f2 = run(env, "finish", "--repo", d, "--rc", "0", "--result", shownResult("br2", [], [again]));
   assert.equal(f2.out, "APPROVED=1", `the next shown round that leaves it out closes it: ${f2.err}`);
 });
+// More open blockers than the reviewer's eight-finding cap: the cap limits new
+// findings, so a round re-reports every open one. One it leaves out closes,
+// and only that one.
+const NINE = Array.from(
+  { length: 9 },
+  (_, i) => `[must-fix] .agents/skills/demo/b.ts:${(i + 1) * 100}: open ${i + 1} — fix — breaks`,
+);
+const NEW_ONE = "[must-fix] .agents/skills/demo/a.ts:3: a new one — fix — breaks";
+function nineOpen(tag: string): { d: string; env: NodeJS.ProcessEnv } {
+  const { d, env, t0 } = openBlocker(tag, ...NINE);
+  writeFileSync(join(d, ".agents/skills/demo/b.ts"), "export const b = 2;\n");
+  const b1 = begin(env, d, "since", ["--since", t0]);
+  const items = JSON.parse(readFileSync(b1.out.match(/ITEMS_FILE=(.*)/)?.[1] ?? "", "utf8"));
+  assert.deepEqual(items.openFindings, NINE, "the follow-up is shown all nine");
+  return { d, env };
+}
+function openAfter(env: NodeJS.ProcessEnv, d: string): string[] {
+  const t = snap(d);
+  writeFileSync(join(d, ".agents/skills/demo/b.ts"), `export const b = ${Math.random()};\n`);
+  const b = begin(env, d, "since", ["--since", t]);
+  return JSON.parse(readFileSync(b.out.match(/ITEMS_FILE=(.*)/)?.[1] ?? "", "utf8")).openFindings;
+}
+test("nine open blockers all re-reported beside a new one are ten open, none closed", () => {
+  const { d, env } = nineOpen("nine-all");
+  const f = run(
+    env,
+    "finish",
+    "--repo",
+    d,
+    "--rc",
+    "0",
+    "--result",
+    shownResult("nine-all1", [...NINE, NEW_ONE], NINE),
+  );
+  assert.equal(f.out, "APPROVED=0", f.err);
+  assert.match(f.err, /\b10 must-fix\/should-fix finding\(s\) unresolved/, "all ten are recorded");
+  assert.deepEqual(openAfter(env, d), [...NINE, NEW_ONE], "the next round is shown all ten");
+});
+test("nine open blockers with eight re-reported close exactly the ninth", () => {
+  const { d, env } = nineOpen("nine-eight");
+  const f = run(
+    env,
+    "finish",
+    "--repo",
+    d,
+    "--rc",
+    "0",
+    "--result",
+    shownResult("nine-eight1", NINE.slice(0, 8), NINE),
+  );
+  assert.equal(f.out, "APPROVED=0", f.err);
+  assert.match(f.err, /\b8 must-fix\/should-fix finding\(s\) unresolved/, "only the one left out closed");
+  assert.deepEqual(openAfter(env, d), NINE.slice(0, 8), "the ninth, and only the ninth, is closed");
+});
 test("a blocker stays open through a round that was not shown it", () => {
   const { d, env, t0 } = openBlocker("blkunshown", OPEN_MAKEFILE);
   writeFileSync(join(d, ".agents/skills/demo/b.ts"), "export const b = 2;\n");
@@ -919,6 +973,31 @@ test("a follow-up's fallback finding beside an open one is a repeat spot", () =>
   const farReply = join(TMP, "fb-far.txt");
   writeFileSync(farReply, "[must-fix] .agents/skills/demo/b.ts:90: a new hole — x — y\n");
   assert.doesNotMatch(run(far.env, "finish", "--repo", far.d, "--fallback", farReply).err, /REPEAT SPOT/);
+});
+
+// A quoted location runs to its closing backtick, a space in the name
+// included: cut at the space it was `.agents/skills/demo/my`, which has no
+// line, so a finding beside it printed no warning.
+test("a fallback finding at `my file.ts:20` beside one at `my file.ts:10` is a repeat spot", () => {
+  const d = repo("fb-spaced");
+  const env = owner("fb-spaced");
+  const t0 = snap(d);
+  assert.match(begin(env, d).out, /RECEIPT=review/);
+  run(env, "finish", "--repo", d, "--rc", "3");
+  const first = join(TMP, "fb-spaced-1.txt");
+  writeFileSync(first, "1. **racy**: `.agents/skills/demo/my file.ts:10` — x — verdict: **fix-now** — failure: y — fix it\n");
+  assert.equal(run(env, "finish", "--repo", d, "--fallback", first).out, "APPROVED=0");
+  writeFileSync(join(d, ".agents/skills/demo/b.ts"), "export const b = 2;\n");
+  assert.match(begin(env, d, "since", ["--since", t0]).out, /RECEIPT=review/);
+  run(env, "finish", "--repo", d, "--rc", "3");
+  const again = join(TMP, "fb-spaced-2.txt");
+  writeFileSync(again, "1. **still racy**: `.agents/skills/demo/my file.ts:20` — x — verdict: **fix-now** — failure: y — fix it\n");
+  const f = run(env, "finish", "--repo", d, "--fallback", again);
+  assert.equal(f.out, "APPROVED=0", f.err);
+  assert.match(
+    f.err,
+    /REPEAT SPOT: \.agents\/skills\/demo\/my file\.ts:20 — the last review flagged \.agents\/skills\/demo\/my file\.ts:10 too/,
+  );
 });
 
 // A fallback finding is rewritten location first, the shape a vendor's

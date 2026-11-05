@@ -713,7 +713,8 @@ const GAP_WORDS: Record<string, string> = {
  *  finding points, used by the REPEAT SPOT detector below. It decides no
  *  finding's closure: a blocker closes when a round that was shown it leaves it
  *  out (finish), never by the file it names. The token is the text up to the first
- *  whitespace, backtick or quote, an opening backtick or quote skipped: with a
+ *  whitespace, backtick or quote, an opening backtick or quote skipped and,
+ *  when it closes on the line, read through to it (`dir/my file.ts:12`): with a
  *  `:<line>` it is whatever precedes the line (`Makefile:12`, `localhost:3000`);
  *  without one it is a path when it holds a `/` or ends in an extension and
  *  holds no colon, so prose (`Note:`) and `node:sqlite` lead with none; a
@@ -731,7 +732,11 @@ export function leadingPath(text: string): { path: string; loc: string; end: num
   const t = text.slice(open);
   const shut = open > 0 ? (text[0] === "(" ? ")" : text[0]) : "";
   const close = (n: number): number => open + n + (shut !== "" && t[n] === shut ? 1 : 0);
-  const raw = /^[^\s`'",;]+/.exec(t)?.[0] ?? "";
+  // A backticked or quoted location runs to its closing delimiter, a space in
+  // the name included; one that does not close on the line is read bare.
+  const quoted = shut !== "" && shut !== ")" ? t.indexOf(shut) : -1;
+  const raw =
+    quoted > 0 && !t.slice(0, quoted).includes("\n") ? t.slice(0, quoted) : (/^[^\s`'",;]+/.exec(t)?.[0] ?? "");
   // Trailing punctuation is not the path's: a sentence's `.` or `:`, and a `)`
   // that closes nothing the token opened (`app/(group)/page.tsx` keeps its own).
   let tok = raw;
@@ -1039,7 +1044,9 @@ function fileFirst(l: string): string {
   if (!loc) return l;
   const head = l.slice(0, at).replace(/[\s:—]+$/, "");
   const tail = l.slice(at + loc.end).replace(/^[\s:]+/, "");
-  return `${loc.loc}: ${tail === "" ? head : `${head} ${tail}`}`;
+  // A location holding a space keeps its backticks, so it is read whole again.
+  const lead = /\s/.test(loc.loc) ? `\`${loc.loc}\`` : loc.loc;
+  return `${lead}: ${tail === "" ? head : `${head} ${tail}`}`;
 }
 
 /**

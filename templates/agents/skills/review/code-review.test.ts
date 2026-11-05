@@ -1289,6 +1289,37 @@ test("receipt mode: a follow-up round is shown the findings still open", () => {
   );
 });
 
+// The output cap limits NEW findings. Combined pieces can leave more than
+// eight blockers open, and a round that re-reported only eight would close the
+// ninth by leaving it out, so the open list is exempt from the cap.
+test("receipt mode: findings still open are exempt from the output cap", () => {
+  const items = `${TMP}/cap-items.json`;
+  const open = Array.from({ length: 9 }, (_, i) => `[must-fix] alpha.txt:${(i + 1) * 100}: open ${i + 1} — x — y`);
+  writeFileSync(items, JSON.stringify({ items: [{ id: "E1", text: "e" }], openFindings: open }));
+  const snap = snapshot();
+  appendFileSync(`${REPO}/alpha.txt`, "cap edit\n");
+  const all = [...open, "[must-fix] beta.txt:2: a new one — x — y"];
+  const frame = JSON.stringify({
+    findings: all.join("\n"),
+    coverage: [{ id: "E1", status: "checked", evidence: ["r"] }],
+  });
+  writeFileSync(`${TMP}/cap.frame`, `BEGIN_REVIEW_V1\n${frame}\nEND_REVIEW_V1\n`);
+  const stub = `${TMP}/cap-stub.sh`;
+  exe(stub, `#!/usr/bin/env bash\ncat > "${SEEN}"\ncat "${TMP}/cap.frame"\n`);
+  const r = runReview(["--since", snap], {
+    CODEX_BIN: stub,
+    GROK_BIN: stub,
+    CODE_REVIEW_RESULT_FILE: `${TMP}/cap-result.json`,
+    CODE_REVIEW_COVERAGE_FILE: items,
+  });
+  rcIs("the follow-up runs", 0, r.rc);
+  has("the cap counts new findings only", "at most 8 NEW findings", seen());
+  has("the open list is exempt from it", "exempt from the output cap", seen());
+  const res = JSON.parse(readFileSync(`${TMP}/cap-result.json`, "utf8"));
+  eq("all nine re-reported and the new one are recorded", 10, res.findings.length);
+  eq("the nine open findings were shown", 9, res.shown.length);
+});
+
 // ── REPEAT SPOT: the same place flagged two reviews running ───────────────
 // A save handler patched through seven reviews drew a new finding beside the
 // last each time; the warning tells the build to redesign the piece instead.
@@ -1358,6 +1389,18 @@ test("a finding beside one the last review left open is a repeat spot", () => {
     "a path holding a colon is one file",
     "REPEAT SPOT: src/x:y.tsx:160 — the last review flagged src/x:y.tsx:153",
     colon.err,
+  );
+  // A backticked location runs to its closing backtick: a space in the name
+  // once cut it at `src/my`, which has no line, so the repeat went unseen.
+  const spaced = repeatRound(
+    "spaced",
+    ["[must-fix] `src/my file.tsx:10`: first — x — y"],
+    "[must-fix] `src/my file.tsx:20`: again — x — y",
+  );
+  has(
+    "a backticked path holding a space is one file",
+    "REPEAT SPOT: src/my file.tsx:20 — the last review flagged src/my file.tsx:10",
+    spaced.err,
   );
 });
 

@@ -1085,7 +1085,8 @@ If the fixes are correct, report no findings (NO_FINDINGS).`;
 EARLIER FINDINGS STILL OPEN. The last review reported these and no review has
 seen them closed. For each, judge whether the fixes below close it; re-report
 it (as written, or updated) if they do not. One you do not re-report is
-recorded as closed by these fixes.
+recorded as closed by these fixes. These are exempt from the output cap:
+re-report every one still open, however many there are.
 ${OPEN_FINDINGS.map((f) => `  ${f}`).join("\n")}`;
       SHOWN = OPEN_FINDINGS;
     }
@@ -1220,8 +1221,10 @@ Required: every [must-fix] finding MUST name the concrete failure it causes
 (the wrong output, the lost data, the crash, the silent skip). A finding that
 names no failure cannot be must-fix.
 
-OUTPUT CAP: at most 8 findings, ranked by severity. If you have more than 8,
-the top 8 displace the rest.
+OUTPUT CAP: at most 8 NEW findings, ranked by severity. If you have more than
+8, the top 8 displace the rest. An earlier finding this prompt lists as still
+open is not new and never counts toward the cap: re-report every one still
+open, however many, beside the new ones.
 
 OUTPUT FORMAT — STRICT. Each finding MUST appear on its own line with the
 literal bracket prefix at the very start of the line. No markdown bold (no
