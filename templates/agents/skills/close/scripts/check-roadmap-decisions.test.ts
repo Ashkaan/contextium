@@ -7,7 +7,7 @@
 
 import { strict as assert } from "node:assert";
 import { spawnSync } from "node:child_process";
-import { copyFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { after, describe, it } from "node:test";
@@ -64,8 +64,20 @@ function repo(base: string[] | null, branch: string[], commit = false): string {
   return dir;
 }
 
+// Every run logs its firing under HOME; this one, so the suite never writes the real log.
+const HOME = mkdtempSync(join(tmpdir(), "roadmap-decisions-home-"));
+after(() => rmSync(HOME, { recursive: true, force: true }));
 function run(dir: string, ...args: string[]) {
-  const r = spawnSync(process.execPath, ["--experimental-strip-types", CHECK, ...args], { cwd: dir, encoding: "utf8" });
+  return runWith(dir, {}, ...args);
+}
+/** run, with these variables over the environment (LAND_HELD_SPECS unset unless given). */
+function runWith(dir: string, env: Record<string, string>, ...args: string[]) {
+  const { LAND_HELD_SPECS: _, ...rest } = process.env;
+  const r = spawnSync(process.execPath, ["--experimental-strip-types", CHECK, ...args], {
+    cwd: dir,
+    encoding: "utf8",
+    env: { ...rest, HOME, ...env },
+  });
   return { code: r.status, out: r.stdout, err: r.stderr };
 }
 
@@ -97,14 +109,51 @@ describe("check-roadmap-decisions", () => {
     assert.match(r.err, /R1 .*"\?"/);
   });
 
-  it("refuses a status worded as waiting on the user", () => {
+  it("refuses a dated status still worded as the user's ruling, whatever its date", () => {
+    for (const status of [
+      "blocked: 2099-01-01 pending your approval of the copy",
+      "blocked: 2099-01-01 the user to decide the floor",
+    ]) {
+      const dir = repo([row("R1", "planned")], [row("R1", status)]);
+      const r = run(dir, "--since", "main");
+      assert.equal(r.code, 1, status);
+      assert.match(r.err, /makes this a question for the user/, status);
+    }
+  });
+
+  it("refuses a status worded as waiting on the user, dated or not", () => {
+    for (const status of [
+      "blocked: 2099-01-01 waiting on the user to bring the signed quote",
+      "blocked: 2099-11-20 waiting on the user for a decision on the vendor",
+    ]) {
+      const dir = repo([row("R1", "planned")], [row("R1", status)]);
+      const r = run(dir, "--since", "main");
+      assert.equal(r.code, 1, status);
+      assert.match(r.err, /makes this a question for the user/, status);
+    }
+  });
+
+  it("refuses a dated status naming the user that holds any decision word, whoever's", () => {
+    for (const status of [
+      "blocked: 2099-11-20 the user sends the form. The insurer's decision is final.",
+      "blocked: 2099-11-20 your decision is still required",
+      "blocked: 2099-11-20 the user's and the vendor's approval is still required",
+    ]) {
+      const dir = repo([row("R1", "planned")], [row("R1", status)]);
+      const r = run(dir, "--since", "main");
+      assert.equal(r.code, 1, status);
+      assert.match(r.err, /makes this a question for the user/, status);
+    }
+  });
+
+  it("refuses a status worded as waiting on the user to confirm", () => {
     const dir = repo([row("R1", "planned")], [row("R1", "blocked: the user to confirm the vendor")]);
     const r = run(dir, "--since", "main");
     assert.equal(r.code, 1);
     assert.match(r.err, /R1 .*"confirm"/);
   });
 
-  it("passes a dated watch; an act of the user's waits on them; the rest are undated waits", () => {
+  it("passes a dated watch; an undated act of the user's is a step for them with no date; the rest are undated waits", () => {
     const dir = repo(
       [row("R1", "planned")],
       [
@@ -121,7 +170,7 @@ describe("check-roadmap-decisions", () => {
     const lines = stderrLines(r.err);
     assert.equal(lines.length, 3, r.err);
     assert.ok(
-      lines.some((l) => l.includes(": R1 ") && /waiting on the user/.test(l)),
+      lines.some((l) => l.includes(": R1 ") && /a step for the user with no date/.test(l)),
       r.err,
     );
     for (const id of ["R2", "R4"])
@@ -243,6 +292,47 @@ describe("check-roadmap-decisions on rows a push adds or changes — what passes
   );
   passes("a manual row moved to done", [row("R1", "planned", "manual")], [row("R1", "done", "manual")]);
   passes(
+    "a new manual row (a row sets it for a later session)",
+    [],
+    [row("R5", "planned", "manual")],
+  );
+  passes("a row whose Sub-spec alone changes to manual", [row("R5", "planned")], [row("R5", "planned", "manual")]);
+  passes(
+    "a planning session's shape: six planned manual rows added at once",
+    [row("R1", "in-progress", "manual")],
+    [row("R1", "done", "manual"), ...["R2", "R3", "R4", "R5", "R6", "R7"].map((id) => row(id, "planned", "manual"))],
+  );
+  passes(
+    "a dated manual row that names the user",
+    [],
+    [row("R5", "blocked: 2099-11-20 the user reviews the quote with the agent", "manual")],
+  );
+  passes(
+    "a manual row dated today in local time",
+    [],
+    [row("R5", `blocked: ${today} the user calls the office`, "manual")],
+  );
+  passes(
+    "a manual row set aside until a date that names the user",
+    [row("R5", "planned", "manual")],
+    [row("R5", "blocked: until 2099-01-01 the user sends the form", "manual")],
+  );
+  passes(
+    "a manual watch with no until",
+    [row("R5", "planned", "manual")],
+    [row("R5", "blocked: 2099-01-01 the app store releases the build", "manual")],
+  );
+  passes(
+    "a dated wait that names the user",
+    [row("R3", "planned")],
+    [row("R3", "blocked: 2099-01-01 the user sends the drafted reply")],
+  );
+  passes(
+    "a release that names the user",
+    [row("R3", "planned")],
+    [row("R3", "blocked: until 2099-01-01 the user renews the domain")],
+  );
+  passes(
     "a manual row set aside until a date",
     [row("R5", "planned", "manual")],
     [row("R5", "blocked: until 2099-01-01 the app store releases the build", "manual")],
@@ -281,20 +371,12 @@ describe("check-roadmap-decisions on rows a push adds or changes — what holds 
       assert.match(lines[0] ?? "", kind);
       assert.match(r.out, /^1 rows added or changed, 1 left open$/m);
     });
-  holds("a new manual row", [], [row("R5", "planned", "manual")], "R5", /waiting on the user/);
   holds(
-    "a row whose Sub-spec alone changes to manual",
-    [row("R5", "planned")],
-    [row("R5", "planned", "manual")],
-    "R5",
-    /waiting on the user/,
-  );
-  holds(
-    "a dated manual row",
+    "a manual row with no date that names the user",
     [],
-    [row("R5", "blocked: 2099-01-01 the user renews the domain", "manual")],
+    [row("R5", "blocked: the user reviews the quote with the agent", "manual")],
     "R5",
-    /waiting on the user/,
+    /a step for the user with no date/,
   );
   holds(
     "a manual row set aside until a date already past",
@@ -304,32 +386,25 @@ describe("check-roadmap-decisions on rows a push adds or changes — what holds 
     /already past/,
   );
   holds(
-    "a manual row set aside until a date that names the user",
-    [row("R5", "planned", "manual")],
-    [row("R5", "blocked: until 2099-01-01 the user sends the form", "manual")],
-    "R5",
-    /waiting on the user/,
-  );
-  holds(
-    "a manual watch with no until",
-    [row("R5", "planned", "manual")],
-    [row("R5", "blocked: 2099-01-01 the app store releases the build", "manual")],
-    "R5",
-    /waiting on the user/,
-  );
-  holds(
     "a manual row moved to in-progress",
     [row("R5", "planned", "manual")],
     [row("R5", "in-progress", "manual")],
     "R5",
-    /waiting on the user/,
+    /half-built/,
   );
   holds(
-    "a dated wait that names the user is a step waiting on them",
+    "a wait that names the user with no date",
     [row("R3", "planned")],
-    [row("R3", "blocked: 2099-01-01 the user sends the drafted reply")],
+    [row("R3", "blocked: the user sends the drafted reply")],
     "R3",
-    /waiting on the user/,
+    /a step for the user with no date/,
+  );
+  holds(
+    "a wait that names the user dated yesterday",
+    [row("R3", "planned")],
+    [row("R3", `blocked: ${yesterday} the user sends the drafted reply`)],
+    "R3",
+    /already past/,
   );
   holds(
     "a wait with no date",
@@ -360,13 +435,6 @@ describe("check-roadmap-decisions on rows a push adds or changes — what holds 
     /already past/,
   );
   holds(
-    "a release that names the user is a step waiting on them",
-    [row("R3", "planned")],
-    [row("R3", "blocked: until 2099-01-01 the user renews the domain")],
-    "R3",
-    /waiting on the user/,
-  );
-  holds(
     "a date that is not a calendar day",
     [row("R3", "planned")],
     [row("R3", "blocked: 2099-99-99 vendor reply")],
@@ -392,7 +460,12 @@ describe("check-roadmap-decisions on rows a push adds or changes — what holds 
   it("prints every open row on its own line", () => {
     const dir = repo(
       [row("R1", "done")],
-      [row("R1", "done"), row("R2", "planned", "manual"), row("R3", "blocked: vendor reply"), row("R4", "in-progress")],
+      [
+        row("R1", "done"),
+        row("R2", "blocked: the user books the visit", "manual"),
+        row("R3", "blocked: vendor reply"),
+        row("R4", "in-progress"),
+      ],
     );
     const r = run(dir, "--since", "main");
     assert.equal(r.code, 1);
@@ -437,6 +510,32 @@ describe("check-roadmap-decisions on spec reports", () => {
     assert.equal(r.code, 1);
     assert.match(r.err, /report\.md:3: "waiting on the user"/);
     assert.match(r.out, /^1 reports checked, 1 parked lines$/m);
+  });
+
+  it("passes a dated report line that says what the user does, and holds every line worded as waiting on the user", () => {
+    const ok = withReport(
+      null,
+      "# Report\n\n- 2099-11-20: the user reviews the quote with the agent\n- 2099-11-20: the user calls the clinic. The insurer's decision is final.\n",
+    );
+    const r = run(ok, "--since", "main");
+    assert.equal(r.code, 0, r.err);
+    assert.match(r.out, /^1 reports checked, 0 parked lines$/m);
+    for (const line of [
+      "- 2099-11-20: waiting on the user, who reviews the quote",
+      "- 2099-11-20: waiting on the user for a decision on the vendor",
+      "- Waiting on the user to call the clinic on 2099-11-20",
+      "- 2000-01-01: waiting on the user, who reviews the quote",
+      "- Waiting for your answer by 2099-11-20 on the copy",
+      "- Waiting on the user 2099-11-20 to bring the quote; waiting on the user to send the form",
+      "- 2099-11-20: waiting on the user. Your approval is still required",
+      "- Waiting on the user to send the form; waiting on the vendor until 2099-11-20",
+      "- Waiting on the user: 2099-11-20 they review the quote",
+    ]) {
+      const dir = withReport(null, `# Report\n\n${line}\n`);
+      const held = run(dir, "--since", "main");
+      assert.equal(held.code, 1, line);
+      assert.match(held.out, /^1 reports checked, 1 parked lines$/m, line);
+    }
   });
 
   it("refuses a report line waiting for your answer, written as a possessive", () => {
@@ -518,32 +617,98 @@ describe("check-roadmap-decisions on partial spec reports", () => {
     assert.match(r.out, /^0 reports partial$/m);
   });
 
+  // A finished spec land.ts holds this landing for keeps its row in-progress
+  // until its --release proves the checks; land.ts names those specs in
+  // LAND_HELD_SPECS, and any other in-progress row is half-built.
+  const LIVE = "# Tasks\n\n```live-checks\nhome | workbench | command | true\n```\n";
+  function tasks(dir: string, name: string, body: string): void {
+    writeFileSync(join(dir, PROJECT, "specs", name, "tasks.md"), body);
+  }
+
+  it("passes an in-progress row whose spec land.ts names in LAND_HELD_SPECS", () => {
+    for (const held of [`${PROJECT}/specs/001-x`, `${PROJECT}/specs/9-other\n${PROJECT}/specs/001-x/\n`]) {
+      const dir = repo([row("R1", "planned", "specs/001-x/")], [row("R1", "in-progress", "specs/001-x/")]);
+      spec(dir, "001-x", "# Spec\n", COMPLETE);
+      tasks(dir, "001-x", LIVE);
+      const r = runWith(dir, { LAND_HELD_SPECS: held }, "--since", "main");
+      assert.equal(r.code, 0, `${JSON.stringify(held)}: ${r.err}`);
+      assert.match(r.out, /^1 rows added or changed, 0 left open$/m);
+    }
+  });
+
+  it("refuses an in-progress row land.ts does not hold for, though its report is complete and it declares a live check", () => {
+    // A spec already complete, its checks unchanged, owes nothing: an
+    // in-progress row for it would land with no hold and never be set done.
+    const env: [string, Record<string, string>][] = [
+      ["unset", {}],
+      ["empty", { LAND_HELD_SPECS: "" }],
+      ["another spec", { LAND_HELD_SPECS: `${PROJECT}/specs/002-y` }],
+      ["another project", { LAND_HELD_SPECS: "projects/ops/2026-01-02_other/specs/001-x" }],
+    ];
+    for (const [what, e] of env) {
+      const dir = repo([row("R1", "done", "specs/001-x/")], [row("R1", "in-progress", "specs/001-x/")]);
+      spec(dir, "001-x", "# Spec\n", COMPLETE);
+      tasks(dir, "001-x", LIVE);
+      const r = runWith(dir, e, "--since", "main");
+      assert.equal(r.code, 1, `${what}: ${r.out}`);
+      assert.match(r.err, /R1 "in-progress" \(Sub-spec specs\/001-x\/?\): half-built/, what);
+    }
+  });
+
+  it("refuses an in-progress row whose report is complete but that declares no live check", () => {
+    for (const body of [null, "# Tasks\n\n```live-checks\n```\n"]) {
+      const dir = repo([row("R1", "planned", "specs/001-x/")], [row("R1", "in-progress", "specs/001-x/")]);
+      spec(dir, "001-x", "# Spec\n", COMPLETE);
+      if (body !== null) tasks(dir, "001-x", body);
+      const r = run(dir, "--since", "main");
+      assert.equal(r.code, 1, `${body}: ${r.out}`);
+      assert.match(r.err, /R1 "in-progress" \(Sub-spec specs\/001-x\): half-built/, String(body));
+    }
+  });
+
+  it("refuses an in-progress row that declares a live check but whose report is not complete", () => {
+    for (const report of [undefined, PARTIAL]) {
+      const dir = repo([row("R1", "planned", "specs/001-x/")], [row("R1", "in-progress", "specs/001-x/")]);
+      spec(dir, "001-x", "# Spec\n", report);
+      tasks(dir, "001-x", LIVE);
+      const r = run(dir, "--since", "main");
+      assert.equal(r.code, 1, `${report}: ${r.out}`);
+      assert.match(r.err, /R1 "in-progress" \(Sub-spec specs\/001-x\): half-built/, String(report));
+    }
+  });
+
   it("is a caller error, never a pass, when spec-state.ts cannot run", () => {
     const tree = mkdtempSync(join(tmpdir(), "roadmap-decisions-copy-"));
     scratch.push(tree);
     const here = dirname(CHECK);
     mkdirSync(join(tree, ".agents/skills/close/scripts"), { recursive: true });
     mkdirSync(join(tree, ".agents/packages/cli-exit"), { recursive: true });
-    for (const f of ["check-roadmap-decisions.ts", "open-decision.ts", "roadmap.ts"]) {
+    for (const f of ["check-roadmap-decisions.ts", "open-decision.ts", "roadmap.ts", "trunk.ts"]) {
       copyFileSync(join(here, f), join(tree, ".agents/skills/close/scripts", f));
     }
     copyFileSync(join(here, "../../../packages/cli-exit/cli-exit.ts"), join(tree, ".agents/packages/cli-exit/cli-exit.ts"));
+    // roadmap.ts asks packages/calendar-day whether a watch date is a real day.
+    mkdirSync(join(tree, ".agents/packages/calendar-day"), { recursive: true });
+    copyFileSync(
+      join(here, "../../../packages/calendar-day/calendar-day.ts"),
+      join(tree, ".agents/packages/calendar-day/calendar-day.ts"),
+    );
     const dir = repo([row("R1", "in-progress", "specs/001-x/")], [row("R1", "in-progress", "specs/001-x/")]);
     spec(dir, "001-x", "# Spec\n", PARTIAL);
     const r = spawnSync(
       process.execPath,
       ["--experimental-strip-types", join(tree, ".agents/skills/close/scripts/check-roadmap-decisions.ts"), "--since", "main"],
-      { cwd: dir, encoding: "utf8" },
+      { cwd: dir, encoding: "utf8", env: { ...process.env, HOME } },
     );
     assert.equal(r.status, 2, r.stderr);
     assert.match(r.stderr, /spec-state\.ts/);
   });
 });
 
-// A step for the user that cannot start yet does not hold the close:
-// a `manual` row rides while a row it depends on, here or in another project,
-// is open; once ready, or when an entry names nothing, it holds the close.
-describe("check-roadmap-decisions: a manual row waiting on an open row", () => {
+// A planned manual row rides whether or not a row it depends on is open (a
+// row is how a step is set for a later session); a Depends on entry that names
+// no row still holds the close.
+describe("check-roadmap-decisions: a manual row and its Depends on", () => {
   const dep = (id: string, status: string, depends: string, sub = "manual") =>
     `| ${id} | ${id.toLowerCase()}-row | intent | in | ${depends} | ${status} | ${sub} |\n`;
   /** Another project whose R2 has `status`, an ordinary row: added on the branch, it rides. */
@@ -568,19 +733,17 @@ describe("check-roadmap-decisions: a manual row waiting on an open row", () => {
     assert.equal(r.code, 0, r.err);
   });
 
-  it("refuses it once ready: every dependency done", () => {
+  it("passes it once ready: every dependency done", () => {
     const dir = repo([row("R1", "done")], [row("R1", "done"), dep("R2", "planned", "R1")]);
     const r = run(dir, "--since", "main");
-    assert.equal(r.code, 1);
-    assert.match(r.err, /R2 "planned" \(Sub-spec manual\): a step waiting on the user/);
+    assert.equal(r.code, 0, r.err);
   });
 
-  it("refuses it when another project's row is done", () => {
+  it("passes it when another project's row is done", () => {
     const dir = repo([row("R1", "done")], [row("R1", "done"), dep("R2", "planned", "other-proj R2")]);
     other(dir, "done");
     const r = run(dir, "--since", "main");
-    assert.equal(r.code, 1);
-    assert.match(r.err, /R2 "planned" \(Sub-spec manual\): a step waiting on the user/);
+    assert.equal(r.code, 0, r.err);
   });
 
   it("refuses an unknown entry, alone or beside an open one", () => {
@@ -595,11 +758,12 @@ describe("check-roadmap-decisions: a manual row waiting on an open row", () => {
   it("judges a row whose only change is its Depends on cell", () => {
     const dir = repo(
       [row("R1", "done"), dep("R2", "planned", "R3"), row("R3", "planned")],
-      [row("R1", "done"), dep("R2", "planned", "R1"), row("R3", "planned")],
+      [row("R1", "done"), dep("R2", "planned", "nobody R9"), row("R3", "planned")],
     );
     const r = run(dir, "--since", "main");
-    assert.equal(r.code, 1, "removing the last open dependency makes the step the user's now");
-    assert.match(r.err, /R2 "planned" \(Sub-spec manual\): a step waiting on the user/);
+    assert.equal(r.code, 1, "the new entry names no row");
+    assert.match(r.err, /R2 "planned" \(Sub-spec manual\): .*fix its Depends on/);
     assert.match(r.out, /^1 rows added or changed, 1 left open$/m);
   });
 });
+

@@ -14,6 +14,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { after, test } from "node:test";
 import { fileURLToPath } from "node:url";
+import { DatabaseSync } from "./tests/sqlite-child.ts";
 
 const SCRIPT = join(dirname(fileURLToPath(import.meta.url)), "corrections.ts");
 const TMP = mkdtempSync(join(tmpdir(), "corrections-test-"));
@@ -518,9 +519,9 @@ test("window mode", () => {
   );
 
   is(
-    "reply_to is the earlier assistant turn cut to 600 characters",
+    "a short answer's reply_to is the END of the earlier assistant turn, its last 300 characters, marked as cut",
     q(t[0]?.items[0]?.reply_to),
-    `${"L".repeat(599)}M`,
+    `…flow${"overflow".repeat(37)}`,
   );
   is("reply_to is the LATEST earlier assistant turn, not a later one", q(t[0]?.items[1]?.reply_to), "short answer");
   is("reply_to is null when nothing came before", q(t[1]?.items[0]?.reply_to), "null");
@@ -792,4 +793,133 @@ test("on statev2.sqlite, window mode keeps the agent's reply as reply_to and dro
   ).threads.flatMap((t) => t.items);
   is("one turn: the correction, not the bare continue", JSON.stringify(items.map((i) => i.text)), '["Make them two."]');
   is("reply_to is the agent's assistant turn", String(items[0]?.reply_to), "The tiles are three columns.");
+});
+
+// ── A pasted credential never leaves the chat ─────
+//
+// Window mode copied the user's turns, and the assistant reply each one answered,
+// verbatim — and a prompt built from that copy would carry every credential the
+// user had pasted in chat to whichever model reads it. Every mode now blanks anything shaped
+// like a key, token or sign-in code, keeping the words around it, and leaves
+// identifiers that only look random (a commit, a thread id) alone. The values
+// are built at run time, so no credential-shaped literal sits in the repo.
+
+test("a pasted credential is blanked in every mode, the words around it kept", () => {
+  const PAT = `github_pat_11ABCDEFG0${"a1B2c3D4e5".repeat(7)}Zq`;
+  const CLASSIC = `ghp_${"Xy7Wv3Ut9S".repeat(3)}Rq5Po4`;
+  const GOOGLE_CODE = `4/0A${"bC3dE5fG7h-J9".repeat(5)}kLm`;
+  const STEAM = "A1B2C3D4E5F60718293A4B5C6D7E8F90";
+  const TWITCH = `wsv${"k3j9x0q2m8".repeat(2)}p7r4t1z`;
+  const EPIC = "0f8e7d6c5b4a39281706f5e4d3c2b1a0";
+  const COMMIT = "fe20c5a7caf2f65092e1709cb989988c2b57ed04";
+
+  const R3 = join(TMP, "redact");
+  mkdirSync(join(R3, "userdata"), { recursive: true });
+  const T = "52345678-1111-2222-3333-444444444444";
+  const db = new DatabaseSync(join(R3, "userdata/state.sqlite"));
+  db.exec(MESSAGES);
+  db.exec(ACTIVITIES);
+  db.exec(`create table projection_threads (
+  thread_id TEXT PRIMARY KEY, project_id TEXT NOT NULL, title TEXT NOT NULL,
+  created_at TEXT NOT NULL, updated_at TEXT NOT NULL, deleted_at TEXT)`);
+  db.exec(`create table projection_thread_sessions (
+  thread_id TEXT PRIMARY KEY, status TEXT NOT NULL, provider_name TEXT,
+  updated_at TEXT NOT NULL)`);
+  db.prepare("insert into projection_threads values (?,?,?,?,?,?)").run(T, "p", "Keys", "x", "x", null);
+  const { add, addAct } = adders(db);
+  add(T, "assistant", `Paste the token here. The old one was ${CLASSIC}, now revoked.`, "2026-11-20T05:50:00.000Z");
+  add(T, "user", `here is the token: ${PAT} thanks`, "2026-11-20T05:56:39.000Z");
+  add(T, "user", GOOGLE_CODE, "2026-11-20T05:57:00.000Z");
+  add(T, "user", `Your Steam Web API Key Key: ${STEAM} Domain Name: registered_1624597571044`, "2026-11-20T05:58:00.000Z");
+  add(T, "user", `4) id = n5rq8w2k / secret = ${TWITCH}`, "2026-11-20T05:59:00.000Z");
+  add(
+    T,
+    "user",
+    `{"redirectUrl":"https://localhost/launcher/authorized?code=${EPIC}","authorizationCode":"${EPIC}","exchangeCode":null} can you fix it?`,
+    "2026-11-20T06:00:00.000Z",
+  );
+  add(T, "user", `the deploy at ${COMMIT} broke thread ${T}`, "2026-11-20T06:01:00.000Z");
+  addAct(T, "user-input.requested", { requestId: "k1", questions: [{ id: "q", question: "q", options: [] }] }, "2026-11-20T06:02:00.000Z");
+  addAct(T, "user-input.resolved", { requestId: "k1", answers: { q: `the password is Hunter2${STEAM.slice(0, 6)}` } }, "2026-11-20T06:03:00.000Z");
+  db.close();
+
+  const env = { T3CODE_HOME: R3, HOME: join(TMP, "home"), WORKBENCH_THREAD_ID: T };
+  const win = run(env, "--since", "2026-11-20T00:00:00Z", "--until", "2026-11-21T00:00:00Z", "--json");
+  const full = run(env, "--full");
+  const rows = run(env);
+  is("window mode exits 0", String(win.rc), "0");
+  is("--full exits 0", String(full.rc), "0");
+
+  for (const [mode, out] of [
+    ["window", win.out],
+    ["--full", full.out],
+    ["rows", rows.out],
+  ] as const) {
+    for (const [what, value] of [
+      ["a fine-grained GitHub token", PAT],
+      ["a Google sign-in code", GOOGLE_CODE],
+      ["a labelled Steam key", STEAM],
+      ["a labelled client secret", TWITCH],
+      ["an Epic sign-in code", EPIC],
+      ["a password typed as an answer", `Hunter2${STEAM.slice(0, 6)}`],
+    ] as const) {
+      hasnt(`${mode}: ${what} is blanked`, out, value);
+    }
+    has(`${mode}: the words before a token stay`, out, "here is the token: [redacted GitHub token] thanks");
+    has(`${mode}: a commit stays`, out, COMMIT);
+    has(`${mode}: a thread id stays`, out, `broke thread ${T}`);
+  }
+  hasnt("window: the assistant reply it answered is blanked too", win.out, CLASSIC);
+  has("window: the reply keeps its words", win.out, "The old one was [redacted GitHub token], now revoked.");
+  has("window: a label keeps its name", win.out, "Key: [redacted");
+  has("window: the JSON around a code keeps its shape", win.out, '\\"exchangeCode\\":null} can you fix it?');
+});
+
+// ── reply_to quotes the end of what the user answered ────
+//
+// The scan has 240,000 characters for this window, and the AI's replies, cut to
+// their first 600, filled 80% of it while 267 of the user's 615 messages
+// were left out. And the first 600 were mostly the wrong part: a short answer
+// such as "1a" answers the question an AI reply ends with, which sat in the
+// last 600 characters 230 times out of 320, and in the first 600 only 74. So
+// the quote is the end: 300 characters before a short answer, 120 before a
+// longer message, whole when the reply is shorter than that.
+
+test("reply_to is the end of the reply the user answered: 300 characters before a short answer, 120 before a longer one", () => {
+  const RQ = join(TMP, "reply-quote");
+  mkdirSync(join(RQ, "userdata"), { recursive: true });
+  const T = "62345678-1111-2222-3333-444444444444";
+  const db = new DatabaseSync(join(RQ, "userdata/state.sqlite"));
+  db.exec(MESSAGES);
+  db.exec(ACTIVITIES);
+  db.exec(`create table projection_threads (
+  thread_id TEXT PRIMARY KEY, project_id TEXT NOT NULL, title TEXT NOT NULL,
+  created_at TEXT NOT NULL, updated_at TEXT NOT NULL, deleted_at TEXT)`);
+  db.exec(`create table projection_thread_sessions (
+  thread_id TEXT PRIMARY KEY, status TEXT NOT NULL, provider_name TEXT,
+  updated_at TEXT NOT NULL)`);
+  const { add } = adders(db);
+  const PREAMBLE = "Here is what I found in the logs. ".repeat(40);
+  const QUESTION = "1. The scan's quotes\n   a. Quote the end (recommended)\n   b. Leave it";
+  add(T, "assistant", `${PREAMBLE}${QUESTION}\n`, "2026-11-20T10:00:00.000Z");
+  add(T, "user", "1a", "2026-11-20T10:01:00.000Z");
+  add(T, "assistant", `${PREAMBLE}So the reader should quote the end of each reply.`, "2026-11-20T10:02:00.000Z");
+  add(T, "user", "No: quote the end only for short answers, and keep the start for the rest of them.", "2026-11-20T10:03:00.000Z");
+  add(T, "assistant", "Short reply, whole.", "2026-11-20T10:04:00.000Z");
+  add(T, "user", "Thanks, that settles it for every reply I send.", "2026-11-20T10:05:00.000Z");
+  db.close();
+
+  const { out, rc } = run({ T3CODE_HOME: RQ, HOME: join(TMP, "home") }, "--since", "2026-11-20T00:00:00Z", "--until", "2026-11-21T00:00:00Z", "--json");
+  is("exits 0", String(rc), "0");
+  const items = (JSON.parse(out) as { threads: { items: { text: string; reply_to: string | null }[] }[] }).threads.flatMap(
+    (x) => x.items,
+  );
+  const short = items[0]?.reply_to ?? "";
+  has("a short answer's quote holds the question it answered", short, "1. The scan's quotes");
+  has("…and its options", short, "a. Quote the end (recommended)");
+  is("…cut to 300 characters after the mark", String([...short].length), "301");
+  is("…and marked as cut at its start", short[0] ?? "", "…");
+  const long = items[1]?.reply_to ?? "";
+  is("a longer message's quote is the reply's last 120 characters, marked", long, `…${`${PREAMBLE}So the reader should quote the end of each reply.`.slice(-120)}`);
+  is("a reply shorter than its quote is whole, with no mark", items[2]?.reply_to ?? "", "Short reply, whole.");
 });

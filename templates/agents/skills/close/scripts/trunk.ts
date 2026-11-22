@@ -44,15 +44,26 @@ import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { exit, runToExit } from "../../../packages/cli-exit/cli-exit.ts";
 
-/** Run git in the repo, output discarded or captured; never throws. */
-function git(repo: string, ...args: string[]): { ok: boolean; out: string } {
+// The small helpers the close's scripts share: one
+// copy here, where trunk resolution already needed them.
+
+/** Run git in the repo, stdout captured without its trailing newlines; never throws. */
+export function git(repo: string, ...args: string[]): { ok: boolean; out: string } {
   const r = spawnSync("git", ["-C", repo, ...args], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
   return { ok: r.status === 0, out: (r.stdout ?? "").replace(/\n+$/, "") };
 }
 
-function isDir(p: string): boolean {
+export function isDir(p: string): boolean {
   try {
     return statSync(p).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+export function isFile(p: string): boolean {
+  try {
+    return statSync(p).isFile();
   } catch {
     return false;
   }

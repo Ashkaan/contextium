@@ -27,9 +27,9 @@
 
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { statSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { isFile } from "./trunk.ts";
 
 const THREAD = join(dirname(fileURLToPath(import.meta.url)), "thread.ts");
 
@@ -153,6 +153,161 @@ export function recordedReviewAuthors(authorThreadId?: string): { vendors: strin
 }
 
 /**
+ * Rows of one read-only query against T3's v2 database, run in a child `node` so
+ * that a caller started as `node x.ts` prints no SQLite warning (the pattern
+ * `recordedReviewAuthors` uses). `missing` when there is no v2 file to read.
+ * A child still running after `timeoutMs` is killed and reads as an error.
+ * T3_DB_TEST_STALL_MS (suites only) holds the child that long before it reads.
+ */
+function queryV2(
+  timeoutMs: number,
+  sql: string,
+  ...params: string[]
+): { rows: Record<string, unknown>[] } | "missing" | { error: string } {
+  const dbPath = t3Database(process.env.T3CODE_HOME || `${process.env.HOME}/.t3`);
+  if (!isFile(dbPath)) return "missing";
+  if (!isV2(dbPath)) return { rows: [] };
+  const child = spawnSync(
+    process.execPath,
+    [
+      "--disable-warning=ExperimentalWarning",
+      "--input-type=module",
+      "-e",
+      `
+    import {DatabaseSync} from 'node:sqlite';
+    const stall=Number(process.env.T3_DB_TEST_STALL_MS||0);
+    if (stall>0) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,stall);
+    const [file,sql,...params]=process.argv.slice(1); const db=new DatabaseSync(file,{readOnly:true});
+    console.log(JSON.stringify(db.prepare(sql).all(...params)));
+    db.close();
+  `,
+      dbPath,
+      sql,
+      ...params,
+    ],
+    { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout: timeoutMs },
+  );
+  if (child.error || child.signal) return { error: `cannot read ${dbPath}: no answer within ${timeoutMs} ms` };
+  if (child.status !== 0) {
+    const why = (child.stderr ?? "").split("\n").find((l) => /Error/.test(l)) ?? `exit ${child.status}`;
+    return { error: `cannot read ${dbPath}: ${why.trim()}` };
+  }
+  return { rows: JSON.parse(child.stdout) as Record<string, unknown>[] };
+}
+
+/** A payload_json field, NULL for a malformed payload rather than failing the query. */
+const payloadField = (path: string): string =>
+  `(case when json_valid(payload_json) then json_extract(payload_json, '${path}') end)`;
+
+/**
+ * The session lookup's budget. It runs inside the end-of-turn hook, which
+ * the wrapper stops at 10 s, after thread.ts has had up to 5 s; a stalled
+ * lookup must leave time for the check it falls back to.
+ */
+export const SESSION_LOOKUP_MS = 2_000;
+
+/**
+ * The T3 thread a harness session belongs to: T3
+ * records the harness's own session id — the Stop payload's `session_id` /
+ * `sessionId` — as `nativeThreadRef.nativeId` on the provider thread of the T3
+ * thread it runs (read live 2026-11-04 for Claude Code and Codex). Null for an
+ * empty or unknown id, no database, or the legacy file; an error for a database
+ * it cannot read or an id two threads claim.
+ */
+export function sessionThread(nativeId: string): string | null | { error: string } {
+  if (!nativeId) return null;
+  const r = queryV2(
+    SESSION_LOOKUP_MS,
+    `select distinct thread_id from main.orchestration_v2_projection_provider_threads
+     where ${payloadField("$.nativeThreadRef.nativeId")} = ? order by thread_id`,
+    nativeId,
+  );
+  if (r === "missing") return null;
+  if ("error" in r) return r;
+  const ids = r.rows.map((row) => String(row.thread_id));
+  if (ids.length > 1) return { error: `session ${nativeId} is recorded on ${ids.length} threads: ${ids.join(", ")}` };
+  return ids[0] ?? null;
+}
+
+export interface Helper {
+  title: string;
+  status: string;
+  delivery: string | null;
+  origin: string;
+}
+
+/** Statuses after which a helper does no more work. */
+const HELPER_DONE = new Set(["completed", "failed", "cancelled", "interrupted"]);
+/** Delivery states in which its result has reached the parent. */
+const HELPER_DELIVERED = new Set(["delivered", "acknowledged", "disposed"]);
+/**
+ * A parent turn holds a result handed to it once it has started — its
+ * `startedAt` is set, whatever status it is in now (running, waiting, ended)
+ * — except a turn rolled back, which may have taken the result with it. A
+ * turn cancelled, failed or interrupted before it started never read it (59,
+ * 44 and 6 such runs on 2026-11-05); a queued one has no `startedAt` yet.
+ */
+const UNDONE_TURN = new Set(["rolled_back"]);
+
+/**
+ * The helpers of a thread whose result has not reached it yet, oldest first
+ * — what a landing waits for. A helper is a T3
+ * child of the thread: delegated through T3 (`app_owned`) or started by the
+ * harness's own subagent tool (`provider_native`). It has reported back once
+ * its status is done AND its delivery state, when T3 sets one, is delivered;
+ * a native subagent has none, because T3 does not deliver it. A status or
+ * delivery state not named here counts as not reported back, so one T3 adds
+ * later cannot slip a close past a live helper.
+ *
+ * `claimed` is a result T3 has attached to a parent turn that has not ended:
+ * the message that starts that turn names the helper in
+ * `delegatedCompletion.taskIds`, and the state moves on only when the turn
+ * ends. Measured 2026-11-05 on this row's live walk — the result was in the
+ * parent's context and the row still read `claimed`; every `claimed` row that
+ * day belonged to a parent whose handing turn was running or queued. So a
+ * `claimed` result counts as reported back once its handing turn has started
+ * (a `startedAt`, and not rolled back — UNDONE_TURN): refusing it would refuse the close of the very turn that
+ * read the result, and nothing would prompt a second close. One whose turn is
+ * still queued, or with no handing message, has not reached the parent.
+ * Empty on the legacy file; an error for no database or one it cannot read.
+ */
+export function unfinishedHelpers(threadId: string): { helpers: Helper[] } | { error: string } {
+  const r = queryV2(
+    10_000,
+    `select ${payloadField("$.title")} as title, s.status, s.completion_delivery_state as delivery, s.origin,
+       (select case when json_valid(r.payload_json) and json_extract(r.payload_json, '$.startedAt') is not null
+                    then r.status end
+          from main.orchestration_v2_projection_messages m
+          join main.orchestration_v2_projection_runs r on r.run_id = m.run_id,
+          json_each(case when json_valid(m.payload_json) then m.payload_json else '{}' end,
+                    '$.delegatedCompletion.taskIds') j
+        where m.thread_id = s.thread_id and j.value = s.subagent_id
+        order by m.created_at desc limit 1) as handed
+     from main.orchestration_v2_projection_subagents s where s.thread_id = ? order by s.started_at, s.subagent_id`,
+    threadId,
+  );
+  if (r === "missing") return { error: "no T3 database" };
+  if ("error" in r) return r;
+  const helpers: Helper[] = [];
+  for (const row of r.rows) {
+    const status = String(row.status ?? "");
+    const delivery = row.delivery == null ? null : String(row.delivery);
+    const reached =
+      delivery === null ||
+      HELPER_DELIVERED.has(delivery) ||
+      (delivery === "claimed" && typeof row.handed === "string" && !UNDONE_TURN.has(row.handed));
+    if (HELPER_DONE.has(status) && reached) continue;
+    helpers.push({
+      title: row.title == null ? "" : String(row.title),
+      status,
+      delivery,
+      origin: String(row.origin ?? ""),
+    });
+  }
+  return { helpers };
+}
+
+/**
  * Node 22 and 24 print `ExperimentalWarning: SQLite is an experimental feature` on
  * stderr when node:sqlite loads, and callers read these programs as `2>&1` — a
  * reader may parse corrections.ts's window mode as JSON. A program
@@ -189,14 +344,6 @@ export async function loadSqlite(script: string): Promise<typeof import("node:sq
       { stdio: "inherit" },
     );
     process.exit(r.status ?? 2);
-  }
-}
-
-function isFile(p: string): boolean {
-  try {
-    return statSync(p).isFile();
-  } catch {
-    return false;
   }
 }
 

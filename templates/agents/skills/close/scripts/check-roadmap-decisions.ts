@@ -2,11 +2,15 @@
 // check-roadmap-decisions.ts — refuse a close that leaves anything open in a
 // ROADMAP row or a spec report it adds or changes.
 //
-// WHY. A close means the work is done: anything still open keeps the session
-// open. A close that printed what was open and landed anyway let work ride out
+// WHY. A close carries nothing meant for THIS session that is still undone:
+// the current row's steps, what it found that should be fixed, changes to its
+// work, expanded scope — anything not set for a later session by a date or a
+// row. A close that printed what was open and landed anyway let work ride out
 // unfinished: a row added as "blocked: the user rules whether the contrast fixes
 // extend past the first seven pages", with the question left at the bottom of
-// the reply, or a report reading "Not done, waiting on the user".
+// the reply, or a report reading "Not done, waiting on the user". Holding the
+// close on every ready `manual` row went too far the other way: it refused
+// every planning session that wrote a later step as a row.
 //
 // WHAT "OPEN" MEANS is defined once, in close/references/auto-close-gate.md
 // precondition (iii); this script implements the roadmap and report half, and
@@ -16,23 +20,27 @@
 // Status, Sub-spec or Depends on cell differs from the merge base's copy, is
 // judged; a row the push left alone in those three cells is not, so a reworded
 // Intent and another session's rows never hold this close. A judged row passes
-// when it is `done`, `closed: …` or `absorbed by …`; `planned` and not
-// `manual`, its spec written or not yet; `planned` and `manual` while a row
-// its Depends on names, here or in another project, is open; or a
-// `blocked:` watch whose leading date
-// (roadmap.ts watchDate), or a `blocked: until` wait whose release date
-// (roadmap.ts releaseDate), is today or later in local time. Anything else holds:
-// a Depends on entry naming no row; a ready `manual` step not set aside
-// `blocked: until <date>`, or a wait that names
-// the user (waiting on the user, whatever its date),
-// `in-progress` (half-built), a wait with no date or a past one, an unknown status. A `blocked:` status worded as the user's
-// decision (open-decision.ts, the words F9 uses) is refused with that wording
-// first, and not printed a second time.
+// when it is `done`, `closed: …` or `absorbed by …`; `planned`, `manual` or
+// not, its spec written or not yet (a row sets the step for a later session);
+// or a `blocked:` watch whose leading date (roadmap.ts watchDate), or a
+// `blocked: until` wait whose release date (roadmap.ts releaseDate), is today
+// or later in local time, whoever it names; or an `in-progress` row whose
+// Sub-spec is one land.ts names in LAND_HELD_SPECS — a spec this landing holds
+// for its live checks, whose row its --release sets `done` once every check
+// passes. Whether a landing owes a spec its checks is land.ts's to know (what
+// it already owes, what this push writes complete or changes); a declared check
+// alone owes nothing, so the list, not the spec's files, decides. Anything else
+// holds: a Depends on entry naming no row; any other `in-progress` row (the row
+// this session is working,
+// half-built); a wait with no date or a past one; an unknown status. A
+// `blocked:` status worded as the user's decision or ruling (open-decision.ts,
+// the words F9 uses), whatever its date, is refused with that wording first,
+// and not printed a second time.
 //
 // SPEC REPORTS. A `projects/**/specs/*/report.md` this branch changed is read
 // for lines it ADDS that leave something waiting on the user
-// (open-decision.ts parkedOnUser); a line the report already held is left
-// alone. And a report spec-state.ts reads as `partial` holds the close unless
+// (open-decision.ts parkedOnUser), whatever their date; a line the report
+// already held is left alone. And a report spec-state.ts reads as `partial` holds the close unless
 // the row naming its spec is `closed: …` or `absorbed by …`.
 //
 // Rows are read with roadmap.ts's listRows, the table's one parser, once over
@@ -45,6 +53,11 @@
 //                                              <ref> (merge-base diff, uncommitted
 //                                              edits and untracked files), from
 //                                              the cwd
+//
+// Env:
+//   LAND_HELD_SPECS — the specs land.ts holds this landing for, one
+//                     `projects/…/specs/NNN-name` per line, relative to the
+//                     cwd; unset or empty, none.
 //
 // Output (stdout): `N roadmaps checked, M open decisions`,
 //                  `R rows added or changed, O left open`,
@@ -77,14 +90,10 @@ import { fileURLToPath } from "node:url";
 import { namesUser, openDecisionWord, parkedOnUser } from "./open-decision.ts";
 import { exit, runToExit } from "../../../packages/cli-exit/cli-exit.ts";
 import { type DepResult, listRows, releaseDate, watchDate } from "./roadmap.ts";
+import { git } from "./trunk.ts";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const SPEC_STATE_TS = join(HERE, "spec-state.ts");
-
-function git(args: string[]): { ok: boolean; out: string } {
-  const r = spawnSync("git", args, { encoding: "utf8" });
-  return { ok: r.status === 0, out: r.stdout ?? "" };
-}
 
 type Row = { status: string; sub: string; dependsOn: string; deps: DepResult[] };
 
@@ -109,9 +118,18 @@ function statuses(roadmap: string, given?: Buffer): Map<string, Row> | null {
   return typeof r === "string" ? null : r;
 }
 
+/** The specs land.ts holds this landing for their live checks (LAND_HELD_SPECS). */
+const HELD_SPECS = new Set(
+  (process.env.LAND_HELD_SPECS ?? "")
+    .split("\n")
+    .map((p) => p.trim().replace(/\/+$/, ""))
+    .filter((p) => p !== ""),
+);
+
 /** Why a judged row holds the close and what clears it, or null when it may
- *  ride (auto-close-gate.md precondition (iii)). `today` is the local date. */
-function openKind({ status, sub, deps }: Row, today: string): string | null {
+ *  ride (auto-close-gate.md precondition (iii)). `today` is the local date;
+ *  `held` says whether land.ts holds this landing for the row's spec. */
+function openKind({ status, deps }: Row, today: string, held: boolean): string | null {
   const s = status.toLowerCase();
   if (s === "done" || /^closed:/.test(s) || /^absorbed by /.test(s)) return null;
   // A Depends on entry that names nothing never reads as a wait.
@@ -119,26 +137,18 @@ function openKind({ status, sub, deps }: Row, today: string): string | null {
   if (unresolved.length > 0) {
     return `depends on ${unresolved.join(", ")}, which names no row — fix its Depends on`;
   }
-  // A step for the user that cannot start yet — a row it depends on, here or
-  // in another project, is still open — is not waiting on them yet, and rides;
-  // once ready, it holds the close below.
-  if (sub === "manual" && s === "planned" && deps.some((x) => x.state === "open")) return null;
-  // A wait that names the user waits on their hands, whatever its date, as a manual
-  // row does — unless the manual row is set aside `blocked: until <date>`: nothing is
-  // theirs to do before then. Nothing sets it back on its own: once the date
-  // passes, `/project triage blocked` lists it and `unblock` there sets it `planned`.
-  const parked = sub === "manual" && releaseDate(status) !== "";
-  if ((sub === "manual" && !parked) || (/^blocked:/.test(s) && namesUser(status.replace(/^blocked:/i, "")))) {
-    return "a step waiting on the user — the session stays open until they have done it; then set the row `done` and close";
-  }
+  // A planned row, a step for the user included, is set for a later session.
   if (s === "planned") return null;
   if (s === "in-progress") {
+    if (held) return null;
     return "half-built — finish it, and set the row `done` if its report is complete; the session stays open until then";
   }
   if (/^blocked:/.test(s)) {
     // A watch's date, or the day a `blocked: until <date>` wait is released.
     const day = watchDate(status) || releaseDate(status);
     if (day === "") {
+      if (namesUser(status.replace(/^blocked:/i, "")))
+        return "a step for the user with no date — do it together before the close, or set it for a later session: `blocked: YYYY-MM-DD <what>` with the day, or a `planned` row";
       return "a wait with no date — write `blocked: YYYY-MM-DD <what>` with the day to check, or keep the session open until it clears";
     }
     if (day < today)
@@ -154,7 +164,7 @@ function main(): number {
     process.stderr.write("usage: check-roadmap-decisions.ts --since <ref>\n");
     return 2;
   }
-  const mb = git(["merge-base", "HEAD", args[1]]);
+  const mb = git(".", "merge-base", "HEAD", args[1] ?? "");
   if (!mb.ok) {
     process.stderr.write(`check-roadmap-decisions: no merge base between HEAD and ${args[1]}\n`);
     return 2;
@@ -162,8 +172,8 @@ function main(): number {
   const base = mb.out.trim();
   // A listing git could not make is not an empty one: read as empty, it judged
   // nothing and passed.
-  const diff = git(["diff", "-z", "--name-only", base, "--", "projects"]);
-  const others = git(["ls-files", "-z", "--others", "--exclude-standard", "--", "projects"]);
+  const diff = git(".", "diff", "-z", "--name-only", base, "--", "projects");
+  const others = git(".", "ls-files", "-z", "--others", "--exclude-standard", "--", "projects");
   if (!diff.ok || !others.ok) {
     process.stderr.write(`check-roadmap-decisions: could not list what changed since ${base} — git failed; re-run\n`);
     return 2;
@@ -171,6 +181,7 @@ function main(): number {
   const touched = [...diff.out.split("\0"), ...others.out.split("\0")];
   const changed = new Set(touched.filter((p) => /^projects\/.+\/ROADMAP\.md$/.test(p)));
   const reports = new Set(touched.filter((p) => /^projects\/.+\/specs\/[^/]+\/report\.md$/.test(p)));
+  // One line in the firing log the daily optimizer counts.
 
   const today = new Intl.DateTimeFormat("en-CA").format(new Date());
   let open = 0;
@@ -189,7 +200,7 @@ function main(): number {
       continue;
     }
     checked++;
-    const before = git(["show", `${base}:${path}`]);
+    const before = git(".", "show", `${base}:${path}`);
     const was = (before.ok ? statuses(path, Buffer.from(before.out)) : null) ?? new Map<string, Row>();
     for (const [id, row] of now) {
       const prior = was.get(id);
@@ -208,7 +219,11 @@ function main(): number {
           continue;
         }
       }
-      const kind = openKind(row, today);
+      const kind = openKind(
+        row,
+        today,
+        /^specs\//.test(row.sub) && HELD_SPECS.has(join(dirname(path), row.sub).replace(/\/+$/, "")),
+      );
       if (kind === null) continue;
       left++;
       process.stderr.write(
@@ -228,7 +243,7 @@ function main(): number {
     // The base's lines, counted, so a line the report already held is consumed
     // rather than read again; fenced blocks quote, they do not park.
     const was = new Map<string, number>();
-    const before = git(["show", `${base}:${path}`]);
+    const before = git(".", "show", `${base}:${path}`);
     if (before.ok) for (const l of before.out.split("\n")) was.set(l, (was.get(l) ?? 0) + 1);
     let fence = false;
     readFileSync(path, "utf8")
@@ -245,7 +260,7 @@ function main(): number {
         if (!words) return;
         parked++;
         process.stderr.write(
-          `${path}:${i + 1}: "${words}" leaves this waiting on the user — ask it in the reply as a numbered list, recommendation first, and halt; the close runs after they answer (auto-close-gate.md precondition (iii)). Something the user DOES keeps the session open until they have done it\n`,
+          `${path}:${i + 1}: "${words}" leaves this waiting on the user — ask it in the reply as a numbered list, recommendation first, and halt; the close runs after they answer (auto-close-gate.md precondition (iii)). Something the user DOES is done together before the close, or set for later as a roadmap row that says what the user does on that date (\`blocked: 2026-11-20 the user …\`)\n`,
         );
       });
   }

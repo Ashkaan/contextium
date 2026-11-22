@@ -36,7 +36,8 @@ Contextium rule level: {{RULES}}. {{RULES_SUMMARY}} Re-run the installer with
 - Before a change to something the user relies on, or a step for their hands, open with what they
   will notice and what stays the same, and say why each step is needed.
 - Ask as a short numbered list, recommendation first, each option labelled by the outcome the user
-  would see. Ask only what only the user can answer, as soon as it blocks progress, and batch
+  would see: every question numbered and its choices lettered (a, b, c), even when there is only one
+  question, so the user answers `1a` or `1a 2b`. Ask only what only the user can answer, as soon as it blocks progress, and batch
   independent questions. Before asking, read what is already there: what the user typed earlier
   in this session, then the repo.
 - MUST push back with better approaches when warranted; NEVER agree by default. Disagree in one
@@ -149,7 +150,11 @@ points here rather than restating them (one fact, one file).
 (below), and no other top-level key. The published validator, not this prose, is the list: a key it
 does not allow fails the check, whatever this section says; the check hands it the file without the
 `disable-model-invocation` line. `description` carries both what the skill does and when to use it,
-at most 1,024 characters; there is no separate trigger field. `allowed-tools` is one space-separated
+at most 1,024 characters; there is no separate trigger field. It holds nothing else: a sentence of
+purpose and the trigger phrases, never how the skill works (its steps, scripts, file paths, record
+formats), which is the body's — some harnesses load every listed skill's description into every
+session before the first message, so the least context is loaded before work starts.
+`allowed-tools` is one space-separated
 string. A YAML frontmatter uses block form only — the validator rejects flow syntax such as `[a, b]`
 and `{k: v}`.
 
@@ -188,8 +193,8 @@ and concise and effective. Judgment stays in the body; data comes from a script.
 level deep from `SKILL.md`.
 
 **The check.** `node --experimental-strip-types .agents/checks/check-skills.ts --all` holds every
-folder to the above; `land.ts` runs it with `--since` over the skill folders the session's worktree
-changed before each commit, and `/author`'s verify step runs it on the skill it scaffolded. It uses
+folder to the above, and `/author`'s verify step runs it on the skill it scaffolded; the close no
+longer runs it, since a skill's shape is checked where the skill is written. It uses
 the published validator (`skills-ref`) when that is installed and a built-in reading of the same
 rules, in the validator's wording, when it is not.
 <!-- /contextium -->

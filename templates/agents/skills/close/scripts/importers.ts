@@ -53,6 +53,12 @@ export function sharedUnit(p: string): string | null {
   return (SHARED_TOPS as readonly string[]).includes(f[0] ?? "") && f.length >= 3 ? `${f[0]}/${f[1]}` : null;
 }
 
+/** The unit a file belongs to: `apps/<domain>/<app>`, or its sharedUnit; null elsewhere. */
+export function unitOf(p: string): string | null {
+  const f = p.split("/");
+  return f[0] === "apps" && f.length >= 4 ? f.slice(0, 3).join("/") : sharedUnit(p);
+}
+
 /** The repo-relative files a relative specifier in <from> can name. */
 function targetsOf(from: string, spec: string): string[] {
   const r = posix.normalize(posix.join(posix.dirname(from), spec));

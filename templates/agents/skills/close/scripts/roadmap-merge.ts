@@ -51,19 +51,12 @@
 //   .agents/skills/close/scripts/land.ts      (registers the driver before merging)
 
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { exit, runToExit } from "../../../packages/cli-exit/cli-exit.ts";
-
-const isFile = (p: string): boolean => {
-  try {
-    return statSync(p).isFile();
-  } catch {
-    return false;
-  }
-};
+import { isFile } from "./trunk.ts";
 
 /** awk's records of a file, one char per byte. */
 function records(path: string): string[] {

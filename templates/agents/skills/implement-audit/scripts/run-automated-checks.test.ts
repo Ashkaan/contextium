@@ -176,6 +176,45 @@ test("case2 bad-sha-fails", () => {
   assert.notEqual(runScript(repo, fakebin, ["--session-base", "not-a-sha"]).rc, 0, "expected non-zero on bad SHA");
 });
 
+test("a snapshot tree checks only the current worktree delta, including index-only files", () => {
+  const repo = makeRepo(),
+    fakebin = mktemp();
+  writeFileSync(join(repo, "snapshot-only.ts"), "export const value = 1;\n");
+  git(repo, "add", "snapshot-only.ts");
+  const tree = git(repo, "write-tree");
+  setupFakeTools(fakebin);
+  setupFakeLint(repo, 0);
+  const unchanged = runScript(repo, fakebin, ["--session-base", tree]);
+  assert.equal(unchanged.rc, 0, unchanged.out);
+  assert.match(unchanged.out, /PASS: lint \(0 files\)/, "a file already in the snapshot is not new work");
+  writeFileSync(join(repo, "snapshot-only.ts"), "export const value = 2;\n");
+  const changed = runScript(repo, fakebin, ["--session-base", tree]);
+  assert.equal(changed.rc, 0, changed.out);
+  assert.match(changed.out, /PASS: lint \(1 files\)/, "an unstaged edit beyond the snapshot must be checked");
+});
+
+test("--paths-file checks only the listed changed files; an unreadable list checks nothing and fails", () => {
+  const repo = makeRepo(),
+    fakebin = mktemp();
+  setupFakeTools(fakebin);
+  setupFakeLint(repo, 0);
+  const base = head(repo);
+  writeFileSync(join(repo, "mine.ts"), "export const mine = 1;\n");
+  mkdirSync(join(repo, "upstream"), { recursive: true });
+  writeFileSync(join(repo, "upstream/theirs.ts"), "export const theirs = 1;\n");
+  writeFileSync(join(repo, "upstream/more.ts"), "export const more = 1;\n");
+  const list = join(mktemp(), "paths");
+  writeFileSync(list, "mine.ts\0listed-but-unchanged.ts\0");
+  const narrowed = runScript(repo, fakebin, ["--session-base", base, "--paths-file", list]);
+  assert.equal(narrowed.rc, 0, narrowed.out);
+  assert.match(narrowed.out, /PASS: lint \(1 files\)/, "only mine.ts is this branch's; the upstream files are not");
+  const whole = runScript(repo, fakebin, ["--session-base", base]);
+  assert.match(whole.out, /PASS: lint \(3 files\)/, "without a list every changed file is checked, as before");
+  const missing = runScript(repo, fakebin, ["--session-base", base, "--paths-file", join(repo, "absent")]);
+  assert.notEqual(missing.rc, 0);
+  assert.match(missing.out, /--paths-file could not be read: .*nothing was checked/);
+});
+
 // ── Case 3: 0 files changed → all checks emit PASS / nothing-to-check ──
 test("case3 zero-files-all-pass", () => {
   const { repo, fakebin } = fixture();

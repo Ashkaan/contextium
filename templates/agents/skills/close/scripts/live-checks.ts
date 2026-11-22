@@ -98,6 +98,18 @@ import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
+/** Seconds a command check signalled at its timeout has to finish its own
+ *  cleanup before the KILL. The longest any check needs is access-probe's
+ *  taking back the access it was given (its CLEANUP_BUDGET_MS, 255 s: three
+ *  Cloudflare calls, each retried in full); the margin is for the process. */
+export const LIVE_CHECK_GRACE_S = 300;
+
+/** timeout(1)'s arguments for one command check: it signals the command's
+ *  whole process group at `timeoutS`, then KILLs it LIVE_CHECK_GRACE_S later. */
+export function liveCheckArgv(timeoutS: number, body: string): string[] {
+  return ["-k", String(LIVE_CHECK_GRACE_S), String(timeoutS), "bash", "-c", `set -euo pipefail\n${body}`];
+}
+
 export type LiveCheck = { id: string; target: string; kind: "command" | "evidence"; body: string; line: number };
 export type Parsed = { checks: LiveCheck[]; warnings: string[]; errors: string[] };
 export type Revision = { deploymentId: string; sourceCommit: string | null };

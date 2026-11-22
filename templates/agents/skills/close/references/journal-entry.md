@@ -117,12 +117,12 @@ summary and nothing else.
 | `**Decisions:**` | links to where a choice lives, and `rejected:` lines — § Decisions. Nothing else |
 | `**Corrections:**` | the user's verbatim words, one quoted bullet per row — § Corrections |
 | `**Lessons:**` | what surprised, and what to do differently |
-| `**Blocked:**` | what waits on someone or something else, checked on a date (`wait:`) — never on the user's hands or their answer; § Blocked |
-| `**Root-Cause Status:**` | for an incident: `<status> — <detail>`, with the same status in the front matter key |
+| `**Blocked:**` | what waits, checked on a date (`wait:`) — never the user's answer, never undated; § Blocked |
+| `**Root-Cause Status:**` | for an incident: `<status> — <detail>`, last in the entry, with the same status in the front matter key |
 
 **Retired.** `**Next:**` — outstanding project work is the project's
 `ROADMAP.md`, the one list of what is left, and the close prints the next
-command from it; work waiting on the user keeps the session open (`auto-close-gate.md` precondition (iii)). `**Issues:**` —
+command from it; this session's own undone work keeps the session open (`auto-close-gate.md` precondition (iii)). `**Issues:**` —
 an investigation's results are `**Findings:**`. The check refuses both, naming
 where the content belongs. One-off labels (`Verification`, `Result`,
 `Machine review`, …) fold into Changes, Findings or Lessons.
@@ -131,21 +131,24 @@ where the content belongs. One-off labels (`Verification`, `Result`,
 
 Each bullet is one line, and there is one kind:
 
-- `- wait: <YYYY-MM-DD> <on what>` — someone or something else, checked on
-  that date: a vendor's quote, a person's reply, data that does not exist yet.
+- `- wait: <YYYY-MM-DD> <on what>` — someone or something, checked on that
+  date: a vendor's quote, a person's reply, data that does not exist yet, or a
+  step of the user's set for that day.
 
-A close means the work is done (`auto-close-gate.md` precondition (iii) is the
-one definition of what may ride it). So nothing here waits on the user. A step
-for the user's hands — a drafted email they send, a console click, a
-signature — keeps the session open until they have done it; a choice they have
-not made — which option, whether to, their go-ahead for infrastructure or
-money — is asked in the reply as a numbered list and the run halts. Neither is
-written here.
+A close carries nothing meant for this session that is still undone
+(`auto-close-gate.md` precondition (iii) is the one definition of what may
+ride it). A step for the user's hands with no date — a drafted email they
+send, a console click, a signature — is done together before the close, or
+set for a later session with its date here or as a `planned` roadmap row (a
+task on their task list only when they ask for one). A choice they
+have not made — which option, whether to, their go-ahead for infrastructure or
+money — is asked in the reply as a numbered list and the run halts, whatever
+its date. A question is never written here.
 
-The check refuses (F12) an `act:` bullet, a `wait:` bullet that names the user
-(the user, the owner, you, or the first name in `git config user.name` —
-`open-decision.ts`; it waits on their hands, whatever its date), and a `wait:`
-bullet whose plain text holds no calendar date (`YYYY-MM-DD`, standing alone) on or after the
+The check refuses (F12) an `act:` bullet; a `wait:` bullet naming the user
+unless the date that leads it (`- wait: <YYYY-MM-DD> the user …`) is on or
+after the entry's — a later date elsewhere in it is another thing's; and any
+other `wait:` bullet whose plain text holds no calendar date (`YYYY-MM-DD`, standing alone) on or after the
 entry's own `date`. It refuses (F9) an untyped bullet, a `decide:` bullet, and
 a `wait:` bullet whose words are a decision: `?`, whether, choose, choice,
 go-ahead, your call — and decide, decision, ruling, sign-off, approve,
@@ -248,8 +251,11 @@ a Findings bullet worth more than a sentence in Changes.
   `**Corrections:**` worded as waiting on the user ("waiting on the user",
   "pending the owner's call", "the user to decide", "until you answer" —
   `open-decision.ts` `parkedOnUser`, which also reads the first name in
-  `git config user.name` as the user's), and `check-roadmap-decisions.ts`
-  refuses the same wording in lines a close adds to a spec's `report.md`.
+  `git config user.name` as the user's), whatever its date — a step the user
+  does on a later day is a Blocked `- wait: <date> the user …` bullet instead —
+  and
+  `check-roadmap-decisions.ts` refuses the same wording in lines a close adds
+  to a spec's `report.md`.
 - **`root_cause_status:`** — optional; when present, one of (checked):
   `fixed` | `unknown-pending-verification` | `deferred-by-user-directive` | `n/a`.
   `fixed` means the cause is gone; `unknown-pending-verification`
@@ -302,6 +308,8 @@ node --experimental-strip-types .agents/skills/close/scripts/corrections.ts --fu
 ```
 
 One `HH:MM <TAB> text` row per thing the user said, in the order they said it.
+Anything shaped like a key, token or sign-in code prints as `[redacted <kind>]`
+(the script's header says why); quote it that way, and never recover the value.
 A close never needs the third mode, `--since <iso> --until <iso> --json`, which
 returns the same rows for every T3 thread in a time window as one JSON object
 (its shape is in the script's header) for readers of many threads at once.

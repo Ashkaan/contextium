@@ -14,9 +14,9 @@ metadata:
 - **The worktree is mandatory.** Phase 0.5 sets `${WORKTREE_DIR}`; every edit MUST target absolute paths under it. The shared-checkout guard (`.agents/hooks/check-shared-checkout-write.sh`) refuses writes into the checkout other sessions share. Do NOT edit in the main repo. A row whose code is in ANOTHER repo (a product) adds a second worktree, of that repo, and every edit to its code and every check and review of it target that one — § "A row whose code is in another repo" below.
 - **The check ORDER is a script, not a table.** Phase 4 calls `scripts/validate.ts`, which runs lint → tests → quality → review → re-lint-if-dirty in one fixed sequence. You do not choose the order and there is no argument that spells "review before lint". The table that used to live here put the code review at layer 4, ahead of E2E — so a clean review landed on a session that had run none, and the old session-only audit marker then no-op'd the real review when it finally came (a review receipt is now reused only for the content it covered).
 - **E2E (Phase 4) is a hard gate, and it always runs.** Static checks + unit tests are never sufficient. Re-read the spec's E2E walk (tasks.md's test tasks) and execute every step against a running app before claiming complete — once after `--phase checks`, and again every time a later phase prints `NEED_E2E=1`. An unchanged review does not buy a skipped E2E.
-- **If it is a UI, `/qa` runs fully (Phase 4.8).** `validate.ts --phase qa-list` says whether a web app changed; that is a lookup, not a judgment. Any target it prints gets a complete `/qa` — the installed impeccable, screenshots, sight-check, visual review — and `--require-qa` refuses the close until every target has a marker for the tree that is about to ship.
+- **If it is a UI, `/qa` runs fully before the first code review (Phase 4.6).** `validate.ts --phase qa-list` says whether a web app changed; that is a lookup, not a judgment. Any target it prints gets a complete `/qa` — the installed impeccable, screenshots, sight-check, visual review — and `--require-qa` refuses the close until every target has a marker for the tree that is about to ship.
 - **Mechanism-match (Phase 4.5) is a hard gate.** Before reporting done, write the one-line verification — agreed mechanism vs. what the diff did. If they don't match, fix the diff or surface the divergence; never paper over it.
-- **implement-audit (Phase 4.7) is a hard gate.** The built diff gets its ONE machine review via `/implement-audit` — the single code reviewer for the repo, the diff-side mirror of `/spec-audit`. Fix every ready finding in-session; proceed only on a clean pass. This writes the `implement-audit:` line the report carries.
+- **implement-audit (Phase 4.7) is a hard gate.** The built diff gets its ONE machine review via `/implement-audit` — the single code reviewer for the repo, the diff-side mirror of `/spec-audit`. Fix every blocking finding inside this row (phase-4.7 § findings-stay-in-row) and handle cosmetic suggestions by the audit skill's nit rule. This writes the `implement-audit:` line the report carries.
 - **Auto-close (Phase 6) is the loop tail.** On clean completion `/implement` invokes `/close` itself per `close/references/auto-close-gate.md` — the user does not type `/close`. It HALTS instead only on a deferral or a mechanism-match FAIL.
 - **Golden Rule:** if validation fails, fix it before moving on. Never accumulate broken state.
 
@@ -69,6 +69,16 @@ repo gets a worktree of its own, and the build and its audit read IT:
 - Every `code-review.ts --snapshot` runs, in place of the `$WORKTREE_DIR` form, as
   `CODE_REVIEW_LOOP_ID="<audit-owner thread id>" CODEX_REVIEW_REPO="$PRODUCT_WT" node --experimental-strip-types .agents/skills/review/code-review.ts --snapshot`.
 - `/implement-audit` takes the same `$PRODUCT_WT` (its own steps say where).
+- Each repo the row changes gets its own review-coverage declaration (phase-5
+  says what one holds), written before that repo's first review: `report.md`
+  for this repo, and `report-<product repo name>.md` beside it in the spec
+  folder for the product, its block's paths relative to `$PRODUCT_WT`. One
+  block cannot serve both, because its paths resolve in the repo under
+  review. Every review of a repo — the audit, `qa-revalidate`, any later
+  round — passes that repo's file as `--report`, never the other's. A
+  recorded run kept in this repo's `evidence/` is named from the product's
+  file with `"repo": "$WORKTREE_DIR"`, on a claim's `negativeTest` as on a
+  dependency. `--phase report` still reads `report.md`.
 
 Without these, every command defaults to this repo's worktree, which holds only
 the spec: the checks pass over nothing and the review reads the wrong diff,
@@ -119,6 +129,7 @@ NAME; the rest of this skill uses these names:
 | the simplest shape | plan.md `### Simplest shape` |
 | the behavior contract | spec.md `## User Scenarios & Testing`, `## Requirements` |
 | the boundary cases | spec.md `### Edge Cases` |
+| the supported inputs | spec.md `### Supported inputs` |
 | the acceptance commands | spec.md `### Acceptance` |
 | the E2E walk (hard gate) | tasks.md's test tasks |
 | the tasks | tasks.md's task lines |
@@ -203,6 +214,7 @@ not there.
 ### 3.2 Implement
 
 - Read the **MIRROR** file reference from the patterns to mirror (plan.md `### Patterns to follow`) and understand the pattern
+- Write the supported inputs' tests first and see them fail (Phase 4 § Write tests)
 - Make the change as specified in the SPEC
 - **Check integration**: does your change connect correctly to adjacent code? Imports resolve? Callers/callees still work? Data flows correctly across boundaries?
 
@@ -261,13 +273,14 @@ right and this file is the bug (§ Critical says why the order is a script).
 | `NEED_E2E=1` | the tree moved, so the E2E walk has to be done again. `--phase checks` always prints this — the first E2E is unconditional. |
 | `NEED_FALLBACK_REVIEW=1` | no independent reviewer answered (`code-review.ts` exit 3), and the phase exits 3: the review is **pending**, not passed. Run `.agents/agents/implement-audit-reviewer.md` in a fresh context on the same diff, save its output to a file as it is (its verdicts and its "Zero findings." line are read; so are triage lines with `NO_FINDINGS` — an empty file is a review that did not happen), and run `validate.ts --fallback-review <file>` — its exit 0 is the pass, its exit 1 the findings to fix. Record the line with `claude-fallback (fresh context, NOT independent)`. Weaker, not failed. |
 
-The remaining phases, in the order the script enforces them: **E2E** (below) →
-**phase-4.5** mechanism-match → **phase-4.7** `/implement-audit` (which owns the review driver) → **phase-4.8**
-`/qa` if the diff touched a UI → phase-5.
+The remaining phases: **E2E** (below) → **phase-4.5** mechanism-match →
+**phase-4.6** `/qa` if the diff touched a UI → **phase-4.7** `/implement-audit` →
+**phase-4.8** confirm QA still covers the final tree → phase-5.
 
 ### Write tests
 
 You MUST write tests for new code:
+- **The supported inputs come first.** Each example under spec.md `### Supported inputs` becomes a test with that example as its fixture, and its expected result as the assertion, written and run before the code that handles it (Phase 3.2), so its first run is the red one. The fallback for anything else gets a test too; a `Not covered:` item gets none.
 - Every new function gets at least one test
 - Error cases and boundary cases get tests
 - Update existing tests if behavior changed
@@ -324,6 +337,14 @@ verify against that run. Wait only for what a run cannot produce on demand:
 
 The user would rather see the run now than be told to come back tomorrow.
 
+What remains on that list never holds the close, and is never a live check.
+Prove the changed behavior now with what can be run — a test, a replay of real
+inputs, a triggered run — land it, and set the outside event as a dated watch
+row in the project's `ROADMAP.md` (`blocked: <YYYY-MM-DD> <what to look for>`),
+which rides the close. Its report says that part is not yet seen. A live check
+is only what the deployed thing answers when asked: a build held for incoming
+traffic or a market forecast is a build that never lands.
+
 **This is a hard gate.** Static checks + unit tests alone are never sufficient.
 
 ## Phase 4.5 — MECHANISM-MATCH GATE (hard gate) (phase-4.5-mechanism-match)
@@ -350,35 +371,21 @@ Common drift patterns to watch for:
 
 If the Input is paraphrased rather than verbatim, the front-gate already locked the mechanism in Clarifications — use that as the source of truth. If neither captures the mechanism cleanly, that itself is spec drift to surface before claiming done.
 
-## Phase 4.7 — IMPLEMENT-AUDIT (hard gate) (phase-4.7-implement-audit)
-
-> **⚠️ Do NOT proceed to Phase 5 until `/implement-audit` returns a clean pass.**
-
-The code is built, validated, and mechanism-matched. Now it gets its ONE machine review — `/implement-audit`, the single code reviewer for the whole repo. This is the diff-side mirror of the SPEC-side `/spec-audit`: each artifact the loop produces gets exactly one machine reviewer, fired automatically by the producer.
-
-Write the report's review-coverage block first (phase-5 says what it holds), then invoke /implement-audit once, passing this worktree, BASE_SHA, scope, that report's path and verified original authors (.agents/skills/review/SKILL.md § Where things are found). That skill owns the review driver, snapshots, fix rounds and trailer. Do not also call validate.ts --phase review here: doing both spends two reviews on the same work.
-
-For a product worktree, pass PRODUCT_WT and its merge-base as described above. Preserve all authors through fixes and the later QA review. The audit runs deterministic checks before each vendor call, reviews only fixes after round 1, and sends NEED_E2E=1 back to the E2E walk. Fix every ready finding in this session.
-
-When no independent vendor can answer (most installs have one model CLI), the review driver exits 3 with `NEED_FALLBACK_REVIEW=1`: the review is pending, not passed. `/implement-audit` § step-2 runs the implement-audit-reviewer agent in a fresh context and records its reply with `validate.ts --fallback-review <file>`, as `claude-fallback (fresh context, NOT independent)` — a weaker review the receipt and the report both say is not independent. `--phase qa-revalidate` does the same for /qa's edits.
-
-The reviewer reads a **blast-radius pack** alongside the diff — who imports each changed file, what it imports, and who calls each symbol the diff changed (`.agents/skills/review/blast-radius.ts`). That is the whole-repo context a hosted review bot sells, computed per review from this worktree. It fails open: a missing packer costs the review its context and nothing else.
-
-Proceed to Phase 5 only on a clean audit pass. The `implement-audit:` line goes into `report.md` § Validation Results at Phase 5; nothing reads it off a commit — a trailer is a record, not a gate.
-
-## Phase 4.8 — QA IF IT IS A UI (hard gate) (phase-4.8-qa-if-ui)
+## Phase 4.6 — QA IF IT IS A UI (hard gate) (phase-4.6-qa-if-ui)
 
 > **⚠️ `/close` does NOT run while `--require-qa` exits 1.**
+
+Write the review-coverage block and save its evidence before QA. Phase 5
+defines what it holds. The final QA snapshot includes those records.
 
 Whether a UI changed is a **lookup**, not a judgment you make from the file
 paths:
 
 ```bash
-PRE_QA=$(CODE_REVIEW_LOOP_ID="<audit-owner thread id>" CODEX_REVIEW_REPO="$WORKTREE_DIR" node --experimental-strip-types .agents/skills/review/code-review.ts --snapshot)
 node --experimental-strip-types .agents/skills/implement/scripts/validate.ts --repo "$WORKTREE_DIR" --phase qa-list --base "$BASE_SHA"
 ```
 
-For a row whose code is in another repo, every snapshot here and below takes
+For a row whose code is in another repo, every snapshot in the QA phases takes
 `CODEX_REVIEW_REPO="$PRODUCT_WT"` and every `validate.ts` call `--repo
 "$PRODUCT_WT"` (§ "A row whose code is in another repo") — the UI that changed
 is in that repo, and `qa-list` run against this one finds none.
@@ -397,43 +404,99 @@ consumers through `/qa`. A
 detector that CRASHES is a HALT, never "not web" — reading a failure as "no UI
 here" is how a UI ships with no QA and a green run.
 
-**Zero `QA_TARGETS` lines** → skip `/qa`, record `qa: skipped-not-web` in the
-report, go to phase-5.
+**No nonempty `QA_TARGETS` values** → skip `/qa`, record `qa: skipped-not-web` in the
+report, go to phase-4.7.
 
 **One or more** → run `/qa --before <target>` on each, to COMPLETION. "Fully"
 means all of it: `/qa`'s own `impeccable-detect.ts` against the live page and
 its fixes, then screenshots, then the sight-check, then the fresh-context visual
 review. That script runs the `impeccable` npm shim, which the script installs
-if it is missing from PATH; there is no skill folder. Do not pin impeccable, do not
-skip the detect step, and do not let the visual reviewer stand in for it. Then:
+if it is missing from PATH and upgrades when a newer version is published; there is no skill folder. Do not pin impeccable, do not
+skip the detect step, and do not let the visual reviewer stand in for it.
+
+If QA edits source, rerun `--phase checks`, walk the E2E steps, check
+mechanism-match, and update the review-coverage evidence before QA takes its
+final snapshot. Proceed to phase-4.7 on the tree QA marked.
+
+## Phase 4.7 — IMPLEMENT-AUDIT (hard gate) (phase-4.7-implement-audit)
+
+> **⚠️ Do NOT proceed to Phase 5 until `/implement-audit` returns a clean pass.**
+
+The code is built, validated, and mechanism-matched. Now it gets its ONE machine review — `/implement-audit`, the single code reviewer for the whole repo. This is the diff-side mirror of the SPEC-side `/spec-audit`: each artifact the loop produces gets exactly one machine reviewer, fired automatically by the producer.
+
+Use the review-coverage block prepared in phase-4.6. Invoke /implement-audit once, passing this worktree, BASE_SHA, scope, that report's path and verified original authors (.agents/skills/review/SKILL.md § Where things are found). That skill owns the review driver, snapshots, fix rounds and trailer. Do not also call validate.ts --phase review here: doing both spends two reviews on the same work.
+
+For a product worktree, pass PRODUCT_WT and its merge-base as described above. Include authors of any QA fixes in the writer set and preserve all authors through fixes. The audit runs deterministic checks before each vendor call, reviews only fixes after round 1, and sends NEED_E2E=1 back to the E2E walk. Fix every blocking finding in this session.
+
+When no independent vendor can answer (most installs have one model CLI), the review driver exits 3 with `NEED_FALLBACK_REVIEW=1`: the review is pending, not passed. `/implement-audit` § step-2 runs the implement-audit-reviewer agent in a fresh context and records its reply with `validate.ts --fallback-review <file>`, as `claude-fallback (fresh context, NOT independent)` — a weaker review the receipt and the report both say is not independent. `--phase qa-revalidate` does the same for /qa's edits.
+
+Proceed to Phase 4.8 only on a clean audit pass. The `implement-audit:` line goes into `report.md` § Validation Results at Phase 5; nothing reads it off a commit — a trailer is a record, not a gate.
+
+### Every finding is fixed inside this row (findings-stay-in-row)
+
+This is the one statement of where a finding goes; `/implement-audit` and `/qa`
+point here. A row is an outcome the user would notice
+(`.agents/skills/project/SKILL.md` § think-step-3.6-row-split), and what its review and
+its QA find is part of building it. Every valid finding within the row's
+outcome that describes a defect — must-fix, should-fix, P0 to P3 — is fixed in
+this row before it lands. For cosmetic review suggestions, follow
+`.agents/skills/implement-audit/SKILL.md` step 4. A row named for findings ("fixes from
+R4's QA", "R23: deck fixes at projector and tablet sizes (from R17's QA)") is
+never created: a dependency sweep planned as nine rows grew to 25 that way, each follow-up paying for its own plan, plan review, build and
+review rounds. A reviewer's `IDEA:` line is not a finding: it is something the
+spec did not ask for, and it goes to Phase 5 § Not built, never into this
+row's fixes. A `DISPROVED:` blocker is settled, and is recorded there too. The
+cases:
+
+- **Zero, one, or many defects of mixed severity**: all are fixed and
+  re-validated before Phase 5; severity orders the work, it never schedules any
+  of it for later.
+- **A finding outside the row's outcome** (a page or app this row did not
+  touch), which is what the driver's `NOTED:` lines are: it is a new outcome.
+  File it in the project that owns that page, as a
+  row named for what the user would notice and passing the row-split test, or
+  fix it here when that is smaller than filing it; ask the user only when no project owns
+  it. It is never a "fixes from Rn" row in this project. Its § Not built line
+  says which.
+- **A fix too large for this row** (a redesign): it becomes a row of its own
+  only when it is a new outcome the user would notice, named as that outcome.
+  Otherwise it is this row's work, and the row is not done until it is.
+- **A finding in a file another open row owns**: this row does not land until
+  the fix is made and validated — here, or by the owning thread after you
+  coordinate with it — and the report's Deviations says which, naming the
+  commit or thread.
+- **A fix blocked on someone else** (a vendor's patch, a third party's reply):
+  first look for a fix this row can make itself — a workaround, a version pin,
+  a patch carried in the repo, another library. That is a technical call, and
+  usually the answer. When none exists, this row is the one that waits: its
+  code does not land while the finding is open, because the review receipt
+  cannot approve it and `land.ts` refuses unapproved content whatever the row
+  says. The close holds, and the reply says what the fix waits on and the date
+  it is expected, when one is known. Never move the fix to a new row, never
+  invent a date.
+
+Phase 5's "narrow the spec" route moves spec scope that was never built; it
+never carries a finding.
+
+## Phase 4.8 — CONFIRM QA COVERS THE FINAL TREE (phase-4.8-final-qa)
+
+Rerun the phase-4.6 target lookup on the audited tree. If it lists UI targets,
+save the nonempty target paths without their `QA_TARGETS=` prefixes, one per
+line, and check their markers:
 
 ```bash
-CODE_REVIEW_LOOP_ID="<audit-owner thread id>" POLICY_CHAIN_AUTHOR_THREAD_ID="<writing thread id>" POLICY_CHAIN_AUTHOR_VENDORS="<all writer providers>" \
-node --experimental-strip-types .agents/skills/implement/scripts/validate.ts --repo "$WORKTREE_DIR" --phase qa-revalidate --since "$PRE_QA" \
-  --report "$WORKTREE_DIR/<project-folder>/specs/NNN-name/report.md"
-POST_QA=$(CODE_REVIEW_LOOP_ID="<audit-owner thread id>" CODEX_REVIEW_REPO="$WORKTREE_DIR" node --experimental-strip-types .agents/skills/review/code-review.ts --snapshot)
+AUDITED_TREE=$(CODE_REVIEW_LOOP_ID="<audit-owner thread id>" CODEX_REVIEW_REPO="$WORKTREE_DIR" node --experimental-strip-types .agents/skills/review/code-review.ts --snapshot)
 node --experimental-strip-types .agents/skills/implement/scripts/validate.ts --repo "$WORKTREE_DIR" --require-qa \
-  --targets-file <the QA_TARGETS list> --tree "$POST_QA"
+  --targets-file <the QA_TARGETS list> --tree "$AUDITED_TREE"
 ```
 
-`/qa` fixes things, and those fixes are code nobody reviewed — `qa-revalidate`
-re-runs layers 1+2 **over what `/qa` moved** (not over `--scope`: its edits are
-routinely unstaged or untracked), then reviews them through the same review
-path phase-4.7 uses, and prints `NEED_E2E=1`. When `/qa` moved only records
-the review receipt still covers the content and no review call is made;
-anything else it moved is reviewed against the receipt before it can approve
-the content again. **One** qa-revalidate round: still dirty, or still
-`NEED_FIX=1`, is a HALT. That round spends the qa bucket, not the build one —
-the implementation fix loop can have spent all its rounds, and a post-QA
-review that returns "ceiling reached" without calling a vendor would ship
-`/qa`'s own source edits unreviewed behind a note. When several `/qa` passes
-spend that bucket too, `qa-revalidate` runs the one `--final` review of the
-newest edits, as phase-4.7 does; a final already spent is the HALT.
-
-`--require-qa` then checks that every target has a `/qa` marker keyed on the tree
-that is about to ship. A marker is written only by `/qa` itself, only on full
-completion — never by hand. Because the key is the tree, a later `/qa` that
-edited source invalidates an earlier target's marker, and that target runs again.
+If a target has no marker for that tree, run its QA again. If that QA edits
+source, run `validate.ts --phase qa-revalidate --since "$AUDITED_TREE"` with
+the same repo and coverage report as the audit. Add any writers of the new QA
+fixes to the author set. Follow its fix and E2E results, then repeat this phase
+on the resulting tree.
+A marker is written only by `/qa` itself at full completion. If a later edit
+invalidates another target's marker, that target runs again.
 
 ## Phase 5 — REPORT (phase-5-report)
 
@@ -442,7 +505,7 @@ Write `report.md` INSIDE the spec folder, `specs/NNN-name/report.md`, with
 
 **The frontmatter is not decoration — it is how every later reader knows whether this spec is finished.** `spec-status:` is `complete` only when nothing in the spec is still owed; anything else (a slice done, code done but not shipped, a task list half-run, a rejected approach) is `partial`. `close/scripts/spec-state.ts` reads it — for a folder, ONLY that folder's `report.md` frontmatter counts — and `/close`, `/project` and this skill's own spec resolution all read spec-state. Asking the filesystem "does `<name>-report.md` exist?" instead calls a SPEC finished the moment any report is filed under its exact name, and unstarted forever when the report is named for the slice it covered.
 
-**The review-coverage block is written before phase-4.7, not here.** The
+**The review-coverage block is written in phase-4.6.** The
 report's one `<!-- review-coverage:v1 -->` … `<!-- /review-coverage -->` block
 declares what the independent review must check: the entry points that reach
 the changed code, the unchanged files whose assumptions it relies on (callers,
@@ -479,15 +542,57 @@ gets `not-applicable — <why>`; a fixture that changes an expected result needs
 the excerpt. Never write the line without having seen the failure.
 
 **The roadmap row is not yours to finish.** Phase 0.5 set it `in-progress`;
-`/close` sets it `done` once `spec-state.ts` reads your report as `complete`,
-and re-derives the README's `next:`. A `partial` report does not land: the
+`/close` sets it `done` once `spec-state.ts` reads your report as `complete`
+(a spec with live checks: once its `--release` has proved them), and
+re-derives the README's `next:`. A `partial` report does not land: the
 close refuses a half-built piece (`.agents/skills/close/references/auto-close-gate.md`
-precondition (iii)). Finish the spec; or narrow it — move what was not built
+precondition (iii)). Finish the spec; or narrow it — move spec scope that was
+not built (never a review or QA finding: § findings-stay-in-row)
 out of spec.md and tasks.md into a new `planned` row's Intent (Sub-spec `—`
 passes the close; what Intent holds is the ROADMAP template's rule,
 `.agents/skills/project/references/templates/ROADMAP.md`), re-run `/spec-audit` on the narrowed folder, and only then
 write the report `complete`; or, when the approach is dropped, set the row
 `closed: <why>`. Do not edit ROADMAP.md's Status otherwise.
+
+### Not built, and the improvements row
+
+Nothing a review raised is lost. The review driver
+prints three kinds of line that this build does not act on in code; collect
+every one from every review round, the audit's and any later one's, and write
+`report.md`'s `## Not built` section, one short line each, `None.` when there
+are none:
+
+```markdown
+## Not built
+
+- IDEA (review round 2): <the line as printed>
+- NOTED (review round 1): <the line> — filed as <slug> R<n> | fixed here
+- DISPROVED Fa1b2c3 (review round 1): <the finding> — <the evidence, a few words>
+```
+
+Write each as what was found, never as a step waiting on the user: the close
+refuses a report line worded that way (precondition (iii)).
+
+**The improvements row.** When the section holds an `IDEA` line, add ONE
+`planned` row to this project's `ROADMAP.md`, unless this row is itself an
+improvements row. Whether it is one is a lookup — its Sub-feature starts
+`Improvements found building R`:
+
+```bash
+node --experimental-strip-types .agents/skills/close/scripts/roadmap.ts <project-folder> | awk -F'\t' '$1=="<ID>"{print $5}'
+```
+
+The row, with `<n>` the highest numeric ID plus one and `R<k>` this row:
+
+```markdown
+| R<n> | Improvements found building R<k> | Build what R<k>'s reviews suggested beyond its spec (the improvements row builds automatically) | in: the IDEA lines in specs/NNN-name/report.md § Not built | R<k> | planned | — |
+```
+
+It rides this close and turns ready when this row lands, so the next
+`/project <slug> plan` plans it (`.agents/skills/project/SKILL.md` § Lanes). An improvements row's
+own `IDEA` lines stay in its § Not built and add no row: one link, never a
+chain. A later spec in the project still reads them (`.agents/skills/spec/SKILL.md`
+step-1).
 
 ### The spec stays in place
 
@@ -513,7 +618,7 @@ Print the completion summary first:
 | Lint | ✅ |
 | Tests | ✅ ({N} new) |
 | Quality | ✅ |
-| implement-audit | ✅ ({rounds} round(s), all findings addressed) |
+| implement-audit | ✅ ({rounds} round(s), blocking findings resolved) |
 | E2E | ✅ ({N} steps) |
 | Mechanism-match | ✅ |
 | QA | ✅ ({N} targets) / skipped-not-web |
@@ -533,7 +638,7 @@ Print the completion summary first:
 
 Then the auto-close gate:
 
-- **Precondition (all five must hold):** (i) no deferral question is outstanding (a mechanism-match FAIL at phase-4.5 halts here and auto-close does NOT fire — the user must see it); (ii) phase-4.8 either found no web target or `validate.ts --require-qa` exited 0 — an incomplete `/qa` on a changed UI is a halt, not a note on the report; (iii) the gate's open-items sweep is empty — every question, issue and improvement the run surfaced is done or asked (precondition (iii) of the SSOT); (iv) `node --experimental-strip-types .agents/skills/close/scripts/land.ts --gate` returns `not-fired`; (v) `validate.ts --phase report` exited 0 on the report as written.
+- **Precondition (all five must hold):** (i) no deferral question is outstanding (a mechanism-match FAIL at phase-4.5 halts here and auto-close does NOT fire — the user must see it); (ii) phase-4.8 found no web target or `validate.ts --require-qa` exited 0 — an incomplete `/qa` on a changed UI is a halt, not a note on the report; (iii) the gate's open-items sweep is empty — every question, issue and improvement the run surfaced is done or asked, a reviewer's `IDEA` recorded per phase-5 § Not built (precondition (iii) of the SSOT); (iv) `node --experimental-strip-types .agents/skills/close/scripts/land.ts --gate` returns `not-fired`; (v) `validate.ts --phase report` exited 0 on the report as written.
 - **Action when all hold:** run `/close` per the gate. `/close` verifies, updates the project, journals, and lands every worktree this thread owns. The `implement-audit:` line is already in the report — see phase-5. The user does NOT type `/close`.
 - `/close` runs its own internal gates unchanged. See the SSOT for the full halt-case table.
 

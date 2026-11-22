@@ -359,3 +359,39 @@ test("a fetch that fails renders the last fetched main and says so", () => {
   assert.equal(r.err, "render-index: could not fetch origin/main; rendering from the last fetched copy");
   assert.match(listing(r), /2026-01-01_landed active/, "the unfetched landing is not invented");
 });
+
+// ── A passed dated check on an active project's row ──────────
+// check-staleness.ts's OVERDUE rows join the lapsed block, so its plan tables
+// are read from main like its READMEs; a plan the worktree deleted is not read
+// back from main, and deleting a plan leaves its project in the index.
+test("a passed dated check on an active project's row is listed with the lapsed windows", () => {
+  const fx = gitFixture();
+  const table = (rows: string): string =>
+    `# Roadmap\n\n| ID | Sub-feature | Intent | Scope boundary | Depends on | Status | Sub-spec |\n|----|----|----|----|----|----|----|\n${rows}`;
+  readmeAt(fx.seed, "court-case", "---\nstatus: active\n---\n");
+  writeFileSync(
+    join(fx.seed, "projects/web/2026-01-01_court-case/ROADMAP.md"),
+    table(
+      `| R1 | next | x | x | — | planned | — |\n| R2 | a check | x | x | — | blocked: ${ago(7)} read the docket: the clerk's notice | manual |\n`,
+    ),
+  );
+  writeFileSync(
+    join(fx.seed, "projects/web/2026-01-01_mine/ROADMAP.md"),
+    table(`| R1 | a check | x | x | — | blocked: ${ago(5)} see the reply | manual |\n`),
+  );
+  git(fx.seed, "add", "-A");
+  git(fx.seed, "commit", "-q", "-m", "checks");
+  git(fx.seed, "push", "-q", "origin", "main");
+  git(fx.wt, "fetch", "-q", "origin", "main");
+  git(fx.wt, "merge", "-q", "--ff-only", "origin/main");
+  rmSync(join(fx.wt, "projects/web/2026-01-01_mine/ROADMAP.md"));
+  const r = exec(SUT, { CONTEXT_CODE_REPO: fx.wt });
+  assert.equal(r.rc, 0, r.err);
+  assert.match(
+    r.out,
+    new RegExp(`^- web/court-case R2 — check due ${ago(7)} \\(7 days ago\\): read the docket: the clerk's notice$`, "m"),
+    r.out,
+  );
+  assert.doesNotMatch(r.out, /web\/mine R1/, "the worktree's deleted plan is not read back from main");
+  assert.match(listing(r), /2026-01-01_mine active/, "deleting a plan does not drop its project");
+});

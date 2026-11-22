@@ -36,10 +36,11 @@
 //   .agents/skills/close/SKILL.md (step-2.1-project-completion)
 
 import { spawnSync } from "node:child_process";
-import { readFileSync, realpathSync, statSync } from "node:fs";
+import { readFileSync, realpathSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { exit, runToExit } from "../../../packages/cli-exit/cli-exit.ts";
+import { isDir, isFile } from "./trunk.ts";
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 
@@ -49,20 +50,6 @@ const err = (msg: string): void => {
 // [[:space:]] under the C locales.
 const SP = "[ \\t\\n\\r\\f\\v]";
 const lowerAscii = (s: string): string => s.replace(/[A-Z]/g, (c) => c.toLowerCase());
-const isDir = (p: string): boolean => {
-  try {
-    return statSync(p).isDirectory();
-  } catch {
-    return false;
-  }
-};
-const isFile = (p: string): boolean => {
-  try {
-    return statSync(p).isFile();
-  } catch {
-    return false;
-  }
-};
 
 /** Run a sibling TypeScript program; stdout with trailing newlines dropped, as `$(…)` reads it. */
 function sibling(script: string, args: string[], stderr: "ignore" | "pipe") {

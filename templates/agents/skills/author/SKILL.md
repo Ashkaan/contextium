@@ -1,6 +1,6 @@
 ---
 name: author
-description: Scaffolds a conforming AI-layer artifact — skill, hook, agent or output style — that already passes the workbench's format checks, Anthropic's documented frontmatter shape, and the four token/context/determinism principles. Use when authoring or compressing any skill, hook, agent or output style.
+description: Scaffolds a skill, hook, agent or output style that already passes the repo's format checks. Use when authoring or compressing any skill, hook, agent or output style.
 allowed-tools: Bash Read Edit Write
 metadata:
   peers: ".agents/skills/author/references/skill.md .agents/skills/author/references/hook.md .agents/skills/author/references/agent.md .agents/skills/author/references/output-style.md .agents/skills/author/scripts/scaffold.ts .agents/skills/author/scripts/verify.ts .agents/agents/ai-layer-reviewer.md .agents/skills/review/policy-review.ts"
@@ -175,8 +175,9 @@ the review policy table (`.agents/skills/review/policy.json`), not chosen here:
    This is the repo-context read — the agent can grep for overlapping artifacts
    and read the branch docs, which a one-shot CLI call cannot.
 
-Act on every `must-fix` / `fix-now` before the branch completes; `nit`,
-`speculative`, and `out-of-scope` need no action. Zero findings is a valid
+Act on every `must-fix` / `fix-now`, `should-fix` and `nit` before the branch
+completes; `speculative`
+and `out-of-scope` need no action. Zero findings is a valid
 result — do not pad. Re-run after
 fixes only if a fix changed the design (not for typos); stop the loop when a
 round mostly re-opens ground an earlier round already touched, and in no case
@@ -206,7 +207,7 @@ Meaningful for exactly one type — **hook** — because hooks are the only arti
 - **skill** — none; auto-discovered from `.agents/skills/<name>/SKILL.md`.
 - **hook** — a PreToolUse/PostToolUse hook is wired per [references/hook.md](references/hook.md) Step 5: a matcher block in each harness's hook manifest, its command running the workbench's copy by absolute path; `verify.ts hook` WARNs (non-blocking) while none names it. A check under `.agents/checks/` is not wired here: one that must block becomes a close gate in `.agents/skills/close/scripts/land.ts`.
 - **agent** — none; auto-discovered from `.agents/agents/<name>.md` through the `~/.claude/agents` home link.
-- **output-style** — NOT auto-selected by existing. To make it the default set `outputStyle` in `~/.claude/settings.json` (the user default; never `.agents/hooks/claude-hooks.json`); to carry it into subagents add the agent types to the fail-closed allowlist of a `SubagentStart` hook in `.agents/hooks/`.
+- **output-style** — NOT auto-selected by existing. To make it the default set `outputStyle` in `.agents/claude-user-settings.json` (`~/.claude/settings.json`, the user default; never `.agents/hooks/claude-hooks.json`); to carry it into subagents add the agent types to the fail-closed allowlist of a `SubagentStart` hook in `.agents/hooks/`.
 
 ## Examples
 

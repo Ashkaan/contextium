@@ -4,7 +4,8 @@
 // Resolve a project slug to its folder path. Walks `projects/<domain>/<date>_<slug>/`
 // and emits the matching path, or "NOT_FOUND" with the nearest matches.
 //
-// Deterministic — single filesystem scan.
+// Deterministic — single filesystem scan. slugMatches(), the matching rule,
+// is exported for open-active.ts.
 //
 // Usage:
 //   find-project.ts <slug>
@@ -102,6 +103,13 @@ function globMatch(name: string, pattern: string): boolean {
 
 const base = (p: string): string => p.slice(p.lastIndexOf("/") + 1);
 
+/** Whether a bare `/project <slug>` matches the folder named `name`: the
+ *  rule main() applies, exported so open-active.ts counts a shared slug the way
+ *  the thread it opens will resolve it. */
+export function slugMatches(name: string, slug: string): boolean {
+  return globMatch(name, `*_${slug}`);
+}
+
 async function main(): Promise<void> {
   enterWriteRoot();
 
@@ -116,14 +124,14 @@ async function main(): Promise<void> {
     const DOMAIN = INPUT.slice(0, INPUT.indexOf("/"));
     const SLUG = INPUT.slice(INPUT.lastIndexOf("/") + 1);
     // The domain folder itself is never a candidate, existing or not.
-    const MATCH = subdirs(`projects/${DOMAIN}`).find((d) => globMatch(base(d), `*_${SLUG}`));
+    const MATCH = subdirs(`projects/${DOMAIN}`).find((d) => slugMatches(base(d), SLUG));
     process.stdout.write(MATCH ? `PATH:${MATCH}\n` : "NOT_FOUND\n");
     return;
   }
 
   // Bare slug: scan all domains
   const tree = projectsTree();
-  const MATCH = tree.find((d) => globMatch(base(d), `*_${INPUT}`));
+  const MATCH = tree.find((d) => slugMatches(base(d), INPUT));
   if (MATCH) {
     process.stdout.write(`PATH:${MATCH}\n`);
     return;

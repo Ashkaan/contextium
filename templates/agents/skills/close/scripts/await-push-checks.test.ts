@@ -878,11 +878,39 @@ describe("await-push-checks: a status that errored", () => {
     assert.match(r.out, /deployer never reported\n$/);
   });
 
-  it("a failure is not settled by a later commit", async () => {
+  // A mark that REFUSED this commit is settled the same way: a half-landed
+  // contract can refuse every push for an hour until a later push's deploy
+  // publishes them all, and the deployer marks only the newest build — so the
+  // refused commit could never get a mark of its own and its close could not
+  // finish. The later commit must contain it and carry the same mark as a
+  // success: the deployer then accepted code that includes this commit.
+  it("a mark that refused is settled by a later trunk commit that contains it and passes", async () => {
     const r = await waiter((p, n) => commit("failure")(p, n) ?? tip(p, n));
+    assert.equal(r.code, 0, r.out + r.err);
+    assert.match(r.out, /^aaaaaaa superseded by ccccccc, whose checks decide \(deployer failure\)$/m);
+    assert.match(r.out, /^deployer: success/m);
+  });
+
+  it("a mark that refused stays a failure when the later commit's mark refused too", async () => {
+    const r = await waiter((p, n) => {
+      if (p.startsWith(`repos/${REPO}/commits/${TIP}/status`))
+        return statuses({ id: 2, context: "deployer", state: "failure", target_url: null });
+      return commit("failure")(p, n) ?? tip(p, n);
+    });
+    assert.equal(r.code, 1, r.out + r.err);
+    assert.match(r.out, /^aaaaaaa superseded by ccccccc/m);
+    assert.match(r.out, /deployer failure\n$/);
+  });
+
+  it("a check run that failed is never settled by a later commit", async () => {
+    const r = await waiter((p, n) => {
+      if (checkRuns(SHA)(p)) return runs(run(1, "build", "completed", "failure"));
+      if (p.startsWith(`repos/${REPO}/commits/${SHA}/status`)) return mark("success");
+      return tip(p, n);
+    });
     assert.equal(r.code, 1, r.out + r.err);
     assert.doesNotMatch(r.out, /superseded/);
-    assert.match(r.out, /deployer failure\n$/);
+    assert.match(r.out, /build failure\n$/);
   });
 
   it("with no later trunk commit stays a failure", async () => {

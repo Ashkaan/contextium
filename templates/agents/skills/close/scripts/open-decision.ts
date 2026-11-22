@@ -1,12 +1,15 @@
 // open-decision.ts — does this line park a choice the user has not made?
 //
-// Nothing a close adds may wait on the user: only a dated wait on someone or
-// something else goes with it, and a question is asked and the run halts
-// (close/references/auto-close-gate.md precondition (iii)). Two places hold
-// what waits, and both refuse an open decision with these words first, so it
-// is reported as a question rather than as a wait with no date: a journal
-// entry's `**Blocked:**` bullets (check-journal-entry.ts, F9) and a ROADMAP
-// row's `blocked:` status (check-roadmap-decisions.ts).
+// A close carries no question for the user: one is asked and the run halts
+// (close/references/auto-close-gate.md precondition (iii)). Wording that parks
+// something on the user is a question however it is dated; a step the user
+// does on a later day is set by a roadmap row's `blocked:` date or a Blocked
+// bullet's `- wait:` date, which the row judge and F12 read, never by a date
+// found in prose. Two places hold what waits, and both refuse an open
+// decision with these words first, so it is reported as a question rather
+// than as a wait with no date: a journal entry's `**Blocked:**` bullets
+// (check-journal-entry.ts, F9) and a ROADMAP row's `blocked:` status
+// (check-roadmap-decisions.ts).
 //
 // Words that are a choice on their own, and words that are one only when the
 // line is the user's: "the vendor's decision" and "the reviewer's answer" wait
@@ -24,8 +27,10 @@
 //   .agents/skills/close/scripts/check-journal-entry.ts
 //   .agents/skills/close/scripts/check-roadmap-decisions.ts
 //   .agents/skills/project/scripts/triage.ts            (the same owner words)
+//   .agents/skills/close/scripts/roadmap.ts             (calendarDay)
 
 import { spawnSync } from "node:child_process";
+import { calendarDay } from "./roadmap.ts";
 
 const DECISION_WORDS = /\?|\bwhether\b|\bchoos(e|es|ing)\b|\bchoice\b|go-ahead|\byour call\b|\bthe user's call\b/i;
 const USER_WORDS =
@@ -90,6 +95,19 @@ export function parkedOnUser(text: string, opts: { act?: boolean } = {}): string
 export function plainText(text: string): string {
   // Code spans first: a URL inside one must not take its closing backtick.
   return text.replace(/`[^`]*`/g, "").replace(/https?:\/\/\S+/g, "");
+}
+
+/** Whether `text`, read without code spans and URLs, holds a calendar day
+ *  (`YYYY-MM-DD`, no digit either side) on or after `day`. */
+export function datedOnOrAfter(text: string, day: string): boolean {
+  return [...plainText(text).matchAll(/(?<![0-9])([0-9]{4}-[0-9]{2}-[0-9]{2})(?![0-9])/g)]
+    .map((m) => m[1] ?? "")
+    .some((d) => calendarDay(d) && d >= day);
+}
+
+/** Whether `text`, read without code spans and URLs, holds any calendar day. */
+export function dated(text: string): boolean {
+  return datedOnOrAfter(text, "0000-00-00");
 }
 
 /** Whether the line names the user, so their own words count as a choice. */

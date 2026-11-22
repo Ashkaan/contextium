@@ -63,6 +63,7 @@ import process from "node:process";
 import { fileURLToPath } from "node:url";
 
 import { yamlScalar } from "./yaml-scalar.ts";
+import { isCalendarDay } from "../packages/calendar-day/calendar-day.ts";
 
 /** A caller error: the message goes to stderr and the run exits with `code`. */
 class Exit extends Error {
@@ -252,16 +253,6 @@ function parseRecord(file: string): DecisionRecord {
   };
 }
 
-/** The calendar has that day — checked in JS, not with GNU-only `date -d`. */
-function realDate(d: string): boolean {
-  const m = /^([0-9]{4})-([0-9]{2})-([0-9]{2})$/.exec(d);
-  if (!m) return false;
-  const [y, mo, day] = [Number(m[1]), Number(m[2]), Number(m[3])];
-  const dt = new Date(0);
-  dt.setUTCFullYear(y, mo - 1, day);
-  return dt.getUTCFullYear() === y && dt.getUTCMonth() === mo - 1 && dt.getUTCDate() === day;
-}
-
 // A supersession names a REPO-RELATIVE path: segments that do not start with a
 // dot (so no `..`, no `./`), no leading `/` or `~`.
 const STATUS_RE =
@@ -333,7 +324,7 @@ function check(targets: string[]): number {
 
     if (!r.hasDate) {
       violation(f, "a", "missing required key: date");
-    } else if (!realDate(r.date)) {
+    } else if (!isCalendarDay(r.date)) {
       violation(f, "c", `date '${r.date}' is not a real YYYY-MM-DD`);
     }
 

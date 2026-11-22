@@ -19,7 +19,7 @@ const GEN = join(dirname(fileURLToPath(import.meta.url)), "next-implement-comman
 const TMP = mkdtempSync(join(tmpdir(), "next-implement-command-test-"));
 after(() => rmSync(TMP, { recursive: true, force: true }));
 
-// No real T3 database: which rows other open threads are building comes from
+// No real T3 database: which rows other open threads hold comes from
 // the NEXT_IMPLEMENT_ROWS_TAKEN stub below, never from this machine's threads.
 const ENV: Record<string, string | undefined> = { ...process.env, T3CODE_HOME: join(TMP, "no-t3") };
 delete ENV.NEXT_IMPLEMENT_ROWS_TAKEN;
@@ -264,7 +264,7 @@ test("rm-status-first", () => {
   assert.equal(gen(d), "# rm-mon — 1 planned row waits on the watch, monitor window open (monitoring-until not set)");
 });
 
-// ── A row another open thread is building ─────────────────────────────────
+// ── A row another open thread holds ───────────────────────────────────────
 // Pasting a printed /implement line for a row a live thread already builds would
 // start it twice; the line is replaced by one naming that thread.
 function takenStub(name: string, lines: string[], code = 0): Record<string, string> {
@@ -299,5 +299,33 @@ test("rm-held-rows-are-named-not-printed", () => {
     gen(d, takenStub("crash", ["R2\tBuilding R2\tt-1\t/w/1"], 4)),
     "/implement rm-held r2\n/implement rm-held r3",
     "a crashed helper prints as without the check",
+  );
+});
+
+// A hands-on thread marks its `manual` row in-progress to keep a second one off
+// it; nothing builds that row, so its holder is named as working it.
+test("rm-held-row-label-follows-its-kind", () => {
+  const d = mkproj("2026-09-12_rm-kind", "active");
+  mkroadmap(
+    d,
+    "| R1 | a | i | s | — | planned | manual |",
+    "| R2 | b | i | s | — | planned | — |",
+    "| R3 | c | i | s | — | planned | `specs/003-c/` |",
+  );
+  spec(d, "003-c");
+  const held = takenStub("kinds", [
+    "R1\tVendor call\tt-1\t/w/1",
+    "R2\tSketching\tt-2\t/w/2",
+    "R3\tBuilding\tt-3\t/w/3",
+  ]);
+  // Every ready row is held, so the whole output is the three holder lines: no
+  // command, no `/project` for the held planning row, no old label.
+  assert.equal(
+    gen(d, held),
+    [
+      '# R1 is being worked in thread "Vendor call"',
+      '# R2 is being worked in thread "Sketching"',
+      '# R3 is being built in thread "Building"',
+    ].join("\n"),
   );
 });

@@ -16,13 +16,19 @@
 // that lane only (the planning row, or the steps that need the user's hands),
 // so planning and hands-on work can each run in a session of its own.
 //
+// "<slug> <lane> auto" (a one-word slug too) is the same lane with a fourth line, `auto: yes`: the
+// form an automation that opens a released step's lane uses. Such a thread
+// first checks whether another
+// chat holds its lane and settles itself if one does (SKILL.md § Lanes).
+//
 // Usage:
 //   parse-arg-mode.ts "$ARGUMENTS"
 //
-// Output (two lines to stdout, three for a lane):
+// Output (two lines to stdout, three for a lane, four for an auto lane):
 //   mode: <blank|create|existing-slug|complete|update|triage>
 //   payload: <the remainder after the mode verb, or empty for blank>
 //   lane: <plan|hands-on>   (only after "<slug> <lane>")
+//   auto: yes               (only after "<slug> <lane> auto")
 //
 // Exit code: 0 always.
 
@@ -53,9 +59,10 @@ function strip(input: string): string {
     .replace(/\n+$/, "");
 }
 
-function emit(mode: string, payload: string, lane = ""): void {
+function emit(mode: string, payload: string, lane = "", auto = false): void {
   process.stdout.write(`mode: ${mode}\npayload:${payload === "" ? "" : ` ${payload}`}\n`);
   if (lane !== "") process.stdout.write(`lane: ${lane}\n`);
+  if (auto) process.stdout.write("auto: yes\n");
 }
 
 const SLUG = /^([a-z0-9]+(-[a-z0-9]+)+|[^\s/]+\/[^\s]+)$/;
@@ -75,9 +82,9 @@ async function main(): Promise<void> {
     emit("triage", triage[1]);
     return;
   }
-  const lane = /^(\S+) (\S+)$/.exec(INPUT);
+  const lane = /^(\S+) (\S+)( auto)?$/.exec(INPUT);
   if (lane && SLUG.test(lane[1]) && LANES.includes(lane[2])) {
-    emit("existing-slug", lane[1], lane[2]);
+    emit("existing-slug", lane[1], lane[2], lane[3] !== undefined);
     return;
   }
 
@@ -87,6 +94,16 @@ async function main(): Promise<void> {
       emit(verb, INPUT.slice(verb.length + 1));
       return;
     }
+  }
+
+  // The auto form is written only by an automation, from a project
+  // folder, so a one-word slug is a project there. It comes after the verbs,
+  // which keep their precedence; typed without `auto`, a hyphenless word
+  // before a lane word stays a new project, as before.
+  const oneWord = /^([a-z0-9]+) (\S+) auto$/.exec(INPUT);
+  if (oneWord && LANES.includes(oneWord[2])) {
+    emit("existing-slug", oneWord[1], oneWord[2], true);
+    return;
   }
 
   // Heuristic: bare kebab-slug (one or more hyphens, no spaces) → existing-slug

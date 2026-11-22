@@ -162,6 +162,33 @@
 - **FR-006**: System MUST authenticate users via [NEEDS CLARIFICATION: auth method not specified - email/password, SSO, OAuth?]
 - **FR-007**: System MUST retain user data for [NEEDS CLARIFICATION: retention period not specified]
 
+<!-- workbench: inputs -->
+### Supported inputs
+
+<!--
+  WORKBENCH: one row per class of input the work must handle, each with one
+  real example (public or sanitized; a synthetic fixture that keeps the
+  structure when the real one is gated or private) and the result expected for
+  it, then the fallback for anything outside these classes. Code review treats
+  an input outside these classes that gets the fallback as working, not a bug
+  (a spec that never says which layouts matter leaves every code review to
+  invent a new one). `Not covered:` lists,
+  one line each, inputs deliberately out of scope and related improvements the
+  review raised that are not taken, the latter marked "(raised in review)".
+  `N/A — <reason>` when the work takes no input.
+-->
+
+| Input class | Example | Expected result |
+|---|---|---|
+| [class] | [real or sanitized example, or fixture path] | [what the work produces] |
+
+**Fallback**: [what happens to any input outside the classes above]
+
+Not covered:
+
+- [input or improvement — why it is out of scope]
+
+<!-- /workbench -->
 ### Key Entities *(include if feature involves data)*
 
 - **[Entity 1]**: [What it represents, key attributes without implementation]

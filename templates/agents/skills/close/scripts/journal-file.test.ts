@@ -84,6 +84,9 @@ for (const f of readdirSync(HERE)) {
   }
 }
 copyFileSync(join(REPO, "packages/cli-exit/cli-exit.ts"), join(CODE, ".agents/packages/cli-exit/cli-exit.ts"));
+// roadmap.ts asks packages/calendar-day whether a watch date is a real day.
+mkdirSync(join(CODE, ".agents/packages/calendar-day"), { recursive: true });
+copyFileSync(join(REPO, "packages/calendar-day/calendar-day.ts"), join(CODE, ".agents/packages/calendar-day/calendar-day.ts"));
 writeFileSync(join(CODE, "README.md"), "# Workbench\n");
 git("-C", CODE, "add", "README.md", ".agents");
 git("-C", CODE, "commit", "-q", "-m", "seed");

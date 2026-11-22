@@ -34,10 +34,10 @@
 //   return 1:   chain exhausted (every slot absent or failed)
 //   return 2:   caller error (unknown row, policy.json missing, empty prompt,
 //               unrunnable validator)
-//   return 3:   chain reached a claude slot in a script context — or, on a row
-//               marked `"fallback": "fresh-context"` (Contextium), every vendor
-//               in it was unavailable: the caller runs a fresh-context review
-//               of its own and records it as NOT independent
+//   return 3:   a non-adversarial row reached a Claude slot for caller dispatch
+//               — or, on a row marked `"fallback": "fresh-context"`, every
+//               vendor in it was unavailable: the caller runs a fresh-context
+//               review of its own and records it as NOT independent
 //   return 124: chain exhausted and the LAST failure was a timeout
 //   return 125: chain exhausted, and AT LEAST ONE slot was alive, answered, and
 //               was rejected for its SHAPE. Not "the last failure was" — any
@@ -59,7 +59,7 @@
 // Environment:
 //   POLICY_JSON                  path to policy.json (default: the one beside
 //                                this script)
-//   CODEX_BIN / GROK_BIN         per-vendor binary override; load-bearing for
+//   CODEX_BIN / GROK_BIN / CLAUDE_BIN  per-vendor binary override; load-bearing for
 //                                stub-driven failure tests, which must never
 //                                depend on a live vendor's quota or auth
 //   POLICY_CHAIN_RESOLVER        command that prints the model a slot's
@@ -117,10 +117,6 @@
 // test cannot bleed into another's run in the same process. Callers therefore
 // pass it per call, never once at the top of the script.
 //
-// There is deliberately no CLAUDE_BIN: a claude slot returns 3 WITHOUT invoking
-// anything, because the Claude layer here is an agent with repo tools, not a
-// one-shot CLI call — so there is no binary for an override to point at.
-//
 // Per-slot timeout, not a total one. A timed-out slot FALLS THROUGH to the next:
 // a hang is the failure class this file exists to survive, and the old hard
 // `exit 124` with no fallthrough left the most common outage uncovered.
@@ -163,6 +159,7 @@ import {
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+
 import { recordedReviewAuthors } from "../close/scripts/t3-db.ts";
 
 const POLICY_CHAIN_DEFAULT_SLOT_TIMEOUT_S = "900";
@@ -509,7 +506,7 @@ function runTimed(
   const outFd = openSync(stdoutFile, "w");
   const errFd = openSync(stderrFile, "w");
   try {
-    const ms = Math.max(1, Math.round(Number(secs) * 1000)) || 900_000;
+    const ms = slotTimeoutMs(secs);
     const r = spawnCapped(ms, bin, args, { stdio: [stdin, outFd, errFd] });
     if (r.error) {
       writeSync(errFd, `${bin}: ${r.error.message}\n`);
@@ -523,12 +520,64 @@ function runTimed(
   }
 }
 
+function slotTimeoutMs(secs: string): number {
+  const ms = Math.round(Number(secs) * 1000);
+  return Number.isFinite(ms) && ms > 0 ? ms : Number(POLICY_CHAIN_DEFAULT_SLOT_TIMEOUT_S) * 1000;
+}
+
 function runCodex(bin: string, promptFile: string, out: string, secs: string, pin: string, tmp: string): number {
   const inFd = openSync(promptFile, "r");
   try {
     // An empty pin runs the CLI's own default model: no -m at all.
     const model = pin !== "" ? ["-m", pin] : [];
     return runTimed(secs, bin, ["exec", ...model, POLICY_CHAIN_CODEX_SANDBOX, "-"], inFd, out, `${tmp}/slot.err`);
+  } finally {
+    closeSync(inFd);
+  }
+}
+
+/** Run the same read-only Claude shape for a policy slot and a named override. */
+export function runClaudeReview(
+  promptFile: string,
+  out: string,
+  opts: { bin: string; model: string; timeoutS: string; cwd?: string },
+  sink: Pick<ChainSink, "err"> = defaultSink,
+): number {
+  const inFd = openSync(promptFile, "r");
+  try {
+    const r = spawnCapped(slotTimeoutMs(opts.timeoutS), opts.bin, buildClaudeAgentArgs(opts.model), {
+      cwd: opts.cwd,
+      stdio: [inFd, "pipe", "pipe"],
+      encoding: "utf8",
+      maxBuffer: 64 * 1024 * 1024,
+    });
+    if (r.status === 124) return 124;
+    const stdout = String(r.stdout ?? "").trim();
+    if (r.error || r.status !== 0) {
+      // Claude reports some CLI and account failures on stdout, including
+      // result envelopes with a nonzero exit. Empty stderr must not hide them.
+      const detail = r.error?.message || String(r.stderr ?? "").trim() || stdout;
+      sink.err(`Claude did not answer (exit ${r.status}): ${detail.slice(-500)}`);
+      return 1;
+    }
+    let answer: { type?: unknown; is_error?: unknown; subtype?: unknown; result?: unknown } | null;
+    try {
+      answer = JSON.parse(stdout);
+    } catch {
+      sink.err("Claude did not answer (invalid result envelope)");
+      return 1;
+    }
+    if (
+      answer?.type !== "result" ||
+      answer.is_error === true ||
+      typeof answer.result !== "string" ||
+      !answer.result.trim()
+    ) {
+      sink.err(`Claude did not answer (${typeof answer?.subtype === "string" ? answer.subtype : "no result"})`);
+      return 1;
+    }
+    writeFileSync(out, `${answer.result.trimEnd()}\n`);
+    return 0;
   } finally {
     closeSync(inFd);
   }
@@ -654,10 +703,52 @@ function jqField(v: unknown): string {
   return typeof v === "string" ? v : JSON.stringify(v);
 }
 
-interface Slot {
-  vendor: string;
-  model: string;
-  tracks: string;
+// An install has no model router or Claude Code runner of its own, so the
+// pieces of them this walk needs live here.
+type Vendor = "codex" | "claude" | "grok";
+type Slot = { vendor: Vendor; model: string; tracks: string };
+const AGENT_VENDORS = ["codex", "grok", "claude"] as const;
+
+/** Whether this vendor has a runner in this walk. */
+function isAgentVendor(vendor: string): vendor is Vendor {
+  return (AGENT_VENDORS as readonly string[]).includes(vendor);
+}
+
+/** Who takes an excluded author's place, in order: the first neither excluded
+ *  nor already on the chain, at its CLI's own default model. */
+const STAND_INS: readonly Slot[] = [
+  { vendor: "claude", model: "opus", tracks: "" },
+  { vendor: "codex", model: "codex", tracks: "" },
+  { vendor: "grok", model: "grok", tracks: "" },
+];
+
+/** The chain with every excluded vendor's slots removed and, when any was, one
+ *  stand-in added, so excluding the author never shortens the chain to nothing. */
+function filterChainForExclusions(slots: Slot[], exclude: readonly string[] | undefined): Slot[] {
+  if (exclude === undefined || exclude.length === 0) return slots;
+  const out = new Set(exclude.map((v) => v.toLowerCase()));
+  const kept = slots.filter((slot) => !out.has(slot.vendor));
+  if (kept.length === slots.length) return kept;
+  const onChain = new Set(kept.map((s) => s.vendor));
+  const standIn = STAND_INS.find((s) => !out.has(s.vendor) && !onChain.has(s.vendor));
+  return standIn ? [...kept, standIn] : kept;
+}
+
+/** A read-only, one-answer Claude Code run; an empty model runs its default. */
+function buildClaudeAgentArgs(model: string): string[] {
+  return [
+    "--print",
+    ...(model !== "" ? ["--model", model] : []),
+    "--output-format",
+    "json",
+    "--safe-mode",
+    "--strict-mcp-config",
+    "--no-session-persistence",
+    "--tools",
+    "Read,Grep,Glob",
+    "--permission-mode",
+    "bypassPermissions",
+  ];
 }
 
 // The row's slots, `chain` or (a panel row) `voices`; null when the file does
@@ -665,7 +756,7 @@ interface Slot {
 function readSlots(
   policy: string,
   taskKind: string,
-): { slots: Slot[]; known: string; fallback?: string } {
+): { slots: Array<Omit<Slot, "vendor"> & { vendor: string }>; known: string; fallback?: string } {
   let doc: unknown;
   try {
     doc = JSON.parse(readFileSync(policy, "utf8"));
@@ -682,7 +773,7 @@ function readSlots(
   const r = row as Record<string, unknown>;
   const list = r.chain ?? r.voices ?? [];
   if (!Array.isArray(list)) return { slots: [], known };
-  const slots: Slot[] = [];
+  const slots: Array<Omit<Slot, "vendor"> & { vendor: string }> = [];
   for (const s of list) {
     const o = s !== null && typeof s === "object" ? (s as Record<string, unknown>) : {};
     const tr = o.tracks;
@@ -772,7 +863,11 @@ function walk(
     return 2;
   }
 
-  let slots = row.slots;
+  let slots: Slot[] = [];
+  for (const slot of row.slots) {
+    if (isAgentVendor(slot.vendor)) slots.push({ ...slot, vendor: slot.vendor });
+    else e(`unsupported vendor '${slot.vendor}' in the '${taskKind}' chain`);
+  }
   if (taskKind === "adversarial-review") {
     const provenance = reviewAuthorVendors();
     if ("error" in provenance) {
@@ -780,11 +875,10 @@ function walk(
       return 2;
     }
     const authors = provenance.authors;
-    slots = slots.filter((slot) => {
-      if (!authors.includes(slot.vendor)) return true;
-      e(`excluded ${slot.vendor}/${slot.model}: artifact author`);
-      return false;
-    });
+    for (const slot of slots) {
+      if (authors.includes(slot.vendor)) e(`excluded ${slot.vendor}/${slot.model}: artifact author`);
+    }
+    slots = filterChainForExclusions(slots, authors);
     if (slots.length === 0) {
       e("no eligible reviewer remains after excluding artifact authors");
       // Contextium: the row's fresh-context fallback, as for a chain whose
@@ -804,16 +898,11 @@ function walk(
   // whether a NEXT slot exists before it names a failure: promising "trying next
   // slot" on a one-slot row is a diagnostic that lies about what happens next.
   for (let i = 0; i < slots.length; i++) {
-    const { vendor, model, tracks } = slots[i] as Slot;
-    if (vendor === "") continue;
+    const { vendor, model, tracks } = slots[i];
     const next = i + 1 < slots.length ? " — trying next slot" : "";
 
-    if (vendor === "claude") {
-      // The Claude slot is the agent layer's job, not this script's — an agent
-      // gets fresh context and repo tools, which a one-shot CLI call does not.
-      // Terminal, not a fallthrough: the caller must dispatch its own agent (or,
-      // for a gate that requires vendor independence from the author, report
-      // unavailable) rather than have this walk answer for it.
+    if (vendor === "claude" && taskKind !== "adversarial-review") {
+      // The SPEC fidelity check uses judgment and owns its Claude dispatch.
       e(`chain for '${taskKind}' reached the claude slot (${model}) — dispatch the Claude agent instead`);
       return 3;
     }
@@ -821,11 +910,7 @@ function walk(
     let bin: string;
     if (vendor === "codex") bin = process.env.CODEX_BIN || "codex";
     else if (vendor === "grok") bin = process.env.GROK_BIN || "grok";
-    else {
-      e(`unsupported vendor '${vendor}' in the '${taskKind}' chain${next}`);
-      lastWasTimeout = false;
-      continue;
-    }
+    else bin = process.env.CLAUDE_BIN || "claude";
 
     // A slot's `tracks` names the exact model it runs. An EMPTY tracks runs the
     // CLI's own default model — the shipped table leaves it empty, so each
@@ -858,10 +943,9 @@ function walk(
     process.env.WORKBENCH_REVIEW_SLOT = vendor;
     let rc: number;
     try {
-      rc =
-        vendor === "codex"
-          ? runCodex(bin, promptFile, out, secs, pin, tmp)
-          : runGrok(bin, promptFile, out, secs, pin, tmp, sink);
+      if (vendor === "codex") rc = runCodex(bin, promptFile, out, secs, pin, tmp);
+      else if (vendor === "grok") rc = runGrok(bin, promptFile, out, secs, pin, tmp, sink);
+      else rc = runClaudeReview(promptFile, out, { bin, model: pin, timeoutS: secs }, { err: e });
     } finally {
       if (priorSlot === undefined) delete process.env.WORKBENCH_REVIEW_SLOT;
       else process.env.WORKBENCH_REVIEW_SLOT = priorSlot;

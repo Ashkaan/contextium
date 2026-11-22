@@ -155,6 +155,10 @@ git(SITE, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "in
 const CLI = join(TMP, "cli");
 mkdirSync(CLI);
 writeFileSync(join(CLI, "package.json"), '{"scripts":{"qa:cmd":"node ."}}');
+// an email target: QA'd through a delivered copy, never served
+const EMAIL = join(TMP, "email");
+mkdirSync(EMAIL);
+writeFileSync(join(EMAIL, "package.json"), '{"scripts":{"qa:email":"node qa-email.js"}}');
 const NONE = join(TMP, "none");
 mkdirSync(NONE);
 const ASTRO = join(TMP, "astro");
@@ -175,6 +179,10 @@ const astroSite = (name: string, extra: Record<string, string>) => {
 const ASTRO_OK = astroSite("astro-ok", {});
 const ASTRO_CF = astroSite("astro-cf", {
   "wrangler.toml": 'name = "astro-cf"\n',
+});
+// the same, as a Worker: its wrangler config names `main`, so it is served by `wrangler dev`
+const ASTRO_CF_WORKER = astroSite("astro-cf-worker", {
+  "wrangler.toml": 'name = "astro-cf-worker"\nmain = "dist/_worker.js/index.js"\n',
 });
 // a Vite Worker behind Cloudflare Access: no network
 const GATED = join(TMP, "gated");
@@ -267,6 +275,7 @@ after(() => {
     ["/tmp/qa-shots", qaRepoSlug(ASTRO)],
     ["/tmp/qa-shots", qaRepoSlug(ASTRO_OK)],
     ["/tmp/qa-shots", qaRepoSlug(ASTRO_CF)],
+    ["/tmp/qa-shots", qaRepoSlug(ASTRO_CF_WORKER)],
     ["/tmp/qa-shots", qaRepoSlug(GATED)],
     ["/tmp/qa-shots", qaRepoSlug(D1APP)],
     ["/tmp/qa-shots", qaRepoSlug(CLI)],
@@ -290,6 +299,11 @@ test("cli target → 2", () => {
   const r = run(["up", "--repo", CLI, "--mode", "before", "--run-id", "t"]);
   assert.equal(r.rc, 2);
   assert.match(r.out, /cli target has no server/);
+});
+test("email target → 2", () => {
+  const r = run(["up", "--repo", EMAIL, "--mode", "before", "--run-id", "t"]);
+  assert.equal(r.rc, 2);
+  assert.ok(r.out.includes("email target has no server"), r.out);
 });
 test("undetectable repo → 3 with detect-app's reason", () => {
   const r = run(["up", "--repo", NONE, "--mode", "before", "--run-id", "t"]);
@@ -505,7 +519,7 @@ test("down reads a runfile in the earlier double-quoted format", () => {
 // worktrees; the HEAD worktree under /tmp has neither, and its build found none.
 const CACHE = join(TMP, "cache");
 const DEPS = join(CACHE, "app");
-mkdirSync(join(CACHE, "node_modules"), { recursive: true });
+mkdirSync(join(CACHE, "node_modules/vite"), { recursive: true });
 mkdirSync(join(DEPS, "dist"), { recursive: true });
 writeFileSync(join(DEPS, "dist/index.html"), "<h1>deps</h1>\n");
 git(DEPS, "init", "-q");
@@ -526,9 +540,17 @@ test("after: the worktree links the node_modules above the checkout", () => {
   assert.equal(upDepsLink("d1"), join(CACHE, "node_modules"));
 });
 test("after: the checkout's own node_modules wins over one above it", () => {
-  mkdirSync(join(DEPS, "node_modules"));
+  mkdirSync(join(DEPS, "node_modules/vite"), { recursive: true });
   try {
     assert.equal(upDepsLink("d2"), join(DEPS, "node_modules"));
+  } finally {
+    rmSync(join(DEPS, "node_modules"), { recursive: true });
+  }
+});
+test("after: a node_modules holding only a tool's cache is passed over for the one above", () => {
+  mkdirSync(join(DEPS, "node_modules/.vite/deps"), { recursive: true });
+  try {
+    assert.equal(upDepsLink("d5"), join(CACHE, "node_modules"));
   } finally {
     rmSync(join(DEPS, "node_modules"), { recursive: true });
   }
@@ -667,6 +689,36 @@ test("astro: preview runs with --ignore-lock", () => {
   assert.equal(r.rc, 0, r.out);
   assert.equal(serverLine(1), "astro preview --port 8813 --host --ignore-lock");
   down();
+});
+// ── wrangler's devtools port: left to itself wrangler probes 9229 and binds it
+//    later, so two servers starting together can both pick it and the slower
+//    dies with EADDRINUSE. Port 0 has the
+//    system assign one at the bind ──
+/** Bring a fixture up and read its server command; always tear it down with
+ *  its captures, and fail when the teardown does. */
+function serverCommandOf(repo: string, runId: string): string {
+  writeFileSync(SERVER_LOG, "");
+  const r = run(["up", "--repo", repo, "--mode", "before", "--run-id", runId]);
+  RUNFILE = runfileOf(r.out);
+  const runDir = RUNFILE === "" ? "" : dirname(RUNFILE);
+  let cmd = "";
+  let teardown: ReturnType<typeof run> | undefined;
+  try {
+    assert.equal(r.rc, 0, r.out);
+    cmd = serverLine(1);
+  } finally {
+    if (RUNFILE !== "") teardown = run(["down", "--runfile", RUNFILE, "--clean"]);
+    RUNFILE = "";
+  }
+  assert.equal(teardown?.rc, 0, teardown?.out ?? "no runfile to tear down");
+  assert.equal(existsSync(runDir), false, `down --clean left ${runDir}`);
+  return cmd;
+}
+test("astro-cf: `wrangler pages dev` asks the system for its devtools port", () => {
+  assert.match(serverCommandOf(ASTRO_CF, "i1"), /^wrangler pages dev dist --port 8813 .*--inspector-port 0(?: |$)/);
+});
+test("astro-cf: a Worker's `wrangler dev` asks the system for its devtools port", () => {
+  assert.match(serverCommandOf(ASTRO_CF_WORKER, "i2"), /^wrangler dev --port 8813 .*--inspector-port 0(?: |$)/);
 });
 test("astro-cf: the astro dev fallback runs with --ignore-lock", () => {
   writeFileSync(SERVER_LOG, "");

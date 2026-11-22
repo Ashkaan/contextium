@@ -312,6 +312,40 @@ test("--set", () => {
   );
 });
 
+// --set --sub-spec — returns a manual row to planning
+test("--set --sub-spec — writes the bare dash, so a manual row is planned again", () => {
+  const d = mk(
+    "set-dash",
+    "| R1 | a | i | s | — | planned | manual |",
+    "| R2 | b | i | s | — | done | `specs/001-b/` |",
+  );
+  const rm = join(d, "ROADMAP.md");
+  const before = read(rm);
+  assert.equal(rcOf(d, "--set", "R1", "planned", "--sub-spec", "—"), 0, "--sub-spec — exits 0");
+  assert.equal(
+    grepLines(read(rm), /^\| R1/, true).join("\n"),
+    "| R1 | a | i | s | — | planned | — |",
+    "--sub-spec — writes a bare dash, not a backticked path",
+  );
+  assert.deepEqual(
+    grepLines(read(rm), /^\| R1/, false),
+    grepLines(before, /^\| R1/, false),
+    "every other line is left alone",
+  );
+  assert.equal(
+    sut(d)
+      .stdout.split("\n")
+      .find((l) => l.startsWith("R1\t")),
+    "R1\tplanned\tyes\t—\ta",
+    "the row lists as a row to plan",
+  );
+  for (const bad of ["-", "--", "– "]) {
+    const r = sut(d, "--set", "R1", "planned", "--sub-spec", bad);
+    assert.equal(r.rc, 2, `--sub-spec "${bad}" exits 2`);
+    assert.match(r.stderr, /is not specs\/NNN-name\/, manual or —/, `--sub-spec "${bad}" says why`);
+  }
+});
+
 // --sync-next: insert after description, replace, remove
 test("--sync-next", () => {
   const d = mk("sync", "| R1 | alpha | i | s | — | planned | — |");
@@ -961,4 +995,175 @@ test("parallel --set loses no row", async () => {
   );
   assert.deepEqual(codes, Array(12).fill(0), "every writer exits 0");
   assert.equal(grepLines(read(join(d, "ROADMAP.md")), /\| in-progress \|/, true).length, 12, "parallel --set loses no row");
+});
+
+// ── Which projects name these ───────────────
+
+/** A repo root holding `projects/<domain>/<folder>/ROADMAP.md` for each entry. */
+function world(name: string, tables: Record<string, string[] | string>): string {
+  const root = join(tmp, name);
+  for (const [rel, rows] of Object.entries(tables)) {
+    mkdirSync(join(root, rel), { recursive: true });
+    const body = typeof rows === "string" ? rows : `# Roadmap: t\n\n${HDR}\n${rows.map((r) => `${r}\n`).join("")}`;
+    writeFileSync(join(root, rel, "ROADMAP.md"), body);
+  }
+  return root;
+}
+const P = "projects/demo/2026-01-02_other-proj";
+const Q = "projects/fin/2026-01-01_waiting";
+const U = "projects/fin/2026-01-03_unrelated";
+const dep = (on: string, status = "planned") => `| R1 | convert | i | s | ${on} | ${status} | — |`;
+
+test("projectFolders: every projects/<domain>/<folder> holding a ROADMAP.md", async () => {
+  const { projectFolders } = await import("./roadmap.ts");
+  const root = world("fx-folders", { [P]: [dep("—")], [Q]: [dep("—")] });
+  mkdirSync(join(root, "projects/fin/2026-02-02_no-table"), { recursive: true });
+  assert.deepEqual(projectFolders(root).sort(), [P, Q]);
+  assert.deepEqual(projectFolders(join(tmp, "fx-no-projects-here")), []);
+});
+
+test("projectsNaming: land's resync set — any entry naming a dir, resolved or not", async () => {
+  const { projectsNaming } = await import("./roadmap.ts");
+  const root = world("fx-naming", {
+    [P]: [dep("—")],
+    [Q]: [dep("other-proj R9")],
+    [U]: [dep("demo/other-proj R2")],
+    "projects/fin/2026-01-04_unnamed": [dep("—")],
+    "projects/ops/2026-01-05_ambig": [dep("other-proj R1")],
+    "projects/other/2026-02-01_other-proj": [dep("—")],
+    "projects/fin/2026-01-06_broken": "no table here\n",
+  });
+  assert.deepEqual(
+    projectsNaming(root, [P]).sort(),
+    ["projects/fin/2026-01-01_waiting", "projects/fin/2026-01-03_unrelated", "projects/ops/2026-01-05_ambig"],
+    "any row, by slug or domain/slug; an entry ambiguous across two domains still counts",
+  );
+  assert.deepEqual(projectsNaming(root, ["apps/x/y", "projects/demo/not-dated"]), [], "outside the dated shape");
+  assert.deepEqual(projectsNaming(root, []), []);
+});
+
+test("rowsFinished: rows done or closed after and not before", async () => {
+  const { rowsFinished } = await import("./roadmap.ts");
+  const t = (...rows: string[]) => Buffer.from(`# Roadmap: t\n\n${HDR}\n${rows.map((r) => `${r}\n`).join("")}`);
+  const row = (id: string, status: string) => `| ${id} | f | i | s | — | ${status} | — |`;
+  const before = t(
+    row("R1", "planned"),
+    row("R2", "in-progress"),
+    row("R3", "planned"),
+    row("R4", "done"),
+    row("R5", "planned"),
+  );
+  const after = t(
+    row("R1", "done"),
+    row("R2", "closed: dropped"),
+    row("R3", "absorbed by R2"),
+    row("R4", "done"),
+    row("R5", "blocked: until 2026-12-01 a hold"),
+    row("R6", "done"),
+  );
+  assert.deepEqual(rowsFinished(before, after), ["R1", "R2", "R3", "R6"]);
+  assert.deepEqual(rowsFinished(null, after), ["R1", "R2", "R3", "R4", "R6"], "no table before: every finished row");
+  assert.deepEqual(rowsFinished(after, after), []);
+  const bad = rowsFinished(before, Buffer.from("no heading\n"));
+  assert.match(String((bad as { error: string }).error), /no `# Roadmap` heading/);
+  assert.match(String((rowsFinished(Buffer.from("x\n"), after) as { error: string }).error), /no `# Roadmap` heading/);
+});
+
+test("projectsWaitingOn: only an entry resolving to a finished row", async () => {
+  const { projectsWaitingOn } = await import("./roadmap.ts");
+  const root = world("fx-waiting", {
+    [P]: [dep("—")],
+    [Q]: [dep("other-proj R4")],
+    [U]: [dep("other-proj R9")],
+    "projects/fin/2026-01-04_by-domain": [dep("demo/other-proj r4")],
+    "projects/fin/2026-01-05_local": [dep("R4")],
+    "projects/fin/2026-01-06_missing-row": [dep("other-proj R7")],
+    "projects/fin/2026-01-07_broken": "no table here\n",
+  });
+  const finished = new Map([[P, new Set(["R4"])]]);
+  const got = projectsWaitingOn(root, finished);
+  assert.deepEqual(got.rels.sort(), ["projects/fin/2026-01-01_waiting", "projects/fin/2026-01-04_by-domain"]);
+  assert.deepEqual(got.unreadable, [
+    { rel: "projects/fin/2026-01-07_broken", why: "no `# Roadmap` heading in ROADMAP.md" },
+  ]);
+  assert.deepEqual(projectsWaitingOn(join(tmp, "fx-nothing-at-all"), new Map()), { rels: [], unreadable: [] });
+  assert.deepEqual(projectsWaitingOn(root, new Map([[P, new Set<string>()]])), { rels: [], unreadable: [] });
+
+  // A second other-proj in another domain makes the bare entry ambiguous: it resolves to nothing.
+  const amb = world("fx-waiting-amb", {
+    [P]: [dep("—")],
+    "projects/other/2026-02-01_other-proj": [dep("—")],
+    [Q]: [dep("other-proj R4")],
+  });
+  assert.deepEqual(projectsWaitingOn(amb, finished).rels, []);
+});
+
+test("waitingOn: the same answer over any reader of the tables", async () => {
+  const { waitingOn } = await import("./roadmap.ts");
+  const t = (...rows: string[]) => Buffer.from(`# Roadmap: t\n\n${HDR}\n${rows.map((r) => `${r}\n`).join("")}`);
+  const tables = new Map<string, Buffer>([
+    [P, t(dep("—"))],
+    [Q, t(dep("other-proj R4"))],
+    [U, t(dep("other-proj R9"))],
+    ["projects/fin/2026-01-07_broken", Buffer.from("no table here\n")],
+  ]);
+  const got = waitingOn([...tables.keys()], (rel) => tables.get(rel) as Buffer, new Map([[P, new Set(["R4"])]]));
+  assert.deepEqual(got.rels, [Q]);
+  assert.deepEqual(got.unreadable, [
+    { rel: "projects/fin/2026-01-07_broken", why: "no `# Roadmap` heading in ROADMAP.md" },
+  ]);
+  let reads = 0;
+  waitingOn(
+    [...tables.keys()],
+    () => {
+      reads++;
+      return Buffer.from("");
+    },
+    new Map(),
+  );
+  assert.equal(reads, 0, "nothing finished reads no table");
+});
+
+test("projectsWaitingOn: a table it cannot read is unreadable, and the rest still answer", async () => {
+  const { projectsWaitingOn } = await import("./roadmap.ts");
+  const { chmodSync } = await import("node:fs");
+  const root = world("fx-waiting-eacces", {
+    [P]: [dep("—")],
+    [Q]: [dep("other-proj R4")],
+    "projects/fin/2026-01-08_locked": [dep("other-proj R4")],
+  });
+  const locked = join(root, "projects/fin/2026-01-08_locked/ROADMAP.md");
+  chmodSync(locked, 0o000);
+  try {
+    const got = projectsWaitingOn(root, new Map([[P, new Set(["R4"])]]));
+    assert.deepEqual(got.rels, [Q]);
+    assert.equal(got.unreadable.length, 1);
+    assert.equal(got.unreadable[0]?.rel, "projects/fin/2026-01-08_locked");
+    assert.match(String(got.unreadable[0]?.why), /EACCES/);
+  } finally {
+    chmodSync(locked, 0o644);
+  }
+});
+
+test("waitingOn: a reader's own exit propagates; only a read error is the table's", async () => {
+  const { waitingOn } = await import("./roadmap.ts");
+  const exit = { code: 1 }; // what cli-exit throws: not an Error
+  assert.throws(
+    () =>
+      waitingOn(
+        [P, Q],
+        () => {
+          throw exit;
+        },
+        new Map([[P, new Set(["R4"])]]),
+      ),
+    (e: unknown) => e === exit,
+  );
+});
+
+test("a tab inside a cell never adds a field: each row lists as exactly five tab fields", () => {
+  const d = mk("tab-in-cell", "| R1 | Call\tbroker | i | s | — | planned | manual |");
+  const lines = list(d).split("\n");
+  assert.equal(lines.length, 1);
+  assert.deepEqual(lines[0]?.split("\t"), ["R1", "planned", "yes", "manual", "Call broker"]);
 });

@@ -10,7 +10,7 @@
 //
 // Usage:
 //   format-trailer.ts round-1 <vendor> <spirit-verdict>
-//   format-trailer.ts round-2 <vendor> <accepted-by-reviewer> <escalated-to-user> <spirit-verdict>
+//   format-trailer.ts follow-up <vendor> <follow-ups 1-3> <pushbacks-accepted-by-reviewer> <escalated-to-user> <spirit-verdict>
 //   format-trailer.ts skipped-user "<verbatim user authorization>"
 //   format-trailer.ts skipped-non-material <typo|formatting|link|wording-polish|section-reorder|clarification>
 //
@@ -21,9 +21,12 @@
 //   plan.md's line is the only durable record of who reviewed the SPEC.
 //   Nothing parses this field; the value is for the human reading plan.md.
 // <spirit-verdict>: MATCH | DRIFT | AMBIGUOUS
+// <follow-ups>: how many follow-up rounds ran after round 1 (1-3, the cap
+//   .agents/skills/review/spec-audit.ts enforces), so the record shows the review depth.
+//   The retired round-2 mode (a pushback-only second round) is refused.
 //
 // Output (one line to stdout):
-//   spec-audit: <vendor> <result>; spirit <verdict>; user-ask-verbatim in spec.md Input
+//   spec-audit: <vendor> round-1[ + N follow-up(s) (…)]; spirit <verdict>; user-ask-verbatim in spec.md Input
 //   spec-audit: skipped — <reason>
 //
 // Exit code: 0 on valid mode; 1 on invalid mode or vendor.
@@ -59,6 +62,15 @@ function validateSpirit(verdict: string): void {
   fail(`error: invalid spirit verdict '${verdict}' — must be MATCH | DRIFT | AMBIGUOUS`);
 }
 
+/** A count argument: a whole number, within [min, max]. */
+function count(value: string, what: string, min: number, max = Number.POSITIVE_INFINITY): number {
+  const n = /^\d+$/.test(value) ? Number(value) : Number.NaN;
+  if (Number.isInteger(n) && n >= min && n <= max) return n;
+  fail(`error: invalid ${what} '${value}' — must be a whole number${max === Number.POSITIVE_INFINITY ? ` ≥ ${min}` : ` from ${min} to ${max}`}`);
+}
+
+const plural = (n: number, word: string): string => `${n} ${word}${n === 1 ? "" : "s"}`;
+
 function validateVendor(vendor: string): void {
   // Any lowercase vendor token the policy could name. Deliberately not a fixed
   // list: pinning one here would reintroduce exactly the coupling this argument
@@ -79,7 +91,7 @@ function labelVendor(vendor: string): string {
 }
 
 async function main(): Promise<void> {
-  const MODE = required(1, "mode required: round-1 | round-2 | skipped-user | skipped-non-material");
+  const MODE = required(1, "mode required: round-1 | follow-up | skipped-user | skipped-non-material");
 
   switch (MODE) {
     case "round-1": {
@@ -90,15 +102,16 @@ async function main(): Promise<void> {
       process.stdout.write(`spec-audit: ${labelVendor(VENDOR)} round-1; spirit ${SPIRIT}; user-ask-verbatim in spec.md Input\n`);
       break;
     }
-    case "round-2": {
+    case "follow-up": {
       const VENDOR = required(2, VENDOR_REQUIRED);
-      const ACCEPTED = required(3, "accepted-by-reviewer count required for round-2");
-      const ESCALATED = required(4, "escalated-to-user count required for round-2");
-      const SPIRIT = required(5, SPIRIT_REQUIRED);
+      const ROUNDS = count(required(3, "follow-up count required: the follow-up rounds run after round 1"), "follow-up count", 1, 3);
+      const ACCEPTED = count(required(4, "accepted-by-reviewer count required for follow-up"), "accepted count", 0);
+      const ESCALATED = count(required(5, "escalated-to-user count required for follow-up"), "escalated count", 0);
+      const SPIRIT = required(6, SPIRIT_REQUIRED);
       validateVendor(VENDOR);
       validateSpirit(SPIRIT);
       process.stdout.write(
-        `spec-audit: ${labelVendor(VENDOR)} round-2 (${ACCEPTED} accepted by ${VENDOR}, ${ESCALATED} escalated); spirit ${SPIRIT}; user-ask-verbatim in spec.md Input\n`,
+        `spec-audit: ${labelVendor(VENDOR)} round-1 + ${plural(ROUNDS, "follow-up")} (${plural(ACCEPTED, "pushback")} accepted by ${VENDOR}, ${ESCALATED} escalated); spirit ${SPIRIT}; user-ask-verbatim in spec.md Input\n`,
       );
       break;
     }
@@ -121,7 +134,7 @@ async function main(): Promise<void> {
       break;
     }
     default:
-      fail(`error: invalid mode '${MODE}' — must be round-1 | round-2 | skipped-user | skipped-non-material`);
+      fail(`error: invalid mode '${MODE}' — must be round-1 | follow-up | skipped-user | skipped-non-material`);
   }
 }
 

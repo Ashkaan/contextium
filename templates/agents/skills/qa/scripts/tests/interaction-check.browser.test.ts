@@ -587,6 +587,118 @@ describe("interaction-check.browser.ts", { skip: SKIP, concurrency: 4 }, () => {
   });
 });
 
+// ── the Access headers go to the site under test and to no other origin ──
+// A site's own pages load fonts and styles from a CDN (api.fontshare.com, say). Sent there, the Access headers turn a font's
+// CORS request into a preflight the CDN refuses, and the page is judged in a
+// fallback font: a live capture read a 670px phone fit
+// where the real page measured 640.
+describe("the Access headers reach only the site under test", { skip: SKIP }, () => {
+  let site: Server | undefined;
+  let cdn: Server | undefined;
+  const siteSeen: IncomingHttpHeaders[] = [];
+  const cdnSeen: IncomingHttpHeaders[] = [];
+  const cdnPaths: string[] = [];
+  const sitePaths: string[] = [];
+  let sitePort = 0;
+  let cdnPort = 0;
+  const portOf = (srv: Server): number => {
+    const a = srv.address();
+    return typeof a === "object" && a !== null ? a.port : 0;
+  };
+  before(async () => {
+    cdn = createHttpServer((q, r) => {
+      cdnSeen.push(q.headers);
+      cdnPaths.push(q.url ?? "");
+      const css = q.url?.endsWith(".css");
+      r.writeHead(200, { "content-type": css ? "text/css" : "image/svg+xml" });
+      r.end(css ? "h1{color:#111}" : "<svg xmlns='http://www.w3.org/2000/svg' width='1' height='1'/>");
+    });
+    await new Promise<void>((res) => cdn?.listen(0, "127.0.0.1", () => res()));
+    cdnPort = portOf(cdn);
+    site = createHttpServer((q, r) => {
+      siteSeen.push(q.headers);
+      sitePaths.push(q.url ?? "");
+      // A same-origin URL that redirects to the other origin: the redirect is
+      // followed, and the headers must not ride along.
+      if (q.url === "/go.css") {
+        r.writeHead(302, { location: `http://localhost:${cdnPort}/r.css` });
+        r.end();
+        return;
+      }
+      // A redirect within the site, as a signed-in site makes: the hop after it
+      // must still carry the headers, or the site answers 401.
+      if (!q.headers["cf-access-client-id"]) {
+        r.writeHead(401);
+        r.end();
+        return;
+      }
+      if (q.url === "/start") {
+        r.writeHead(302, { location: "/" });
+        r.end();
+        return;
+      }
+      // A chain that starts on the site and leaves it: the hop on the site is
+      // signed (it 401s otherwise), the hop off it is not.
+      if (q.url === "/mix.css") {
+        r.writeHead(302, { location: "/mid.css" });
+        r.end();
+        return;
+      }
+      if (q.url === "/mid.css") {
+        r.writeHead(302, { location: `http://localhost:${cdnPort}/z.css` });
+        r.end();
+        return;
+      }
+      if (q.url === "/here.css") {
+        r.writeHead(302, { location: "/there.css" });
+        r.end();
+        return;
+      }
+      if (q.url === "/there.css") {
+        r.writeHead(200, { "content-type": "text/css" });
+        r.end("h1{margin:0}");
+        return;
+      }
+      r.writeHead(200, { "content-type": "text/html" });
+      r.end(
+        `<!doctype html><link rel="stylesheet" href="http://localhost:${cdnPort}/s.css"><link rel="stylesheet" href="/go.css"><link rel="stylesheet" href="/here.css"><link rel="stylesheet" href="/mix.css"><h1>Hi</h1>` +
+          `<img src="http://localhost:${cdnPort}/i.svg" alt=""><button onclick="this.textContent='Saving…'">Save</button>`,
+      );
+    });
+    await new Promise<void>((res) => site?.listen(0, "127.0.0.1", () => res()));
+    sitePort = portOf(site);
+  });
+  after(() => {
+    site?.close();
+    cdn?.close();
+  });
+  test("every request to the site carries them, through its own redirects and a press; none to the other origin does, through a redirect either", async () => {
+    const r = await check(
+      "/start",
+      `http://127.0.0.1:${sitePort}`,
+      JSON.stringify({ access: { id: "ID-7", secret: "SECRET-7" }, actAs: "a@example.com", jwt: "J.7" }),
+    );
+    assert.equal(r.rc, 0, r.out);
+    assert.ok(siteSeen.length >= 2, `site saw ${siteSeen.length} request(s)`);
+    for (const h of siteSeen) {
+      assert.equal(h["cf-access-client-id"], "ID-7");
+      assert.equal(h["x-portal-act-as"], "a@example.com");
+      assert.equal(h["cf-access-jwt-assertion"], "J.7");
+    }
+    assert.ok(cdnSeen.length >= 2, `the other origin saw ${cdnSeen.length} request(s)`);
+    assert.ok(cdnPaths.includes("/r.css"), `the redirect was followed: ${cdnPaths.join(", ")}`);
+    assert.ok(sitePaths.includes("/there.css"), `the site's own redirect was followed: ${sitePaths.join(", ")}`);
+    assert.ok(sitePaths.includes("/mid.css"), `a chain leaving the site was walked on it: ${sitePaths.join(", ")}`);
+    assert.ok(cdnPaths.includes("/z.css"), `and reached its off-site hop: ${cdnPaths.join(", ")}`);
+    for (const h of cdnSeen) {
+      assert.equal(h["cf-access-client-id"], undefined);
+      assert.equal(h["cf-access-client-secret"], undefined);
+      assert.equal(h["x-portal-act-as"], undefined);
+      assert.equal(h["cf-access-jwt-assertion"], undefined);
+    }
+  });
+});
+
 // ── the auth options on stdin become request headers ──
 describe("CF-Access + act-as from stdin", { skip: SKIP }, () => {
   let http: Server | undefined;

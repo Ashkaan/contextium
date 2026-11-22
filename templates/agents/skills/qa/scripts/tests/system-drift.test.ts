@@ -373,6 +373,83 @@ export const App = () => (
   test("and after any CSS length", () => has(r.out, "off-palette-colour  #c1c2c3"));
 }
 
+// ── 13b2. A non-breaking space between the word and the # is still prose ──
+// Pages that keep a number on one line with its label write the space as an
+// entity (`Bar&nbsp;#246813`), and the prose rule above saw no space before the
+// `#`, so five QA runs rejected such a number by hand (2026-10-30 to
+// 2026-11-13). `&nbsp;`, `&#160;` and `&#xA0;` separate words as a space does.
+{
+  const repo = newRepo("prose-hash-nbsp");
+  realDesign(repo, FOUR_STEP);
+  writeApp(
+    repo,
+    `export const App = () => (
+  <footer>
+    <span>Licence&nbsp;No&nbsp;#246813</span>
+    <span>No&#160;#135791 and No&#xA0;#975310</span>
+    <span style={{ border: "1px&nbsp;#d1d2d3" }}>a length still precedes a colour</span>
+  </footer>
+);
+`,
+  );
+  const r = drift(repo);
+  test("a number after a word and &nbsp; is not a colour", () => lacks(r.out, "#246813"));
+  test("nor one after a word and a numeric non-breaking space", () => {
+    lacks(r.out, "#135791");
+    lacks(r.out, "#975310");
+  });
+  test("a hex after a CSS length is still a colour", () => has(r.out, "off-palette-colour  #d1d2d3"));
+}
+
+// ── 13c. An HTML character reference is not a colour ───────────────────
+// docs.example.com writes a non-breaking hyphen as `&#8209;` (23
+// times) and ai-talk-xperi a square bullet as `&#9632;`: four to eight digits
+// after a #, so the literal match reported `#8209` as an off-palette colour, a
+// P2 from its count alone. A `#` straight after `&` opens a
+// character reference, never a colour.
+{
+  const repo = newRepo("char-ref");
+  realDesign(repo, FOUR_STEP);
+  writeApp(
+    repo,
+    `export const App = () => (
+  <div>
+    <p>multi&#8209;factor login, non&#8209;public</p>
+    <span>&#9632; item</span>
+    <span>&#128273; key</span>
+    <span style={{ color: "#abcdef" }}>a real colour</span>
+  </div>
+);
+`,
+  );
+  const r = drift(repo);
+  test("a non-breaking hyphen reference is not a colour", () => lacks(r.out, "#8209"));
+  test("nor a square bullet reference", () => lacks(r.out, "#9632"));
+  test("nor an emoji reference", () => lacks(r.out, "#128273"));
+  test("a real colour on the same page still is", () => has(r.out, "off-palette-colour  #abcdef"));
+}
+
+// ── 13d. A colour built at run time is checked by its fixed channels ──────
+// slides.example.com draws its scenes with `tealA: a => \`rgba(0,180,216,${a})\``,
+// the declared teal #00b4d8 at an alpha only known while it runs. Compared as
+// text it could never match any declaration. Its red, green and
+// blue are fixed, so those are what is compared; an undeclared base still reports.
+{
+  const repo = newRepo("runtime-alpha");
+  realDesign(repo, FOUR_STEP);
+  writeApp(
+    repo,
+    "export const C = {\n" +
+      "  tealA: (a) => `rgba(16,16,16,${a})`,\n" +
+      "  oddA: (a) => `rgba(1,2,3,${a})`,\n" +
+      "};\n",
+  );
+  const r = drift(repo);
+  test("a run-time alpha of a declared colour is on the palette", () => lacks(r.out, "rgba(16,16,16"));
+  test("a run-time alpha of an undeclared colour still reports", () =>
+    has(r.out, "off-palette-colour  rgba(1,2,3,${a})"));
+}
+
 // ── 14. A recipe claim is never counted as a defect ───────────────────────
 {
   const repo = newRepo("claims");

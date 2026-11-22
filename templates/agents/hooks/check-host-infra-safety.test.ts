@@ -16,13 +16,17 @@
 
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { test } from "node:test";
+import { after, test } from "node:test";
 import { fileURLToPath } from "node:url";
 
 const HOOK = join(dirname(fileURLToPath(import.meta.url)), "check-host-infra-safety.sh");
 assert.ok(existsSync(HOOK), `hook not found at ${HOOK}`);
+// Every run's firing line goes to this HOME's log, never the real one.
+const HOME = mkdtempSync(join(tmpdir(), "host-infra-home-"));
+after(() => rmSync(HOME, { recursive: true, force: true }));
 
 interface Run {
   rc: number;
@@ -34,6 +38,7 @@ function hook(stdin: string, ...args: string[]): Run {
   const res = spawnSync("bash", [HOOK, ...args], {
     input: stdin,
     encoding: "utf8",
+    env: { ...process.env, HOME },
   });
   return { rc: res.status ?? -1, out: res.stdout ?? "", err: res.stderr ?? "" };
 }
@@ -289,3 +294,4 @@ for (const [name, command] of CONTROLS) {
     assert.equal(r.rc, 0, `expected a pass for: ${command}\n${r.err}`);
   });
 }
+

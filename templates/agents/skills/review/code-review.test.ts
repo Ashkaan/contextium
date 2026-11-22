@@ -39,6 +39,7 @@ import {
   readFileSync,
   realpathSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -107,9 +108,9 @@ const BASE_ENV: NodeJS.ProcessEnv = {
   WORKBENCH_THREAD_ID: "",
   POLICY_CHAIN_RESOLVER: `${TMP}/resolve-model.sh`,
   CODE_REVIEW_SNAP_STATE_DIR: `${TMP}/snaps`,
-  // Every loop below walks a 4-round ceiling, which keeps this suite inside the
-  // close's 180 s per suite; "the shipped ceiling" walks the real one.
-  CODE_REVIEW_MAX_ROUNDS: "4",
+  // Every loop below walks the shipped 3-round ceiling, short
+  // enough for the close's 180 s per suite; it was lowered here while the
+  // shipped one was 5 or 10.
 };
 
 // A scratch repo standing in for a session worktree: two committed files, so a
@@ -170,8 +171,8 @@ let LOOP = 0;
 const SHIPPED = Number(
   /^const MAX_ROUNDS = (\d+);$/m.exec(readFileSync(new URL("./code-review.ts", import.meta.url), "utf8"))?.[1],
 );
-assert.ok(SHIPPED > 4, "code-review.ts states a MAX_ROUNDS ceiling above the suite's lowered one");
-const MAX = 4;
+assert.ok(SHIPPED >= 3, "code-review.ts states a MAX_ROUNDS ceiling of at least three: a first review and two repair rounds");
+const MAX = SHIPPED;
 /** Round numbers a..b, inclusive. */
 const upTo = (a: number, b: number): number[] => Array.from({ length: b - a + 1 }, (_, i) => a + i);
 function runReview(args: string[], extra: NodeJS.ProcessEnv = {}): Result {
@@ -379,7 +380,9 @@ test("--since: the converged case, and the delta only", () => {
   // The point of the whole change: settled code stops being re-sent every round.
   lacks("the untouched file does NOT reach the reviewer", "beta two", SEEN_TEXT);
   has("the reviewer is told this is a follow-up round", "FOLLOW-UP ROUND", SEEN_TEXT);
-  has("the follow-up brief asks about fix-induced defects", "introduce a NEW defect", SEEN_TEXT);
+  has("the follow-up asks for bugs the repairs cause or expose", "Report any bug these repairs cause", SEEN_TEXT);
+  has("a break in an untouched caller is reported with its cause", 'with "caused by <the changed file:line>"', SEEN_TEXT);
+  lacks("and drops the test-strength hunt", "9. Claims against failure", SEEN_TEXT);
   // AGENTS.md § Standards names no validation library; neither may the reviewer.
   lacks("the conventions do not demand Zod", "Zod", SEEN_TEXT);
   has("the conventions still ask for validation at the boundary", "validated at every boundary", SEEN_TEXT);
@@ -553,10 +556,8 @@ test("the round ceiling", () => {
       GROK_BIN: STUB,
     }).rc;
   };
-  rcIs("no session id: round 2 is allowed", 0, nosidRound(2));
-  rcIs("no session id: round 3 is allowed", 0, nosidRound(3));
-  rcIs("no session id: round 4 is allowed", 0, nosidRound(4));
-  rcIs("no session id: round 5 is still refused", 5, nosidRound(5));
+  for (const n of upTo(2, MAX)) rcIs(`no session id: round ${n} is allowed`, 0, nosidRound(n));
+  rcIs(`no session id: round ${MAX + 1} is still refused`, 5, nosidRound(MAX + 1));
   eq(
     "no session id: the counter is keyed on the generated thread id",
     "session-",
@@ -594,6 +595,46 @@ test("the shipped ceiling is MAX_ROUNDS, and the override cannot raise it", () =
   }
   has("the last one says the shipped ceiling", `round ${SHIPPED} of at most ${SHIPPED}`, last?.err ?? "");
   rcIs("a value that would raise the ceiling is ignored", 5, walk(SHIPPED + 1).rc);
+  rmSync(CEIL_STATE, { recursive: true, force: true });
+});
+
+// ── The user's approval past the ceiling ────────────────────────────────
+test("past the ceiling, a round runs only on the user's dated approval, and each is recorded", () => {
+  rmSync(CEIL_STATE, { recursive: true, force: true });
+  for (const n of upTo(2, MAX)) ceilRound(n);
+  const withWords = (words: string, n: string): Result => {
+    const snap = snapshot();
+    appendFileSync(`${REPO}/alpha.txt`, `approved ${n} edit\n`);
+    return review(["--since", snap], {
+      ...BASE_ENV,
+      CODE_REVIEW_PAST_CEILING_BY: words,
+      CODE_REVIEW_ROUND_STATE_DIR: CEIL_STATE,
+      CLAUDE_CODE_SESSION_ID: "ceiling-test",
+      CODEX_REVIEW_REPO: REPO,
+      POLICY_JSON: POLICY,
+      CODEX_BIN: STUB,
+      GROK_BIN: STUB,
+    });
+  };
+  rcIs("words with no date or name are no approval", 5, withWords("sure, go ahead", "vague").rc);
+  const land = withWords(`"Land the session now!!!" — Robin, 2026-11-20`, "land");
+  rcIs("the user's words asking to land are no approval for another round", 5, land.rc);
+  has("and the refusal points at the close's override", "CLOSE_REVIEW_OVERRIDDEN_BY", land.err);
+  rcIs(
+    "nor are words asking to close",
+    5,
+    withWords(`"That's fine. Close this out!!" — Robin, 2026-11-05`, "close").rc,
+  );
+  const ok = withWords(`"1" (one more review of the two fixes, then land) — Robin, 2026-11-05`, "approved");
+  rcIs("the user's dated approval lets the round past the ceiling run", 0, ok.rc);
+  has("the run says it was authorized and by what", "past the round-", ok.err);
+  const files = readdirSync(CEIL_STATE).filter((x) => x.endsWith(".authorized"));
+  eq("one approval record beside the counter", 1, files.length);
+  has(
+    "the record quotes the user's words",
+    "one more review of the two fixes",
+    readFileSync(join(CEIL_STATE, files[0] as string), "utf8"),
+  );
   rmSync(CEIL_STATE, { recursive: true, force: true });
 });
 
@@ -826,12 +867,12 @@ writeFileSync(
     ],
   }),
 );
-function framed(reply: string, extra: NodeJS.ProcessEnv = {}): Result & { result: string } {
+function framed(reply: string, extra: NodeJS.ProcessEnv = {}, args = ["HEAD~1", "HEAD"]): Result & { result: string } {
   const stub = `${TMP}/framed-${createHash("sha256").update(reply).digest("hex").slice(0, 8)}.sh`;
   writeFileSync(`${stub}.reply`, reply);
   exe(stub, `#!/usr/bin/env bash\ncat > "${SEEN}"\ncat "${stub}.reply"\n`);
   rmSync(RESULT, { force: true });
-  const r = runReview(["HEAD~1", "HEAD"], {
+  const r = runReview(args, {
     CODEX_BIN: stub,
     GROK_BIN: stub,
     CODE_REVIEW_RESULT_FILE: RESULT,
@@ -866,9 +907,25 @@ test("receipt mode: findings come only from the findings field", () => {
   eq("the result carries them too", 2, JSON.parse(r.result).findings.length);
 });
 
+test("receipt mode: Grok's concatenated narration cannot hide a valid final frame", () => {
+  const before = snapshot();
+  appendFileSync(`${REPO}/alpha.txt`, "frame transport regression\n");
+  const r = framed(frame({ findings: "NO_FINDINGS", coverage: cov }, "I'll read the files.", "All done."), {}, [
+    "--since",
+    before,
+  ]);
+  assert.equal(r.rc, 0, `a final frame glued to narration is still a completed review: ${r.err}`);
+  eq("narration is not reported as findings", 0, JSON.parse(r.result).findings.length);
+});
+
 test("receipt mode: a malformed frame is not a review", () => {
   for (const [name, reply] of [
     ["no frame (the old triage format)", "NO_FINDINGS\n"],
+    [
+      "two frames glued to narration",
+      frame({ findings: "NO_FINDINGS", coverage: cov }, "Reading.") +
+        frame({ findings: "NO_FINDINGS", coverage: cov }, "Done."),
+    ],
     [
       "two frames",
       frame({ findings: "NO_FINDINGS", coverage: cov }) + frame({ findings: "NO_FINDINGS", coverage: cov }),
@@ -894,6 +951,18 @@ test("receipt mode: a malformed frame is not a review", () => {
     eq(`${name}: no result is written`, "", r.result);
     eq(`${name}: nothing on stdout`, "", r.out);
   }
+});
+
+test("receipt mode: a finding glued onto the closing marker cannot grant approval", () => {
+  const before = snapshot();
+  appendFileSync(`${REPO}/alpha.txt`, "closing marker regression\n");
+  const reply = frame({ findings: "NO_FINDINGS", coverage: cov }).replace(
+    "END_REVIEW_V1\n",
+    "END_REVIEW_V1[must-fix] alpha.txt:1: defect\n",
+  );
+  const r = framed(reply, {}, ["--since", before]);
+  assert.equal(r.rc, 1, "a glued trailing finding must reject the frame");
+  assert.equal(r.result, "", "a rejected frame grants no receipt");
 });
 
 // ── The blast-radius pack reaches the reviewer ────────────────────────
@@ -1258,19 +1327,23 @@ test("a sentence that merely mentions the sentinel falls through to a working ba
   has("answered by the backup", "1 finding(s) from grok", r.err);
 });
 
+/** A finding's id as audit-dedupe.ts findingId gives it: F and six hex digits of the normalised line. */
+const fid = (line: string): string =>
+  `F${createHash("sha256").update(line.replace(/\s+/g, " ").trim()).digest("hex").slice(0, 6)}`;
 test("receipt mode: a follow-up round is shown the findings still open", () => {
   const items = `${TMP}/open-items.json`;
-  writeFileSync(
-    items,
-    JSON.stringify({ items: [{ id: "E1", text: "e" }], openFindings: ["[must-fix] alpha.txt:1: still wrong — x — y"] }),
-  );
+  const OPEN1 = "[must-fix] alpha.txt:1: still wrong — x — y";
+  writeFileSync(items, JSON.stringify({ items: [{ id: "E1", text: "e" }], openFindings: [OPEN1] }));
   const snap = snapshot();
   appendFileSync(`${REPO}/alpha.txt`, "open findings edit\n");
   const stub = `${TMP}/open-stub.sh`;
-  exe(
-    stub,
-    `#!/usr/bin/env bash\ncat > "${SEEN}"\nprintf 'BEGIN_REVIEW_V1\\n{"findings":"NO_FINDINGS","coverage":[{"id":"E1","status":"checked","evidence":["r"]}]}\\nEND_REVIEW_V1\\n'\n`,
-  );
+  const frame = JSON.stringify({
+    findings: "NO_FINDINGS",
+    coverage: [{ id: "E1", status: "checked", evidence: ["r"] }],
+    verdicts: [{ id: fid(OPEN1), verdict: "fixed", evidence: "alpha.txt:1 now right" }],
+  });
+  writeFileSync(`${TMP}/open.frame`, `BEGIN_REVIEW_V1\n${frame}\nEND_REVIEW_V1\n`);
+  exe(stub, `#!/usr/bin/env bash\ncat > "${SEEN}"\ncat "${TMP}/open.frame"\n`);
   const r = runReview(["--since", snap], {
     CODEX_BIN: stub,
     GROK_BIN: stub,
@@ -1279,7 +1352,13 @@ test("receipt mode: a follow-up round is shown the findings still open", () => {
   });
   rcIs("the follow-up runs", 0, r.rc);
   has("the open finding is in the prompt", "EARLIER FINDINGS STILL OPEN", seen());
-  has("verbatim", "[must-fix] alpha.txt:1: still wrong", seen());
+  has("verbatim, under its id", `${fid(OPEN1)}  [must-fix] alpha.txt:1: still wrong`, seen());
+  has("and the reviewer is asked for one verdict each", '"verdict": "fixed" | "disproved" | "open"', seen());
+  eq(
+    "the result records the verdicts",
+    "fixed",
+    JSON.parse(readFileSync(`${TMP}/open-result.json`, "utf8")).verdicts[0].verdict,
+  );
   // The result names what the prompt showed: a finding the round was shown and
   // did not re-raise is closed by the receipt, one it never saw stays open.
   eq(
@@ -1298,10 +1377,10 @@ test("receipt mode: findings still open are exempt from the output cap", () => {
   writeFileSync(items, JSON.stringify({ items: [{ id: "E1", text: "e" }], openFindings: open }));
   const snap = snapshot();
   appendFileSync(`${REPO}/alpha.txt`, "cap edit\n");
-  const all = [...open, "[must-fix] beta.txt:2: a new one — x — y"];
   const frame = JSON.stringify({
-    findings: all.join("\n"),
+    findings: "[must-fix] alpha.txt:2: a new one — witness: a normal run → exit 1",
     coverage: [{ id: "E1", status: "checked", evidence: ["r"] }],
+    verdicts: open.map((f) => ({ id: fid(f), verdict: "open", evidence: "still fails" })),
   });
   writeFileSync(`${TMP}/cap.frame`, `BEGIN_REVIEW_V1\n${frame}\nEND_REVIEW_V1\n`);
   const stub = `${TMP}/cap-stub.sh`;
@@ -1314,94 +1393,147 @@ test("receipt mode: findings still open are exempt from the output cap", () => {
   });
   rcIs("the follow-up runs", 0, r.rc);
   has("the cap counts new findings only", "at most 8 NEW findings", seen());
-  has("the open list is exempt from it", "exempt from the output cap", seen());
+  has("the open list gets verdicts outside the cap", "so it never counts toward the cap", seen());
   const res = JSON.parse(readFileSync(`${TMP}/cap-result.json`, "utf8"));
-  eq("all nine re-reported and the new one are recorded", 10, res.findings.length);
+  eq("the new finding is recorded", 1, res.findings.length);
   eq("the nine open findings were shown", 9, res.shown.length);
+  eq("and all nine have a verdict", 9, res.verdicts.length);
 });
 
-// ── REPEAT SPOT: the same place flagged two reviews running ───────────────
-// A save handler patched through seven reviews drew a new finding beside the
-// last each time; the warning tells the build to redesign the piece instead.
-function repeatRound(name: string, open: string[], findings: string): Result {
-  const items = `${TMP}/repeat-${name}.json`;
-  writeFileSync(items, JSON.stringify({ items: [{ id: "E1", text: "e" }], openFindings: open }));
+// One follow-up round over a scratch edit, its reviewer answering <findings>
+// (and <verdicts>) inside the receipt frame.
+function followUp(
+  name: string,
+  open: string[],
+  findings: string,
+  o: { verdicts?: unknown; changeFiles?: string[]; extra?: NodeJS.ProcessEnv; edit?: boolean } = {},
+  // verdicts: "omit" sends a frame with no verdicts key at all.
+): Result {
+  const items = `${TMP}/fu-${name}.json`;
+  writeFileSync(
+    items,
+    JSON.stringify({
+      items: [{ id: "E1", text: "e" }],
+      openFindings: open,
+      ...(o.changeFiles ? { changeFiles: o.changeFiles } : {}),
+    }),
+  );
   const snap = snapshot();
-  appendFileSync(`${REPO}/alpha.txt`, `repeat ${name} edit\n`);
-  const stub = `${TMP}/repeat-${name}.sh`;
-  const frame = JSON.stringify({ findings, coverage: [{ id: "E1", status: "checked", evidence: ["r"] }] });
-  writeFileSync(`${TMP}/repeat-${name}.frame`, `BEGIN_REVIEW_V1\n${frame}\nEND_REVIEW_V1\n`);
-  exe(stub, `#!/usr/bin/env bash\ncat >/dev/null\ncat "${TMP}/repeat-${name}.frame"\n`);
+  if (o.edit !== false) appendFileSync(`${REPO}/alpha.txt`, `follow-up ${name} edit\n`);
+  const stub = `${TMP}/fu-${name}.sh`;
+  const verdicts =
+    o.verdicts ?? (open.length > 0 ? open.map((f) => ({ id: fid(f), verdict: "open", evidence: "still fails" })) : undefined);
+  const frame = JSON.stringify({
+    findings,
+    coverage: [{ id: "E1", status: "checked", evidence: ["r"] }],
+    ...(verdicts === undefined || verdicts === "omit" ? {} : { verdicts }),
+  });
+  writeFileSync(`${TMP}/fu-${name}.frame`, `BEGIN_REVIEW_V1\n${frame}\nEND_REVIEW_V1\n`);
+  exe(stub, `#!/usr/bin/env bash\ncat > "${SEEN}"\ncat "${TMP}/fu-${name}.frame"\n`);
   return runReview(["--since", snap], {
     CODEX_BIN: stub,
     GROK_BIN: stub,
-    CODE_REVIEW_RESULT_FILE: `${TMP}/repeat-${name}-result.json`,
+    CODE_REVIEW_RESULT_FILE: `${TMP}/fu-${name}-result.json`,
     CODE_REVIEW_COVERAGE_FILE: items,
+    ...o.extra,
   });
 }
-test("a finding beside one the last review left open is a repeat spot", () => {
-  const open = ["[must-fix] src/Editor.tsx:153: readKey advances early — x — y"];
-  const near = repeatRound("near", open, "[must-fix] src/Editor.tsx:165: the race remains — x — y");
-  rcIs("the review completes", 0, near.rc);
-  has(
-    "the warning names both spots",
-    "REPEAT SPOT: src/Editor.tsx:165 — the last review flagged src/Editor.tsx:153 too",
-    near.err,
-  );
-  has("and says what to do", "redesign it as a whole", near.err);
-  eq("stdout stays triage lines only", "[must-fix] src/Editor.tsx:165: the race remains — x — y\n", near.out);
-  const edge = repeatRound("edge", open, "[should-fix] src/Editor.tsx:178: still stale — x");
-  has("25 lines away still counts", "REPEAT SPOT: src/Editor.tsx:178", edge.err);
-  const far = repeatRound("far", open, "[must-fix] src/Editor.tsx:179: a new hole — x — y");
-  lacks("26 lines away is a new spot", "REPEAT SPOT", far.err);
-  const other = repeatRound("other", open, "[must-fix] src/Invoice.tsx:153: same line, other file — x — y");
-  lacks("the same line in another file is a new spot", "REPEAT SPOT", other.err);
-  const nit = repeatRound("nit", open, "[nit] src/Editor.tsx:154: wording");
-  lacks("a nit is never a repeat spot", "REPEAT SPOT", nit.err);
-  const ticked = repeatRound("ticked", open, "[must-fix] `src/Editor.tsx:160`: backticked — x — y");
-  has("a backticked location is read", "REPEAT SPOT: src/Editor.tsx:160", ticked.err);
-  const linked = repeatRound(
-    "linked",
-    ["[must-fix] [src/Editor.tsx:153](/abs/src/Editor.tsx:153): linked — x — y"],
-    "[should-fix] [src/Editor.tsx:170](/abs/src/Editor.tsx:170): linked again — x",
-  );
-  has(
-    "a markdown-link location is read on both sides",
-    "REPEAT SPOT: src/Editor.tsx:170 — the last review flagged src/Editor.tsx:153",
-    linked.err,
-  );
-  const none = repeatRound("none", [], "[must-fix] src/Editor.tsx:153: first sighting — x — y");
-  lacks("with nothing open there is nothing to repeat", "REPEAT SPOT", none.err);
-  eq(
-    "a round shown nothing records an empty shown list",
-    "[]",
-    JSON.stringify(JSON.parse(readFileSync(`${TMP}/repeat-none-result.json`, "utf8")).shown),
-  );
-  // The spot's file is the finding's file, read by the one rule every reader
-  // of a finding uses (audit-dedupe.ts leadingPath): a path holding a colon was
-  // cut at it, so its repeat was never seen.
-  const colon = repeatRound(
-    "colon",
-    ["[must-fix] src/x:y.tsx:153: first — x — y"],
-    "[must-fix] src/x:y.tsx:160: again — x — y",
-  );
-  has(
-    "a path holding a colon is one file",
-    "REPEAT SPOT: src/x:y.tsx:160 — the last review flagged src/x:y.tsx:153",
-    colon.err,
-  );
-  // A backticked location runs to its closing backtick: a space in the name
-  // once cut it at `src/my`, which has no line, so the repeat went unseen.
-  const spaced = repeatRound(
-    "spaced",
-    ["[must-fix] `src/my file.tsx:10`: first — x — y"],
-    "[must-fix] `src/my file.tsx:20`: again — x — y",
-  );
-  has(
-    "a backticked path holding a space is one file",
-    "REPEAT SPOT: src/my file.tsx:20 — the last review flagged src/my file.tsx:10",
-    spaced.err,
-  );
+const fuResult = (name: string) => JSON.parse(readFileSync(`${TMP}/fu-${name}-result.json`, "utf8"));
+
+// ── How a review's findings are sorted ──
+// A must-fix or should-fix is a bug and holds the change; an [idea] never does
+// and goes to the improvements row, unless it may touch sending, money or
+// deleting; a finding outside the build's change is another session's code
+// unless it says how this change causes it.
+test("ideas never hold the change, a held-topic idea does, and a finding outside the change needs its cause", () => {
+  const lines = [
+    "[idea] alpha.txt: show the count beside the total",
+    "[idea] alpha.txt: resend the summary email when it bounces",
+    "[must-fix] src/untouched.ts:10: an old corner — witness: a blank → a crash",
+    "[must-fix] src/caller.ts:5: double-sends on retry — witness: a timeout → two sends — caused by alpha.txt:2",
+    "[must-fix] src/other.ts:5: wrong — witness: x → y — caused by src/also-untouched.ts:3",
+    "[must-fix] alpha.txt:1: wrong total — witness: 3 rows → 4",
+    "[nit] src/untouched.ts:3: a name",
+  ].join("\n");
+  const r = followUp("sort", [], lines, { changeFiles: ["alpha.txt", "beta.txt"] });
+  rcIs("the round completes", 0, r.rc);
+  lacks("an idea is not a finding", "show the count beside the total", r.out);
+  has("an idea about sending is held as a should-fix", "[should-fix] alpha.txt: resend the summary email when it bounces (held:", r.out);
+  lacks("a finding outside the change with no cause is not this change's", "src/untouched.ts:10", r.out);
+  has("a break this change causes in an untouched caller holds it", "src/caller.ts:5: double-sends", r.out);
+  lacks("a cause outside the change does not count", "src/other.ts:5", r.out);
+  has("a bug in the change holds it", "alpha.txt:1: wrong total", r.out);
+  has("a nit passes as written", "[nit] src/untouched.ts:3", r.out);
+  has("the note is named on stderr", "outside this build's change, noted: [must-fix] src/untouched.ts:10", r.err);
+  const res = fuResult("sort");
+  eq("the result records the idea", JSON.stringify(["[idea] alpha.txt: show the count beside the total"]), JSON.stringify(res.ideas));
+  eq("and the two notes", 2, res.noted.length);
+  eq("a round shown nothing records an empty shown list", "[]", JSON.stringify(res.shown));
+  const blind = followUp("sort-unknown", [], "[must-fix] src/untouched.ts:10: an old corner — witness: a blank → a crash");
+  has("with the build's change unknown, nothing is set aside", "src/untouched.ts:10", blind.out);
+  const all = followUp("sort-clean", [], "[idea] alpha.txt: a clearer label", { changeFiles: ["alpha.txt"] });
+  rcIs("ideas alone are a clean review", 0, all.rc);
+  eq("with nothing on stdout", "", all.out);
+  has("and say so", "ideas and notes only", all.err);
+});
+
+// ── A follow-up judges every open finding by its id (Codex, 2026-11-22) ──
+test("a follow-up must give each open finding exactly one verdict by its id", () => {
+  const OPEN1 = "[must-fix] alpha.txt:7: reads the bathroom digit as bedrooms — witness: 2 bd 1 ba → 1";
+  const none = followUp("vd-none", [OPEN1], "NO_FINDINGS", { verdicts: [] });
+  assert.notEqual(none.rc, 0, "a frame with no verdict for a shown finding is not a review");
+  has("and says which is missing", `verdicts omit ${fid(OPEN1)}`, none.err);
+  const odd = followUp("vd-odd", [OPEN1], "NO_FINDINGS", {
+    verdicts: [{ id: fid(OPEN1), verdict: "maybe", evidence: "x" }],
+  });
+  assert.notEqual(odd.rc, 0, "a verdict outside fixed, disproved and open is not a review");
+  const missingKey = followUp("vd-key", [OPEN1], "NO_FINDINGS", { verdicts: "omit" });
+  assert.notEqual(missingKey.rc, 0, "a frame without the verdicts key is not a review");
+  const ok = followUp("vd-ok", [OPEN1], "NO_FINDINGS", {
+    verdicts: [{ id: fid(OPEN1), verdict: "disproved", evidence: "the roll prints Beds and Baths columns; 2 bd stays 2" }],
+  });
+  rcIs("one verdict each is a review", 0, ok.rc);
+  eq("and is recorded", "disproved", fuResult("vd-ok").verdicts[0].verdict);
+});
+
+// ── The builder's evidence gets a review without a code change ─────────────
+test("a rebuttal runs a round with no source change, and reaches the reviewer beside its finding", () => {
+  const OPEN1 = "[must-fix] alpha.txt:8: a Unix-millisecond date sorts wrong — witness: 1785056400000 → 1970";
+  const reb = `${TMP}/rebuttal.txt`;
+  writeFileSync(reb, `${fid(OPEN1)}: the spec's supported inputs are ISO dates; any other string gets the fallback "date unknown"\n`);
+  const r = followUp("rebut", [OPEN1], "NO_FINDINGS", {
+    edit: false,
+    verdicts: [{ id: fid(OPEN1), verdict: "disproved", evidence: "fallback applies" }],
+    extra: { CODE_REVIEW_REBUTTAL_FILE: reb },
+  });
+  rcIs("the round runs although nothing changed", 0, r.rc);
+  has("the evidence sits under its finding", "the builder's evidence that it is not a bug: the spec's supported inputs are ISO dates", seen());
+  writeFileSync(reb, "not an id line\n");
+  const bad = followUp("rebut-bad", [OPEN1], "NO_FINDINGS", { edit: false, extra: { CODE_REVIEW_REBUTTAL_FILE: reb } });
+  rcIs("a rebuttal line without an id is a caller error", 2, bad.rc);
+});
+
+test("a QA-bucket follow-up's finding holds the change like any other", () => {
+  const items = `${TMP}/qa-bucket.json`;
+  writeFileSync(items, JSON.stringify({ items: [{ id: "E1", text: "e" }], openFindings: [] }));
+  const snap = snapshot();
+  appendFileSync(`${REPO}/alpha.txt`, "qa bucket edit\n");
+  const stub = `${TMP}/qa-bucket.sh`;
+  const frame = JSON.stringify({
+    findings: "[must-fix] alpha.txt:1: a new defect — x — y",
+    coverage: [{ id: "E1", status: "checked", evidence: ["r"] }],
+  });
+  writeFileSync(`${TMP}/qa-bucket.frame`, `BEGIN_REVIEW_V1\n${frame}\nEND_REVIEW_V1\n`);
+  exe(stub, `#!/usr/bin/env bash\ncat >/dev/null\ncat "${TMP}/qa-bucket.frame"\n`);
+  const r = runReview(["--since", snap], {
+    CODEX_BIN: stub,
+    GROK_BIN: stub,
+    CODE_REVIEW_BUCKET: "qa",
+    CODE_REVIEW_RESULT_FILE: `${TMP}/qa-bucket-result.json`,
+    CODE_REVIEW_COVERAGE_FILE: items,
+  });
+  rcIs("the QA round completes", 0, r.rc);
+  has("an unlabeled finding still blocks there", "[must-fix] alpha.txt:1: a new defect", r.out);
 });
 
 test("receipt mode: a primary whose findings are narration falls through to a working backup", () => {
@@ -1495,6 +1627,126 @@ function rounds(dir: string): number {
   const f = readdirSync(dir).find((n) => !n.includes("."));
   return f ? Number(readFileSync(join(dir, f), "utf8").trim()) : 0;
 }
+
+test("interrupted follow-up, repeated full and final reviews keep their allowance for the retry", () => {
+  for (const mode of ["since", "range", "final"]) {
+    const dir = `${TMP}/interrupted-${mode}`;
+    const env = { CODE_REVIEW_ROUND_STATE_DIR: dir, CODE_REVIEW_LOOP_ID: `interrupted-${mode}` };
+    assert.equal(sliceReview([SBASE, "HEAD"], env).rc, 0);
+    const before = sliceReview(["--snapshot"], env).out.trim();
+    appendFileSync(`${SREPO}/a.ts`, `\n// pending ${mode}\n`);
+    if (mode === "final") {
+      for (let round = 2; round <= MAX; round++) {
+        const pre = sliceReview(["--snapshot"], env).out.trim();
+        appendFileSync(`${SREPO}/a.ts`, `\n// round ${round}\n`);
+        assert.equal(sliceReview(["--since", pre], env).rc, 0);
+      }
+    }
+    const args = mode === "range" ? [SBASE, "HEAD"] : ["--since", before, ...(mode === "final" ? ["--final"] : [])];
+    const spent = rounds(dir);
+    const dead = `${TMP}/interrupted-${mode}.sh`;
+    exe(dead, "#!/usr/bin/env bash\ncat >/dev/null\nexit 1\n");
+    const failed = sliceReview(args, { ...env, CODEX_BIN: dead, GROK_BIN: dead });
+    assert.notEqual(failed.rc, 0, `${mode}: the reviewer was unavailable`);
+    assert.equal(rounds(dir), spent, `${mode}: an interrupted/unanswered review must not spend a round`);
+    const retry = sliceReview(args, env);
+    assert.equal(retry.rc, 0, `${mode}: the same review can resume without fresh approval: ${retry.err}`);
+  }
+});
+
+test("issued snapshots survive temporary-directory cleanup and a reviewer retry", () => {
+  const auditOwner = "durable-snapshot-owner";
+  const env = {
+    CODE_REVIEW_LOOP_ID: auditOwner,
+    CODE_REVIEW_SNAP_STATE_DIR: "",
+    CODE_REVIEW_ROUND_STATE_DIR: `${TMP}/durable-snapshot-rounds`,
+  };
+  const snapshot = sliceReview(["--snapshot"], env);
+  assert.equal(snapshot.rc, 0, snapshot.err);
+  const durable = join(TMP, ".cache/workbench/threads", auditOwner, "review-snapshots");
+  assert.ok(existsSync(durable), "the snapshot ledger must live in durable thread state, not /tmp");
+  appendFileSync(`${SREPO}/a.ts`, "\n// after restart\n");
+  const r = sliceReview(["--since", snapshot.out.trim()], env);
+  assert.equal(r.rc, 0, r.err);
+});
+
+test("a symlinked repo recovers its completed receipt snapshot after the old ledger disappears", () => {
+  const id = "alias-recovery",
+    ledger = `${TMP}/alias-recovery-ledger`;
+  const env = {
+    CODE_REVIEW_LOOP_ID: id,
+    CODE_REVIEW_SNAP_STATE_DIR: ledger,
+    CODE_REVIEW_ROUND_STATE_DIR: `${TMP}/alias-recovery-rounds`,
+  };
+  const tree = sliceReview(["--snapshot"], env).out.trim();
+  const dir = join(TMP, ".cache/workbench/threads", id);
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(
+    join(dir, "review.json"),
+    JSON.stringify({
+      version: 1,
+      owner: id,
+      repos: {
+        [SREPO]: {
+          required: true,
+          base: SBASE,
+          scope: "",
+          report: null,
+          registeredAt: new Date().toISOString(),
+          spendInit: {},
+          receipt: {
+            status: "complete",
+            mode: "range",
+            bucket: "build",
+            tree,
+            base: SBASE,
+            scope: "",
+            startedAt: new Date().toISOString(),
+            block: null,
+            covered: {},
+            requiredItems: [],
+            authors: "claude",
+            reviewer: "codex/stub",
+            approved: true,
+          },
+        },
+      },
+    }),
+  );
+  rmSync(ledger, { recursive: true, force: true });
+  const alias = `${TMP}/alias-recovery-repo`;
+  symlinkSync(SREPO, alias);
+  appendFileSync(join(SREPO, "a.ts"), "\n// pending after old ledger cleanup\n");
+  const r = sliceReview(["--since", tree], { ...env, CODEX_REVIEW_REPO: alias });
+  assert.equal(r.rc, 0, "aliases must find the same durable receipt: " + r.err);
+});
+
+test("a changed companion or declaration gets a coverage-only review even with no product diff", () => {
+  const env = { CODE_REVIEW_LOOP_ID: "coverage-only", CODE_REVIEW_ROUND_STATE_DIR: `${TMP}/coverage-only-rounds` };
+  const previous = sliceReview(["--snapshot"], env).out.trim();
+  const items = `${TMP}/coverage-only-items.json`;
+  writeFileSync(
+    items,
+    JSON.stringify({
+      items: [{ id: "D1", text: "read companion/shared.ts" }],
+      changedCoverage: ["companion::shared.ts"],
+    }),
+  );
+  const stub = `${TMP}/coverage-only.sh`;
+  exe(
+    stub,
+    `#!/usr/bin/env bash\ncat > "${SEEN}"\nprintf '%s\\n' 'BEGIN_REVIEW_V1' '{"findings":"NO_FINDINGS","coverage":[{"id":"D1","status":"checked","evidence":["companion/shared.ts"]}]}' 'END_REVIEW_V1'\n`,
+  );
+  const r = sliceReview(["--since", previous], {
+    ...env,
+    CODEX_BIN: stub,
+    GROK_BIN: stub,
+    CODE_REVIEW_COVERAGE_FILE: items,
+    CODE_REVIEW_RESULT_FILE: `${TMP}/coverage-only-result.json`,
+  });
+  assert.equal(r.rc, 0, "changed external coverage is reviewed, not mistaken for convergence: " + r.err);
+  assert.match(seen(), /companion::shared.ts/);
+});
 
 test("a refused repeated full review spends no round: over the budget, or an empty diff", () => {
   const dir = `${TMP}/refusal-rounds`;
@@ -1602,4 +1854,172 @@ test("a piece in T3 needs the audit owner, as the two-arg form does", () => {
   );
   rcIs("refused without CODE_REVIEW_LOOP_ID", 2, r.rc);
   has("and says so", "CODE_REVIEW_LOOP_ID is required in T3", r.err);
+});
+
+// ── The reviewer override ──────────────────────────────────────────────
+// Both chain vendors out (one at its usage limit, one out of credit), the user
+// writes "override: use claude". CODE_REVIEW_REVIEWER_OVERRIDE_BY carries their
+// words; the review then goes to Claude, read-only, recorded as Claude.
+
+/** A commit of its own, so each case reviews HEAD~1..HEAD whatever ran before it. */
+let OVERRIDE_N = 0;
+function overrideCommit(): void {
+  OVERRIDE_N += 1;
+  writeFileSync(`${REPO}/override-${OVERRIDE_N}.txt`, `override case ${OVERRIDE_N}\n`);
+  g("add", "-A");
+  g("commit", "-qm", `override case ${OVERRIDE_N}`);
+}
+
+test("the reviewer override sends the review to Claude, read-only, and records it as Claude with the user's words", () => {
+  const CLAUDE_SEEN = `${TMP}/claude-seen.txt`;
+  const CLAUDE_ARGS = `${TMP}/claude-args.txt`;
+  const CLAUDE = `${TMP}/claude-stub.sh`;
+  exe(
+    CLAUDE,
+    `#!/usr/bin/env bash\necho "$@" > "${CLAUDE_ARGS}"\npwd >> "${CLAUDE_ARGS}"\ncat > "${CLAUDE_SEEN}"\necho '{"type":"result","is_error":false,"result":"NO_FINDINGS"}'\n`,
+  );
+  const fail = `${TMP}/vendor-must-not-run.sh`;
+  exe(fail, `#!/usr/bin/env bash\necho "a chain vendor ran" >&2\nexit 1\n`);
+  const words = '"override: use claude" — Robin, 2026-11-19';
+  overrideCommit();
+  const r = runReview(["HEAD~1", "HEAD"], {
+    CODE_REVIEW_REVIEWER_OVERRIDE_BY: words,
+    CLAUDE_BIN: CLAUDE,
+    CODEX_BIN: fail,
+    GROK_BIN: fail,
+  });
+  assert.equal(r.rc, 0, r.err);
+  assert.match(r.err, /answered: claude\/opus \(reviewer override: "override: use claude" — Robin, 2026-11-19\)/);
+  assert.doesNotMatch(r.err, /a chain vendor ran/);
+  const args = readFileSync(CLAUDE_ARGS, "utf8");
+  // No model is pinned: Claude Code runs the user's own default.
+  assert.match(args, /--print --output-format json/);
+  assert.match(args, /--tools Read,Grep,Glob/);
+  assert.match(args, /--no-session-persistence/);
+  assert.match(args.trim().split("\n").at(-1) ?? "", new RegExp(`${realpathSync(REPO)}$`));
+  assert.match(readFileSync(CLAUDE_SEEN, "utf8"), /DIFF|diff --git/);
+});
+
+test("the reviewer override refuses words that do not name the user and a date, before any reviewer runs", () => {
+  const CLAUDE = `${TMP}/claude-must-not-run.sh`;
+  exe(CLAUDE, `#!/usr/bin/env bash\necho "claude ran" >&2\necho '{"result":"NO_FINDINGS"}'\n`);
+  overrideCommit();
+  for (const words of ["use claude", "override — 2026-11-19"]) {
+    overrideCommit();
+    const r = runReview(["HEAD~1", "HEAD"], { CODE_REVIEW_REVIEWER_OVERRIDE_BY: words, CLAUDE_BIN: CLAUDE });
+    assert.equal(r.rc, 2, `${words}: ${r.err}`);
+    assert.match(r.err, /CODE_REVIEW_REVIEWER_OVERRIDE_BY must quote the user's words with their name and the date/);
+    assert.doesNotMatch(r.err, /claude ran/);
+  }
+});
+
+test("a Claude answer that is an error envelope, or not JSON, is a failed review", () => {
+  const CLAUDE = `${TMP}/claude-error.sh`;
+  exe(
+    CLAUDE,
+    `#!/usr/bin/env bash\ncat > /dev/null\necho '{"type":"result","is_error":true,"subtype":"error_max_turns","result":""}'\n`,
+  );
+  overrideCommit();
+  const r = runReview(["HEAD~1", "HEAD"], {
+    CODE_REVIEW_REVIEWER_OVERRIDE_BY: '"override: use claude" — Robin, 2026-11-19',
+    CLAUDE_BIN: CLAUDE,
+  });
+  assert.equal(r.rc, 1, r.err);
+  assert.match(r.err, /Claude did not answer \(error_max_turns\)/);
+
+  exe(CLAUDE, `#!/usr/bin/env bash\necho '{"type":"result","is_error":true,"result":"Provider failed"}'\nexit 2\n`);
+  overrideCommit();
+  const nonzero = runReview(["HEAD~1", "HEAD"], {
+    CODE_REVIEW_REVIEWER_OVERRIDE_BY: '"override: use claude" — Robin, 2026-11-19',
+    CLAUDE_BIN: CLAUDE,
+  });
+  assert.equal(nonzero.rc, 1, nonzero.err);
+  assert.match(nonzero.err, /Provider failed/);
+});
+
+// ── A fix round does not re-review records ──────────────────────────────
+// Fix rounds that attack the one-off scripts a build saved as evidence spend
+// their blockers on records. In a workbench, a changed record reaches a follow-up round only
+// while an open finding points at it.
+test("a follow-up round leaves out changed records no open finding names", () => {
+  const W = `${TMP}/records-repo`;
+  mkdirSync(`${W}/.agents/skills/demo`, { recursive: true });
+  mkdirSync(`${W}/projects/p/specs/001-x/evidence`, { recursive: true });
+  const wg = (...args: string[]): void => {
+    spawnSync("git", ["-C", W, ...args], { encoding: "utf8" });
+  };
+  wg("init", "-q", ".");
+  wg("config", "user.email", "t@t");
+  wg("config", "user.name", "t");
+  const src = ".agents/skills/demo/a.ts";
+  const rec = "projects/p/specs/001-x/evidence/helper.ts.txt";
+  writeFileSync(`${W}/${src}`, "export const a = 1;\n");
+  writeFileSync(`${W}/${rec}`, "one-off helper v1\n");
+  wg("add", "-A");
+  wg("commit", "-qm", "init");
+  const prompt = `${TMP}/records-prompt.txt`;
+  const stub = `${TMP}/records-stub.sh`;
+  const frame = `${TMP}/records.frame`;
+  writeFileSync(
+    frame,
+    `BEGIN_REVIEW_V1\n${JSON.stringify({ findings: "NO_FINDINGS", coverage: [] })}\nEND_REVIEW_V1\n`,
+  );
+  exe(stub, `#!/usr/bin/env bash\ncat >"${prompt}"\ncat "${frame}"\n`);
+  const round = (name: string, open: string[]): Result => {
+    const items = `${TMP}/records-${name}.json`;
+    writeFileSync(items, JSON.stringify({ items: [], openFindings: open }));
+    const verdicts = open.map((f) => ({ id: fid(f), verdict: "fixed", evidence: "read it" }));
+    writeFileSync(
+      frame,
+      `BEGIN_REVIEW_V1\n${JSON.stringify({ findings: "NO_FINDINGS", coverage: [], ...(open.length > 0 ? { verdicts } : {}) })}\nEND_REVIEW_V1\n`,
+    );
+    const snap = review(["--snapshot"], { ...BASE_ENV, CODEX_REVIEW_REPO: W }).out.replace(/\n+$/, "");
+    appendFileSync(`${W}/${src}`, `export const ${name} = 2;\n`);
+    appendFileSync(`${W}/${rec}`, `helper edit ${name.length}\n`);
+    LOOP += 1;
+    return review(["--since", snap], {
+      ...BASE_ENV,
+      CODEX_REVIEW_REPO: W,
+      POLICY_JSON: POLICY,
+      CODE_REVIEW_ROUND_STATE_DIR: `${TMP}/rounds-${LOOP}`,
+      CODEX_BIN: stub,
+      GROK_BIN: stub,
+      CODE_REVIEW_COVERAGE_FILE: items,
+      CODE_REVIEW_RESULT_FILE: `${TMP}/records-${name}-result.json`,
+    });
+  };
+  const plain = round("plain", []);
+  rcIs("the round runs", 0, plain.rc);
+  const sent = readFileSync(prompt, "utf8");
+  has("the source change reaches the reviewer", src, sent);
+  lacks("the record's lines do not", "+helper edit", sent);
+  has("and the build is told", "1 changed record(s) not re-reviewed", plain.err);
+  const named = round("named", [`[must-fix] ${rec}:1: the helper is wrong — x — y`]);
+  rcIs("the named round runs", 0, named.rc);
+  has("a record an open finding names is read so it can close", "+helper edit", readFileSync(prompt, "utf8"));
+});
+
+// ── A first review read in pieces counts once ────────────────
+// Until then each piece spent a round, so a four-piece set used up the whole
+// fix allowance before the first repair.
+test("the pieces of a first review count as one review, up to four", () => {
+  const dir = `${TMP}/pieces-once`;
+  const env = { CODE_REVIEW_ROUND_STATE_DIR: dir, CODE_REVIEW_LOOP_ID: "pieces-once" };
+  const files = ["p1.ts", "p2.ts", "p3.ts", "p4.ts", "p5.ts"];
+  for (const f of files) writeFileSync(join(SREPO, f), `export const ${f.replace(".ts", "")} = 1;\n`);
+  const first = sliceReview([SBASE, "HEAD", "--slice", pieceFile("once-1", [files[0] as string])], env);
+  assert.equal(first.rc, 0, first.err);
+  for (const n of [2, 3, 4]) {
+    const p = sliceReview([SBASE, "HEAD", "--slice", pieceFile(`once-${n}`, [files[n - 1] as string])], env);
+    assert.equal(p.rc, 0, `piece ${n}: ${p.err}`);
+    has(`piece ${n} says it is part of the one review`, `piece ${n} of the first review`, p.err);
+  }
+  const fifth = sliceReview([SBASE, "HEAD", "--slice", pieceFile("once-5", [files[4] as string])], env);
+  rcIs("a fifth piece is refused", 5, fifth.rc);
+  has("and says why", "fits in four pieces", fifth.err);
+  const snap = sliceReview(["--snapshot"], env).out.trim();
+  appendFileSync(`${SREPO}/a.ts`, "\n// first repair\n");
+  const fix = sliceReview(["--since", snap], env);
+  assert.equal(fix.rc, 0, fix.err);
+  has("the first repair's review is round 2", `round 2 of at most ${MAX}`, fix.err);
 });

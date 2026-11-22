@@ -7,7 +7,7 @@ import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:f
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { after, test } from "node:test";
-import { importerClosure, sharedUnit } from "./importers.ts";
+import { importerClosure, sharedUnit, unitOf } from "./importers.ts";
 
 const TMP = mkdtempSync(join(tmpdir(), "importers-test-"));
 after(() => rmSync(TMP, { recursive: true, force: true }));
@@ -171,4 +171,12 @@ test("sharedUnit names integrations/<name> and packages/<name> only", () => {
   assert.equal(sharedUnit("packages/README.md"), null);
   assert.equal(sharedUnit("apps/a/b/c.ts"), null);
   assert.equal(sharedUnit(""), null);
+});
+
+test("unitOf names an app's apps/<domain>/<app>, else the shared unit", () => {
+  assert.equal(unitOf("apps/a/b/src/c.ts"), "apps/a/b");
+  assert.equal(unitOf("apps/a/b/package.json"), "apps/a/b");
+  assert.equal(unitOf("apps/a/README.md"), null);
+  assert.equal(unitOf("packages/p/p.ts"), "packages/p");
+  assert.equal(unitOf("journal/2026-11-07/x.md"), null);
 });

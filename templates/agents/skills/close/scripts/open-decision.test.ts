@@ -13,7 +13,7 @@ import { dirname, join } from "node:path";
 import { describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { namesUser, openDecisionWord, parkedOnUser, plainText } from "./open-decision.ts";
+import { dated, datedOnOrAfter, namesUser, openDecisionWord, parkedOnUser, plainText } from "./open-decision.ts";
 
 describe("openDecisionWord", () => {
   it("finds a choice on its own, whoever the line is about", () => {
@@ -158,5 +158,54 @@ describe("the owner's first name", () => {
   it("reads no name when user.name is unset or not a word", () => {
     assert.equal(inRepo(null, 'm.namesUser("waits on Sam")'), "false");
     assert.equal(inRepo("x", 'm.namesUser("waits on x")'), "false");
+  });
+});
+
+// A step is set for a later session either by a date or by a row.
+describe("datedOnOrAfter and dated", () => {
+  it("finds a calendar day on or after the given one, and only a real day", () => {
+    assert.equal(datedOnOrAfter("2026-11-20 they review the quote", "2026-11-06"), true);
+    assert.equal(datedOnOrAfter("they review the quote on 2026-11-06", "2026-11-06"), true, "the same day");
+    assert.equal(datedOnOrAfter("2026-11-05 they review the quote", "2026-11-06"), false, "the day before");
+    assert.equal(datedOnOrAfter("2099-99-99 x", "2026-11-06"), false, "not a calendar day");
+    assert.equal(datedOnOrAfter("2099-01-010 x", "2026-11-06"), false, "a digit after it");
+    assert.equal(datedOnOrAfter("see `2099-01-01`", "2026-11-06"), false, "inside a code span");
+    assert.equal(datedOnOrAfter("", "2026-11-06"), false);
+    assert.equal(dated("2000-01-01 x"), true);
+    assert.equal(dated("no date here"), false);
+  });
+});
+
+// Parked wording is a question however it is dated: a step is set for later
+// by a row's blocked: date or a Blocked bullet's - wait: date, which F12 and
+// the row judge read; prose is never scanned for a date.
+describe("parkedOnUser and dates", () => {
+  it("parks a wait on the user whatever its date", () => {
+    for (const line of [
+      "2026-11-20: waiting on the user for the review",
+      "Waiting on the user to call the clinic on 2026-11-20",
+      "2099-01-01 waiting on the user to bring the signed quote",
+    ])
+      assert.equal(parkedOnUser(line)?.toLowerCase(), "waiting on the user", line);
+  });
+
+  it("does not read a dated step written as what the user does", () => {
+    assert.equal(parkedOnUser("2026-11-20: the user reviews the quote with the agent"), null);
+    assert.equal(parkedOnUser("2026-11-20 the user calls the clinic. The insurer's decision is final."), null);
+  });
+});
+
+// Any decision word on a line that names the user holds it, even another
+// party's ("the insurer's decision"): the close errs toward asking, because a
+// held line says why and is reworded, while a question let through is lost.
+describe("openDecisionWord, on a line that names the user", () => {
+  it("counts every decision word, whoever's it reads as", () => {
+    assert.equal(openDecisionWord("the user sends the form. The insurer's decision is final.", true), "decision");
+    assert.equal(openDecisionWord("2099-11-20 your decision is still required", true), "decision");
+    assert.equal(
+      openDecisionWord("2099-11-20 the user's and the vendor's approval is still required", true),
+      "approval",
+    );
+    assert.equal(openDecisionWord("the insurer's decision", false), null);
   });
 });

@@ -602,15 +602,10 @@ test("an entry naming another harness does not count", async (t) => {
 
 test("an uncovered harness running the check as itself", async (t) => {
   const F = mkfix();
-  // The file Grok Build links to (Codex's) gains an entry naming grok.
-  edit(`${F}/repo/.agents/hooks/claude-hooks.json`, (j) => {
-    const hooks = j.hooks as { Stop: unknown[] };
-    return { ...j, hooks: { ...hooks, Stop: [...hooks.Stop, { hooks: [cmd(eotCmd("grok"))] }] } };
-  });
+  // Grok Build is covered (it runs Codex's entry); Antigravity is not.
   edit(`${F}/repo/.agents/hooks.json`, (j) => ({ ...j, eot: { Stop: [cmd(eotCmd("antigravity"))] } }));
   const r = run(F);
   await t.test("exits 1", () => assert.equal(r.rc, 1, r.out));
-  await t.test("naming Grok Build", () => says(r.out, "Grok Build manifest runs the end-of-turn check (check-close-reached.sh) as grok"));
   await t.test("and Antigravity", () => says(r.out, "Antigravity manifest runs the end-of-turn check (check-close-reached.sh) as antigravity"));
 });
 

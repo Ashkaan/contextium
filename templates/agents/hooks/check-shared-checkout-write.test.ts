@@ -766,3 +766,4 @@ test(`Antigravity's manifest exists at ${AGY_MANIFEST}`, () =>
   dispatches("agy manifest routes replace_file_content here", "replace_file_content", mx);
   dispatches("agy manifest routes run_command here", "run_command", mx);
 }
+

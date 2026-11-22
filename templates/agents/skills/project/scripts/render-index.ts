@@ -5,7 +5,7 @@
 //
 //   1. the compact priority-sorted project index (project-index.generate.ts)
 //   2. the lapsed-monitor-window block (check-staleness.ts --expired-only),
-//      already turned into prose lines — not the raw EXPIRED:/NOWINDOW: rows
+//      already turned into prose lines — not the raw EXPIRED:/NOWINDOW:/OVERDUE: rows
 //   3. the closing "which one to start?" prompt
 //
 // WHY THIS EXISTS: blank-mode /project has no judgment in it. As two Bash
@@ -18,8 +18,8 @@
 // from main when the thread opens and is not updated until its close, so an
 // index read from it shows every project as it stood then: a project blocked
 // on main hours ago still renders as Active. Both halves therefore
-// read a scratch copy of every project README as origin/main has it (fetched
-// first), with this worktree's own edits to those READMEs — committed on its
+// read a scratch copy of every project README and ROADMAP as origin/main has it (fetched
+// first), with this worktree's own edits to those files — committed on its
 // branch or not yet — laid over it, since those are newer than main for this
 // thread. A fetch that fails falls back to the last fetched origin/main and
 // says so on stderr; a root that is not a git checkout (a test fixture) has no
@@ -63,8 +63,12 @@ const die = (msg: string, code = 1): never => {
   exit(code);
 };
 
-/** Every project README; the only files either half reads with --expired-only. */
-const README_GLOB = ":(glob)projects/*/*/README.md";
+/** Every project README.md and ROADMAP.md, the only files either half reads with
+ *  --expired-only (the plans for check-staleness.ts's OVERDUE rows, 2026-11-20).
+ *  One pathspec, `R*.md`, not one per name: `git archive` refuses a pathspec that
+ *  matches nothing, so a tree with no plan table failed, and `*.md` tripled the
+ *  copy with notes nothing reads (16.7 MB against 5.7 MB, 2026-11-20). */
+const PROJECT_FILES = [":(glob)projects/*/*/R*.md"];
 
 const git = (repo: string, args: string[]) =>
   spawnSync("git", ["-C", repo, ...args], {
@@ -94,7 +98,7 @@ function freshView(repo: string): string | null {
     return null;
   }
   const base = git(repo, ["merge-base", "HEAD", MAIN]);
-  const archive = spawnSync("git", ["-C", repo, "archive", "--format=tar", MAIN, "--", README_GLOB], {
+  const archive = spawnSync("git", ["-C", repo, "archive", "--format=tar", MAIN, "--", ...PROJECT_FILES], {
     stdio: ["ignore", "pipe", "pipe"],
     maxBuffer: 256 * 1024 * 1024,
   });
@@ -111,8 +115,8 @@ function freshView(repo: string): string | null {
   // main (committed, staged or not), and every one it added and never staged.
   // NUL-separated (-z): without it git C-quotes a folder named with an accent, the
   // quoted path is never on disk, and main's copy wins over the thread's edit.
-  const changed = git(repo, ["diff", "-z", "--name-only", "--no-renames", base.stdout.trim(), "--", README_GLOB]);
-  const added = git(repo, ["ls-files", "-z", "--others", "--exclude-standard", "--", README_GLOB]);
+  const changed = git(repo, ["diff", "-z", "--name-only", "--no-renames", base.stdout.trim(), "--", ...PROJECT_FILES]);
+  const added = git(repo, ["ls-files", "-z", "--others", "--exclude-standard", "--", ...PROJECT_FILES]);
   if (changed.status !== 0 || added.status !== 0) {
     rmSync(view, { recursive: true, force: true });
     die("render-index: could not list this worktree's own project edits");
@@ -122,10 +126,13 @@ function freshView(repo: string): string | null {
     if (existsSync(join(repo, rel))) {
       mkdirSync(dirname(dest), { recursive: true });
       copyFileSync(join(repo, rel), dest);
-    } else {
+    } else if (rel.endsWith("/README.md")) {
       // The folder goes with it: the generator counts a project folder with no
       // README as a project it could not read.
       rmSync(dirname(dest), { recursive: true, force: true });
+    } else {
+      // Any other file alone (a deleted plan table): the project stays.
+      rmSync(dest, { force: true });
     }
   }
   return view;
@@ -250,6 +257,14 @@ async function main(): Promise<void> {
       ranked.push({ age: days, line: `- ${f[1] ?? ""} — ended ${until} (${daysRaw} days ago)` });
     } else if (row.startsWith("NOWINDOW:")) {
       ranked.push({ age: -1, line: `- ${f[1] ?? ""} — monitor with no monitoring-until date` });
+    } else if (row.startsWith("OVERDUE:")) {
+      // A dated check on one row of an active or blocked project; its words may hold colons.
+      const m = /^OVERDUE:([^:]+):([^:]+):watch=([0-9-]+):days-overdue=([0-9]+):(.*)$/.exec(row);
+      if (m) {
+        const [, ref, id, due, days, what] = m;
+        const words = what.length > 80 ? `${what.slice(0, 79)}…` : what;
+        ranked.push({ age: Number(days), line: `- ${ref} ${id} — check due ${due} (${days} days ago): ${words}` });
+      }
     }
   }
   // `sort -rn` on "<age>\t<line>": age descending, ties by the whole line descending.

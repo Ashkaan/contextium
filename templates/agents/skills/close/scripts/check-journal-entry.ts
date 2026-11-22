@@ -11,7 +11,7 @@
 // read (a failed read is never "nothing staged").
 //
 // It is only ever handed THIS thread's own entry — by `journal-file.ts --check`
-// during /close § 3 and by `land.ts` before the commit — so entries written
+// during /close § 3 and by `land.ts` before the push — so entries written
 // before a schema change are never re-read; a schema change applies to new
 // entries only.
 //
@@ -85,13 +85,15 @@
 //        is read by neither F9 nor check-roadmap-decisions. Binds entries
 //        started at F10_FROM or later.
 //   F11 — no body line outside **Blocked:** and **Corrections:** leaves
-//        something waiting on the user (open-decision.ts parkedOnUser). F10
-//        alone was an assertion a writer could make over a parked question;
-//        this reads for the question. Binds from F10_FROM.
-//   F12 — a `**Blocked:**` bullet is never `- act: …`, and a `- wait: …`
-//        carries a calendar date on or after the entry's: a step for the user
-//        keeps the session open, because a close means it is done. Binds from
-//        F12_FROM.
+//        something waiting on the user (open-decision.ts parkedOnUser),
+//        whatever its date: a step the user does on a later day is a Blocked
+//        `- wait: <date>` bullet (F12). F10 alone was an assertion a writer
+//        could make over a parked question; this reads for the question.
+//        Binds from F10_FROM.
+//   F12 — a `**Blocked:**` bullet is never `- act: …`, and a `- wait: …`,
+//        the user's or anyone's, carries a calendar date on or after the
+//        entry's: a close carries nothing meant for this session, and a step
+//        is set for a later one by a date or a row. Binds from F12_FROM.
 //   F6–F9 and F12 skip `0000-*.md`, as F5 does, and skip lines inside a ``` or ~~~
 //   fence — an entry quoting an old entry is not writing a section.
 //
@@ -103,17 +105,18 @@
 // belong to the slug above them — never the field names, so it does not have
 // to move when the schema gains a field.
 //
-// Runs from close/scripts/land.ts before each commit of the records worktree
+// Runs from close/scripts/land.ts before the push of the records worktree
 // and from journal-file.ts --check during /close § 3.
 
 import { spawnSync } from "node:child_process";
-import { namesUser, openDecisionWord, parkedOnUser, plainText } from "./open-decision.ts";
-import { closeSync, mkdtempSync, openSync, readFileSync, realpathSync, rmSync, statSync } from "node:fs";
+import { dated, datedOnOrAfter, namesUser, openDecisionWord, parkedOnUser, plainText } from "./open-decision.ts";
+import { calendarDay } from "./roadmap.ts";
+import { isFile } from "./trunk.ts";
+import { closeSync, mkdtempSync, openSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { exit, runToExit } from "../../../packages/cli-exit/cli-exit.ts";
-import { calendarDay } from "./roadmap.ts";
 
 // Copies of close/references/journal-entry.md § Section set and § Field
 // reference; the test fails when either drifts from the file.
@@ -122,14 +125,6 @@ const ROOT_CAUSE_VALUES = "fixed|unknown-pending-verification|deferred-by-user-d
 
 // awk's and grep's [[:space:]] in the C locale.
 const SP = "[ \\t\\n\\v\\f\\r]";
-
-function isFile(p: string): boolean {
-  try {
-    return statSync(p).isFile();
-  } catch {
-    return false;
-  }
-}
 
 /** The file as awk and grep see it: one entry per line, a final newline ending
  *  the last line rather than opening an empty one. */
@@ -239,13 +234,13 @@ function blockedCheck(l: string, n: number, report: (n: number, id: string, msg:
   if (word) report(n, "F9", `"${word}" makes this an open decision, not an ${typed[1]}: ${HALT}`);
 }
 
-// ─── F12: nothing under Blocked waits on the user ─────────────────────
-// A close means the work is done: anything open keeps the session open. A
-// step for the user's hands keeps the session open, so an `act:` is refused; a
-// `wait:` that names the user waits on them too, whatever its date; any other
-// `wait:` rides only as a check set for a future date — a calendar day standing
-// alone in its plain text (code spans and URLs read out), on or after the
-// entry's own date. What "open" means is auto-close-gate.md precondition (iii).
+// ─── F12: nothing under Blocked is left undated ───────────────────────
+// A close carries nothing meant for this session: anything not set for a
+// later session by a date or a row. An `act:` is a step for the user's hands
+// with no date, so it is refused; a `wait:`, whoever it names, rides only as a
+// check set for a future date — a calendar day standing alone in its plain
+// text (code spans and URLs read out), on or after the entry's own date. What
+// "open" means is auto-close-gate.md precondition (iii).
 function futureWaitCheck(
   kind: string,
   text: string,
@@ -257,28 +252,30 @@ function futureWaitCheck(
     report(
       n,
       "F12",
-      "a step for the user does not ride the close — list it in the reply as what they do; the session stays open until they have done it, then closes (auto-close-gate.md precondition (iii))",
+      "a step for the user with no date does not ride the close — do it together before the close, or set it for a later session: `- wait: <YYYY-MM-DD> <what>` with the day, or a `planned` roadmap row (auto-close-gate.md precondition (iii))",
     );
     return;
   }
+  // A step of the user's is dated by the field the schema fixes, the date that
+  // leads the bullet (`- wait: <YYYY-MM-DD> the user …`), as a row's `blocked:`
+  // date is: a later date elsewhere in the text is another thing's.
   if (namesUser(text)) {
-    report(
-      n,
-      "F12",
-      "a wait that names the user waits on them, whatever its date — the session stays open until they have done it; a wait names who or what else it waits on (auto-close-gate.md precondition (iii))",
-    );
+    const lead = /^\s*([0-9]{4}-[0-9]{2}-[0-9]{2})(?![0-9])/.exec(plainText(text))?.[1] ?? "";
+    if (!calendarDay(lead) || lead < day)
+      report(
+        n,
+        "F12",
+        `a step for the user is set for later only by the date that leads the bullet, on or after the entry's ${day} — write \`- wait: <YYYY-MM-DD> the user …\`, or do it together before the close`,
+      );
     return;
   }
-  const dates = [...plainText(text).matchAll(/(?<![0-9])([0-9]{4}-[0-9]{2}-[0-9]{2})(?![0-9])/g)]
-    .map((m) => m[1] ?? "")
-    .filter(calendarDay);
-  if (dates.length === 0)
+  if (!dated(text))
     report(
       n,
       "F12",
       "a wait with no date — write `- wait: <YYYY-MM-DD> <who or what>` with the day to check, or keep the session open until it clears",
     );
-  else if (!dates.some((d) => d >= day))
+  else if (!datedOnOrAfter(text, day))
     report(
       n,
       "F12",
@@ -286,14 +283,15 @@ function futureWaitCheck(
     );
 }
 
-/** F11 — a line worded as waiting on the user (open-decision.ts parkedOnUser). */
+/** F11 — a line worded as waiting on the user (open-decision.ts parkedOnUser),
+ *  whatever its date. */
 function parkedCheck(l: string, n: number, report: (n: number, id: string, msg: string) => void): void {
   const parked = parkedOnUser(l);
   if (parked)
     report(
       n,
       "F11",
-      `"${parked}" leaves this waiting on the user: ${HALT}. If it is something the user DOES (a send, a click), the session stays open until they have done it`,
+      `"${parked}" leaves this waiting on the user: ${HALT}. If it is something the user DOES (a send, a click), do it together before the close, or set it for later as a Blocked bullet that says what the user does on that date (\`- wait: 2026-11-20 the user …\`)`,
     );
 }
 
@@ -340,7 +338,7 @@ function bodyChecks(lines: string[], file: string, when = ""): string[] {
         let where: string;
         if (label === "Next")
           where =
-            "retired: outstanding project work belongs in the project ROADMAP.md, and work waiting on the user keeps the session open";
+            "retired: outstanding project work belongs in the project ROADMAP.md, and this session's own undone work keeps the session open";
         else if (label === "Issues")
           where = "retired: what an investigation found belongs under **Findings:**, each bullet naming its reading";
         else

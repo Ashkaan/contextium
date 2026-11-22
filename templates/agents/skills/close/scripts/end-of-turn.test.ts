@@ -69,7 +69,10 @@ interface Thread {
   file: (name: string) => string;
   put: (name: string, body?: string) => void;
   /** End a turn: run the check on a payload. */
-  end: (p: unknown, opts?: { harness?: string | null; covered?: string; tid?: string | null; slot?: string }) => Run;
+  end: (
+    p: unknown,
+    opts?: { harness?: string | null; covered?: string; tid?: string | null; slot?: string; t3?: string },
+  ) => Run;
   pause: (q: string) => Run;
 }
 interface Run {
@@ -82,8 +85,10 @@ function thread(): Thread {
   const tid = randomUUID();
   const state = join(HOME, ".cache", "workbench", "threads", tid);
   mkdirSync(state, { recursive: true });
-  const env = (o: { covered?: string; tid?: string | null; slot?: string } = {}) => {
-    const e: NodeJS.ProcessEnv = { ...process.env, HOME };
+  const env = (o: { covered?: string; tid?: string | null; slot?: string; t3?: string } = {}) => {
+    // T3CODE_HOME is a throwaway too, never the live ~/.t3: the fixtures carry
+    // real session ids (the helper rule looks each one up).
+    const e: NodeJS.ProcessEnv = { ...process.env, HOME, T3CODE_HOME: o.t3 ?? join(ROOT, "no-t3") };
     if (o.slot !== undefined) e.WORKBENCH_REVIEW_SLOT = o.slot;
     else delete e.WORKBENCH_REVIEW_SLOT;
     if (o.tid !== null) e.WORKBENCH_THREAD_ID = o.tid ?? tid;
@@ -92,7 +97,11 @@ function thread(): Thread {
     else delete e.END_OF_TURN_TEST_COVERED;
     return e;
   };
-  const exec = (args: string[], input: string, o: { covered?: string; tid?: string | null; slot?: string } = {}): Run => {
+  const exec = (
+    args: string[],
+    input: string,
+    o: { covered?: string; tid?: string | null; slot?: string; t3?: string } = {},
+  ): Run => {
     const r = spawnSync(process.execPath, ["--experimental-strip-types", SCRIPT, ...args], {
       input,
       encoding: "utf8",
@@ -339,16 +348,20 @@ test("an uncovered harness, no --harness, and Grok through the Claude settings f
   const t = thread();
   closed(t);
   assert.equal(t.end(payload("claude", "Hi"), { harness: null }).code, 0, "no --harness");
-  assert.equal(t.end(payload("grok", "Hi"), { harness: "grok" }).code, 0, "Grok is not covered");
   assert.equal(
-    t.end(payload("grok", "Hi"), { harness: "claude" }).code,
+    t.end(payload("grok", "Hi"), { harness: "grok", covered: "claude,codex" }).code,
     0,
-    "a Grok payload through the Claude manifest",
+    "Grok when it is not covered",
   );
   assert.equal(
-    t.end(payload("grok", "Hi", false, { last_assistant_message: "Hi" }), { harness: "codex" }).code,
+    t.end(payload("grok", "Hi"), { harness: "claude", covered: "claude,codex" }).code,
     0,
-    "a Grok payload through the manifest Codex reads, which Grok's hooks file links to, even with Codex's field",
+    "a Grok payload through the Claude manifest when Grok is not covered",
+  );
+  assert.equal(
+    t.end(payload("grok", "Hi", false, { last_assistant_message: "Hi" }), { harness: "codex", covered: "claude,codex" }).code,
+    0,
+    "a Grok payload through the manifest Codex reads, which Grok's hooks file links to, even with Codex's field, when Grok is not covered",
   );
   assert.equal(t.end(payload("codex", "Hi"), { harness: "codex" }).code, 2, "Codex itself is still checked");
   assert.equal(
@@ -400,16 +413,79 @@ test("Grok, when covered: the reply is this turn's agent chunks from its transcr
   );
 });
 
-// ── a question after a close pauses it ───────────────────────────────
+// ── Grok on the real covered list, from a captured run ───────────────────────
+//
+// The captures keep `<cwd>`, `<transcript>` and `<session>` in place of the
+// run's paths and session id. No case here sets `covered`, so these read
+// COVERED.
+
+/** A captured Grok payload, its placeholders filled. */
+function grokCapture(name: string, transcript: string): Record<string, unknown> {
+  const raw = readFileSync(join(FIX, `${name}.json`), "utf8")
+    .replaceAll("<cwd>", CWD)
+    .replaceAll("<transcript>", transcript)
+    .replaceAll("<session>", `grok-test-${randomUUID()}`);
+  return JSON.parse(raw);
+}
+
+test("Grok, covered: its captured first stop is refused while the report is undelivered, and its second stop passes", () => {
+  const t = thread();
+  closed(t);
+  const transcript = join(FIX, "grok-transcript.jsonl");
+  const first = t.end(grokCapture("grok-first-stop", transcript), { harness: "claude" });
+  assert.equal(first.code, 2, "the first stop of a Grok turn through the Claude manifest");
+  assert.match(first.stderr, /Paste the close report/);
+  assert.ok(!existsSync(t.file("report-delivered")));
+  assert.equal(
+    t.end(grokCapture("grok-first-stop", transcript), { harness: "grok" }).code,
+    2,
+    "through --harness grok",
+  );
+  assert.equal(
+    t.end(grokCapture("grok-second-stop", transcript), { harness: "claude" }).code,
+    0,
+    "the second stop always passes",
+  );
+});
+
+test("Grok, covered: delivery is found in its real transcript when the payload carries no reply", () => {
+  const t = thread();
+  closed(t);
+  // Grok's shutdown stop carries no `lastAssistantMessage`, so the reply comes
+  // from the transcript.
+  const bare = (transcript: string) => {
+    const p = grokCapture("grok-first-stop", transcript);
+    delete p.lastAssistantMessage;
+    delete p.last_assistant_message;
+    return p;
+  };
+  const real = readFileSync(join(FIX, "grok-transcript.jsonl"), "utf8");
+  const undelivered = join(ROOT, `grok-real-${t.tid}.jsonl`);
+  writeFileSync(undelivered, real);
+  assert.equal(t.end(bare(undelivered), { harness: "claude" }).code, 2, "the real transcript lacks the line");
+  const chunk = JSON.stringify({
+    method: "session/update",
+    params: { update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: `\n\n${PROOF}` } } },
+  });
+  const delivered = join(ROOT, `grok-delivered-${t.tid}.jsonl`);
+  writeFileSync(delivered, `${real.trimEnd()}\n${chunk}\n`);
+  assert.equal(t.end(bare(delivered), { harness: "claude" }).code, 0);
+  assert.ok(existsSync(t.file("report-delivered")), "report-delivered written from the transcript");
+});
+
+// ── US5: a question after a close pauses it ───────────────────────────────
 
 const Q = "Which plan should I keep?";
 
-test("--pause refuses an empty question and a thread with no close; records both markers otherwise", () => {
+test("--pause refuses an empty question; records both markers otherwise, before any close too", () => {
   const t = thread();
   assert.equal(t.pause("  ").code, 2);
-  const early = t.pause(Q);
-  assert.equal(early.code, 2);
-  assert.match(early.stderr, /no close has finished in this thread/);
+  const early = thread();
+  // No close yet (a session asking mid-way): recorded, and the asking reply is checked.
+  assert.equal(early.pause(Q).code, 0, "a question before any close is recorded");
+  assert.ok(existsSync(early.file("reopened")));
+  assert.equal(early.end(payload("claude", "Still working on it.")).code, 2, "a reply without it is refused");
+  assert.ok(!existsSync(early.file("asked")), "a question never asked is not recorded as asked");
   closed(t);
   const r = t.pause(Q);
   assert.equal(r.code, 0, r.stderr);
@@ -417,6 +493,36 @@ test("--pause refuses an empty question and a thread with no close; records both
   assert.ok(existsSync(t.file("reopened")));
   t.pause("Second question?");
   assert.equal(readFileSync(t.file("paused"), "utf8").trim(), "Second question?", "a second pause replaces the first");
+});
+
+test("a held close's question is checked like any other: refused without it, recorded as asked with it", () => {
+  const t = thread();
+  t.put("held", "subject\n");
+  const r = t.pause(Q);
+  assert.equal(r.code, 0, r.stderr);
+  assert.equal(readFileSync(t.file("paused"), "utf8").trim(), Q);
+  const omit = t.end(payload("claude", "Still checking."));
+  assert.equal(omit.code, 2, "the hold no longer lets a reply skip the recorded question");
+  assert.match(omit.stderr, /Ask it in these words/);
+  assert.ok(!existsSync(t.file("asked")));
+  assert.ok(existsSync(t.file("paused")), "the question is kept for the retry");
+  // The retry, with no second --pause: the second stop that asks it marks it asked.
+  assert.equal(t.end(payload("claude", `Live check failed:\n${Q}`, true)).code, 0);
+  assert.ok(existsSync(t.file("asked")), "asked is written when the retry carries the question");
+  assert.ok(!existsSync(t.file("paused")));
+  assert.equal(t.end(payload("claude", "Waiting on the user.")).code, 0, "held still allows later turns");
+});
+
+test("a new --pause clears the earlier question's asked mark until its own reply asks it", () => {
+  const t = thread();
+  closed(t);
+  t.pause(Q);
+  assert.equal(t.end(payload("claude", Q)).code, 0);
+  assert.ok(existsSync(t.file("asked")));
+  t.pause("A second question?");
+  assert.ok(!existsSync(t.file("asked")), "the second question has not reached the user yet");
+  assert.equal(t.end(payload("claude", "A second question?")).code, 0);
+  assert.ok(existsSync(t.file("asked")));
 });
 
 test("the asking turn passes when the reply carries the question; every later turn is refused until a new close", () => {
@@ -436,15 +542,30 @@ test("the asking turn passes when the reply carries the question; every later tu
   assert.equal(t.end(payload("claude", "Closed again.")).code, 0);
 });
 
-test("a reply that does not ask the recorded question is refused naming it, and the pause is consumed either way", () => {
+test("a question recorded as a numbered list passes when the reply prints it as that list", () => {
+  // Choices go one per line so the reply shows a real list (recorded
+  // on one line, they came out as a paragraph); line breaks are collapsed.
+  const t = thread();
+  closed(t);
+  t.pause("Row 9, finance snapshot alert:\n1. Close it as already fixed (recommended).\n2. Keep it open.");
+  const reply =
+    "Already handled.\n\nRow 9, finance snapshot alert:\n\n1. Close it as already fixed (recommended).\n2. Keep it open.\n";
+  assert.equal(t.end(payload("claude", reply)).code, 0);
+});
+
+test("a reply that does not ask the recorded question is refused naming it; the question is kept for the retry", () => {
   const t = thread();
   closed(t);
   t.pause(Q);
   const r = t.end(payload("claude", "Which one do you want?"));
   assert.equal(r.code, 2);
   assert.match(r.stderr, /Ask it in these words: "Which plan should I keep\?"/);
-  assert.ok(!existsSync(t.file("paused")));
+  assert.ok(existsSync(t.file("paused")), "kept, so the retry is checked");
   assert.ok(existsSync(t.file("reopened")), "the close stays paused");
+  // A first-stop retry that asks it passes and marks it asked.
+  assert.equal(t.end(payload("claude", `Sorry: ${Q}`)).code, 0);
+  assert.ok(!existsSync(t.file("paused")));
+  assert.ok(existsSync(t.file("asked")));
 });
 
 test("the second stop of an asking turn passes and consumes the pause; an interrupted asking turn's pause is consumed next", () => {
@@ -453,6 +574,7 @@ test("the second stop of an asking turn passes and consumes the pause; an interr
   t.pause(Q);
   assert.equal(t.end(payload("claude", "no question", true)).code, 0);
   assert.ok(!existsSync(t.file("paused")));
+  assert.ok(!existsSync(t.file("asked")), "a second stop that never asked it leaves it unasked");
   assert.equal(t.end(payload("claude", "Next turn.")).code, 2, "reopened still holds the close paused");
 
   const u = thread();
@@ -520,4 +642,177 @@ test("an id-less session's close is checked by the hook that follows it, with no
   assert.ok(existsSync(join(state, "reopened")));
   const next = node(join(HERE, "thread.ts"), ["--id"]);
   assert.notEqual(next.stdout.trim(), sid, "any other caller still starts a new session after the close");
+});
+
+// ── a helper's turn in the session's folder is the helper's ─────────────
+//
+// T3 records each harness session id as `nativeThreadRef.nativeId` on the
+// provider thread of the T3 thread it runs. A delegated helper shares the
+// parent's worktree, so the folder names the parent; the session id names
+// the helper.
+
+const HELPER = "thread:delegated-task:command%3Amcp%3Ahelper";
+
+/** A fake T3 home whose database maps each session id to a thread. */
+function t3Home(map: Record<string, string>): string {
+  const home = mkdtempSync(join(ROOT, "t3-"));
+  mkdirSync(join(home, "userdata"));
+  const r = spawnSync(
+    process.execPath,
+    [
+      "--disable-warning=ExperimentalWarning",
+      "--experimental-sqlite",
+      "--input-type=module",
+      "-e",
+      `import {DatabaseSync} from 'node:sqlite';
+       const [file, map] = process.argv.slice(1); const db = new DatabaseSync(file);
+       db.exec('create table orchestration_v2_projection_provider_threads(thread_id text, payload_json text)');
+       const ins = db.prepare('insert into orchestration_v2_projection_provider_threads values (?, ?)');
+       for (const [sid, tid] of Object.entries(JSON.parse(map))) ins.run(tid, JSON.stringify({ nativeThreadRef: { nativeId: sid } }));`,
+      join(home, "userdata", "statev2.sqlite"),
+      JSON.stringify(map),
+    ],
+    { encoding: "utf8" },
+  );
+  assert.equal(r.status, 0, r.stderr);
+  return home;
+}
+
+/** A closed thread whose ledger worktree has work not landed. */
+function closedUnlanded(): Thread {
+  const t = thread();
+  const wt = worktree();
+  ledger(t, wt);
+  closed(t);
+  t.put("report-delivered");
+  writeFileSync(join(wt, "later.txt"), "later\n");
+  return t;
+}
+
+/** Every file in the state folder but the log, with its contents. */
+const snapshot = (t: Thread): string =>
+  spawnSync("sh", ["-c", 'for f in $(ls -A | grep -v \'^end-of-turn.log$\'); do echo "== $f"; cat "$f"; done'], {
+    cwd: t.state,
+    encoding: "utf8",
+  }).stdout;
+
+/** Each covered payload form, with the session id set as that harness sends it. */
+const FORMS: { name: string; harness: H; covered?: string; withId: (sid: string | null) => Record<string, unknown> }[] =
+  [
+    {
+      name: "Claude Code",
+      harness: "claude",
+      withId: (sid) => {
+        const p = payload("claude", "Hi");
+        if (sid === null) delete p.session_id;
+        else p.session_id = sid;
+        return p;
+      },
+    },
+    {
+      name: "Codex",
+      harness: "codex",
+      withId: (sid) => {
+        const p = payload("codex", "Hi");
+        if (sid === null) delete p.session_id;
+        else p.session_id = sid;
+        return p;
+      },
+    },
+    {
+      // Grok's own camelCase id, with the snake_case copy it also sends removed.
+      name: "Grok",
+      harness: "grok",
+      covered: "claude,codex,grok",
+      withId: (sid) => {
+        const p = payload("grok", "Hi");
+        delete p.session_id;
+        if (sid === null) delete p.sessionId;
+        else p.sessionId = sid;
+        return p;
+      },
+    },
+  ];
+
+for (const form of FORMS) {
+  test(`${form.name}: a helper's turn on a closed thread with work not landed is allowed and logged in the thread's own log`, () => {
+    const t = closedUnlanded();
+    const t3 = t3Home({ "sess-helper": HELPER, "sess-own": t.tid });
+    const before = snapshot(t);
+    const r = t.end(form.withId("sess-helper"), { harness: form.harness, covered: form.covered, t3 });
+    assert.equal(r.code, 0, r.stderr);
+    assert.doesNotMatch(r.stderr, UNLANDED);
+    assert.match(
+      stateLog(t),
+      new RegExp(`a helper's turn \\(${HELPER.replace(/[%:]/g, ".")}\\), not thread ${t.tid}'s`),
+    );
+    assert.doesNotMatch(globalLog(), new RegExp(t.tid), "the line is in the thread's own log, not the global one");
+    assert.equal(snapshot(t), before, "no marker is created, removed or changed");
+  });
+
+  test(`${form.name}: the session's own turn, an unknown session id and no session id are each refused as today`, () => {
+    const t = closedUnlanded();
+    const t3 = t3Home({ "sess-helper": HELPER, "sess-own": t.tid });
+    for (const [what, sid] of [
+      ["its own thread", "sess-own"],
+      ["an id T3 has no record of", "sess-unknown"],
+      ["no session id", null],
+    ] as const) {
+      const r = t.end(form.withId(sid), { harness: form.harness, covered: form.covered, t3 });
+      assert.equal(r.code, 2, `${what}: ${r.stderr}`);
+      assert.match(r.stderr, UNLANDED, what);
+    }
+    assert.doesNotMatch(stateLog(t), /helper's turn/);
+  });
+}
+
+test("a session id T3's database cannot be read for is checked as today, and the error logged", () => {
+  const t = closedUnlanded();
+  const t3 = mkdtempSync(join(ROOT, "t3-bad-"));
+  mkdirSync(join(t3, "userdata"));
+  writeFileSync(join(t3, "userdata", "statev2.sqlite"), "not a database");
+  const r = t.end(FORMS[0]?.withId("sess-helper"), { t3 });
+  assert.equal(r.code, 2, r.stderr);
+  assert.match(r.stderr, UNLANDED);
+  assert.match(stateLog(t), /session id not looked up: cannot read/);
+});
+
+test("a thread with no state folder exits before T3's database is read", () => {
+  const t = thread();
+  rmSync(t.state, { recursive: true });
+  const t3 = mkdtempSync(join(ROOT, "t3-junk-"));
+  mkdirSync(join(t3, "userdata"));
+  writeFileSync(join(t3, "userdata", "statev2.sqlite"), "not a database");
+  const before = globalLog();
+  assert.equal(t.end(FORMS[0]?.withId("sess-helper"), { t3 }).code, 0);
+  assert.equal(globalLog(), before, "nothing logged: the database was never opened");
+  assert.ok(!existsSync(t.state));
+});
+
+test("a session lookup that stalls gives up in time for today's check, through the hook wrapper", () => {
+  const t = closedUnlanded();
+  const t3 = t3Home({ "sess-helper": HELPER });
+  const wrapper = join(HERE, "..", "..", "..", "hooks", "check-close-reached.sh");
+  const started = Date.now();
+  // Not a review-chain subprocess, even when the suite runs inside one (it
+  // sets WORKBENCH_REVIEW_SLOT, and the hook allows that before any lookup).
+  const { WORKBENCH_REVIEW_SLOT: _slot, ...outer } = process.env;
+  const r = spawnSync("bash", [wrapper, "--harness", "claude"], {
+    input: JSON.stringify(FORMS[0]?.withId("sess-helper")),
+    encoding: "utf8",
+    cwd: CWD,
+    env: {
+      ...outer,
+      HOME,
+      T3CODE_HOME: t3,
+      WORKBENCH_THREAD_ID: t.tid,
+      T3_DB_TEST_STALL_MS: "9000",
+      END_OF_TURN_TEST_COVERED: "claude",
+    },
+  });
+  assert.equal(r.status, 2, `the check still ran and refused: ${r.stderr}`);
+  assert.match(r.stderr, UNLANDED);
+  assert.doesNotMatch(r.stderr, /stopped after/, "the wrapper did not have to stop it");
+  assert.match(stateLog(t), /session id not looked up: .*no answer within 2000 ms/);
+  assert.ok(Date.now() - started < 9_000, "it did not wait for the stalled lookup");
 });

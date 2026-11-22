@@ -4,7 +4,8 @@
 // + on-disk markers ONLY — /qa is zero-config, so there is no per-repo .qa.json.
 // Detection NEVER invents a serve/run command for
 // Node-server / CLI / render targets — those declare themselves with a
-// `qa:serve` / `qa:cmd` / `qa:render` script in their own package.json; only the
+// `qa:serve` / `qa:cmd` / `qa:render` script in their own package.json, and an
+// app that sends a designed email declares `qa:email`; only the
 // convention-covered web shapes (Astro / Vite / static) get a default. A target
 // that matches neither convention nor a qa:* script exits 3 (`unknown`).
 //
@@ -19,7 +20,7 @@
 //          `sed -n 's/^KEY=//p'` (as serve.ts does, line by line) — NOT
 //          `eval`/`source`: the command values intentionally contain spaces
 //          (`QA_SERVE=npm run qa:serve`), so the stream is not shell-sourceable.
-//            TYPE=astro-cf|astro|next|vite|static|node-server|cli|render|unknown
+//            TYPE=astro-cf|astro|next|vite|static|node-server|email|cli|render|unknown
 //            QA_SERVE=<`npm run qa:serve`, or empty>
 //            QA_CMD=<`npm run qa:cmd`, or empty>
 //            QA_RENDER=<`npm run qa:render`, or empty>
@@ -88,6 +89,7 @@ async function main(): Promise<void> {
     return s ? String(s) : "";
   }
 
+  const qaEmailS = pkgScript("qa:email");
   const qaRenderS = pkgScript("qa:render");
   const qaCmdS = pkgScript("qa:cmd");
   const qaServeS = pkgScript("qa:serve");
@@ -104,6 +106,14 @@ async function main(): Promise<void> {
   }
 
   // ── qa:* escape-hatch scripts win over convention ────────────────────
+  // An `email` app sends a designed email: its `qa:email` script prints
+  // how to make a test send, and its QA ends with the delivered copy checked on
+  // a phone (.agents/skills/qa/SKILL.md step-5c-email). It wins over render: the
+  // delivered copy, not a local render, is what a client sees.
+  if (qaEmailS) {
+    emit("email", "", "package.json:qa:email");
+    exit(0);
+  }
   // A `render` script is the universal hatch: the repo declares how to produce
   // PNG(s) into $QA_OUT for anything that isn't a served web page (TRMNL Liquid,
   // HTML-to-image). It wins over cmd/serve — it IS the visual.

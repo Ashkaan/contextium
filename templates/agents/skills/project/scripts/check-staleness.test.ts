@@ -87,6 +87,7 @@ mk("ai", "ends-today", `status: monitor\npriority: high\nmonitoring-until: ${TOD
 mk("ai", "future-window", `status: monitor\npriority: high\nmonitoring-until: ${FUTURE} — still watching.`);
 mk("ai", "no-field", "status: monitor\npriority: high");
 mk("ai", "garbage-date", "status: monitor\npriority: high\nmonitoring-until: sometime next quarter");
+mk("ai", "impossible-date", "status: monitor\npriority: high\nmonitoring-until: 2026-02-30");
 mk("ai", "active-with-date", `status: active\npriority: high\nmonitoring-until: ${PAST}`);
 mk("ai", "body-mention", `status: monitor\npriority: high\nmonitoring-until: ${FUTURE}`);
 appendFileSync(
@@ -109,6 +110,7 @@ test("check-staleness EXPIRED scan", () => {
   assert.ok(!has(out, /future-window/), "future window is silent");
   assert.ok(has(out, /^NOWINDOW:ai\/no-field$/), "missing monitoring-until is NOWINDOW");
   assert.ok(has(out, /^NOWINDOW:ai\/garbage-date$/), "unparseable date is NOWINDOW");
+  assert.ok(has(out, /^NOWINDOW:ai\/impossible-date$/), "a day the calendar lacks is NOWINDOW, not rolled into March");
   assert.ok(!has(out, /active-with-date/), "status: active is not scanned for expiry");
   assert.ok(!has(out, /body-mention/), "body prose is not read as frontmatter");
   assert.ok(!has(out, /^STALE:/), "--expired-only emits no STALE rows");
@@ -160,6 +162,54 @@ test("folder-form mentions and longer slugs", () => {
     has(out, /^STALE:ai\/lonely-slug:days-since-last-mention=never$/),
     `'lonely-slug-extended' wrongly counted as a mention of 'lonely-slug' (out='${out}')`,
   );
+});
+
+// OVERDUE, added 2026-11-20: a dated check (`blocked: <date> …`) on a row of an
+// active or blocked project whose date has passed. EXPIRED reads only a monitor
+// project's window, so a dated check on an active project would pass unseen.
+test("check-staleness OVERDUE scan", () => {
+  const ROOT = mkTmp("overdue");
+  const proj = (slug: string, fm: string, rows: string[]): void => {
+    const dir = join(ROOT, "projects", "ai", `2026-01-01_${slug}`);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "README.md"), `---\n${fm}\n---\n\n# ${slug}\n`);
+    writeFileSync(
+      join(dir, "ROADMAP.md"),
+      `# Roadmap: ${slug}\n\n| ID | Sub-feature | Intent | Scope boundary | Depends on | Status | Sub-spec |\n|----|-------------|--------|----------------|-----------|--------|----------|\n${rows.join("\n")}\n`,
+    );
+  };
+  proj("active-watch", "status: active", [
+    "| R1 | ready work | x | x | — | planned | — |",
+    `| R2 | a check | x | x | — | blocked: ${PAST} re-read the docket: it said so | manual |`,
+    `| R3 | due today | x | x | — | blocked: ${TODAY} check today | manual |`,
+    `| R4 | later | x | x | — | blocked: ${FUTURE} check later | manual |`,
+    `| R5 | a release | x | x | — | blocked: until ${PAST} a broker's hold | manual |`,
+    "| R6 | a wait | x | x | — | blocked: vendor reply | manual |",
+    "| R7 | finished | x | x | — | done | manual |",
+  ]);
+  proj("blocked-watch", "status: blocked", [
+    "| R1 | a wait | x | x | — | blocked: vendor reply | manual |",
+    `| R2 | a check | x | x | — | blocked: ${PAST} — see the court's email | manual |`,
+  ]);
+  proj("monitor-watch", `status: monitor\nmonitoring-until: ${PAST}`, [
+    `| R1 | a check | x | x | — | blocked: ${PAST} watch it | — |`,
+  ]);
+  proj("finished", "status: completed", [`| R1 | a check | x | x | — | blocked: ${PAST} never read | — |`]);
+  mkdirSync(join(ROOT, "journal"), { recursive: true });
+  const { out, rc } = run(ROOT, "--expired-only");
+  assert.equal(rc, 0, `rc=${rc} out='${out}'`);
+  assert.ok(
+    has(out, new RegExp(`^OVERDUE:ai/active-watch:R2:watch=${PAST}:days-overdue=10:re-read the docket: it said so$`)),
+    `a passed check on an active project is listed (out='${out}')`,
+  );
+  assert.ok(!has(out, /^OVERDUE:ai\/active-watch:R[134567]:/), `only R2 of active-watch is overdue (out='${out}')`);
+  assert.ok(
+    has(out, new RegExp(`^OVERDUE:ai/blocked-watch:R2:watch=${PAST}:days-overdue=10:see the court's email$`)),
+    `a passed check on a blocked project is listed, its dash dropped (out='${out}')`,
+  );
+  assert.ok(!has(out, /^OVERDUE:ai\/monitor-watch/), `a monitor project's window is EXPIRED's (out='${out}')`);
+  assert.ok(has(out, /^EXPIRED:ai\/monitor-watch:/), `the monitor project still lapses (out='${out}')`);
+  assert.ok(!has(out, /finished/), `a completed project is not scanned (out='${out}')`);
 });
 
 // A daylight-saving change between the window's end and today must not cost a

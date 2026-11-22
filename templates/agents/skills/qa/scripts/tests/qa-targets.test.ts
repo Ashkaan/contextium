@@ -604,8 +604,9 @@ test("a missing detector is a HALT, not 'not web'", () =>
   test("a detector exiting 3 means not-web", () => assert.equal(r.out, ""));
 }
 
-// Every web TYPE the detector can return is a target; cli/render/unknown are not.
-for (const t of ["astro-cf", "astro", "next", "vite", "static", "node-server"]) {
+// Every web TYPE the detector can return is a target, and so is an email
+// (a designed email is QA'd by a delivered copy); cli/render/unknown are not.
+for (const t of ["astro-cf", "astro", "next", "vite", "static", "node-server", "email"]) {
   const detector = stub(`type-${t}`, `echo "TYPE=${t}"\nexit 0`);
   test(`TYPE=${t} is a web target`, () =>
     assert.equal(
@@ -620,4 +621,49 @@ for (const t of ["cli", "render", "unknown"]) {
       run(["--repo", R2, "apps/web/portal/src/pages/index.astro"], { env: { QA_DETECT_APP: detector } }).out,
       "",
     ));
+}
+
+// ── An email is checked only when it comes out different ──
+// A change to shared code two client emails import must not ask the user to
+// check them when neither email changed.
+{
+  const repo = newRepo("email-render");
+  const app = join(repo, "apps/mail/letter");
+  put(
+    join(app, "package.json"),
+    `${JSON.stringify({ name: "letter", private: true, scripts: { "qa:email": "node --experimental-strip-types scripts/qa-email.ts", "qa:email-render": "node --experimental-strip-types scripts/render.ts" } })}\n`,
+  );
+  put(join(app, "scripts/qa-email.ts"), 'process.stdout.write("send a test\\n");\n');
+  put(join(app, "src/lib/body.ts"), 'export const body = "<p>Hello</p>";\n');
+  put(join(app, "scripts/render.ts"), 'import { body } from "../src/lib/body.ts";\nprocess.stdout.write(body);\n');
+  put(
+    join(app, "src/lib/monitor.ts"),
+    'import { limit } from "../../../../../packages/shared/limits.ts";\nexport const watch = limit;\n',
+  );
+  put(join(repo, "packages/shared/limits.ts"), "export const limit = 1;\n");
+  git(repo, "add", "-A");
+  git(repo, "commit", "-qm", "base");
+  const base = git(repo, "rev-parse", "HEAD");
+
+  put(join(repo, "packages/shared/limits.ts"), "export const limit = 2;\n");
+  const same = run(["--repo", repo, "--base", base]);
+  test("a shared change that leaves the email the same owes no delivered-copy check", () => {
+    assert.equal(same.rc, 0, same.err);
+    assert.equal(same.out, "");
+    assert.match(same.err, /apps\/mail\/letter: the email comes out the same/);
+  });
+
+  put(join(app, "src/lib/body.ts"), 'export const body = "<p>Hello again</p>";\n');
+  const changed = run(["--repo", repo, "--base", base]);
+  test("a change that alters the email keeps it a target", () => {
+    assert.equal(changed.rc, 0, changed.err);
+    assert.equal(changed.out, app);
+    assert.match(changed.err, /the email comes out different/);
+  });
+  test("the base copy is removed after the comparison", () =>
+    assert.doesNotMatch(git(repo, "worktree", "list"), /qa-email-base-/));
+
+  put(join(app, "src/lib/body.ts"), 'export const body = "<p>Hello</p>";\n');
+  const noBase = run(["--repo", repo, "packages/shared/limits.ts"]);
+  test("without --base the email stays a target", () => assert.equal(noBase.out, app));
 }

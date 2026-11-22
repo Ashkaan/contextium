@@ -4,6 +4,57 @@ A newer version of the template will ship better skills, refined standards, new 
 Pulling those in should never put your own work at risk. The installer is built around exactly that
 split: it refreshes the methodology layer and leaves your data alone.
 
+## Upgrading to v9.3.0: reviews judge each finding, and the close checks the merged tree once
+
+Re-run the installer. Nothing of yours changes, and there is no step to take; review receipts saved
+by earlier versions still read.
+
+- **A fix round judges every open finding by name.** Each finding a review raises gets a short id,
+  and the next round must say of each one whether it is fixed, disproved or still open, with what
+  it read. A finding is closed only by that verdict: a round that leaves one out no longer closes it.
+  When the fresh-context fallback reviews instead of an outside reviewer, a finding it does not
+  report again counts as fixed, as before.
+- **Fewer rounds, aimed at real bugs.** A build gets one first review and up to three repairs, each
+  reviewed, with the third repair's review as the one final review. A must-fix or should-fix has to
+  name what breaks and an input that breaks it. A finding judged open after two repairs in a row
+  prints `STILL OPEN`, which tells the build to change its approach rather than patch again; it
+  replaces the old `REPEAT SPOT` warning.
+- **Ideas and other people's bugs no longer hold a build.** An improvement the spec did not ask for
+  comes back as an `IDEA:` line, a problem in a file this change did not touch as `NOTED:` (unless
+  the reviewer shows this change causes it), and a disproved finding as `DISPROVED:`. The build lists
+  them in its report's `## Not built`, and its ideas become one improvements row on the roadmap, so
+  nothing a review raised is lost.
+- **Spec reviews run follow-up rounds.** After the first review, up to three follow-ups re-read the
+  edited spec and mark each finding resolved or open, plus anything the edits broke. The fidelity
+  check now reads exactly the sections it judges (the ask, clarifications, scenarios, requirements
+  and simplest shape), cut by a script, and the spec template asks for the inputs the work must
+  handle and what happens to anything else.
+- **Claude Code can stand in for an excluded reviewer.** When the reviewer that wrote the change is
+  excluded, a read-only Claude Code run (`claude --print`, Read/Grep/Glob only, your default model)
+  can take its place. Spending past the round ceiling, or overriding the reviewer rule, now needs
+  your own words quoted with your name and the date.
+- **The close checks the merged tree once.** The decision-record, integration-manifest, script,
+  secret and standards checks run after the trunk is merged, on the tree that will actually be
+  pushed, and nothing is pushed until every repo has passed. A checker missing from your workbench is
+  named in the output instead of stopping the close. The skill-shape check now runs where a skill is
+  written (`/author`), not at every close.
+- **The close waits for helpers, and a held close keeps its worktrees.** In T3 Code a close waits
+  until every helper the thread started has reported back. A close held for its live checks keeps
+  every worktree it used until the release, so a fix is made and reviewed where it belongs.
+- **Questions can be asked at any point.** `end-of-turn.ts --pause "<question>"` works before a
+  close as well as after or during a hold, and questions are numbered with lettered choices, so you
+  answer `1a`. Grok Build is now covered by the end-of-turn check.
+- **Pasted secrets are blanked.** Anything shaped like a key, token, password or sign-in code is
+  replaced by `[redacted <kind>]` in what the close quotes from your chat.
+- **QA covers emails and long pages.** An app that sends a designed email declares `qa:email`, and
+  its QA is your look at a delivered copy, asked only when the email itself changed. Full-page shots
+  now draw lists that scroll inside their own box, and QA's access headers go only to the site under
+  test.
+- **Overdue dated checks show up.** `/project` and its triage list each active project's dated check
+  rows whose day has passed.
+- **Works on stock macOS without `flock`.** The review record's lock falls back to a lock folder
+  when `flock` is not installed.
+
 ## Upgrading to v9.2.1: the review loop stops asking, and fixes to the close
 
 Re-run the installer. Nothing of yours changes, and there is no step to take.

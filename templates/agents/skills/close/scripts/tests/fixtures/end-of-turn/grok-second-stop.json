@@ -1,0 +1,21 @@
+{
+  "hookEventName": "stop",
+  "sessionId": "<session>",
+  "cwd": "<cwd>",
+  "workspaceRoot": "<cwd>",
+  "timestamp": "2026-11-06T15:23:48.893010340+00:00",
+  "transcriptPath": "<transcript>",
+  "promptId": "t3-xai-prompt-1",
+  "permissionMode": "bypassPermissions",
+  "reason": "end_turn",
+  "stopHookActive": true,
+  "lastAssistantMessage": "Hello. What can I help you with?\n\nSTOP7Q",
+  "backgroundTasks": [],
+  "sessionCrons": [],
+  "hook_event_name": "Stop",
+  "session_id": "<session>",
+  "transcript_path": "<transcript>",
+  "permission_mode": "bypassPermissions",
+  "stop_hook_active": true,
+  "last_assistant_message": "Hello. What can I help you with?\n\nSTOP7Q"
+}

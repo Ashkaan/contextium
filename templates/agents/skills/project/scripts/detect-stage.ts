@@ -14,8 +14,8 @@
 //   ready-to-close     → status:active + a ready row's spec is reported complete
 //                        while the row is not yet `done` — a close that did not
 //                        finish; /close flips the row
-//   taken              → status:active + every ready row owed work is being
-//                        built in another open T3 thread (`taken:` names each)
+//   taken              → status:active + every ready row owed work is held
+//                        by another open T3 thread (`taken:` names each)
 //   monitor            → status:monitor
 //   blocked            → status:blocked
 //   completed          → status:completed
@@ -44,10 +44,11 @@
 //   5. else a ready row with Sub-spec `manual` → manual-steps
 //   6. else, when a ready row was skipped as held → taken
 //   7. else → all-specs-reported
-// A row another open T3 thread is building — marked in-progress in that
-// thread's own worktree, read by close/scripts/rows-taken.ts — is skipped by
-// every rule above and printed as `taken:`: without it, two threads asking at
-// the same time are both sent to the same row and build it twice.
+// A row another open T3 thread holds — a build, a hands-on step or a planning
+// row, marked in-progress in that thread's own worktree, read by
+// close/scripts/rows-taken.ts — is skipped by every rule above and printed as
+// `taken:`: without it, two threads asking at the same time are both sent to
+// the same row and build it twice.
 // A rows-taken.ts that crashes is a `rows-taken-error:` on stderr and routes
 // as without it: the check only narrows a choice that is right without it.
 // A `manual` row is work no spec is written for — a message, a call, a decision,
@@ -75,14 +76,23 @@
 //   active-spec: <path or empty>
 //   next-row: <ID or empty>       (a ROADMAP.md project, or an active one)
 //   plan-row: <ID or empty>       the first free ready row owed planning, even
-//                                 when a row to build comes before it
+//                                 when a row to build comes before it: what
+//                                 opens a plan lane
+//   plan-rows: <IDs or empty>     every free open row owed planning, ready or
+//                                 still behind its Depends on, space-separated,
+//                                 in-progress first then planned, each in table
+//                                 order: what the plan lane, once open, designs
+//                                 — a row behind an
+//                                 unbuilt one is designed now unless its design
+//                                 needs that row's result, and only its build
+//                                 waits
 //   manual-row: <ID or empty>     the first free ready `manual` row, likewise
 //                                 (/project works these while a row to
 //                                 build waits for its own `/implement`
 //                                 session)
 //   taken: <ID> by "<title>" (<worktree>)
 //                                 (one per holder of a ready row another open
-//                                  T3 thread is building; any stage)
+//                                  T3 thread holds; any stage)
 //   roadmap-error: <message>      (only when ROADMAP.md is missing or malformed)
 //   spec-state-error: <message>   (only when spec-state.ts crashed; stage unknown)
 //   behind-main: <message>        (only when origin/main changed this project
@@ -94,7 +104,9 @@
 // hours ago still reads active here. The stage is still printed, since it is right for
 // this tree, but `behind-main:` tells the caller to merge origin/main and ask
 // again before acting on it. No fetch: every worktree shares one set of refs,
-// and each landing's push moves origin/main for all of them.
+// and each landing's push moves origin/main for all of them. The check is the
+// exported behindMain(), which open-active.ts also runs over every folder of a
+// close's set.
 //
 // Exit code: 0 always (1 when no path is given or the write root cannot be
 // resolved).
@@ -136,6 +148,23 @@ function enterWriteRoot(): void {
     process.stderr.write(`detect-stage: cd: ${root}: No such file or directory\n`);
     exit(1);
   }
+}
+
+/**
+ * How many files origin/main changed in `folder` after `cwd`'s HEAD was cut: 0
+ * when it is current. A folder this checkout lacks but origin/main has counts
+ * as behind (its files are all changes). A failing git call reads 0, as it
+ * always has here. -z, counted as NUL records: one changed file is one record
+ * whatever its name. Exported for open-active.ts, which checks every folder of
+ * a close's set with it, so the rule lives once.
+ */
+export function behindMain(folder: string, cwd: string = process.cwd()): number {
+  const behind = spawnSync("git", ["diff", "-z", "--name-only", "HEAD...refs/remotes/origin/main", "--", folder], {
+    cwd,
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "ignore"],
+  });
+  return behind.status === 0 ? behind.stdout.split("\0").filter((s) => s !== "").length : 0;
 }
 
 /** Run another loop script with node; stdout and stderr captured apart. */
@@ -269,6 +298,7 @@ async function main(): Promise<void> {
   let ROADMAP_ERR = "";
   let ROADMAP_STAGE = "";
   let PLAN_ROW = "";
+  let PLAN_ROWS = "";
   let MANUAL_ROW = "";
   const TAKEN: string[] = [];
   const specStateOf = (n: string): string =>
@@ -293,22 +323,24 @@ async function main(): Promise<void> {
     } else {
       process.stderr.write(rm.stderr);
       const ROWS = linesOf(chomp(rm.stdout)).map((l) => l.split("\t"));
-      let planRow = "";
       let manualRow = "";
       let closeRow = "";
-      // Ready rows, in-progress first then planned, each in table order.
-      const ready = (st: string) => ROWS.filter((f) => f[2] === "yes" && (f[1] ?? "").toLowerCase() === st);
-      const READY = [...ready("in-progress"), ...ready("planned")].map((f) =>
+      // Open rows, in-progress first then planned, each in table order; READY
+      // is those whose every dependency is finished.
+      const open = (st: string) => ROWS.filter((f) => (f[1] ?? "").toLowerCase() === st);
+      const OPEN = [...open("in-progress"), ...open("planned")].map((f) =>
         // `IFS=$'\t' read` collapsed empty fields; the row is read the same.
         f
           .join("\t")
           .replace(/^\t+|\t+$/g, "")
           .split(/\t+/),
       );
-      // Rows another open thread is building. DETECT_STAGE_ROWS_TAKEN points at
+      const READY = OPEN.filter((f) => f[2] === "yes");
+      // Rows another open thread holds (marked in-progress in its own worktree).
+      // DETECT_STAGE_ROWS_TAKEN points at
       // another copy of the helper (a test seam).
       const heldBy = new Map<string, string[]>();
-      if (READY.length > 0) {
+      if (OPEN.length > 0) {
         const rt = runTs(process.env.DETECT_STAGE_ROWS_TAKEN || join(CLOSE_SCRIPTS, "rows-taken.ts"), [PROJECT_PATH]);
         process.stderr.write(rt.stderr);
         if (rt.status !== 0) process.stderr.write(`rows-taken-error: rows-taken.ts exited ${rt.status}\n`);
@@ -320,43 +352,48 @@ async function main(): Promise<void> {
       // Every held ready row is printed, before the loop below stops at the first free one.
       for (const [id = ""] of READY) TAKEN.push(...(heldBy.get(id) ?? []));
       // The walk goes on past the first row to build, so plan-row and
-      // manual-row name the first of each kind whatever comes before them.
+      // manual-row name the first ready row of each kind whatever comes before
+      // them, and plan-rows every open row owed planning, ready or not.
+      const planRows: string[] = [];
+      let planRow = "";
       let buildRow = "";
-      for (const [id = "", , , sub = ""] of READY) {
+      for (const [id = "", , readyCell = "", sub = ""] of OPEN) {
         if (id === "" || heldBy.has(id)) continue;
+        const isReady = readyCell === "yes";
         if (sub === "—") {
-          if (planRow === "") planRow = id;
+          planRows.push(id);
+          if (isReady && planRow === "") planRow = id;
           continue;
         }
         if (sub === "manual") {
-          if (manualRow === "") manualRow = id;
+          if (isReady && manualRow === "") manualRow = id;
           continue;
         }
         const st = specStateOf(sub);
         if (st === "complete") {
           // Reported complete, row not yet done: the close did not finish.
-          if (closeRow === "") closeRow = id;
+          if (isReady && closeRow === "") closeRow = id;
           continue;
         }
         if (st !== "none" && st !== "partial") {
           // The row names a spec that is not on disk: nothing to build.
-          if (planRow === "") planRow = id;
+          planRows.push(id);
+          if (isReady && planRow === "") planRow = id;
           continue;
         }
-        // Both a row to build and a row to plan are chosen; keep reading only
-        // for a complete row awaiting its close, which outranks them.
-        if (buildRow !== "" && planRow !== "") continue;
         if (runTs(join(CLOSE_SCRIPTS, "open-clarifications.ts"), [`${PROJECT_PATH}/${sub}`]).status !== 0) {
-          if (planRow === "") planRow = id;
+          planRows.push(id);
+          if (isReady && planRow === "") planRow = id;
           continue;
         }
-        if (buildRow !== "") continue;
+        if (!isReady || buildRow !== "") continue;
         buildRow = id;
         ACTIVE_SPEC = `${PROJECT_PATH}/${sub}/spec.md`;
         NEXT_ROW = id;
         ROADMAP_STAGE = "ready-to-implement";
       }
       PLAN_ROW = planRow;
+      PLAN_ROWS = planRows.join(" ");
       MANUAL_ROW = manualRow;
       if (chomp(rm.stdout) === "") {
         // A table with no rows: nothing has been planned yet.
@@ -400,17 +437,11 @@ async function main(): Promise<void> {
     `active-spec: ${ACTIVE_SPEC}\n`;
   if (SPEC_STATE_ERR !== "") out += `spec-state-error: ${SPEC_STATE_ERR}\n`;
   if (HAS_ROADMAP) {
-    out += `next-row: ${NEXT_ROW}\nplan-row: ${PLAN_ROW}\nmanual-row: ${MANUAL_ROW}\n`;
+    out += `next-row: ${NEXT_ROW}\nplan-row: ${PLAN_ROW}\nplan-rows: ${PLAN_ROWS}\nmanual-row: ${MANUAL_ROW}\n`;
     for (const t of TAKEN) out += `taken: ${t}\n`;
     if (ROADMAP_ERR !== "") out += `roadmap-error: ${ROADMAP_ERR}\n`;
   }
-  // -z, counted as NUL records: one changed file is one record whatever its name.
-  const behind = spawnSync(
-    "git",
-    ["diff", "-z", "--name-only", "HEAD...refs/remotes/origin/main", "--", PROJECT_PATH],
-    { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] },
-  );
-  const files = behind.status === 0 ? behind.stdout.split("\0").filter((s) => s !== "").length : 0;
+  const files = behindMain(PROJECT_PATH);
   if (files > 0) {
     out += `behind-main: origin/main changed ${files} file(s) in this project after this worktree was cut; merge origin/main and re-run\n`;
   }

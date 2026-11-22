@@ -23,6 +23,8 @@ import {
   reviewSessionId,
   recordedReviewAuthors,
   inT3ReviewContext,
+  sessionThread,
+  unfinishedHelpers,
 } from "./t3-db.ts";
 
 const TMP = mkdtempSync(join(tmpdir(), "t3-db-test-"));
@@ -307,4 +309,169 @@ test("v2 session compatibility view retains run-only provider history", () => {
   } finally {
     db.close();
   }
+});
+
+// ── whose turn it is, and which helpers a close waits for ───────────
+
+/** Run `fn` with T3CODE_HOME pointed at `home`, restoring it after. */
+function withT3<T>(home: string, fn: () => T): T {
+  const saved = process.env.T3CODE_HOME;
+  process.env.T3CODE_HOME = home;
+  try {
+    return fn();
+  } finally {
+    if (saved === undefined) delete process.env.T3CODE_HOME;
+    else process.env.T3CODE_HOME = saved;
+  }
+}
+
+/** A fake statev2.sqlite holding only the tables (and columns) the helper rule reads. */
+function r140Home(
+  name: string,
+  tables: { providerThreads?: boolean; subagents?: boolean } = {},
+): { home: string; db: DatabaseSync } {
+  const home = join(TMP, name);
+  mkdirSync(join(home, "userdata"), { recursive: true });
+  const db = new DatabaseSync(join(home, "userdata/statev2.sqlite"));
+  if (tables.providerThreads !== false)
+    db.exec("create table orchestration_v2_projection_provider_threads(thread_id text, payload_json text)");
+  if (tables.subagents !== false)
+    db.exec(
+      "create table orchestration_v2_projection_subagents(subagent_id text, thread_id text, origin text, status text, started_at text, payload_json text, completion_delivery_state text)",
+    );
+  // The turn a finished helper's result was handed to: the message that starts
+  // it names the helper in delegatedCompletion.taskIds (read live 2026-11-05).
+  db.exec(
+    "create table orchestration_v2_projection_messages(message_id text, thread_id text, run_id text, created_at text, payload_json text);" +
+      "create table orchestration_v2_projection_runs(run_id text, thread_id text, status text, payload_json text);",
+  );
+  return { home, db };
+}
+
+test("sessionThread maps a harness session id to the T3 thread that recorded it", () => {
+  const { home, db } = r140Home("session-thread");
+  const ins = db.prepare("insert into orchestration_v2_projection_provider_threads values (?, ?)");
+  ins.run("parent", JSON.stringify({ nativeThreadRef: { driver: "claudeAgent", nativeId: "sess-parent" } }));
+  ins.run("thread:delegated-task:x", JSON.stringify({ nativeThreadRef: { driver: "codex", nativeId: "sess-helper" } }));
+  ins.run("no-ref", JSON.stringify({ nativeThreadRef: null }));
+  ins.run("broken", "{not json");
+  db.close();
+  withT3(home, () => {
+    assert.equal(sessionThread("sess-parent"), "parent");
+    assert.equal(sessionThread("sess-helper"), "thread:delegated-task:x");
+    assert.equal(sessionThread("sess-unknown"), null, "an id T3 has no record of");
+    assert.equal(sessionThread(""), null, "an empty id");
+  });
+  withT3(join(TMP, "session-thread-none"), () => {
+    assert.equal(sessionThread("sess-parent"), null, "no database at all");
+  });
+});
+
+test("sessionThread errors on a database it cannot read, and on an id two threads claim", () => {
+  const { home, db } = r140Home("session-thread-bad", { providerThreads: false });
+  db.close();
+  withT3(home, () => {
+    const r = sessionThread("sess");
+    assert.ok(r !== null && typeof r === "object" && "error" in r, `a missing table is an error, got ${r}`);
+  });
+  const two = r140Home("session-thread-two");
+  const ins = two.db.prepare("insert into orchestration_v2_projection_provider_threads values (?, ?)");
+  ins.run("a", JSON.stringify({ nativeThreadRef: { nativeId: "dup" } }));
+  ins.run("b", JSON.stringify({ nativeThreadRef: { nativeId: "dup" } }));
+  ins.run("a", JSON.stringify({ nativeThreadRef: { nativeId: "same" } }));
+  ins.run("a", JSON.stringify({ nativeThreadRef: { nativeId: "same" } }));
+  two.db.close();
+  withT3(two.home, () => {
+    const r = sessionThread("dup");
+    assert.ok(r !== null && typeof r === "object" && /a, b/.test(r.error), "two threads is an error naming both");
+    assert.equal(sessionThread("same"), "a", "two rows of one thread are that thread");
+  });
+});
+
+test("sessionThread and unfinishedHelpers read nothing from the legacy file", () => {
+  const home = join(TMP, "r140-legacy");
+  mkdirSync(join(home, "userdata"), { recursive: true });
+  new DatabaseSync(join(home, "userdata/state.sqlite")).close();
+  withT3(home, () => {
+    assert.equal(sessionThread("sess"), null);
+    assert.deepEqual(unfinishedHelpers("parent"), { helpers: [] });
+  });
+});
+
+test("unfinishedHelpers lists every child whose result has not reached the parent, oldest first", () => {
+  const { home, db } = r140Home("helpers");
+  const ins = db.prepare("insert into orchestration_v2_projection_subagents values (?, ?, ?, ?, ?, ?, ?)");
+  const p = (title: string) => JSON.stringify({ title });
+  // Listed: still working, a status or delivery state T3 may add, a finished
+  // one T3 is still handing over.
+  ins.run("s1", "parent", "app_owned", "running", "2026-11-04T10:00:03Z", p("review round 2"), null);
+  ins.run("s2", "parent", "app_owned", "queued", "2026-11-04T10:00:01Z", p("queued one"), null);
+  ins.run("s3", "parent", "app_owned", "completed", "2026-11-04T10:00:02Z", p("handing over"), "claimed");
+  ins.run("s4", "parent", "app_owned", "completed", "2026-11-04T10:00:04Z", p("odd delivery"), "parked");
+  ins.run("s5", "parent", "provider_native", "running", "2026-11-04T10:00:05Z", "{not json", null);
+  // Claimed for a wake turn that is only queued: the parent has not seen it.
+  ins.run("s6", "parent", "app_owned", "completed", "2026-11-04T10:00:06Z", p("queued wake"), "claimed");
+  // Claimed for a turn cancelled before it started, or one rolled back: not read.
+  ins.run("s7", "parent", "app_owned", "completed", "2026-11-04T10:00:07Z", p("cancelled unstarted"), "claimed");
+  ins.run("s8", "parent", "app_owned", "completed", "2026-11-04T10:00:08Z", p("rolled back"), "claimed");
+  // Claimed for the turn now running, or one that has ended: it reached the
+  // parent, which is reading it (this row's own live walk).
+  ins.run("d5", "parent", "app_owned", "completed", "2026-11-04T09:00:05Z", p("in this turn"), "claimed");
+  ins.run("d6", "parent", "app_owned", "failed", "2026-11-04T09:00:06Z", p("in an ended turn"), "claimed");
+  // A started turn in a status not named anywhere (waiting on an approval) holds it too.
+  ins.run("d7", "parent", "app_owned", "completed", "2026-11-04T09:00:07Z", p("in a waiting turn"), "claimed");
+  const msg = db.prepare("insert into orchestration_v2_projection_messages values (?, ?, ?, ?, ?)");
+  const runs = db.prepare("insert into orchestration_v2_projection_runs values (?, ?, ?, ?)");
+  const run = (id: string, thread: string, status: string, started = true) =>
+    runs.run(id, thread, status, JSON.stringify({ startedAt: started ? "2026-11-04T10:00:00Z" : null }));
+  const wake = (id: string, runId: string, ...taskIds: string[]) =>
+    msg.run(id, "parent", runId, id, JSON.stringify({ delegatedCompletion: { taskIds } }));
+  run("r1", "parent", "completed");
+  run("r2", "parent", "running");
+  run("r3", "parent", "queued", false);
+  run("r4", "parent", "cancelled", false);
+  run("r5", "parent", "rolled_back");
+  run("r6", "parent", "waiting");
+  wake("m1", "r1", "d6");
+  wake("m2", "r2", "d5", "x");
+  wake("m3", "r3", "s6");
+  wake("m5", "r4", "s7");
+  wake("m6", "r5", "s8");
+  wake("m7", "r6", "d7");
+  msg.run("m4", "parent", "r2", "m4", "{not json");
+  // Another thread's message naming s3 does not hand s3 to this one.
+  run("r9", "other", "running");
+  msg.run("m9", "other", "r9", "m9", JSON.stringify({ delegatedCompletion: { taskIds: ["s3"] } }));
+  // Not listed: finished and delivered, acknowledged, disposed, or never delivered
+  // by T3 (a native subagent); another thread's helper.
+  ins.run("d1", "parent", "app_owned", "completed", "2026-11-04T09:00:00Z", p("done"), "delivered");
+  ins.run("d2", "parent", "app_owned", "failed", "2026-11-04T09:00:01Z", p("failed"), "acknowledged");
+  ins.run("d3", "parent", "app_owned", "interrupted", "2026-11-04T09:00:02Z", p("stopped"), "disposed");
+  ins.run("d4", "parent", "provider_native", "cancelled", "2026-11-04T09:00:03Z", p("native"), null);
+  ins.run("o1", "other", "app_owned", "running", "2026-11-04T09:00:04Z", p("another thread's"), null);
+  db.close();
+  withT3(home, () => {
+    assert.deepEqual(unfinishedHelpers("parent"), {
+      helpers: [
+        { title: "queued one", status: "queued", delivery: null, origin: "app_owned" },
+        { title: "handing over", status: "completed", delivery: "claimed", origin: "app_owned" },
+        { title: "review round 2", status: "running", delivery: null, origin: "app_owned" },
+        { title: "odd delivery", status: "completed", delivery: "parked", origin: "app_owned" },
+        { title: "", status: "running", delivery: null, origin: "provider_native" },
+        { title: "queued wake", status: "completed", delivery: "claimed", origin: "app_owned" },
+        { title: "cancelled unstarted", status: "completed", delivery: "claimed", origin: "app_owned" },
+        { title: "rolled back", status: "completed", delivery: "claimed", origin: "app_owned" },
+      ],
+    });
+    assert.deepEqual(unfinishedHelpers("nobody"), { helpers: [] }, "a thread with no children");
+  });
+});
+
+test("unfinishedHelpers errors when it cannot read T3's database", () => {
+  const { home, db } = r140Home("helpers-bad", { subagents: false });
+  db.close();
+  withT3(home, () => assert.ok("error" in unfinishedHelpers("parent"), "a missing table is an error"));
+  withT3(join(TMP, "helpers-none"), () =>
+    assert.ok("error" in unfinishedHelpers("parent"), "a missing database is an error"),
+  );
 });

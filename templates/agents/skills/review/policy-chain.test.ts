@@ -133,6 +133,10 @@ function mkstub(path: string, body: string): void {
 }
 mkstub(`${TMP}/say-codex.sh`, 'echo "[must-fix] from codex"');
 mkstub(`${TMP}/say-grok.sh`, 'printf "{\\"text\\":\\"[must-fix] from grok\\"}\\n"');
+mkstub(
+  `${TMP}/say-claude.sh`,
+  `printf '%s\\n' "$@" > '${TMP}/claude-argv.txt'; cat > '${TMP}/claude-stdin.txt'; echo '{"type":"result","is_error":false,"result":"[must-fix] from claude"}'`,
+);
 mkstub(`${TMP}/record-args.sh`, `printf '%s\\n' "$@" > '${TMP}/argv.txt'; echo '{"text":"ok"}'`);
 mkstub(`${TMP}/no-trailing-newline.sh`, 'printf "[nit] last line with no newline"');
 mkstub(`${TMP}/say-slot.sh`, 'echo "[must-fix] slot=$WORKBENCH_REVIEW_SLOT"');
@@ -143,6 +147,7 @@ process.env.POLICY_CHAIN_SLOT_TIMEOUT_S = "5";
 // Existing fixtures describe Claude-authored artifacts. Individual provenance
 // cases below override or remove this explicitly.
 process.env.POLICY_CHAIN_AUTHOR_VENDORS = "claude";
+process.env.CLAUDE_BIN = `${TMP}/absent-claude`;
 process.env.T3CODE_HOME = TMP;
 process.env.HOME = TMP;
 delete process.env.WORKBENCH_THREAD_ID;
@@ -216,6 +221,29 @@ test("review excludes each artifact author, including a primary or backup author
   }
 });
 
+test("the review router replaces its excluded Codex author with read-only Claude after Grok fails", () => {
+  const r = run(
+    "adversarial-review",
+    PROMPT,
+    {
+      POLICY_CHAIN_AUTHOR_VENDORS: "codex",
+      CODEX_BIN: `${TMP}/say-codex.sh`,
+      GROK_BIN: `${STUBS}/stub-fail.ts`,
+      CLAUDE_BIN: `${TMP}/say-claude.sh`,
+    },
+    wantsFinding,
+  );
+  assert.equal(r.rc, 0, r.err);
+  assert.equal(r.out, "[must-fix] from claude");
+  assert.match(r.err, /excluded codex\/codex: artifact author/);
+  assert.match(r.err, /grok failed.*trying next slot/);
+  assert.match(r.err, /answered: claude\/opus/);
+  // The stand-in pins no model: Claude Code runs the user's own default.
+  assert.doesNotMatch(readFileSync(`${TMP}/claude-argv.txt`, "utf8"), /--model/);
+  assert.match(readFileSync(`${TMP}/claude-argv.txt`, "utf8"), /--tools\nRead,Grep,Glob/);
+  assert.equal(readFileSync(`${TMP}/claude-stdin.txt`, "utf8"), readFileSync(PROMPT, "utf8"));
+});
+
 test("review refuses missing, empty or unknown original-author provenance before invoking a vendor", () => {
   for (const authors of [undefined, "", " ", "openai", "claude,,codex", "claude,unknown"]) {
     const r = run("adversarial-review", PROMPT, {
@@ -231,11 +259,12 @@ test("review refuses missing, empty or unknown original-author provenance before
 });
 
 test("exhausting eligible reviewers never falls back to an artifact author", () => {
-  for (const authors of ["codex,grok", "codex,codex"]) {
+  for (const authors of ["codex,claude", "codex,grok,claude"]) {
     const r = run("adversarial-review", PROMPT, {
       POLICY_CHAIN_AUTHOR_VENDORS: authors,
       CODEX_BIN: `${TMP}/say-codex.sh`,
       GROK_BIN: `${STUBS}/stub-fail.ts`,
+      CLAUDE_BIN: `${TMP}/say-claude.sh`,
     });
     assert.equal(r.rc, 1, r.err);
     assert.equal(r.out, "");
@@ -294,8 +323,10 @@ test("declared authors cannot omit the writing thread's recorded providers or re
     ...base,
     POLICY_CHAIN_AUTHOR_THREAD_ID: "mixed-writer",
     POLICY_CHAIN_AUTHOR_VENDORS: "codex,grok",
+    CLAUDE_BIN: `${TMP}/say-claude.sh`,
   });
-  assert.equal(mixed.rc, 1, mixed.err);
+  assert.equal(mixed.rc, 0, mixed.err);
+  assert.equal(mixed.out, "[must-fix] from claude");
   for (const id of ["unknown-writer", "missing-writer"]) {
     const bad = run("adversarial-review", PROMPT, {
       ...base,
@@ -566,6 +597,27 @@ test("12 — the chain reaches a claude slot", () => {
   has("12 tells the caller to dispatch its agent", "dispatch the Claude agent instead", r.err);
 });
 
+test("a Claude CLI error envelope or a rejected review never approves the change", () => {
+  const errorClaude = `${TMP}/error-claude.sh`;
+  mkstub(errorClaude, `echo '{"type":"result","is_error":true,"subtype":"error_max_turns","result":"NO_FINDINGS"}'`);
+  const env = { POLICY_CHAIN_AUTHOR_VENDORS: "codex,grok", CLAUDE_BIN: errorClaude };
+  const errored = run("adversarial-review", PROMPT, env, wantsFinding);
+  assert.equal(errored.rc, 1, errored.err);
+  assert.equal(errored.out, "");
+  assert.match(errored.err, /Claude did not answer \(error_max_turns\)/);
+
+  mkstub(errorClaude, `echo '{"type":"result","is_error":true,"result":"Provider limit reached"}'; exit 1`);
+  const nonzero = run("adversarial-review", PROMPT, env, wantsFinding);
+  assert.equal(nonzero.rc, 1, nonzero.err);
+  assert.equal(nonzero.out, "");
+  assert.match(nonzero.err, /Provider limit reached/);
+
+  const rejected = run("adversarial-review", PROMPT, { ...env, CLAUDE_BIN: `${TMP}/say-claude.sh` }, rejectAll);
+  assert.equal(rejected.rc, 125, rejected.err);
+  assert.equal(rejected.out, "");
+  assert.match(rejected.err, /claude answered in the wrong shape/);
+});
+
 test("14 — a large prompt is piped, never placed on argv", () => {
   // ~256 KB, well past the point where argv dies "Argument list too long"
   // (exit 126).
@@ -602,8 +654,11 @@ test("16b/16c — the table is the one shipped beside the script", () => {
   mkdirSync(`${TMP}/copy/a/b`, { recursive: true });
   mkdirSync(`${TMP}/copy/a/close/scripts`, { recursive: true });
   copyFileSync(join(SCRIPT_DIR, "policy-chain.ts"), `${TMP}/copy/a/b/policy-chain.ts`);
-  // Its one sibling import, where it resolves from the copy.
-  copyFileSync(join(SCRIPT_DIR, "../close/scripts/t3-db.ts"), `${TMP}/copy/a/close/scripts/t3-db.ts`);
+  // Its sibling imports, where they resolve from the copy.
+  for (const f of ["t3-db.ts", "trunk.ts"])
+    copyFileSync(join(SCRIPT_DIR, "../close/scripts", f), `${TMP}/copy/a/close/scripts/${f}`);
+  mkdirSync(`${TMP}/copy/packages/cli-exit`, { recursive: true });
+  copyFileSync(join(SCRIPT_DIR, "../../packages/cli-exit/cli-exit.ts"), `${TMP}/copy/packages/cli-exit/cli-exit.ts`);
   const code = `const m = await import(${JSON.stringify(`${TMP}/copy/a/b/policy-chain.ts`)}); const p = m.policyChainPolicyPath(); if (p === null) process.exit(2); process.stdout.write(p + "\\n");`;
   const env = { ...process.env };
   delete env.POLICY_JSON;
@@ -1080,6 +1135,16 @@ test("code-review.ts: caller-scoped rows", () => {
   has("cr: the fall-through is named on stderr", "trying next slot", r.err);
   has("cr: the answering vendor is named on stderr", "answered: grok", r.err);
   eq("cr: a clean review prints no findings", "", r.out);
+
+  r = review(["--fixture", FIXTURE], {
+    POLICY_CHAIN_AUTHOR_VENDORS: "codex",
+    CODEX_BIN: `${TMP}/say-codex.sh`,
+    GROK_BIN: `${STUBS}/stub-fail.ts`,
+    CLAUDE_BIN: `${TMP}/say-claude.sh`,
+  });
+  rcIs("cr: an unavailable Grok backs up to Claude for Codex-authored work", 0, r.rc);
+  has("cr: the Claude review's finding is returned", "[must-fix] from claude", r.out);
+  has("cr: the Claude reviewer is attributed", "answered: claude/opus", r.err);
 
   // acceptance 3 — hung primary falls through (this used to be a hard 124).
   r = review(["--fixture", FIXTURE], {

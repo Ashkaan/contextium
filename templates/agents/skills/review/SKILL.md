@@ -1,7 +1,7 @@
 ---
 name: review
 disable-model-invocation: true
-description: "The vendor review chain the loop skills run and never the model itself — code-review.ts over a git diff, spec-audit.ts over a SPEC or spec folder, policy-review.ts over any artifact — each walking a row of the policy table (policy.json here: Codex first, its declared backup next, never a vendor the caller names as an original author, and a fresh-context fallback labelled NOT independent only when no eligible vendor answers), with blast-radius.ts packing the callers of what a diff changed and find-peers.ts sweeping a mechanism for the siblings a fix left behind. Invoked by /implement (Phase 4.7), /implement-audit, /spec-audit and /author through the paths in this folder; run by hand only to review a diff or SPEC outside those loops or to run the chain's own suites (run-tests.ts) and its eval (evals/)."
+description: The vendor review programs the loop skills call to review a diff, a SPEC or a file. Used by /implement, /implement-audit, /spec-audit and /author; invoke directly for a review outside those loops.
 allowed-tools: "Bash(.agents/skills/review/*:*) Read"
 metadata:
   peers: ".agents/skills/review/code-review.ts .agents/skills/review/spec-audit.ts .agents/skills/review/policy-review.ts .agents/skills/review/policy-chain.ts .agents/skills/review/policy.json .agents/skills/review/blast-radius.ts .agents/skills/review/blast-radius-symbols.ts .agents/skills/review/find-peers.ts .agents/skills/review/run-tests.ts"
@@ -16,7 +16,7 @@ holds every folder here to.
 | Script | Reviews | Called by |
 |---|---|---|
 | `code-review.ts <base> <head> [--slice <file>]` / `--since <tree>` / `--snapshot` | a git diff, with the blast-radius pack spliced in; with `--slice`, one piece of a too-large change: only the NUL-separated paths the file lists, over the set's one base and head (at most four pieces; `.agents/skills/implement-audit/SKILL.md` step-2); a framed result for the review receipt when asked | `/implement` Phase 4.7, `/implement-audit`, `validate.ts` |
-| `spec-audit.ts <spec-or-folder> <brief> [pushback-file]` | a SPEC or spec folder | `/spec-audit` |
+| `spec-audit.ts <spec-or-folder> <brief> [--follow-up <file>]` | a SPEC or spec folder; a follow-up judges the last round's findings by id and the edits made for them (at most three) | `/spec-audit` |
 | `policy-review.ts <task-kind> <artifact> <brief>` | one file, under any policy row | `/spec-audit`, `/author` |
 | `policy-chain.ts` | imported by the three above; walks the row | — |
 | `blast-radius.ts` + `blast-radius-symbols.ts` | who imports, what imports, who calls | `code-review.ts` |
@@ -50,6 +50,10 @@ holds every folder here to.
   change. A counter that is unreadable, or missing after the audit registered
   one, reads as spent (exit 5). The executing child's identity and the original
   writer's identity below serve different purposes; preserve all three.
+  Completed-answer accounting, durable issued snapshots and the driver's
+  verified upstream-integration allowance are defined in
+  `.agents/skills/implement-audit/SKILL.md` § step-2-dispatch-reviewer. Use that driver;
+  never select a merge bucket or alter its counter yourself.
 
 - **The review receipt:** with `CODE_REVIEW_RESULT_FILE` set (`validate.ts`
   sets it, with `CODE_REVIEW_COVERAGE_FILE` naming the declared items), the

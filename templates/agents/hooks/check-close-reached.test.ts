@@ -163,3 +163,4 @@ test("a log that cannot be written still allows (exit 0)", () => {
   assert.equal(r.rc, 0, r.err);
   assert.match(r.err, /reply allowed/);
 });
+

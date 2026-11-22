@@ -1,7 +1,7 @@
 #!/usr/bin/env -S node --experimental-strip-types
 // check-staleness.ts
 //
-// Two independent "this project needs a decision" scans over projects/*/*/.
+// Three independent "this project needs a decision" scans over projects/*/*/.
 //
 //   1. STALE   — active/blocked/monitor project with no journal mention in the
 //                last N days (default 14). Optional; fire when the user asks
@@ -9,6 +9,9 @@
 //   2. EXPIRED — monitor project whose `monitoring-until:` date has already
 //                passed. Fires on every blank-mode /project via
 //                `step-0.5-render-index`.
+//   3. OVERDUE — a dated check on one row of an active or blocked project,
+//                `blocked: <date> …` in its ROADMAP.md, whose date has passed.
+//                Runs with EXPIRED, under --expired-only too.
 //
 // The two answer different questions and a project can trip either alone: a
 // monitor window can lapse while the project is still being mentioned daily,
@@ -19,7 +22,14 @@
 // there to catch go unnoticed, and nothing says so. Lapsed windows pile up
 // unless something prints them.
 //
-// Deterministic — filesystem + frontmatter + journal grep, no AI.
+// WHY OVERDUE EXISTS: EXPIRED reads only a monitor project, whose window is
+// its earliest watch. A dated check on a project that also has ready or
+// waiting rows is in no window at all: such a check can pass while its project
+// reads active, and what it was waiting for sits unseen until someone asks. So
+// triage shows every project's overdue checks, one line each. A monitor project's rows are
+// left to EXPIRED, which already lapses on the earliest of them.
+//
+// Deterministic — filesystem + frontmatter + ROADMAP tables + journal grep, no AI.
 //
 // Usage:
 //   check-staleness.ts                # both scans, 14-day staleness cutoff
@@ -30,6 +40,8 @@
 //   STALE:<domain>/<slug>:days-since-last-mention=<N|never>
 //   EXPIRED:<domain>/<slug>:monitoring-until=<YYYY-MM-DD>:days-overdue=<N>
 //   NOWINDOW:<domain>/<slug>            # status: monitor, no parseable date
+//   OVERDUE:<domain>/<slug>:<ID>:watch=<YYYY-MM-DD>:days-overdue=<N>:<what>
+//                                       # <what>: the Status after its date; may hold colons
 //
 // Output is empty if nothing is flagged. Exit code: 0 always (1 only when the
 // write root cannot be resolved).
@@ -40,7 +52,9 @@
 // sed, grep, date) costs seconds across a few hundred projects — slower than
 // the full journal-grep scan it is supposed to be a fast subset of. One pass
 // over the frontmatter costs about a tenth of a second. Keep it that way: no
-// child process inside the per-project loop. The journal is read once
+// child process inside the per-project loop. OVERDUE parses each active or
+// blocked project's ROADMAP.md in-process through listRows, which adds tens of
+// milliseconds. The journal is read once
 // and every project's mention search runs over that one in-memory copy, where
 // the bash original ran one `grep -r` per project.
 //
@@ -58,6 +72,8 @@ import { type Dirent, readdirSync, readFileSync, realpathSync, statSync } from "
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { exit, runToExit } from "../../../packages/cli-exit/cli-exit.ts";
+import { listRows, watchDate } from "../../close/scripts/roadmap.ts";
+import { isCalendarDay } from "../../../packages/calendar-day/calendar-day.ts";
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 
@@ -90,13 +106,9 @@ const ymd = (d: Date): string => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${
 /** Epoch seconds of local (TZ) midnight on YYYY-MM-DD — `date -d <day> +%s` —
  *  or null for a day `date` rejects (2026-13-45, 2026-02-30). */
 function dayEpoch(day: string): number | null {
-  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(day);
-  if (!m) return null;
-  const y = Number(m[1]);
-  const mo = Number(m[2]);
-  const d = Number(m[3]);
-  const t = new Date(y, mo - 1, d);
-  if (t.getFullYear() !== y || t.getMonth() !== mo - 1 || t.getDate() !== d) return null;
+  if (!isCalendarDay(day)) return null;
+  // Local midnight from the text: new Date(y, m, d) reads years 0-99 as 1900-1999.
+  const t = new Date(`${day}T00:00:00`);
   return Math.floor(t.getTime() / 1000);
 }
 
@@ -174,6 +186,42 @@ function scanFrontmatter(): Row[] {
   return rows;
 }
 
+/**
+ * OVERDUE lines for `dir`'s ROADMAP.md: each row whose Status is a dated check
+ * (roadmap.ts watchDate, the one watch rule; `blocked: until` is a release, not
+ * a check) dated before `today`. Rows come through listRows, the one table
+ * parser, in-process. A table that does not parse is said on stderr and
+ * skipped: the close refuses such a table, so none is expected.
+ */
+function overdueChecks(dir: string, ref: string, today: string, todayEpoch: number): string[] {
+  const file = `${dir}/ROADMAP.md`;
+  try {
+    statSync(file);
+  } catch {
+    return [];
+  }
+  const r = listRows(file, undefined, { projectsRoot: null });
+  if (!r.ok) {
+    process.stderr.write(`check-staleness: ${ref}: ROADMAP.md does not parse: ${r.messages.join("; ")}\n`);
+    return [];
+  }
+  const out: string[] = [];
+  for (const [id = "", status = ""] of r.rows) {
+    const due = watchDate(status);
+    if (due === "" || due >= today) continue;
+    const dueEpoch = dayEpoch(due);
+    if (dueEpoch === null) continue;
+    // The words after the date, without the dash or colon some rows put first.
+    const what = status
+      .replace(/^blocked:[ \t]*/i, "")
+      .slice(due.length)
+      .replace(/^[\s—–:-]+/, "")
+      .trim();
+    out.push(`OVERDUE:${ref}:${id}:watch=${due}:days-overdue=${Math.trunc((todayEpoch - dueEpoch) / 86400)}:${what}\n`);
+  }
+  return out;
+}
+
 /** Every file under journal/, recursively, with its text — read once. */
 function journalFiles(): { path: string; text: string }[] {
   const out: { path: string; text: string }[] = [];
@@ -238,7 +286,7 @@ async function main(): Promise<void> {
       // date and ignore the rest.
       let untilDate = untilRaw.replace(/^"/, "").replace(/^'/, "");
       untilDate = [...untilDate].slice(0, 10).join("");
-      // Shape is right; the calendar still rejects an impossible day (2026-13-45).
+      // Shape is right; the calendar still rejects an impossible day.
       const untilEpoch = /^[0-9]{4}-[0-9]{2}-[0-9]{2}$/.test(untilDate) ? dayEpoch(untilDate) : null;
 
       if (untilEpoch === null) {
@@ -248,6 +296,11 @@ async function main(): Promise<void> {
           `EXPIRED:${domain}/${slug}:monitoring-until=${untilDate}:days-overdue=${Math.trunc((TODAY_EPOCH - untilEpoch + 43200) / 86400)}\n`,
         );
       }
+    }
+
+    // --- OVERDUE (active/blocked) ---
+    if (status === "active" || status === "blocked") {
+      for (const line of overdueChecks(dir, `${domain}/${slug}`, TODAY, TODAY_EPOCH)) process.stdout.write(line);
     }
 
     if (!RUN_STALE) continue;

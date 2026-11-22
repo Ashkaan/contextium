@@ -64,10 +64,37 @@ writeFileSync(
   join(FAKE_SRC, "playwright/index.js"),
   `const { appendFileSync } = require("node:fs");
 const statusMap = JSON.parse(process.env.FAKE_STATUS || "{}");
+const log = (s) => appendFileSync(process.env.FAKE_LOG, s + "\\n");
+// A DevTools session as qaSignAccess uses it: a request is paused only when an
+// enabled pattern matches it, as Chromium does; each continue is logged with
+// the headers it set, "plain" when the request was never paused.
+class Cdp {
+  constructor() { this.patterns = []; this.paused = null; this.urls = {}; this.n = 0; }
+  on(event, f) { if (event === "Fetch.requestPaused") this.paused = f; }
+  async send(method, params) {
+    if (method === "Fetch.enable") this.patterns = params.patterns;
+    if (method === "Fetch.continueRequest") {
+      const url = this.urls[params.requestId];
+      log(params.headers ? "sent " + url + " " + JSON.stringify(Object.fromEntries(params.headers.map((h) => [h.name, h.value]))) : "as is " + url);
+    }
+  }
+}
+async function request(page, url) {
+  const cdp = page.cdp;
+  if (!cdp || !cdp.paused || !cdp.patterns.some((p) => url.startsWith(p.urlPattern.slice(0, -1)))) return log("plain " + url);
+  const requestId = "r" + cdp.n++;
+  cdp.urls[requestId] = url;
+  cdp.paused({ requestId, request: { url, headers: {} } });
+  await new Promise((r) => setImmediate(r));
+}
 class Page {
+  constructor(ctx) { this.ctx = ctx; }
+  context() { return this.ctx; }
   async goto(url) {
     const route = new URL(url).pathname;
     appendFileSync(process.env.FAKE_LOG, \`goto \${url}\\n\`);
+    await request(this, url);
+    await request(this, "https://cdn.example/f.woff2");
     if (process.env.FAKE_THROW && route === process.env.FAKE_THROW) throw new Error("boom on " + route);
     const status = statusMap[route] ?? 200;
     return { status: () => status };
@@ -75,7 +102,9 @@ class Page {
 }
 class Ctx {
   constructor(opts) { appendFileSync(process.env.FAKE_LOG, \`context \${JSON.stringify(opts)}\\n\`); }
-  async newPage() { return new Page(); }
+  async addCookies(c) { log("cookies " + JSON.stringify(c)); }
+  async newCDPSession(page) { page.cdp = new Cdp(); return page.cdp; }
+  async newPage() { return new Page(this); }
   async close() {}
 }
 exports.chromium = {
@@ -293,13 +322,18 @@ test("auth run → 0", () => {
   );
   assert.equal(r.rc, 0, r.out);
 });
-test("token pair + act-as sent as extraHTTPHeaders", () =>
+test("token pair + act-as sent to the site's own origin", () =>
   assert.ok(
     read(FAKE_LOG).includes(
-      '"CF-Access-Client-Id":"ID-1","CF-Access-Client-Secret":"SECRET-1","X-Portal-Act-As":"Someone@Example.com"',
+      'sent http://localhost:8813/ {"CF-Access-Client-Id":"ID-1","CF-Access-Client-Secret":"SECRET-1","X-Portal-Act-As":"Someone@Example.com"}',
     ),
     read(FAKE_LOG),
   ));
+test("and never to another origin the page loads from, nor as a context-wide header", () => {
+  assert.match(read(FAKE_LOG), /^plain https:\/\/cdn\.example\/f\.woff2$/m);
+  assert.doesNotMatch(read(FAKE_LOG), /^sent https:\/\/cdn\.example/m);
+  assert.equal(read(FAKE_LOG).includes("extraHTTPHeaders"), false);
+});
 // act-as without a token means nothing and is not sent
 test("act-as without token → no header", () => {
   clear(FAKE_LOG);

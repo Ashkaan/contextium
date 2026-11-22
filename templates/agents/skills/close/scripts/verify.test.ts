@@ -38,6 +38,10 @@ import { basename, dirname, join } from "node:path";
 import { after, test } from "node:test";
 import { fileURLToPath } from "node:url";
 
+// The user's review override (CLOSE_REVIEW_OVERRIDDEN_BY) is never inherited by
+// these runs: a close run with it would otherwise pass every refusal they test.
+delete process.env.CLOSE_REVIEW_OVERRIDDEN_BY;
+
 const SCRIPT = join(dirname(fileURLToPath(import.meta.url)), "verify.ts");
 const TMP = mkdtempSync(join(tmpdir(), "verify-test-"));
 after(() => {
@@ -248,6 +252,29 @@ test("an app directly under apps/ (a flat layout) is its own unit", () => {
   has("a flat apps/<name>/ app is found by its package.json", OUT, "ok flatapp");
   hasnt("and a folder inside it is not an app of its own", OUT, "flatapp/src");
   rmSync(join(WT, "apps/flatapp"), { recursive: true, force: true });
+});
+
+// land.ts merges the trunk in the worktree and, on a conflict, stops with the
+// merge uncommitted; its re-run verifies before committing it. `git diff HEAD`
+// then lists every file the trunk brought in, so the close would demand checks
+// and a review for other threads' landed work.
+test("an uncommitted trunk merge brings in only this thread's changes", () => {
+  const other = join(TMP, "other-clone");
+  git("clone", "-q", BARE, other);
+  git("-C", other, "config", "user.email", "t@example.com");
+  git("-C", other, "config", "user.name", "tester");
+  appendFileSync(join(other, "apps/health/untouched/src/index.ts"), "// another thread's work\n");
+  git("-C", other, "commit", "-q", "-am", "another thread lands");
+  git("-C", other, "push", "-q", "origin", "main");
+  git("-C", WT, "fetch", "-q", "origin", "main");
+  git("-C", WT, "merge", "-q", "--no-commit", "--no-ff", "origin/main");
+  try {
+    go();
+    hasnt("the trunk's own change is not this thread's to verify", OUT, "health/untouched");
+    has("this thread's committed change is still in scope", OUT, "tools/bare");
+  } finally {
+    git("-C", WT, "merge", "--abort");
+  }
 });
 
 test("a red half halts, names the half, and hands back the exact command", () => {

@@ -1,6 +1,6 @@
 ---
 name: spec
-description: Writes one spec folder, specs/NNN-name/{spec,plan,tasks,research}.md, per designed roadmap row from spec-kit's templates, fills the row in ROADMAP.md, auto-dispatches spec-audit (reviewer consensus + spirit-check), folds findings, then auto-invokes /close. Use when /project hands over a design, or when work-in-progress turns out to need a SPEC in the moment. The SPEC-writing half of the loop's Think verb — broken out so a SPEC can be produced anytime one is needed, not only inside a full /project think flow.
+description: Writes the spec folder for each designed roadmap row, has it audited, and closes. Use when /project hands over a design, or when work in progress turns out to need a SPEC.
 allowed-tools: "Bash(.agents/skills/close/scripts/*:*) Bash(.agents/skills/spec-audit/scripts/*:*) Read Edit Write Skill Task"
 metadata:
   peers: ".agents/skills/project/SKILL.md .agents/skills/spec-audit/SKILL.md .agents/skills/close/references/auto-close-gate.md .agents/skills/spec/references/templates/SOURCE.md .agents/skills/project/references/templates/ROADMAP.md .agents/skills/close/scripts/roadmap.ts"
@@ -17,7 +17,7 @@ metadata:
 - **No user sign-off halt (option A).** The old "present SPEC, HALT for user review" gate is gone. A machine-audited SPEC is committed + pushed by the auto-close and reviewed by the user on the trunk / in the fresh `/implement` session. The loop only halts for a genuine decision or deferral. Nor does a task or success criterion wait on the user's acceptance unless their quoted words asked for one: write it as "verify it is good" — full `/qa`, a fresh-context sighted review, every finding fixed — because a stop nobody asked for leaves the work waiting on a sign-off instead of being checked.
 - **Auto-close is the tail.** `step-3-auto-close` invokes `/close` itself on clean completion per the shared SSOT (`close/references/auto-close-gate.md`). The user does not type `/close`.
 - **Fresh-context boundary preserved.** `/spec`'s auto-close ENDS the session. The close prints each ready row's `/implement <slug> <row>` command, and the user runs it in a fresh session — `/spec` does NOT roll into `/implement`.
-- **Credentials in the SPEC must resolve to a named secret-store item + field.** "From the key or whatever app Y uses" is a `AGENTS.md § Standards → Read before asserting` violation — resolve the item's name + field (and its id, where the store has one) during the design (in `/project`'s explore step) and cite it explicitly. `/spec` writes what the design resolved; it does not paper over a gap.
+- **Credentials in the SPEC must resolve to a named secret-store item + field.** "From the key or whatever app Y uses" is a `AGENTS.md § Standards → Read before asserting` violation — resolve the item's name + field (and its id, where the store has one) during the design (in `/project`'s explore step) and cite it explicitly. `/spec` writes what the design resolved; it does not paper over a gap. Nor does it write a task for the user's hands — a sign-in, a key, a console click: the planning session already took it (`.agents/skills/project/SKILL.md` § Critical), and a design that left one is handed back to `/project`, not written.
 
 ## step-1-write-spec — write the spec folders
 
@@ -37,9 +37,22 @@ by spec-kit (the templates and their provenance are
 **One folder per designed row.** `/project` splits a design into roadmap rows
 with `Depends on`, and hands over every row it designed this session; each gets
 its own folder now, so rows whose dependencies are met can run in parallel at
-once. A row that was not designed keeps Sub-spec `—` and sends the next session
-to planning.
+once. Every foreseeable row is designed in that one session, whatever its
+Depends on; the only row left undesigned is one whose design needs a result
+nobody has yet, which keeps Sub-spec `—` and sends a later session to planning
+once that result exists (`.agents/skills/project/SKILL.md` § think-step-3.6-row-split).
 
+0. **Read what earlier builds left unbuilt.** In a project with reports,
+   print every earlier build's `## Not built` section (nothing printed: none):
+
+   ```bash
+   find <project-folder> -path '*/specs/*/report.md' -exec awk '/^## /{p=($0=="## Not built")} p{print FILENAME": "$0}' {} +
+   ```
+
+   Fold each line that bears on this row into its spec, and list each one
+   that bears on it but is left out under `### Supported inputs`' `Not
+   covered:` with the reason. For an improvements row, every `IDEA` line its
+   Scope boundary names is either folded in or listed there.
 1. **Number and name.** `NNN` is the highest existing `specs/NNN-*` plus one,
    zero-padded to three (`001` first); the name is the row's Sub-feature in
    kebab-case — spec-kit's own convention.
@@ -55,7 +68,10 @@ to planning.
    `.agents/skills/close/scripts/open-clarifications.ts` finds it, `/implement` refuses to
    start while one remains, and the project routes back to `/project` to settle
    it.
-4. **The roadmap row.** With no `ROADMAP.md` in the project, create it from
+4. **The roadmap row.** A row is an outcome the user would notice; before adding
+   one, apply `.agents/skills/project/SKILL.md` § think-step-3.6-row-split's test, and
+   put work inside an open row's outcome into that row's spec instead. With no
+   `ROADMAP.md` in the project, create it from
    [`project/references/templates/ROADMAP.md`](../project/references/templates/ROADMAP.md):
    fill the epic name and intro, and REPLACE the template's three placeholder
    rows (`<name>`, `<one line>`) with the real rows — never append beneath them,
@@ -84,7 +100,7 @@ to planning.
 folder per spec. The older layout of loose `*.spec.md` / `*.plan.md` files is
 retired: no reader (`spec-state.ts`,
 `detect-stage.ts`, `project-remaining-work.ts`, `next-implement-command.ts`)
-reads it, and `land.ts`'s project-shape gate refuses a close that writes it.
+reads it.
 
 ## step-2-spec-audit — dispatch /spec-audit
 
@@ -93,7 +109,7 @@ UNCONDITIONAL — fires on every spec `/spec` writes. Dispatch `/spec-audit <spe
 **Handling findings:**
 
 - **review round-1 consensus**: all findings accepted by the authoring agent and folded (edit the spec's files); proceed.
-- **review round-2 with pushbacks**: the reviewer conceded (`[concede]`) or held (`[disagree]`); disagreements that hold are an escalation.
+- **follow-up rounds**: each finding is accepted (the spec edited) or pushed back, and a follow-up judges each by id, `[resolved]` or `[open]`, plus any defect the edits introduced; at most three follow-ups (`/spec-audit` § step-5). Findings still open at the cap are settled there; only what the user alone can answer reaches them.
 - **Spirit-check MATCH**: no drift; proceed.
 - **Spirit-check DRIFT / AMBIGUOUS**: fold every point that changing the spec back to the user's words settles, and name each in the summary; the check is not run again in that audit (`/spec-audit` § step-3). Only a point that needs a choice they alone can make is surfaced.
 - **A surfaced DRIFT point, or a held reviewer escalation**: surface to the user. This is a hard stop — `step-3-auto-close` does NOT fire while it is outstanding (per the auto-close gate's precondition (i)).
@@ -120,7 +136,7 @@ The `## SPEC Created` summary `/close` surfaces (no sign-off halt):
 **Key Patterns**: {pattern with file:line}, {pattern with file:line}
 
 **Machine review (step-2 via /spec-audit):**
-- Machine review: {round-1 consensus | round-2 consensus (N pushbacks accepted by the reviewer, M escalated) | skipped — non-material}
+- Machine review: {round-1 consensus | round-1 + N follow-ups (M pushbacks accepted by the reviewer, K escalated) | skipped — non-material}
 - Spirit-check: {MATCH | DRIFT — <details> | AMBIGUOUS — <details>}
 
 **Open clarifications**: {none | the rows whose spec still carries a `[NEEDS CLARIFICATION]` marker — they go back to /project, not /implement}
@@ -154,7 +170,7 @@ matched to the row case-insensitively. These are the same lines
 
 ### Example 2 — ad-hoc mid-session SPEC
 
-Working together, it turns out a small change needs a spec. `/spec "<scope hint>"` reads the design context already in session (lighter than a full think flow), adds a row to the project's `ROADMAP.md` (creating it from the template if absent), writes that row's `specs/NNN-name/` folder with `## Clarifications` reading `N/A — no grill (ad-hoc spec)`, audits it, auto-closes. No `/project` think flow required.
+Working together, it turns out a small change needs a spec. `/spec "<scope hint>"` reads the design context already in session (lighter than a full think flow), applies the row-split outcome test (`.agents/skills/project/SKILL.md` § think-step-3.6-row-split) — work inside an open row's outcome, its review or QA findings included, goes into that row's spec instead, and only a new outcome the user would notice gets a row — then adds that row to the project's `ROADMAP.md` (creating it from the template if absent), writes that row's `specs/NNN-name/` folder with `## Clarifications` reading `N/A — no grill (ad-hoc spec)`, audits it, auto-closes. No `/project` think flow required.
 
 ### Example 3 — spirit DRIFT halts auto-close
 
@@ -167,6 +183,6 @@ Working together, it turns out a small change needs a spec. `/spec "<scope hint>
 | Auto-close fired while a DRIFT was unresolved | `step-2` surfaced DRIFT but `step-3` proceeded | Precondition (i) was violated — an outstanding decision means HALT; re-open the decision with the user before any close |
 | `/close` ran twice | the gate was not consulted before dispatch | `step-3` MUST run `land.ts --gate` BEFORE dispatching `/close`, and proceed only on `not-fired` |
 | plan.md still holds the `- spec-audit: [...]` placeholder | `step-2` was skipped, or printed the line without writing it | Run `/spec-audit <spec-folder>`; it replaces the whole list item with the line |
-| Spec written as a loose `*.spec.md` (the close refuses it: `project shape rejected`) | The retired layout was followed | Move it into `specs/NNN-name/` split across the four templates, and point its row's Sub-spec at the folder with `roadmap.ts --set` |
+| Spec written as a loose `*.spec.md` (no reader finds it) | The retired layout was followed | Move it into `specs/NNN-name/` split across the four templates, and point its row's Sub-spec at the folder with `roadmap.ts --set` |
 | `roadmap.ts` exits 1 `placeholder row R1` | ROADMAP.md was created from the template and the placeholder rows were appended to, not replaced | Delete the `<name>` rows; the real rows take their place |
 | `/implement` refuses with `NEEDS CLARIFICATION` | A marker was left in spec.md, plan.md or tasks.md | That is the gate working: settle the question in `/project <slug>`, then edit the marker out |

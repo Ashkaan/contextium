@@ -12,7 +12,7 @@
 # homes through links (~/.agents/skills, ~/.claude/skills, ~/.claude/agents,
 # ~/.gemini/config/skills), each picked harness's hook location is a link to
 # the one manifest for its format in .agents/ (or has the guards merged into a
-# settings file of yours), and land.ts runs the checks before every commit a
+# settings file of yours), and land.ts runs the checks on the merged tree before every push a
 # close makes.
 #
 # The first question is which tool you drive the workbench with (T3 Code is the
@@ -36,7 +36,7 @@ set -euo pipefail
 
 # --- Constants ---
 
-VERSION="v9.2.1"
+VERSION="v9.3.0"
 
 # The tools the installer knows, in menu order. The first is the recommended one.
 HARNESSES="t3 claude codex cursor vscode gemini antigravity grok"
@@ -2390,5 +2390,5 @@ printf '%s\n' "Everything lives once: ${BOLD}AGENTS.md${NC} (a link to .agents/A
 printf '%s\n' "AGENTS.md carries the ${BOLD}${RULES}${NC} rules; re-run with ${BOLD}--rules <level>${NC} to change that."
 printf '%s\n' "Add your own preferences and stack in AGENTS.md outside the Contextium blocks, and"
 printf '%s\n' "put hooks of your own in ${BOLD}.agents/user-hooks.json${NC}; a re-run merges them in."
-printf '%s\n' "/close runs the checks before every commit it makes, whichever tool made the change."
+printf '%s\n' "/close runs the checks on the merged tree before every push it makes, whichever tool made the change."
 printf '\n'

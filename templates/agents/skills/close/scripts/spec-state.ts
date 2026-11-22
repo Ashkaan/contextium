@@ -29,10 +29,11 @@
 // peers:
 //   .agents/skills/close/scripts/spec-state.test.ts
 
-import { lstatSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
+import { lstatSync, readdirSync, readFileSync, realpathSync } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { exit, runToExit } from "../../../packages/cli-exit/cli-exit.ts";
+import { isDir, isFile } from "./trunk.ts";
 
 const err = (msg: string): void => {
   process.stderr.write(`Error: ${msg}\n`);
@@ -44,13 +45,6 @@ const exists = (p: string): boolean => {
   try {
     lstatSync(p);
     return true;
-  } catch {
-    return false;
-  }
-};
-const isFile = (p: string): boolean => {
-  try {
-    return statSync(p).isFile();
   } catch {
     return false;
   }
@@ -104,13 +98,7 @@ async function main(): Promise<void> {
     exit(2);
   }
   const projectDir = argv[0] ?? "";
-  let isDir = false;
-  try {
-    isDir = statSync(projectDir).isDirectory();
-  } catch {
-    isDir = false;
-  }
-  if (!isDir) {
+  if (!isDir(projectDir)) {
     err(`not a directory: ${projectDir}`);
     exit(2);
   }

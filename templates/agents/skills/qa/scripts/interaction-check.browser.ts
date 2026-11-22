@@ -77,7 +77,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import process from "node:process";
 import type { BrowserContext, Page, Request, Route } from "playwright";
-import { type CfAccessPair, qaAccessHeaders } from "./lib.ts";
+import { type CfAccessPair, qaAccessHeaders, qaSignAccess } from "./lib.ts";
 import { exit, runToExit } from "../../../packages/cli-exit/cli-exit.ts";
 import { gotoSurvivingNetworkChange } from "./nav.ts";
 
@@ -132,7 +132,8 @@ async function main(): Promise<void> {
   }
   // The person the token acts as on an app that declares PROBE_ACTS_AS; only with the token.
   const auth = readAuth();
-  const extraHTTPHeaders = qaAccessHeaders(auth.access, auth.actAs, auth.jwt);
+  // Sent to the site only, never to a CDN it loads from (qaSignAccess).
+  const accessHeaders = qaAccessHeaders(auth.access, auth.actAs, auth.jwt);
 
   const isData = (req: Request): boolean => ["fetch", "xhr"].includes(req.resourceType());
 
@@ -249,7 +250,6 @@ async function main(): Promise<void> {
   async function newPage(screen: Screen = DESKTOP): Promise<{ ctx: BrowserContext; page: Page }> {
     const ctx = await browser.newContext({
       ...screen,
-      extraHTTPHeaders,
       serviceWorkers: "block",
     });
     await ctx.addInitScript(NO_SOCKETS);
@@ -258,6 +258,7 @@ async function main(): Promise<void> {
       r.request().method() === "GET" ? r.continue() : r.fulfill({ status: 204, body: "" }),
     );
     const page = await ctx.newPage();
+    await qaSignAccess(page, base, accessHeaders);
     return { ctx, page };
   }
 

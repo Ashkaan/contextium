@@ -38,7 +38,8 @@
 // make impossible. So 3 is data and everything else is exit 2.
 //
 // WEB, is whatever detect-app.ts's TYPE says:
-// astro-cf, astro, next, vite, static, node-server. cli / render / unknown are
+// astro-cf, astro, next, vite, static, node-server, and email (an app that sends
+// a designed email, whose QA is a delivered copy). cli / render / unknown are
 // not targets — there are no pixels in a CLI's stdout, and a render target's
 // PNGs are already its own deliverable.
 //
@@ -76,8 +77,9 @@
 //   - detect-app.ts exit 2 / >3:  exit 2
 
 import { type SpawnSyncReturns, spawnSync } from "node:child_process";
-import { existsSync, readFileSync, statSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { existsSync, mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { dropCodeExt, dropQuery, importEdges } from "./import-map.ts";
 import { exit, runToExit } from "../../../packages/cli-exit/cli-exit.ts";
@@ -231,8 +233,9 @@ async function main(): Promise<void> {
 
   // ── Classification ────────────────────────────────────────────────────
 
-  const WEB_TYPES = new Set(["astro-cf", "astro", "next", "vite", "static", "node-server"]);
+  const WEB_TYPES = new Set(["astro-cf", "astro", "next", "vite", "static", "node-server", "email"]);
   const TYPE_CACHE = new Map<string, boolean>();
+  const TYPE_NAME = new Map<string, string>();
 
   // isWeb <abs-dir> — true or false. Exits the SCRIPT with 2 on a detector
   // failure, which is the point: there is no third answer a caller could safely
@@ -258,6 +261,7 @@ async function main(): Promise<void> {
     const type = /^TYPE=(.*)$/m.exec(run.stdout)?.[1] ?? "";
     const web = WEB_TYPES.has(type);
     TYPE_CACHE.set(dir, web);
+    TYPE_NAME.set(dir, type);
     return web;
   }
 
@@ -406,8 +410,58 @@ async function main(): Promise<void> {
     frontier = next;
   }
 
-  if (TARGETS.length === 0) exit(0);
-  process.stdout.write(`${sortC(new Set(TARGETS)).join("\n")}\n`);
+  // ── An email is checked only when it comes out different ──
+  // A change to shared code a client email also uses asks for the user's
+  // check of a delivered copy only when the email itself comes out different:
+  // asking for a newsletter check over a database change the email never
+  // shows costs the user a look at nothing. An email app declares `qa:email-render` (`node --experimental-strip-types
+  // <file>`), a program printing its email for a fixed sample; it is run at
+  // --base, in a detached worktree outside the repo, and in this tree, and
+  // identical output drops the target. No --base, no render script on either
+  // side, or a render that fails keeps the target.
+  const renderEmail = (root: string, rel: string): string | null => {
+    const dir = join(root, rel);
+    let script = "";
+    try {
+      script = (JSON.parse(readFileSync(join(dir, "package.json"), "utf8")).scripts ?? {})["qa:email-render"] ?? "";
+    } catch {
+      return null;
+    }
+    const file = /^node --experimental-strip-types (\S+)$/.exec(script)?.[1];
+    if (!file) return null;
+    const r = spawnSync(process.execPath, ["--experimental-strip-types", file], {
+      cwd: dir,
+      encoding: "utf8",
+      timeout: 60_000,
+      maxBuffer: 64 * 1024 * 1024,
+    });
+    return r.status === 0 ? r.stdout : null;
+  };
+  let KEPT = sortC(new Set(TARGETS));
+  const emails = KEPT.filter((t) => TYPE_NAME.get(t) === "email");
+  if (BASE && emails.length > 0) {
+    const baseTree = mkdtempSync(join(tmpdir(), "qa-email-base-"));
+    const added = git("worktree", "add", "--detach", "-q", baseTree, BASE).status === 0;
+    try {
+      for (const t of emails) {
+        const rel = relative(REPO, t);
+        const now = renderEmail(REPO, rel);
+        const before = added ? renderEmail(baseTree, rel) : null;
+        if (now !== null && before !== null && now === before) {
+          KEPT = KEPT.filter((k) => k !== t);
+          err(
+            `qa-targets: ${rel}: the email comes out the same before and after this change; no delivered copy to check`,
+          );
+        } else if (now !== null && before !== null) err(`qa-targets: ${rel}: the email comes out different`);
+      }
+    } finally {
+      if (added) git("worktree", "remove", "--force", baseTree);
+      rmSync(baseTree, { recursive: true, force: true });
+    }
+  }
+
+  if (KEPT.length === 0) exit(0);
+  process.stdout.write(`${KEPT.join("\n")}\n`);
 }
 
 await runToExit(main);

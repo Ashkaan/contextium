@@ -51,6 +51,12 @@ test("qa:cmd → cli", () =>
   assert.equal(run(mkrepo('{"bin":{"foo":"cli.js"},"scripts":{"qa:cmd":"node cli.js --help"}}')), "cli|0"));
 test("qa:serve → node-server", () =>
   assert.equal(run(mkrepo('{"scripts":{"start":"node server.js","qa:serve":"node server.js"}}')), "node-server|0"));
+// qa:email marks an app that sends a designed email: its QA ends with
+// a delivered test copy checked on a phone, so it is a QA target of its own.
+test("qa:email → email", () =>
+  assert.equal(run(mkrepo('{"scripts":{"test":"node --test","qa:email":"node qa-email.ts"}}')), "email|0"));
+test("qa:email wins over qa:render", () =>
+  assert.equal(run(mkrepo('{"scripts":{"qa:render":"make png","qa:email":"node qa-email.ts"}}')), "email|0"));
 // qa:render wins over astro detection
 test("qa:render → render", () =>
   assert.equal(run(mkrepo('{"dependencies":{"astro":"5"},"scripts":{"qa:render":"make qa-png"}}')), "render|0"));

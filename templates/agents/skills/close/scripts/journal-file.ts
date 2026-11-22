@@ -55,11 +55,12 @@
 //       3 --check found an invalid entry
 
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync, realpathSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { exit, runToExit } from "../../../packages/cli-exit/cli-exit.ts";
+import { git, isFile } from "./trunk.ts";
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const THREAD = join(SCRIPT_DIR, "thread.ts");
@@ -89,18 +90,6 @@ function capture(cmd: string, args: string[], opts: { quiet?: boolean } = {}): C
 
 function node(script: string, args: string[], opts: { quiet?: boolean } = {}): Captured {
   return capture(process.execPath, ["--experimental-strip-types", script, ...args], opts);
-}
-
-function git(args: string[]): boolean {
-  return spawnSync("git", args, { stdio: "ignore" }).status === 0;
-}
-
-function isFile(p: string): boolean {
-  try {
-    return statSync(p).isFile();
-  } catch {
-    return false;
-  }
 }
 
 async function main(): Promise<void> {
@@ -195,13 +184,13 @@ async function main(): Promise<void> {
   // do without a ref to compare against.
   const jt = node(TRUNK_TS, [WT], { quiet: true });
   const JTRUNK = jt.ok ? jt.out : "";
-  if (JTRUNK !== "") git(["-C", WT, "fetch", "-q", "origin", JTRUNK]);
+  if (JTRUNK !== "") git(WT, "fetch", "-q", "origin", JTRUNK);
 
   const taken = (name: string): boolean => {
     const rel = `journal/${DATE}/${name}`;
     if (existsSync(`${WT}/${rel}`)) return true;
     if (JTRUNK === "") return false;
-    return git(["-C", WT, "cat-file", "-e", `origin/${JTRUNK}:${rel}`]);
+    return git(WT, "cat-file", "-e", `origin/${JTRUNK}:${rel}`).ok;
   };
 
   let NAME = `${HHMM}-${SLUG}.md`;

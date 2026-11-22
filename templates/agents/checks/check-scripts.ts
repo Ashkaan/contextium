@@ -716,7 +716,7 @@ function partB(p: string): void {
 // ── Part (c): the language, and the bash tier ────────────────────────────
 
 /** Every file of the worktree a commit could carry: tracked, plus untracked and
- *  not ignored (land.ts runs this before its `git add -A`), still on disk,
+ *  not ignored (land.ts runs this on the merged tree, before the push), still on disk,
  *  outside `node_modules/`. A listing that fails is a caller error. */
 function worktreeFiles(): string[] {
   const r = git(["ls-files", "-z", "--cached", "--others", "--exclude-standard"], false);

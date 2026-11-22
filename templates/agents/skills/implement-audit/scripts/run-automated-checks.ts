@@ -1,6 +1,6 @@
 #!/usr/bin/env -S node --experimental-strip-types
 // run-automated-checks.ts — Step 1 of /implement-audit. Run the 5 deterministic
-// checks against the diff between $BASE_SHA and HEAD; emit structured
+// checks against the diff between the baseline commit/tree and worktree; emit structured
 // pass/fail lines the step-2 reviewer can consume verbatim.
 //
 // Owns the check block that would otherwise sit inline in
@@ -14,12 +14,16 @@
 //        .agents/checks/check-secrets.ts (check 5)
 //
 // Usage:
-//   run-automated-checks.ts --session-base <SHA> [--repo-dir <path>]
+//   run-automated-checks.ts --session-base <SHA> [--repo-dir <path>] [--paths-file <file>]
 //
 // Flags:
-//   --session-base <SHA>  git rev-parsable start of the session's commits (REQUIRED)
+//   --session-base <SHA>  git rev-parsable baseline commit or snapshot tree (REQUIRED)
 //   --repo-dir <path>     absolute repo path (defaults to $CLAUDE_PROJECT_DIR,
 //                         then falls back to `git rev-parse --show-toplevel`)
+//   --paths-file <file>   NUL-separated repo-relative paths: check only the
+//                         changed files on this list. An upstream-merge review
+//                         passes the receipt keeper's REVIEW_PATHS_FILE, so the
+//                         trunk's own files are not this branch's to fix.
 //
 // Output (stdout, one TAP-ish line per check):
 //   PASS: lint (3 files)
@@ -117,6 +121,7 @@ function runMerged(
 async function main(): Promise<void> {
   // ── Argument parsing ─────────────────────────────────────────────────
   let SESSION_BASE = "";
+  let PATHS_FILE = "";
   // Fix B: CLAUDE_PROJECT_DIR is an optimization, not a hard dependency — fall
   // back to git when unset (some callers leave it unset). Applied at the
   // default only; a later --repo-dir flag still overrides. A failing rev-parse
@@ -134,12 +139,13 @@ async function main(): Promise<void> {
   const argv = process.argv.slice(2);
   while (argv.length > 0) {
     const a = argv[0] ?? "";
-    if (a === "--session-base" || a === "--repo-dir") {
+    if (a === "--session-base" || a === "--repo-dir" || a === "--paths-file") {
       if (argv.length < 2) {
         err(`${process.argv[1]}: $2: unbound variable`);
         exit(1);
       }
       if (a === "--session-base") SESSION_BASE = argv[1] ?? "";
+      else if (a === "--paths-file") PATHS_FILE = argv[1] ?? "";
       else REPO_DIR = argv[1] ?? "";
       argv.splice(0, 2);
     } else if (a === "-h" || a === "--help") {
@@ -192,7 +198,7 @@ async function main(): Promise<void> {
     exit(1);
   }
 
-  if (spawnSync("git", ["rev-parse", "--verify", `${SESSION_BASE}^{commit}`], { stdio: "ignore" }).status !== 0) {
+  if (spawnSync("git", ["rev-parse", "--verify", `${SESSION_BASE}^{tree}`], { stdio: "ignore" }).status !== 0) {
     err(`unparseable session-base: ${SESSION_BASE}`);
     exit(1);
   }
@@ -212,9 +218,7 @@ async function main(): Promise<void> {
   let listing = "";
   let untrackedListing = "";
   for (const args of [
-    ["diff", "-z", "--name-only", SESSION_BASE, "HEAD"],
-    ["diff", "-z", "--name-only", "--cached"],
-    ["diff", "-z", "--name-only"],
+    ["diff", "-z", "--name-only", SESSION_BASE],
     ["ls-files", "-z", "--others", "--exclude-standard"],
   ]) {
     const g = spawnSync("git", args, {
@@ -229,7 +233,21 @@ async function main(): Promise<void> {
     listing += g.stdout ?? "";
     if (args[0] === "ls-files") untrackedListing = g.stdout ?? "";
   }
-  const changed_files = [...new Set(listing.split("\0").filter((l) => l !== ""))].sort();
+  let changed_files = [...new Set(listing.split("\0").filter((l) => l !== ""))].sort();
+  if (PATHS_FILE !== "") {
+    let keep = new Set<string>();
+    try {
+      keep = new Set(
+        readFileSync(PATHS_FILE, "utf8")
+          .split("\0")
+          .filter((l) => l !== ""),
+      );
+    } catch (e) {
+      err(`--paths-file could not be read: ${(e as Error).message}; nothing was checked`);
+      exit(1);
+    }
+    changed_files = changed_files.filter((f) => keep.has(f));
+  }
   const untracked = untrackedListing.split("\0").filter((u) => u !== "" && isFile(u));
 
   const code_files: string[] = [];

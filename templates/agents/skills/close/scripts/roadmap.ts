@@ -25,12 +25,14 @@
 //   `—`                                          → —
 //   `manual`, ticked or not (a step no spec is written for) → manual
 // Any other cell is a malformed table (exit 1, naming the row and the cell), and
-// `--set … --sub-spec` refuses anything but `specs/NNN-name/` or `manual` before
-// it writes.
+// `--set … --sub-spec` refuses anything but `specs/NNN-name/`, `manual` or `—`
+// before it writes; `—` returns a manual row to planning.
 //
 // Usage:
 //   roadmap.ts <project-folder>                 one TSV line per row:
 //                                               ID  Status  ready(yes|no)  Sub-spec  Sub-feature
+//                                               (a tab typed inside a cell is written as a space,
+//                                               so every line is exactly five fields)
 //   roadmap.ts <project-folder> --next          the derived `next:` value, or nothing
 //   roadmap.ts <project-folder> --ready         the ready rows only, same TSV, in
 //                                               next-order (in-progress, then planned)
@@ -88,6 +90,9 @@
 // for rows-taken.ts, with each row's dependency results for
 // check-roadmap-decisions.ts, project-status.ts and land.ts. dependsOnEntries()
 // and matchProject(), the cell's grammar and the slug-to-folder match.
+// projectFolders(), the folders an entry can name; projectsNaming(), land.ts's
+// resync set; projectsWaitingOn() (waitingOn() over any reader) and
+// rowsFinished(), which land.ts --landed-projects reads (comment above them).
 //
 // peers:
 //   .agents/skills/close/scripts/roadmap.test.ts
@@ -116,6 +121,8 @@ import {
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { exit, runToExit } from "../../../packages/cli-exit/cli-exit.ts";
+import { isDir, isFile } from "./trunk.ts";
+import { isCalendarDay as calendarDay } from "../../../packages/calendar-day/calendar-day.ts";
 
 const SPEC_STATE = join(dirname(fileURLToPath(import.meta.url)), "spec-state.ts");
 
@@ -132,21 +139,6 @@ function usage(): never {
   );
   return exit(2);
 }
-
-const isDir = (p: string): boolean => {
-  try {
-    return statSync(p).isDirectory();
-  } catch {
-    return false;
-  }
-};
-const isFile = (p: string): boolean => {
-  try {
-    return statSync(p).isFile();
-  } catch {
-    return false;
-  }
-};
 
 /** awk's records: split on \n, and a final newline ends the last record rather than starting an empty one. Latin1: one char per byte. `given` is the file's bytes when the caller already holds them. */
 function records(path: string, given?: Buffer): { lines: string[]; raw: Buffer } {
@@ -305,14 +297,10 @@ function substr(s: string, m: number, n?: number): string {
 }
 const trim = (s: string): string => s.replace(/^[ \t]+|[ \t]+$/g, "");
 
-/** Whether `token` is a `YYYY-MM-DD` naming a real calendar day: it survives a
- *  `Date.UTC` round trip, so `2099-99-99` and `2026-02-30` do not. */
-export function calendarDay(token: string): boolean {
-  const m = /^([0-9]{4})-([0-9]{2})-([0-9]{2})$/.exec(token);
-  if (!m) return false;
-  const d = new Date(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3])));
-  return d.toISOString().slice(0, 10) === token;
-}
+/** Whether `token` is a `YYYY-MM-DD` naming a real calendar day, so `2099-99-99`
+ *  and `2026-02-30` are not: the repo's one rule (packages/calendar-day),
+ *  exported as calendarDay. */
+export { calendarDay };
 
 /** The watch date of a `blocked:` status — its leading `YYYY-MM-DD`, when that
  *  is a calendar day and no digit follows it — or "". The template's watch
@@ -458,8 +446,9 @@ interface Table {
   byid: Map<string, number>;
 }
 
-/** Status → kind, by the template derivation rule's vocabulary. */
-function kindOf(status: string): string {
+/** Status → kind, by the template derivation rule's vocabulary. Exported for
+ *  the techs-leftovers lister, which asks whether a row is still open. */
+export function kindOf(status: string): string {
   const s = status.toLowerCase();
   if (s === "planned" || s === "in-progress" || s === "done") return s;
   if (/^blocked:/.test(s)) return "blocked";
@@ -587,10 +576,9 @@ export function matchProject(rels: string[], slug: string, domain = ""): { rel: 
   return { error: `${named} names more than one project (${hits.sort().join(", ")}) — write <domain>/${slug}` };
 }
 
-/** `matchProject` over the project folders under `<root>/projects/` — those
- *  holding a ROADMAP.md, the only rows a Depends on entry can name; a stray
- *  folder of the same name is no candidate and makes nothing ambiguous. */
-export function findProjectFolder(root: string, slug: string, domain = ""): { rel: string } | { error: string } {
+/** Every `projects/<domain>/<folder>` under `<root>` holding a ROADMAP.md —
+ *  the only folders a Depends on entry can name; [] when there is no projects/. */
+export function projectFolders(root: string): string[] {
   const rels: string[] = [];
   const top = `${root}/projects`;
   let domains: string[] = [];
@@ -599,14 +587,137 @@ export function findProjectFolder(root: string, slug: string, domain = ""): { re
       .filter((e) => e.isDirectory())
       .map((e) => e.name);
   } catch {
-    return { error: `no projects/ folder in ${root}` };
+    return [];
   }
   for (const d of domains) {
-    if (domain !== "" && d !== domain) continue;
     for (const e of readdirSync(`${top}/${d}`, { withFileTypes: true }))
       if (e.isDirectory() && isFile(`${top}/${d}/${e.name}/ROADMAP.md`)) rels.push(`projects/${d}/${e.name}`);
   }
-  return matchProject(rels, slug, domain);
+  return rels;
+}
+
+/** `matchProject` over `projectFolders(root)`: a stray folder of the same name
+ *  holding no ROADMAP.md is no candidate and makes nothing ambiguous. */
+export function findProjectFolder(root: string, slug: string, domain = ""): { rel: string } | { error: string } {
+  if (!isDir(`${root}/projects`)) return { error: `no projects/ folder in ${root}` };
+  return matchProject(projectFolders(root), slug, domain);
+}
+
+// WHICH PROJECTS NAME THESE — two answers, on purpose. land.ts re-derives every README whose dependency resolution MAY have
+// changed, so its set is a string match on any row, resolution not consulted:
+// a landing that adds a second same-named project makes an entry ambiguous,
+// and that project must be re-derived too (projectsNaming). The close's open
+// step wants only the projects actually waiting on a row this landing
+// finished, so its set resolves each entry and keeps the ones naming a finished
+// row (projectsWaitingOn). One set for both would either re-derive too little
+// or open threads for unrelated work.
+
+/** Every project under `<root>/projects/` whose ROADMAP.md names one of
+ *  `dirs` in Depends on (`<slug> <ID>` or `<domain>/<slug> <ID>`), on any
+ *  row. land.ts's resync set (moved here unchanged from its closure). */
+export function projectsNaming(root: string, dirs: string[]): string[] {
+  const named = new Set<string>();
+  for (const dir of dirs) {
+    const m = /(?:^|\/)projects\/([^/]+)\/[0-9]{4}-[0-9]{2}-[0-9]{2}_([^/]+)$/.exec(dir);
+    if (m?.[1] && m[2]) named.add(m[2]).add(`${m[1]}/${m[2]}`);
+  }
+  if (named.size === 0) return [];
+  const found: string[] = [];
+  let domains: string[] = [];
+  try {
+    domains = readdirSync(`${root}/projects`);
+  } catch {
+    return [];
+  }
+  for (const domain of domains) {
+    let folders: string[] = [];
+    try {
+      folders = readdirSync(`${root}/projects/${domain}`);
+    } catch {
+      continue;
+    }
+    for (const folder of folders) {
+      const table = `${root}/projects/${domain}/${folder}/ROADMAP.md`;
+      if (!isFile(table)) continue;
+      // Only the cells are wanted, so nothing is resolved here.
+      const { deps } = listRows(table, undefined, { projectsRoot: null });
+      if (deps.some((row) => row.some((x) => x.project !== "" && named.has(x.project))))
+        found.push(`projects/${domain}/${folder}`);
+    }
+  }
+  return found;
+}
+
+/** The projects waiting on a row in `finished` (folder → row IDs): a folder is
+ *  kept when one of its Depends on entries resolves, through `matchProject`
+ *  over `folders`, to a finished row. An ambiguous entry, or one naming a row
+ *  its project lacks, resolves to nothing. `table(rel)` gives a folder's
+ *  ROADMAP.md bytes; one it cannot give (it throws an Error) or that does not
+ *  parse is returned in `unreadable` with the reason or listRows' last message.
+ *  Anything else the reader throws — a caller's own exit — propagates. The reader is the caller's: the filesystem
+ *  (projectsWaitingOn) or a commit (land.ts --landed-projects). */
+export function waitingOn(
+  folders: string[],
+  table: (rel: string) => Buffer,
+  finished: Map<string, Set<string>>,
+): { rels: string[]; unreadable: Array<{ rel: string; why: string }> } {
+  const done = new Map<string, Set<string>>();
+  for (const [rel, ids] of finished) if (ids.size > 0) done.set(rel, new Set([...ids].map((i) => i.toUpperCase())));
+  if (done.size === 0) return { rels: [], unreadable: [] };
+  const rels: string[] = [];
+  const unreadable: Array<{ rel: string; why: string }> = [];
+  for (const rel of folders) {
+    let bytes: Buffer;
+    try {
+      bytes = table(rel);
+    } catch (e) {
+      // A reader's own exit (land.ts's fatal git read) is not this table's
+      // fault: it propagates. A read error is this table's alone.
+      if (!(e instanceof Error)) throw e;
+      unreadable.push({ rel, why: e.message });
+      continue;
+    }
+    const r = listRows(`${rel}/ROADMAP.md`, bytes, { projectsRoot: null });
+    if (!r.ok) {
+      unreadable.push({ rel, why: r.messages[r.messages.length - 1] ?? "the table does not read" });
+      continue;
+    }
+    const waits = r.deps.some((row) =>
+      row.some((x) => {
+        if (x.project === "") return false;
+        const hit = matchProject(folders, x.slug, x.domain);
+        return "rel" in hit && (done.get(hit.rel)?.has(x.id.toUpperCase()) ?? false);
+      }),
+    );
+    if (waits) rels.push(rel);
+  }
+  return { rels, unreadable };
+}
+
+/** `waitingOn` over the project folders under `<root>/projects/`, read from disk. */
+export function projectsWaitingOn(
+  root: string,
+  finished: Map<string, Set<string>>,
+): { rels: string[]; unreadable: Array<{ rel: string; why: string }> } {
+  if (![...finished.values()].some((ids) => ids.size > 0)) return { rels: [], unreadable: [] };
+  return waitingOn(projectFolders(root), (rel) => readFileSync(`${root}/${rel}/ROADMAP.md`), finished);
+}
+
+/** The row IDs whose status reads done, `closed:` or `absorbed by` in `after`
+ *  and did not in `before` (null: no table before, so none). Either side that
+ *  does not parse is `{ error }` with listRows' last message. */
+export function rowsFinished(before: Buffer | null, after: Buffer): string[] | { error: string } {
+  const finishedIn = (b: Buffer): Set<string> | { error: string } => {
+    const r = listRows("ROADMAP.md", b, { projectsRoot: null });
+    if (!r.ok) return { error: r.messages[r.messages.length - 1] ?? "the table does not read" };
+    const k = (s: string) => kindOf(s);
+    return new Set(r.rows.filter((f) => k(f[1] ?? "") === "done" || k(f[1] ?? "") === "closed").map((f) => f[0] ?? ""));
+  };
+  const was = before === null ? new Set<string>() : finishedIn(before);
+  if (!(was instanceof Set)) return was;
+  const now = finishedIn(after);
+  if (!(now instanceof Set)) return now;
+  return [...now].filter((id) => !was.has(id));
 }
 
 /** The repo root above a table at `<root>/projects/<domain>/<folder>/ROADMAP.md`, or null. */
@@ -717,8 +828,10 @@ function parseOrThrow(
     }
   }
 
+  // A tab typed inside a cell would add a field to the TSV: a space instead.
+  const cell = (v: string | undefined): string => (v ?? "").replace(/\t/g, " ");
   const rowTsv = (r: number): string =>
-    `${rid[r]}\t${rstatus[r]}\t${ready[r] ? "yes" : "no"}\t${rsub[r]}\t${rfeat[r]}\n`;
+    `${cell(rid[r])}\t${cell(rstatus[r])}\t${ready[r] ? "yes" : "no"}\t${cell(rsub[r])}\t${cell(rfeat[r])}\n`;
   const noRow = (id: string): never => {
     const ids = rid.join(", ");
     return fail(`no row ${id} in ROADMAP.md (rows: ${ids === "" ? "none" : ids})`);
@@ -863,6 +976,7 @@ function parseOrThrow(
   const seg = segs(lines[ln] ?? "");
   seg[colStatus] = ` ${bytes(set.status)} `;
   if (set.subspec === "manual") seg[colSub] = " manual ";
+  else if (set.subspec === "—") seg[colSub] = ` ${bytes("—")} `;
   else if (set.subspec !== "") seg[colSub] = ` \`${bytes(set.subspec)}\` `;
   lines[ln] = seg.join("|");
   for (const l of lines) out.text += `${l}\n`;
@@ -961,8 +1075,8 @@ async function main(): Promise<void> {
       set.id = rest[1] ?? "";
       set.status = rest[2] ?? "";
       set.subspec = rest[4] ?? "";
-      if (rest.length === 5 && set.subspec !== "manual" && !SPEC_FOLDER.test(set.subspec)) {
-        err(`--sub-spec '${set.subspec}' is not specs/NNN-name/ or manual`);
+      if (rest.length === 5 && set.subspec !== "manual" && set.subspec !== "—" && !SPEC_FOLDER.test(set.subspec)) {
+        err(`--sub-spec '${set.subspec}' is not specs/NNN-name/, manual or —`);
         exit(2);
       }
       const s = set.status;

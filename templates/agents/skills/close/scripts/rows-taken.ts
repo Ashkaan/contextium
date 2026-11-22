@@ -1,5 +1,5 @@
 #!/usr/bin/env -S node --experimental-strip-types
-// rows-taken.ts — which rows of a project another open T3 thread is building.
+// rows-taken.ts — which rows of a project another open T3 thread holds.
 //
 // WHY. Two threads that run `/project <slug>` the same morning are both sent to
 // the same next row by detect-stage.ts, and the second learns it only when its
@@ -25,7 +25,8 @@
 // cannot be read at all (no origin/main, a git error, a malformed copy) the
 // worktree is skipped with a note, never read as holding everything.
 //
-// Only building holds a row (planning does not), and a thread the user forgot
+// Only a row a thread marked in-progress is held: a build, or a hands-on step
+// it is working; planning marks nothing and holds nothing. A thread the user forgot
 // to settle holds its row until they settle it; every line names the thread so
 // they can.
 //
@@ -66,13 +67,14 @@
 //   .agents/skills/close/scripts/roadmap.ts   (listRows — the one table parser)
 
 import { spawn } from "node:child_process";
-import { existsSync, lstatSync, realpathSync, statSync } from "node:fs";
+import { existsSync, lstatSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { exit, runToExit } from "../../../packages/cli-exit/cli-exit.ts";
 import { listRows } from "./roadmap.ts";
 import { loadSqlite, type OpenThread, openThreads, t3Database } from "./t3-db.ts";
+import { isFile } from "./trunk.ts";
 
 const note = (msg: string): void => {
   process.stderr.write(`rows-taken: ${msg}\n`);
@@ -83,14 +85,6 @@ const real = (p: string): string | null => {
     return realpathSync(p);
   } catch {
     return null;
-  }
-};
-
-const isFile = (p: string): boolean => {
-  try {
-    return statSync(p).isFile();
-  } catch {
-    return false;
   }
 };
 

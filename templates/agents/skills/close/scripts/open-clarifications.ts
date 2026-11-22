@@ -25,21 +25,14 @@
 //   .agents/skills/project/scripts/detect-stage.ts
 //   .agents/skills/close/scripts/next-implement-command.ts
 
-import { readFileSync, realpathSync, statSync } from "node:fs";
+import { readFileSync, realpathSync } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { exit, runToExit } from "../../../packages/cli-exit/cli-exit.ts";
+import { isDir } from "./trunk.ts";
 
 const err = (msg: string): void => {
   process.stderr.write(`Error: ${msg}\n`);
-};
-
-const isDir = (p: string): boolean => {
-  try {
-    return statSync(p).isDirectory();
-  } catch {
-    return false;
-  }
 };
 
 /** The marker lines of one file, `<name>:<line>: <text>`, comments cut out first. */

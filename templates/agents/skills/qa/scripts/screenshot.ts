@@ -52,9 +52,10 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync }
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import type { Browser } from "playwright";
+import type { Browser, Page, Request, Response } from "playwright";
 import {
   qaAccessHeaders,
+  qaSignAccess,
   qaBrowsers,
   qaContextOptions,
   qaErr,
@@ -75,6 +76,326 @@ import { gotoSurvivingNetworkChange } from "./nav.ts";
 const PART_MAX = 3_000;
 /** How long the shot waits for every image to load and decode (see REVEAL); QA_IMAGE_WAIT_MS overrides, for the test. */
 const IMAGE_WAIT_MS = Number(process.env.QA_IMAGE_WAIT_MS) || 10_000;
+
+// ── FONTS ─────────────────────────────────────────────────────────────────────
+// Phone shots drawn in the machine's fallback font, with nothing in the run
+// saying so, lead the reviewer to judge line breaks the page never has. Two
+// things go wrong. A font
+// first used by text the reveal brings in was still loading when the still's
+// height was measured, so the page was cut into parts at the fallback's height;
+// Playwright waits for fonts inside each screenshot call, which is after that
+// measurement. And a font file or font stylesheet that failed left no trace.
+//
+// So each capture phase (the motion burst, the settled still) first waits for
+// the fonts the page has started using, at most FONT_WAIT_MS, and every font
+// that failed, timed out or could not be checked becomes a note on that
+// phase's evidence: in the manifests (`fontNotes`) and as one `font:` line
+// per route, width and phase in the run summary. The screenshot calls that
+// follow skip Playwright's own font wait (DRIVER_FONT_WAIT_OFF), which has no
+// deadline of its own: a stalled font request held each call for its full 30s
+// timeout and then failed the run.
+
+/** Longest wait for pending fonts, per capture phase; QA_FONT_WAIT_MS overrides, for the test. */
+const FONT_WAIT_MS = Number(process.env.QA_FONT_WAIT_MS) || 5_000;
+/** Read by playwright-core at each screenshot call (coreBundle.js `_preparePageForScreenshot`). */
+const DRIVER_FONT_WAIT_OFF = "PW_TEST_SCREENSHOT_NO_FONTS_READY";
+
+interface FontNote {
+  phase: "motion" | "still";
+  kind: "timeout" | "face-error" | "stylesheet-error" | "unverified";
+  reason: string;
+  /** The font family of a face that failed or timed out. */
+  family?: string;
+  /** The origin a failed stylesheet came from; never its path or query. */
+  origin?: string;
+}
+interface FontState {
+  timedOut: boolean;
+  /** `began`: on the read after capture, a face that was idle at the phase's waited read and is in use now. */
+  faces: { family: string; status: string; began?: boolean }[];
+}
+interface SheetFailure {
+  origin: string;
+  reason: string;
+  /** The URL that failed, kept in memory only: a later direct load of it recovers the sheet. */
+  url?: string;
+}
+
+/**
+ * The page's font faces, after waiting up to `waitMs` for the ones it has
+ * started using; `waitMs` 0 reads them without waiting. Null when the browser
+ * could not answer, including a page that did not answer by the deadline.
+ */
+async function readFonts(page: Page, waitMs: number): Promise<FontState | null> {
+  const inPage = page.evaluate(async (ms: number) => {
+    const set = document.fonts;
+    if (!set) return null;
+    // Layout first: the browser starts loading a face when text laid out in it
+    // needs it, and text the reveal just added has not been laid out yet.
+    void document.documentElement.getBoundingClientRect();
+    let timedOut = false;
+    if (ms > 0) {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      timedOut = await Promise.race([
+        set.ready.then(
+          () => false,
+          () => false,
+        ),
+        new Promise<boolean>((r) => {
+          timer = setTimeout(() => r(true), ms);
+        }),
+      ]);
+      clearTimeout(timer);
+    }
+    // Once the wait is over, the waited read remembers each face's status and
+    // starts listening for the browser's own load events; the read after
+    // capture then knows which loads the capture started: a face idle at the
+    // wait and in use now, or one the browser finished loading since (a face
+    // added afterwards from a URL). A face registered already loaded from
+    // bytes fires no load, so it is not mistaken for one.
+    //
+    // A face present at the wait keeps its own status, even if another face
+    // had matching descriptors. For new objects only, a settled descriptor
+    // accounts for Chromium rebuilding a stylesheet's faces during a shot.
+    // Those copies announce loads even when the rendered text stays the same,
+    // as measured on a live page.
+    interface Since {
+      settled: Set<string>;
+      byFace: WeakMap<FontFace, string>;
+      loaded: WeakSet<FontFace>;
+      stop: () => void;
+    }
+    const describe = (f: FontFace): string =>
+      [f.family, f.weight, f.style, f.stretch, f.unicodeRange, f.featureSettings].join("|");
+    const store = window as unknown as { __qaFontsSinceWait?: Since };
+    if (ms > 0) {
+      store.__qaFontsSinceWait?.stop();
+      const loaded = new WeakSet<FontFace>();
+      const onLoad = (e: Event) => {
+        for (const face of (e as FontFaceSetLoadEvent).fontfaces) loaded.add(face);
+      };
+      set.addEventListener("loadingdone", onLoad);
+      set.addEventListener("loadingerror", onLoad);
+      const faces = [...set];
+      store.__qaFontsSinceWait = {
+        settled: new Set(faces.filter((f) => f.status === "loaded" || f.status === "error").map(describe)),
+        byFace: new WeakMap(faces.map((f) => [f, f.status])),
+        loaded,
+        stop: () => {
+          set.removeEventListener("loadingdone", onLoad);
+          set.removeEventListener("loadingerror", onLoad);
+        },
+      };
+    }
+    const since = store.__qaFontsSinceWait;
+    return {
+      timedOut,
+      faces: [...set].map((f) => ({
+        family: f.family.replace(/^["']|["']$/g, ""),
+        status: f.status,
+        began: (() => {
+          if (ms !== 0 || since === undefined) return false;
+          const previous = since.byFace.get(f);
+          if (previous !== undefined) return previous === "unloaded" && f.status !== "unloaded";
+          return since.loaded.has(f) && !since.settled.has(describe(f));
+        })(),
+      })),
+    };
+  }, waitMs);
+  // A page that stops answering (a detached frame, a hung renderer) must not
+  // hold the run: give up on it a little after its own deadline.
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const backstop = new Promise<null>((r) => {
+    timer = setTimeout(() => r(null), waitMs + 2_000);
+  });
+  try {
+    const state = await Promise.race([inPage.catch(() => null), backstop]);
+    return state && Array.isArray(state.faces) ? state : null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * Stylesheet requests that failed in the navigation attempt that committed,
+ * and are still failed: a later successful load of the same sheet clears its
+ * failure. URLs stay in memory for matching; only origins leave. Also the
+ * committed attempt's main-document response, which answers for the page when
+ * a request held open (a stalled font) keeps the navigation from going idle.
+ */
+function trackStylesheets(page: Page): {
+  goto: Page["goto"];
+  failures: () => SheetFailure[];
+  document: () => Response | undefined;
+} {
+  let attempt = 0;
+  const startedIn = new WeakMap<Request, number>();
+  const failed = new Map<string, SheetFailure>();
+  let docRequest: Request | undefined;
+  let doc: Response | undefined;
+  let docFinished = false;
+  const isDocument = (req: Request): boolean => {
+    try {
+      return req.isNavigationRequest() && req.frame() === page.mainFrame();
+    } catch {
+      return false;
+    }
+  };
+  // A sheet is one request through its redirects: a later load that reaches a
+  // different mirror still recovers the sheet the page asked for.
+  const sheetKey = (req: Request): string => {
+    let first = req;
+    try {
+      for (let r = req.redirectedFrom(); r; r = r.redirectedFrom()) first = r;
+    } catch {
+      // a request that cannot say where it came from is its own sheet
+    }
+    return first.url();
+  };
+  // Chromium refuses a stylesheet that answered 4xx/5xx and then reports the
+  // request as aborted; the status is the better reason, so it stays.
+  const answeredError = new WeakSet<Request>();
+  const answeredOk = new WeakSet<Request>();
+  const ours = (req: Request): boolean => {
+    try {
+      return req.resourceType() === "stylesheet" && req.frame() === page.mainFrame();
+    } catch {
+      return false; // a service-worker request has no frame, and no part in this document
+    }
+  };
+  const origin = (url: string): string => {
+    try {
+      return new URL(url).origin;
+    } catch {
+      return "unknown origin";
+    }
+  };
+  page.on("request", (req) => {
+    const mainDocument = isDocument(req);
+    if (!mainDocument && !ours(req)) return;
+    startedIn.set(req, attempt);
+    // The browser issues a new document request when it follows a redirect.
+    // Until that request answers, the earlier response cannot stand for it.
+    if (mainDocument) {
+      docRequest = req;
+      doc = undefined;
+      docFinished = false;
+    }
+  });
+  page.on("response", (res) => {
+    const req = res.request();
+    if (startedIn.get(req) !== attempt) return;
+    if (isDocument(req)) {
+      if (req === docRequest) doc = res;
+      return;
+    }
+    if (!ours(req)) return;
+    const status = res.status();
+    if (status >= 300 && status < 400) return; // a redirect's own answer is neither failure nor recovery
+    if (status >= 400) {
+      answeredError.add(req);
+      failed.set(sheetKey(req), { origin: origin(req.url()), reason: `HTTP ${status}`, url: req.url() });
+    } else answeredOk.add(req);
+  });
+  page.on("requestfinished", (req) => {
+    if (startedIn.get(req) !== attempt) return;
+    if (isDocument(req) && doc?.request() === req) docFinished = true;
+    // A sheet recovers only once its whole body has arrived, not on its headers.
+    if (ours(req) && answeredOk.has(req)) {
+      failed.delete(sheetKey(req));
+      for (const [k, v] of failed) if (v.url === req.url()) failed.delete(k);
+    }
+  });
+  page.on("requestfailed", (req) => {
+    if (!ours(req) || startedIn.get(req) !== attempt || answeredError.has(req)) return;
+    failed.set(sheetKey(req), {
+      origin: origin(req.url()),
+      reason: req.failure()?.errorText || "request failed",
+      url: req.url(),
+    });
+  });
+  return {
+    // Each call is a fresh attempt: gotoSurvivingNetworkChange retries once,
+    // and an abandoned attempt's late events must not describe the page shot.
+    goto: (url, options) => {
+      attempt++;
+      failed.clear();
+      docRequest = undefined;
+      doc = undefined;
+      docFinished = false;
+      return page.goto(url, options);
+    },
+    failures: () => [...failed.values()],
+    // Only a document that arrived whole answers for the page.
+    document: () => (docFinished ? doc : undefined),
+  };
+}
+
+/** The notes for one phase: `before` is the bounded wait, `afterCapture` an unwaited read once its shots are taken. */
+function fontNotes(
+  phase: FontNote["phase"],
+  before: FontState | null,
+  afterCapture: FontState | null,
+  sheets: SheetFailure[],
+): FontNote[] {
+  const notes: FontNote[] = [];
+  if (before === null) {
+    notes.push({ phase, kind: "unverified", reason: "font state could not be read before capture" });
+  } else if (before.timedOut) {
+    const pending = [...new Set(before.faces.filter((f) => f.status === "loading").map((f) => f.family))];
+    if (pending.length === 0)
+      notes.push({ phase, kind: "timeout", reason: `fonts still loading after ${FONT_WAIT_MS}ms` });
+    for (const family of pending)
+      notes.push({ phase, kind: "timeout", reason: `still loading after ${FONT_WAIT_MS}ms`, family });
+  }
+  const failedFaces = new Set(
+    [...(before?.faces ?? []), ...(afterCapture?.faces ?? [])].filter((f) => f.status === "error").map((f) => f.family),
+  );
+  for (const family of failedFaces)
+    notes.push({ phase, kind: "face-error", reason: "failed to load or parse", family });
+  if (before !== null && afterCapture === null) {
+    notes.push({ phase, kind: "unverified", reason: "font state could not be read after capture" });
+  } else if (afterCapture !== null && !before?.timedOut) {
+    // A load that began after the wait above (the rewind or a screenshot call
+    // brought a face into use): still loading now, or idle at the wait and in
+    // use now. Early shots of the phase may show the fallback.
+    const started = new Set(
+      afterCapture.faces
+        .filter((f) => f.status === "loading" || f.began === true)
+        .map((f) => f.family)
+        .filter((family) => !failedFaces.has(family)),
+    );
+    for (const family of started)
+      notes.push({ phase, kind: "unverified", reason: "began loading during capture", family });
+  }
+  for (const s of sheets) notes.push({ phase, kind: "stylesheet-error", reason: s.reason, origin: s.origin });
+  const seen = new Set<string>();
+  return notes.filter((n) => {
+    const key = JSON.stringify(n);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+/** One summary line's text for a phase's notes. */
+function describeFontNotes(notes: FontNote[]): string {
+  return notes
+    .map((n) => `${n.kind}${n.family ? ` ${n.family}` : ""}${n.origin ? ` ${n.origin}` : ""}: ${n.reason}`)
+    .join("; ");
+}
+
+/** Run `fn` with Playwright's own screenshot font wait off, restoring the previous setting after. */
+async function withoutDriverFontWait<T>(fn: () => Promise<T>): Promise<T> {
+  const previous = process.env[DRIVER_FONT_WAIT_OFF];
+  process.env[DRIVER_FONT_WAIT_OFF] = "1";
+  try {
+    return await fn();
+  } finally {
+    if (previous === undefined) delete process.env[DRIVER_FONT_WAIT_OFF];
+    else process.env[DRIVER_FONT_WAIT_OFF] = previous;
+  }
+}
 
 async function main(): Promise<void> {
   const SHOTS_ROOT = process.env.QA_SHOTS_ROOT || "/tmp/qa-shots";
@@ -199,10 +520,17 @@ async function main(): Promise<void> {
   // Deterministic multi-viewport capture → manifest.json + table.
   const base = URL_;
   const outDir = OUT_DIR;
-  const pages = PAGES.split(/\s+/).filter(Boolean);
-  const widths = VIEWPORTS.split(",")
-    .map((w) => Number.parseInt(w.trim(), 10))
-    .filter(Boolean);
+  // A route given twice is shot once, for the same reason as a width (below).
+  const pages = [...new Set(PAGES.split(/\s+/).filter(Boolean))];
+  // A width given twice is shot once: a second capture would overwrite the
+  // first one's PNG while both kept manifest rows and notes.
+  const widths = [
+    ...new Set(
+      VIEWPORTS.split(",")
+        .map((w) => Number.parseInt(w.trim(), 10))
+        .filter(Boolean),
+    ),
+  ];
   const masks = (MASKS || "")
     .split(",")
     .map((s) => s.trim())
@@ -218,10 +546,11 @@ async function main(): Promise<void> {
   };
 
   // CF-Access service-token headers (the pair resolved above) — sent on every
-  // request so a gated portal returns 200 instead of a login redirect.
+  // request to the site (qaSignAccess, never to a CDN it loads from) so a
+  // gated portal returns 200 instead of a login redirect.
   // X-Portal-Act-As makes the probe the person the portal pairs it with
   // (PROBE_ACTS_AS); it means nothing without the token, so it only rides with it.
-  const extraHTTPHeaders = qaAccessHeaders(ACCESS, AUTH_ACT_AS, JWT);
+  const accessHeaders = qaAccessHeaders(ACCESS, AUTH_ACT_AS, JWT);
 
   // Chromium's shared-memory files go in a TMPDIR of the browser's own, removed
   // on exit: one is left behind whenever a process ends between making and
@@ -286,6 +615,8 @@ async function main(): Promise<void> {
     landedOrigin: string;
     /** Page rows this shot covers: the whole page, or one part of it. */
     rows: number;
+    /** Present only when a font failed, timed out or could not be checked (FONTS). */
+    fontNotes?: FontNote[];
   }
   interface Anim {
     name: string;
@@ -295,25 +626,48 @@ async function main(): Promise<void> {
     playState: string;
   }
   type Motion =
-    | { route: string; width: number; animations: Anim[]; frames: string[]; distinctFrames: number; error?: undefined }
-    | { route: string; width: number; error: string; animations?: undefined; distinctFrames?: undefined };
+    | {
+        route: string;
+        width: number;
+        animations: Anim[];
+        frames: string[];
+        distinctFrames: number;
+        error?: undefined;
+        fontNotes?: FontNote[];
+      }
+    | {
+        route: string;
+        width: number;
+        error: string;
+        animations?: undefined;
+        distinctFrames?: undefined;
+        fontNotes?: FontNote[];
+      };
 
   const manifest: Shot[] = [];
   const motion: Motion[] = [];
+  /** FONTS: one summary line per capture phase with notes, in capture order. */
+  const fontLines: string[] = [];
+  const fontLine = (route: string, width: number, phase: string, notes: FontNote[]): void => {
+    if (notes.length > 0)
+      fontLines.push(`font: ${route} @${width} ${phase} — typography may differ: ${describeFontNotes(notes)}`);
+  };
   for (const route of pages) {
     for (const width of widths) {
       const ctx = await (await browsers.forWidth(width)).newContext({
         ...qaContextOptions(width),
         deviceScaleFactor: 1,
         reducedMotion: REDUCED_MOTION === "reduce" ? "reduce" : "no-preference",
-        extraHTTPHeaders,
       });
       const page = await ctx.newPage();
+      // Watching stylesheets starts before the first navigation (FONTS).
+      const sheets = trackStylesheets(page);
+      await qaSignAccess(page, base, accessHeaders);
       const url = base.replace(/\/$/, "") + (route.startsWith("/") ? route : `/${route}`);
       let status = 0;
       let landedOrigin = "";
       try {
-        const resp = await gotoSurvivingNetworkChange(page, url, { waitUntil: "networkidle", timeout: 30000 });
+        const resp = await gotoSurvivingNetworkChange(sheets, url, { waitUntil: "networkidle", timeout: 30000 });
         status = resp ? resp.status() : 0;
         // T5: an auth wall answers 200 from a DIFFERENT origin. Route-count
         // guards miss it on single-page sites; the landed origin never does.
@@ -322,8 +676,20 @@ async function main(): Promise<void> {
         } catch {
           // no origin to compare
         }
-      } catch {
-        status = -1;
+      } catch (e) {
+        // A page that answered but never went network-idle — a font request
+        // held open is the usual cause — is shot as it stands, so its fonts can
+        // be checked and noted (FONTS). Any other failure has no page to shoot.
+        const doc = sheets.document();
+        if (e instanceof Error && e.name === "TimeoutError" && doc) {
+          status = doc.status();
+          try {
+            landedOrigin = new URL(page.url()).origin;
+          } catch {
+            // no origin to compare
+          }
+          qaErr(`screenshot: ${route} @${width} — answered ${status} but never went network-idle; shot as it stands`);
+        } else status = -1;
       }
       // MOTION, captured before the settled still — the entrance is already
       // running by the time `networkidle` resolves, so anything sampled later has
@@ -334,6 +700,9 @@ async function main(): Promise<void> {
       if (CAPTURE_MOTION) {
         const mdir = `${outDir}/motion`;
         mkdirSync(mdir, { recursive: true });
+        let fontsBefore: FontState | null = null;
+        let notes: FontNote[] = [];
+        const withNotes = () => (notes.length > 0 ? { fontNotes: notes } : {});
         try {
           const anims = await page.evaluate(() =>
             document.getAnimations().map((a) => {
@@ -358,7 +727,9 @@ async function main(): Promise<void> {
           // sampled four identical settled frames and reported "no motion" for a
           // page that animates fine. Seeking every animation back to 0 and
           // replaying makes the burst independent of how slow the load was, which
-          // is also what makes it comparable between runs.
+          // is also what makes it comparable between runs. Fonts settle first
+          // (FONTS), so the replay is not drawn in a fallback that then swaps.
+          fontsBefore = await readFonts(page, FONT_WAIT_MS);
           await page.evaluate(() => {
             for (const a of document.getAnimations()) {
               try {
@@ -374,12 +745,15 @@ async function main(): Promise<void> {
           // looks animated". Full-viewport shots with animations ALLOWED — this is
           // the one capture that must not be fast-forwarded.
           const burst: string[] = [];
-          for (const at of [0, 120, 260, 520]) {
-            const f = `${mdir}/${slugRoute(route)}-${width}-t${String(at).padStart(4, "0")}.png`;
-            await page.screenshot({ path: f, animations: "allow", caret: "hide" });
-            burst.push(f);
-            await page.waitForTimeout(at === 0 ? 120 : 140);
-          }
+          await withoutDriverFontWait(async () => {
+            for (const at of [0, 120, 260, 520]) {
+              const f = `${mdir}/${slugRoute(route)}-${width}-t${String(at).padStart(4, "0")}.png`;
+              await page.screenshot({ path: f, animations: "allow", caret: "hide" });
+              burst.push(f);
+              await page.waitForTimeout(at === 0 ? 120 : 140);
+            }
+          });
+          notes = fontNotes("motion", fontsBefore, await readFonts(page, 0), sheets.failures());
           const distinct = new Set(
             burst.map((f) => {
               try {
@@ -389,10 +763,13 @@ async function main(): Promise<void> {
               }
             }),
           ).size;
-          motion.push({ route, width, animations: anims, frames: burst, distinctFrames: distinct });
+          motion.push({ route, width, animations: anims, frames: burst, distinctFrames: distinct, ...withNotes() });
         } catch (e) {
-          motion.push({ route, width, error: String(e instanceof Error && e.message ? e.message : e) });
+          // A burst that failed part way still says what its fonts were doing.
+          if (notes.length === 0) notes = fontNotes("motion", fontsBefore, await readFonts(page, 0), sheets.failures());
+          motion.push({ route, width, error: String(e instanceof Error && e.message ? e.message : e), ...withNotes() });
         }
+        fontLine(route, width, "motion", notes);
       }
 
       // REVEAL before the settled still. A fullPage shot does NOT scroll, so a
@@ -412,6 +789,16 @@ async function main(): Promise<void> {
       // switched to eager, which starts its fetch, and the shot waits for all
       // of them to load and decode, up to IMAGE_WAIT_MS; one still missing then
       // is named on stderr rather than shot silently as white.
+      //
+      // Then SKIPPED CONTENT. The browser does not draw a `content-visibility:
+      // auto` element outside the viewport, and the shot is taken with the
+      // window at the top of a 1,600px-tall viewport (qaContextOptions), so
+      // such content lower down comes out blank — the walk's return to the top
+      // un-draws what it passed, and a visual reviewer has to reject a blank
+      // lower list as a capture artifact. Each element whose computed value is `auto` is set
+      // `visible`; `hidden` content, which a visitor never sees, is left alone,
+      // and no box's size or overflow changes, so a list that scrolls in its
+      // own box shows only the rows in its window, as a visitor sees it.
       let pendingImages = 0;
       try {
         pendingImages = await page.evaluate(async (waitMs: number) => {
@@ -433,6 +820,11 @@ async function main(): Promise<void> {
             "[data-animate],[data-aos],[data-reveal],.reveal,.fade-in,.animate-on-scroll" +
             "{opacity:1 !important;transform:none !important;visibility:visible !important}";
           document.head.appendChild(s);
+          for (const el of document.querySelectorAll<HTMLElement>("*")) {
+            if (getComputedStyle(el).contentVisibility === "auto") {
+              el.style.setProperty("content-visibility", "visible", "important");
+            }
+          }
           await new Promise((r) => setTimeout(r, 120));
           // Read the list again: the scroll can insert images (an observer
           // filling a slot), and those must be waited for too.
@@ -462,6 +854,10 @@ async function main(): Promise<void> {
         );
       }
 
+      // Fonts the reveal brought into use settle before the page is measured:
+      // a height taken in the fallback cuts the parts in the wrong place (FONTS).
+      const stillFontsBefore = await readFonts(page, FONT_WAIT_MS);
+
       // A page taller than PART_MAX is shot as clipped parts, top to bottom.
       // A part the reviewer can read at about 1.5x (PART_MAX). The blank and
       // identical-shot gates below judge a route's parts together, since one
@@ -473,20 +869,23 @@ async function main(): Promise<void> {
         // an unmeasurable page is shot whole, as before
       }
       const parts = height > PART_MAX ? Math.ceil(height / PART_MAX) : 1;
+      const stillShots: Shot[] = [];
       for (let part = 0; part < parts; part++) {
         const file =
           parts === 1
             ? `${outDir}/${slugRoute(route)}-${width}.png`
             : `${outDir}/${slugRoute(route)}-${width}-part${part + 1}.png`;
         const top = part * PART_MAX;
-        await page.screenshot({
-          path: file,
-          fullPage: true,
-          animations: "disabled",
-          caret: "hide",
-          mask: masks.map((sel) => page.locator(sel)),
-          ...(parts === 1 ? {} : { clip: { x: 0, y: top, width, height: Math.min(PART_MAX, height - top) } }),
-        });
+        await withoutDriverFontWait(() =>
+          page.screenshot({
+            path: file,
+            fullPage: true,
+            animations: "disabled",
+            caret: "hide",
+            mask: masks.map((sel) => page.locator(sel)),
+            ...(parts === 1 ? {} : { clip: { x: 0, y: top, width, height: Math.min(PART_MAX, height - top) } }),
+          }),
+        );
         let bytes = 0;
         try {
           bytes = statSync(file).size;
@@ -504,8 +903,12 @@ async function main(): Promise<void> {
           // unhashable reads as no hash
         }
         const rows = parts === 1 ? height : Math.min(PART_MAX, height - top);
-        manifest.push({ route, width, path: file, bytes, status, sha, ink, landedOrigin, rows });
+        stillShots.push({ route, width, path: file, bytes, status, sha, ink, landedOrigin, rows });
       }
+      // Every part carries the same notes: the wait ran once, for all of them.
+      const stillNotes = fontNotes("still", stillFontsBefore, await readFonts(page, 0), sheets.failures());
+      for (const shot of stillShots) manifest.push(stillNotes.length > 0 ? { ...shot, fontNotes: stillNotes } : shot);
+      fontLine(route, width, "still", stillNotes);
       await ctx.close();
     }
   }
@@ -543,6 +946,8 @@ async function main(): Promise<void> {
       `${m.route.padEnd(16)} ${String(m.width).padStart(5)}  ${m.path}  ${kb(m.bytes).padStart(7)}  ${m.status}\n`,
     );
   }
+  // FONTS: one line per capture phase with notes; a still's parts share one.
+  for (const line of fontLines) process.stdout.write(`${line}\n`);
 
   // Collide-check per width: >1 distinct route sharing one image is not evidence.
   // A route shot in parts is compared as the whole sequence of its parts.

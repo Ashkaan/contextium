@@ -550,11 +550,14 @@ function main(): void {
       isObj(g) && Array.isArray(g.hooks) ? g.hooks.map(cmd) : [],
     );
   };
-  const checkEndOfTurn = (label: string, shape: Shape, mf: string, id: string): void => {
+  // `handler` is the --harness value the manifest's Stop entry carries: Grok
+  // Build runs Codex's manifest (its hooks file links to it), and end-of-turn.ts
+  // senderOf tells a Grok payload apart from Codex's.
+  const checkEndOfTurn = (label: string, shape: Shape, mf: string, id: string, handler = id): void => {
     const m = readJson(mf);
     if (m === undefined) return;
     const named = stopCommands(shape, m).filter(
-      (c) => c.includes(EOT) && new RegExp(`--harness ${id}(\\s|$)`).test(c),
+      (c) => c.includes(EOT) && new RegExp(`--harness ${handler}(\\s|$)`).test(c),
     );
     if (!covered.has(id)) {
       if (named.length > 0)
@@ -564,7 +567,7 @@ function main(): void {
     }
     if (named.length === 0) {
       err(`Error: ${label} manifest does not run the end-of-turn check on Stop: ${mf} needs a Stop
-    handler running .agents/hooks/${EOT} --harness ${id}. Without it a close's report can go
+    handler running .agents/hooks/${EOT} --harness ${handler}. Without it a close's report can go
     unpasted and a closed thread's later work unlanded, and nothing says so. Re-run install.sh.`);
       return;
     }
@@ -597,7 +600,7 @@ function main(): void {
   const grokHooks = `${H}/.grok/hooks/contextium.json`;
   if (asserted("grok", existsSync(grokHooks))) {
     checkManifest("Grok Build", "claude", grokHooks, GROK_WANT);
-    checkEndOfTurn("Grok Build", "claude", grokHooks, "grok");
+    checkEndOfTurn("Grok Build", "claude", grokHooks, "grok", "codex");
   }
   const geminiSettings = `${HERE}/.gemini/settings.json`;
   if (asserted("gemini", existsSync(geminiSettings))) {

@@ -305,19 +305,35 @@ async function main(): Promise<void> {
       /(?:^|[\s{;"'`(,])(?:color|background(?:-color)?|border(?:-[a-z]+)*|outline(?:-color)?|box-shadow|text-shadow|fill|stroke|caret-color|accent-color|text-decoration(?:-color)?|column-rule(?:-color)?|backgroundColor|borderColor|boxShadow|textShadow|outlineColor|caretColor|accentColor|border[A-Z][A-Za-z]*)\s*:\s*[^:;{}"'`<>]*$/;
     const inProse = (rawLine: string, at: number): boolean => {
       const before = rawLine.slice(0, at);
-      const word = /([A-Za-z0-9.%-]+)\s+$/.exec(before);
+      // A non-breaking space written as an entity (`&nbsp;`, `&#160;`) between
+      // the word and the `#` separates them as a space does.
+      const word = /([A-Za-z0-9.%-]+)(?:\s|&nbsp;|&#160;|&#x[aA]0;)+$/.exec(before);
       if (word === null || CSS_BEFORE_COLOUR.test(word[1] ?? "")) return false;
       return !IN_DECLARATION.test(before);
     };
     for (const [file, line, raw] of codeLines()) {
       // Spaces are dropped before the compare, so `rgb(0, 0, 0)` and
       // `rgb(0,0,0)` are one colour.
+      // A `#` straight after `&` opens an HTML character reference (`&#8209;`,
+      // a non-breaking hyphen), never a colour: security-xperi's 23 of them read
+      // as the P2 colour `#8209`.
       const toks = [...raw.matchAll(LITERAL)]
-        .filter((m) => !(m[0].startsWith("#") && inProse(raw, m.index)))
+        .filter((m) => !(m[0].startsWith("#") && (raw[m.index - 1] === "&" || inProse(raw, m.index))))
         .flatMap((m) => m[0].replaceAll(" ", "").split(/\s+/).filter(Boolean));
       for (const tok of toks) {
         if (tok.includes("var(--")) continue;
         if (normColors.includes(`|${tok.toLowerCase()}|`)) continue;
+        // A colour built at run time (`rgba(0,180,216,${a})`) has an alpha no fixed
+        // text can match; its red, green and blue are fixed, so those are compared
+        // with the declared palette (a slide deck's scene colours, say).
+        const built = tok.includes("${") ? /^rgba?\((\d{1,3}),(\d{1,3}),(\d{1,3}),/.exec(tok) : null;
+        if (built) {
+          const hex = `#${built
+            .slice(1, 4)
+            .map((n) => Number(n).toString(16).padStart(2, "0"))
+            .join("")}`;
+          if (normColors.includes(`|${hex}|`) || normColors.includes(`|rgb(${built.slice(1, 4).join(",")})|`)) continue;
+        }
         pairs.push([tok, `${rel(file)}:${line}`]);
       }
     }

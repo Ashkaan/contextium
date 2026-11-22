@@ -1,17 +1,17 @@
 // land-cases.ts — the cases the close's spec names as the hard gate, and every
-// one the close has grown since. Not a suite itself: the eight `land*.test.ts`
+// one the close has grown since. Not a suite itself: the fourteen `land*.test.ts`
 // files beside land.ts each run one range of these cases.
 //
-// WHY EIGHT FILES. The cases run strictly one after another, and every one
+// WHY FOURTEEN FILES. The cases run strictly one after another, and every one
 // spawns land.ts and its helpers as Node processes. In bash that cost a few
 // milliseconds a child; in TypeScript it is a Node start each, and the whole
 // suite takes minutes — past the 180 s verify.ts gives one suite. The files
 // are processes that `node --test` runs side by side and verify.ts times one
 // at a time, while every case and expected string stays in this one file.
-// Three files were enough until every landing began running verify.ts first
-// (the `land` helper below), which put the gates file alone past four
-// minutes; the eight are cut from each case's measured time to finish in
-// about two minutes apiece, the live-check case (27) in a file of its own.
+// Every landing runs verify.ts first (the `land` helper below), so the files are
+// cut from each case's measured time to finish in about two minutes apiece; a
+// case that would push a file past the bound gets a file of its own. The last file runs every case from
+// its number on, so a new case runs somewhere until it is given its own.
 //
 // Run them all:
 //   node --test --experimental-strip-types .agents/skills/close/scripts/land*.test.ts
@@ -62,12 +62,18 @@ import {
   renameSync,
   rmSync,
   statSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, relative, resolve } from "node:path";
 import { after, describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
+import { isDir, isFile } from "../trunk.ts";
+
+// The user's review override (CLOSE_REVIEW_OVERRIDDEN_BY) is never inherited by
+// these runs: a close run with it would otherwise pass every refusal they test.
+delete process.env.CLOSE_REVIEW_OVERRIDDEN_BY;
 
 const HERE = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const REPO = resolve(HERE, "../../..");
@@ -234,20 +240,6 @@ function write(p: string, text: string): void {
 }
 function cat(...paths: string[]): string {
   return chomp(paths.map((p) => readFileSync(p, "utf8")).join(""));
-}
-function isDir(p: string): boolean {
-  try {
-    return statSync(p).isDirectory();
-  } catch {
-    return false;
-  }
-}
-function isFile(p: string): boolean {
-  try {
-    return statSync(p).isFile();
-  } catch {
-    return false;
-  }
 }
 /** `grep -c` over a file: the count of matching lines, or "" when it is absent. */
 function countLines(p: string, pred: (l: string) => boolean): string {
@@ -788,6 +780,11 @@ kase("Case 5: a conflict halts loud and changes nothing shared", () => {
   has("the conflict markers are in the worktree", cat(join(SAT1, "contested.txt")), "<<<<<<<");
   is("the shared checkout is untouched", g(F.PROD, "rev-parse", "HEAD"), SHARED_BEFORE);
   is("the shared checkout is clean", g(F.PROD, "status", "--porcelain"), "");
+  // ONE REPO'S REFUSAL PUSHES NO REPO. The code repo's row comes first in the
+  // ledger and holds the thread's journal; pushed before the satellite was even
+  // merged, a refusal there would leave half a change live, and a deployer
+  // waiting on the other half refuses every push until it lands.
+  is("the code repo's half is not pushed either", onMain(F.CODE, "journal/2026-09-13/0000-auto-1.md"), "no");
   ok(
     "no closed marker after a conflict",
     !existsSync(threadFile(TID1, "closed")),
@@ -834,7 +831,9 @@ kase("Case 5: a conflict halts loud and changes nothing shared", () => {
 // scripts, run as that copy's land.ts (`F.script`, which `land` uses until the
 // next fixture). It logs what it was asked and from where, and answers from
 // the environment: AWAIT_STUB_RC and AWAIT_STUB_LINE for every repo, or only
-// for the one whose name ends in AWAIT_STUB_ONLY. Both repos' origins are
+// for the one whose name ends in AWAIT_STUB_ONLY. With AWAIT_STUB_LOCK it
+// first waits a second for that lock, as the deploy workflow waits for the
+// repo lock to fetch, and fails as that run fails when it cannot take it. Both repos' origins are
 // given GitHub names, mapped back to their bare origins with `insteadOf`,
 // because land.ts asks GitHub only about a repo whose origin names one.
 function writeAwaitStub(): void {
@@ -844,10 +843,16 @@ function writeAwaitStub(): void {
   copyScripts(STUBROOT);
   write(
     join(STUBDIR, "await-push-checks.ts"),
-    `const arg = (f: string): string => process.argv[process.argv.indexOf(f) + 1] ?? "";
+    `import { spawnSync } from "node:child_process";
+const arg = (f: string): string => process.argv[process.argv.indexOf(f) + 1] ?? "";
 const repo = arg("--repo");
 const sha = arg("--sha");
 process.stderr.write(\`polled \${sha} \${repo}\\ncwd \${process.cwd()}\\n\`);
+const lock = process.env.AWAIT_STUB_LOCK;
+if (lock && spawnSync("flock", ["-w", "1", lock, "true"]).status !== 0) {
+  process.stdout.write("deploy: failure (its lock wait timed out)\\ndeploy failure\\n");
+  process.exit(1);
+}
 if (process.env.AWAIT_STUB_FAIL_SHA === sha) {
   process.stdout.write("deploy: failure (run_old)\\ndeploy failure\\n");
   process.exit(1);
@@ -1254,11 +1259,6 @@ kase("Case 7: a journal the aggregator could not parse never lands", () => {
   let r = land(1, ["thread one"], { merge: true });
   is("unparseable front matter exits 3", r.rc, "3");
   has("naming the file", r.out, "NOT CLOSED: journal entry fails the schema");
-  is(
-    "and nothing was committed in the worktree",
-    g(F.WT1, "log", "--oneline", "origin/main..HEAD").split("\n").filter(Boolean).length,
-    "0",
-  );
   is("so nothing reached main", onMain(F.CODE, `journal/2026-09-13/${basename(J)}`), "no");
   ok("no closed marker", !existsSync(threadFile(TID1, "closed")), "a broken journal still closed the session");
 
@@ -1288,11 +1288,6 @@ kase("Case 7a: a missing checker refuses the close rather than skipping", () => 
   let r = land(1, ["thread one"], { merge: true, script: join(NOCHECK, "land.ts") });
   is("a missing checker exits 3", r.rc, "3");
   has("naming the script it wanted", r.out, `NOT CLOSED: journal check missing: ${NOCHECK}/check-journal-entry.ts`);
-  is(
-    "and nothing was committed in the worktree",
-    g(F.WT1, "log", "--oneline", "origin/main..HEAD").split("\n").filter(Boolean).length,
-    "0",
-  );
   is("so nothing reached main", onMain(F.CODE, `journal/2026-09-13/${basename(J)}`), "no");
 
   // With the checker back, the same entry lands.
@@ -1528,6 +1523,13 @@ kase("Case 9h: a held close keeps its scripts' worktree until release", () => {
   let r = land(1, ["thread one", "--hold"], { merge: true, script });
   is("the held landing exits 4", r.rc, "4");
   ok("…and keeps the worktree its scripts run from", isDir(SATDIR), "the held close removed its own scripts");
+  // A landing without --hold, while held with no live checks owed, stays held:
+  // only --release ends a hold.
+  write(join(F.WT1, "two.txt"), "two\n");
+  r = land(1, ["thread one, more"], { merge: true, script });
+  is("an ordinary landing while held stays held", r.rc, "4");
+  ok("…writing no closed marker", !existsSync(threadFile(TID1, "closed")), "the hold was closed by a landing");
+  ok("…and keeping the scripts' worktree", isDir(SATDIR), "a landing during the hold removed it");
   r = land(1, ["--release"], { merge: true, script });
   is("the release, run from that worktree, passes", r.rc, "0");
   has("…and prints the line", r.out, "— closing this tab loses nothing.");
@@ -1764,8 +1766,8 @@ kase("Case 11c: a one-off's `project: null` is no project", () => {
 
 // ── Case 12 ───────────────────────────────────────────────────────────────
 //
-// The checker is the workbench's, and what is tested here is that land.ts finds it
-// in a ledger worktree, runs it before the commit and honours its verdict — not
+// The checker is workbench's, and what is tested here is that land.ts finds it
+// in a ledger worktree, runs it before the push and honours its verdict — not
 // the seven parts, which check-decision-records.test.ts owns. So a stand-in
 // that rejects any changed record containing BAD, committed at the path land.ts
 // resolves. It logs `<worktree>⇥<record>` for every record it sees to
@@ -1843,13 +1845,6 @@ kase("Case 12: the decision-record gate", () => {
     `NOT CLOSED: decision record rejected in ${F.WT1}: decisions/0001-bad.md: (b) stub rejects it`,
   );
   has("…and printing every other violation too", r.out, "decisions/0002-also-bad.md: (b) stub rejects it");
-  is(
-    "the worktree is left uncommitted",
-    g(F.WT1, "status", "--porcelain", "-uall")
-      .split("\n")
-      .filter((l) => /decisions\/|one\.txt/.test(l)).length,
-    "3",
-  );
   is("so neither file reached main", onMain(F.CODE, "decisions/0001-bad.md") + onMain(F.CODE, "one.txt"), "nono");
 
   // 1b. The same record already COMMITTED in the worktree, as /implement commits
@@ -1911,56 +1906,23 @@ kase("Case 12: the decision-record gate", () => {
   is("a close carrying a clean record lands", r.rc, "0");
   is("and the record is on main", onMain(F.CODE, "decisions/0001-good.md"), "yes");
 
-  // 3. A changed record with no checker anywhere in the ledger is refused, not
-  //    skipped — a silent `[ -f ]` would land the record unchecked.
+  // 3. A changed record with no checker in the workbench worktree lands, the
+  //    check it could not run named (R2: that refusal stopped nothing in 60 days).
   drFixture("c12c");
   write(join(F.WT1, "projects/x/decisions/0001-a.md"), "fine\n");
   r = land(1, ["thread one"], { merge: true });
-  is("a record with no resolvable checker exits 3", r.rc, "3");
-  has(
-    "saying no worktree holds the checker",
-    r.out,
-    "no worktree this thread owns holds .agents/checks/check-decision-records.ts",
-  );
-  is("and it did not reach main", onMain(F.CODE, "projects/x/decisions/0001-a.md"), "no");
+  is("a record with no checker in the workbench worktree lands", r.rc, "0");
+  has("…naming the check it could not run", r.out, "decision record: not checked");
 
-  //    A README edit in a decisions/ folder is not a record: with no checker,
-  //    that close is not refused.
-  rmSync(join(F.WT1, "projects/x/decisions/0001-a.md"));
-  write(join(F.WT1, "projects/x/decisions/README.md"), "# Decision records\n");
-  r = land(1, ["thread one"], { merge: true });
-  is("a decisions/README.md alone needs no checker", r.rc, "0");
-
-  //    The same with the record already COMMITTED: the no-checker question must
-  //    measure from the trunk too, or it asks HEAD and finds nothing to refuse.
-  fixture("c12c2");
-  write(join(F.WT1, "projects/x/decisions/0001-a.md"), "fine\n");
-  gDo(F.WT1, "add", "-A");
-  gDo(F.WT1, "commit", "-q", "-m", "a record, committed early");
-  is(
-    "the record is committed and the index clean before the close",
-    (gOk(F.WT1, "cat-file", "-e", "HEAD:projects/x/decisions/0001-a.md") ? "in-head" : "") +
-      g(F.WT1, "status", "--porcelain"),
-    "in-head",
-  );
-  r = land(1, ["thread one"], { merge: true });
-  is("a committed record with no resolvable checker exits 3", r.rc, "3");
-  has("…saying no worktree holds the checker", r.out, "no worktree this thread owns holds");
-  is("…and it stayed off main", onMain(F.CODE, "projects/x/decisions/0001-a.md"), "no");
-
-  // 4. The checker's own satellite lands BEFORE a repo whose records it must
-  //    check. Its removal is deferred to the end; removed in turn, the third repo
-  //    would find the resolved path gone and fail with no violation at all. The
-  //    checker's worktree is a satellite when the thread is on a product repo
-  //    and workbench is the satellite; the fixture gives the PROD satellite the
-  //    checker, which puts it in the same ledger position.
+  // 4. A third repo's record is checked IN its own worktree, by the workbench
+  //    worktree's checker, while a product satellite lands beside it.
   drFixture("c12d");
   let SAT1 = writeRoot(1, F.PROD).out;
-  drStub(SAT1);
+  drStub(F.WT1);
   let t = thirdRepo("c12d");
   write(join(t.TSAT, "decisions/0001-third.md"), "fine\n");
   r = land(1, ["thread one"], { merge: true });
-  is("a record in a repo landed after the checker's satellite lands", r.rc, "0");
+  is("a record in a third repo lands, checked by the workbench copy", r.rc, "0");
   is("and reaches main", onMain(t.TREPO, "decisions/0001-third.md"), "yes");
   const tsat = t.TSAT;
   is(
@@ -1968,36 +1930,41 @@ kase("Case 12: the decision-record gate", () => {
     countLines(DR_LOG, (l) => l === `${tsat}\tdecisions/0001-third.md`),
     "1",
   );
-  is("the checker's satellite is still removed, last", isDir(SAT1) ? "left" : "gone", "gone");
+  is("the product satellite is removed", isDir(SAT1) ? "left" : "gone", "gone");
 
-  // 5. The same shape, but the third repo's record is bad on the first run. The
-  //    checker's satellite has already landed when the close is refused, so its
-  //    deferred removal never ran; the retry finds it already landed and must
-  //    queue that removal again, or it is left on disk under the proof line.
+  // 5. The same shape, but the third repo's record is bad on the first run: the
+  //    refusal comes before any push, so the product satellite has not landed
+  //    either (every repo is checked before any is pushed, since 2026-11-06).
   drFixture("c12e");
   SAT1 = writeRoot(1, F.PROD).out;
-  drStub(SAT1);
+  write(join(SAT1, "sat.md"), "sat\n");
+  drStub(F.WT1);
   t = thirdRepo("c12e");
+  const checkerLanded = (): string => (onMain(F.PROD, "sat.md") === "yes" ? "1" : "0");
   write(join(t.TSAT, "decisions/0001-third.md"), "BAD\n");
   r = land(1, ["thread one"], { merge: true });
   is("the first run is refused on the third repo's record", r.rc, "3");
-  is(
-    "…after the checker's satellite landed",
-    g(F.PROD, "log", "origin/main", "--format=%s")
-      .split("\n")
-      .filter((l) => l === "checker").length,
-    "1",
-  );
+  is("…before the product satellite landed", checkerLanded(), "0");
+  //    Only a push that fails outright can still leave the product satellite
+  //    landed and the third repo not; the retry lands the rest.
   write(join(t.TSAT, "decisions/0001-third.md"), "fine\n");
+  const hook = join(F.S, `origins/land-${PID}-c12e-third.git/hooks/pre-receive`);
+  write(hook, "#!/bin/sh\necho refused by the test >&2\nexit 1\n");
+  chmodSync(hook, 0o755);
+  r = land(1, ["thread one"], { merge: true });
+  is("a push the third origin refuses exits 3", r.rc, "3");
+  has("…naming the push", r.out, `NOT CLOSED: push of ${t.TREPO} failed`);
+  is("…after the product satellite landed", checkerLanded(), "1");
+  rmSync(hook);
   r = land(1, ["thread one"], { merge: true });
   is("the retry lands", r.rc, "0");
-  is("the already-landed checker satellite is removed on the retry", isDir(SAT1) ? "left" : "gone", "gone");
+  is("the already-landed product satellite is gone on the retry", isDir(SAT1) ? "left" : "gone", "gone");
 });
 
 // ── Case 13 ───────────────────────────────────────────────────────────────
 //
 // The same shape as Case 12 for the second pre-commit checker. What is tested
-// is that land.ts finds it, runs it with --since before the commit and honours
+// is that land.ts finds it, runs it with --since before the push and honours
 // its verdict; the schema's parts are check-integration-manifest.test.ts's.
 function imStub(dir: string): void {
   write(
@@ -2063,328 +2030,13 @@ kase("Case 13: the integration-manifest gate", () => {
   is("a close carrying a clean manifest lands", r.rc, "0");
   is("and the manifest is on main", onMain(F.CODE, "integrations/alpha/README.md"), "yes");
 
-  // 4. A changed manifest with no checker in the ledger is reported, not refused:
-  //    a workbench without that checker has no manifest schema to hold it to.
+  // 4. A changed manifest with no checker in the workbench worktree lands, named.
   fixture("c13d");
   write(join(F.WT1, "integrations/alpha/README.md"), "fine\n");
   r = land(1, ["thread one"], { merge: true });
-  is("a manifest with no resolvable checker still lands", r.rc, "0");
-  has(
-    "saying no checker looked at it",
-    r.out,
-    `note: integration manifests changed in ${F.WT1}; no .agents/checks/check-integration-manifest.ts to check them`,
-  );
-
-  //    A manifest outside integrations/<name>/ is not one: no checker needed.
-  rmSync(join(F.WT1, "integrations/alpha"), { recursive: true, force: true });
-  write(join(F.WT1, "docs/integrations/alpha/README.md"), "fine\n");
-  r = land(1, ["thread one"], { merge: true });
-  is("a README.md outside integrations/<name>/ needs no checker", r.rc, "0");
+  is("a manifest with no checker lands", r.rc, "0");
+  has("…naming the check it could not run", r.out, "integration manifest: not checked");
 });
-
-// ── Case 14 ───────────────────────────────────────────────────────────────
-//
-// The third pre-commit checker, and the first that lives in the worktree it
-// checks: the skills tree is `.agents/skills/` of the workbench, its checker is
-// `.agents/checks/check-skills.ts`, and land.ts runs THAT copy over what the worktree
-// changed under `.agents/skills/`. What is tested is that it is found, run with
-// --since before the commit, and honoured — the rules themselves are
-// check-skills.test.ts's. The stub writes a marker on every invocation (into
-// the fixture HOME, which outlives the worktree), so "not invoked" is
-// observable.
-function skStub(dir: string): void {
-  write(
-    join(dir, ".agents/checks/check-skills.ts"),
-    `import { execSync } from "node:child_process";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
-writeFileSync(\`\${process.env.HOME}/.skill-stub-invoked\`, "");
-let base = "HEAD";
-if (process.argv[2] === "--since") {
-  try {
-    base = execSync(\`git merge-base HEAD \${process.argv[3]}\`, { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
-  } catch {
-    console.error(\`stub: no merge base with \${process.argv[3]}\`);
-    process.exit(2);
-  }
-}
-const changed = (execSync(\`git diff --name-only \${base}\`, { encoding: "utf8" }) +
-  execSync("git ls-files --others --exclude-standard", { encoding: "utf8" })).split("\\n").filter(Boolean);
-let rc = 0;
-for (const f of changed.filter((p) => /^\\.agents\\/skills\\/[^/]+\\/SKILL\\.md$/.test(p))) {
-  if (!existsSync(f)) continue;
-  if (readFileSync(f, "utf8").includes("BAD")) { console.error(\`\${f}: stub rejects it\`); rc = 1; }
-}
-if (rc === 0) console.log("OK — stub");
-process.exit(rc);
-`,
-  );
-  gDo(dir, "add", "-A");
-  gDo(dir, "commit", "-q", "-m", "skill checker");
-}
-
-const skInvoked = (): string => (existsSync(join(F.HOME_DIR, ".skill-stub-invoked")) ? "invoked" : "not");
-
-kase("Case 14: the skill-manifest gate", () => {
-  // 1. A bad manifest is refused with the violation printed, nothing committed.
-  fixture("c14a");
-  skStub(F.WT1);
-  write(join(F.WT1, ".agents/skills/alpha/SKILL.md"), "BAD\n");
-  let r = land(1, ["thread one"], { merge: true });
-  is("a bad skill manifest exits 3", r.rc, "3");
-  has(
-    "naming the check's violation",
-    r.out,
-    `NOT CLOSED: skill manifest rejected in ${F.WT1}: .agents/skills/alpha/SKILL.md: stub rejects it`,
-  );
-  is("…and it did not reach main", onMain(F.CODE, ".agents/skills/alpha/SKILL.md"), "no");
-
-  // 2. A clean manifest lands, and the checker ran.
-  fixture("c14b");
-  skStub(F.WT1);
-  write(join(F.WT1, ".agents/skills/alpha/SKILL.md"), "fine\n");
-  r = land(1, ["thread one"], { merge: true });
-  is("a close carrying a clean skill manifest lands", r.rc, "0");
-  is("and the manifest is on main", onMain(F.CODE, ".agents/skills/alpha/SKILL.md"), "yes");
-
-  // 3. A changed manifest in a worktree without the checker is refused, not skipped.
-  fixture("c14c");
-  write(join(F.WT1, ".agents/skills/alpha/SKILL.md"), "fine\n");
-  r = land(1, ["thread one"], { merge: true });
-  is("a skill manifest with no checker in its worktree exits 3", r.rc, "3");
-  has(
-    "saying the worktree holds no .agents/checks/check-skills.ts",
-    r.out,
-    `skill manifests changed in ${F.WT1}, but ${F.WT1} holds no .agents/checks/check-skills.ts`,
-  );
-
-  // 4. Only a root-level file changed, or a path under a top-level folder that is
-  //    NOT .agents/skills/ — a journal entry, a project record — and the checker is not
-  //    invoked: the gate is scoped to `.agents/skills/`, not to "any top-level folder",
-  //    because in this repo every close changes paths under one. A file under a
-  //    skill folder that is NOT its SKILL.md (a state/ file) does invoke it —
-  //    within .agents/skills/ the gate selects by folder, not by manifest.
-  fixture("c14d");
-  skStub(F.WT1);
-  write(join(F.WT1, "seed.txt"), "edited\n");
-  write(join(F.WT1, "journal/2026-09-25/1200-x.md"), "entry\n");
-  write(join(F.WT1, "projects/x/README.md"), "record\n");
-  r = land(1, ["thread one"], { merge: true });
-  is("a change outside .agents/skills/ lands", r.rc, "0");
-  is("…without invoking the skill checker", skInvoked(), "not");
-  fixture("c14e");
-  skStub(F.WT1);
-  write(join(F.WT1, ".agents/skills/alpha/state/notes.md"), "learned\n");
-  r = land(1, ["thread one"], { merge: true });
-  is("a change under a skill folder lands when the checker passes", r.rc, "0");
-  is("…and the skill checker was invoked for it", skInvoked(), "invoked");
-
-  //    A change that only DELETES a file under a skill folder (state/_doc.md)
-  //    still selects the folder: the checker decides what a missing file means.
-  fixture("c14f");
-  skStub(F.WT1);
-  write(join(F.WT1, ".agents/skills/alpha/SKILL.md"), "fine\n");
-  write(join(F.WT1, ".agents/skills/alpha/state/_doc.md"), "doc\n");
-  gDo(F.WT1, "add", "-A");
-  gDo(F.WT1, "commit", "-q", "-m", "alpha with state");
-  // On the trunk already, so the deletion is the ONLY change since the base.
-  gDo(F.WT1, "push", "-q", "origin", "HEAD:main");
-  rmSync(join(F.WT1, ".agents/skills/alpha/state/_doc.md"));
-  r = land(1, ["thread one"], { merge: true });
-  is("a deletion under a skill folder lands when the checker passes", r.rc, "0");
-  is("…and the skill checker was invoked for it", skInvoked(), "invoked");
-});
-
-// ── Case 14g ──────────────────────────────────────────────────────────────
-//
-// The workbench gate and the merged tree. check-roadmap-decisions.ts runs from
-// the workbench worktree's OWN copy, only in a workbench worktree (one holding
-// .agents/skills/close/scripts/land.ts), over its project changes, and again
-// on the merged tree when the trunk merge brought commits in; each app the
-// branch changed runs its own `check` on that merged tree. The roadmap rules
-// are check-roadmap-decisions.test.ts's; what is tested is that land.ts finds
-// the gate, refuses without it, and that the merged tree is judged.
-
-kase("Case 14g: the workbench roadmap gate and an app's check on the merged tree", () => {
-  // 1. A workbench worktree with a project change and no gate is refused, not skipped.
-  fixture("c14ge");
-  const GATE = ".agents/skills/close/scripts/check-roadmap-decisions.ts";
-  gDo(F.WT1, "rm", "-q", GATE);
-  write(join(F.WT1, "projects/d/2026-01-01_p/README.md"), "fine\n");
-  let r = land(1, ["thread one"], { merge: true });
-  is("no roadmap gate in the worktree exits 3", r.rc, "3");
-  has(
-    "…with the merge-trunk hint",
-    r.out,
-    `something left open in a roadmap or report inputs changed in ${F.WT1}, but ${F.WT1} holds no ${GATE} — merge origin/main into the branch`,
-  );
-
-  // 2. An app's own check on the merged tree: a shared builder gains an
-  //    argument on one branch while another branch adds a caller of it; each
-  //    type-checks alone, the merged tree does not. The trunk here gains an app
-  //    whose check fails beside this branch's file; the branch's own close
-  //    passes its first run and is refused on the merged tree, before the push.
-  fixture("c14gj");
-  gDo(F.WT2, "pull", "-q", "origin", "main");
-  const check = `node -e "const f=require('fs');require('fs').writeFileSync(process.env.HOME+'/.app-check-invoked','');if(f.existsSync('a.ts')&&f.existsSync('raise.ts')){console.error('a.ts(1,1): error TS2554: Expected 7 arguments, but got 6.');process.exit(2)}"`;
-  write(
-    join(F.WT2, "apps/x/package.json"),
-    `${JSON.stringify({ name: "x", private: true, scripts: { check } }, null, 2)}\n`,
-  );
-  write(join(F.WT2, "apps/x/raise.ts"), "export const raise = 1;\n");
-  gDo(F.WT2, "add", "-A");
-  gDo(F.WT2, "commit", "-q", "-m", "the trunk changes the app");
-  gDo(F.WT2, "push", "-q", "origin", "HEAD:main");
-  write(join(F.WT1, "apps/x/a.ts"), "export const a = 1;\n");
-  rmSync(join(F.HOME_DIR, ".app-check-invoked"), { force: true });
-  r = land(1, ["thread one"], { merge: true });
-  is("an app that fails its check only on the merged tree exits 3", r.rc, "3");
-  has(
-    "naming the app and the check's error line",
-    r.out,
-    `NOT CLOSED: apps/x's check fails on the merged tree in ${F.WT1}: a.ts(1,1): error TS2554: Expected 7 arguments, but got 6.`,
-  );
-  is("…and nothing of it was pushed", onMain(F.CODE, "apps/x/a.ts"), "no");
-  //     The refusal leaves the merge committed; an unchanged retry must not push it.
-  r = land(1, ["thread one"], { merge: true });
-  is("an unchanged retry is refused again", r.rc, "3");
-  has("…on the same check", r.out, "apps/x's check fails on the merged tree");
-  is("…and still nothing was pushed", onMain(F.CODE, "apps/x/a.ts"), "no");
-
-  //     The same app with a check that passes beside it lands, after the check ran.
-  fixture("c14gk");
-  gDo(F.WT2, "pull", "-q", "origin", "main");
-  const pass = `node -e "require('fs').writeFileSync(process.env.HOME+'/.app-check-invoked','')"`;
-  write(
-    join(F.WT2, "apps/x/package.json"),
-    `${JSON.stringify({ name: "x", private: true, scripts: { check: pass } }, null, 2)}\n`,
-  );
-  gDo(F.WT2, "add", "-A");
-  gDo(F.WT2, "commit", "-q", "-m", "the trunk adds the app");
-  gDo(F.WT2, "push", "-q", "origin", "HEAD:main");
-  write(join(F.WT1, "apps/x/a.ts"), "export const a = 1;\n");
-  rmSync(join(F.HOME_DIR, ".app-check-invoked"), { force: true });
-  r = land(1, ["thread one"], { merge: true });
-  is("an app whose check passes on the merged tree lands", r.rc, "0");
-  is("…after its check ran", existsSync(join(F.HOME_DIR, ".app-check-invoked")) ? "invoked" : "not", "invoked");
-
-  // 8c. The same failure through shared code: this branch changes a package's
-  //     signature while the trunk adds an app calling the old one. The branch
-  //     touches no app, so only an importer of the changed package can catch
-  //     it; the merged-tree run checks the trunk's new caller and refuses.
-  fixture("c14gl");
-  gDo(F.WT2, "pull", "-q", "origin", "main");
-  const sig = `node -e "if(require('fs').readFileSync('../../packages/p/p.ts','utf8').includes('b: number')){console.error('caller.ts(1,1): error TS2554: Expected 2 arguments, but got 1.');process.exit(2)}"`;
-  write(
-    join(F.WT2, "apps/y/package.json"),
-    `${JSON.stringify({ name: "y", private: true, scripts: { check: sig } }, null, 2)}\n`,
-  );
-  write(join(F.WT2, "apps/y/caller.ts"), 'import { p } from "../../packages/p/p.ts";\np(1);\n');
-  gDo(F.WT2, "add", "-A");
-  gDo(F.WT2, "commit", "-q", "-m", "the trunk adds a caller of the package");
-  gDo(F.WT2, "push", "-q", "origin", "HEAD:main");
-  write(join(F.WT1, "packages/p/p.ts"), "export const p = (a: number, b: number): number => a + b;\n");
-  r = land(1, ["thread one"], { merge: true });
-  is("a package change that breaks a trunk caller only on the merged tree exits 3", r.rc, "3");
-  has(
-    "naming the importing app and its check's error line",
-    r.out,
-    `NOT CLOSED: apps/y's check fails on the merged tree in ${F.WT1}: caller.ts(1,1): error TS2554: Expected 2 arguments, but got 1.`,
-  );
-  is("…and nothing of it was pushed", onMain(F.CODE, "packages/p/p.ts"), "no");
-
-  // 8d. The same through a barrel: the app imports the package's index.ts,
-  //     which re-exports p.ts by a specifier that does not hold the
-  //     repo-relative path. A changed p.ts reaches the app only through its
-  //     importers in shared code, followed in turn (third v9.2.0 review).
-  fixture("c14gm");
-  gDo(F.WT2, "pull", "-q", "origin", "main");
-  write(
-    join(F.WT2, "apps/y/package.json"),
-    `${JSON.stringify({ name: "y", private: true, scripts: { check: sig } }, null, 2)}\n`,
-  );
-  write(join(F.WT2, "packages/p/index.ts"), 'export * from "./p.ts";\n');
-  write(join(F.WT2, "apps/y/caller.ts"), 'import { p } from "../../packages/p/index.ts";\np(1);\n');
-  gDo(F.WT2, "add", "-A");
-  gDo(F.WT2, "commit", "-q", "-m", "the trunk adds a caller of the package's barrel");
-  gDo(F.WT2, "push", "-q", "origin", "HEAD:main");
-  write(join(F.WT1, "packages/p/p.ts"), "export const p = (a: number, b: number): number => a + b;\n");
-  r = land(1, ["thread one"], { merge: true });
-  is("a package change reaching a trunk caller through a barrel exits 3", r.rc, "3");
-  has(
-    "…naming the app that imports the barrel",
-    r.out,
-    `NOT CLOSED: apps/y's check fails on the merged tree in ${F.WT1}: caller.ts(1,1): error TS2554: Expected 2 arguments, but got 1.`,
-  );
-  is("…and nothing of it was pushed", onMain(F.CODE, "packages/p/p.ts"), "no");
-
-  // 8e. The same through an integration: the trunk adds integrations/q
-  //     calling the package's old signature. Only apps were checked, so q's
-  //     own check never ran on the merged tree (Contextium v9.2.0 review); every
-  //     importing unit — app, integration or package — runs its check.
-  fixture("c14gn");
-  gDo(F.WT2, "pull", "-q", "origin", "main");
-  const qsig = `node -e "if(require('fs').readFileSync('../../packages/p/p.ts','utf8').includes('b: number')){console.error('q.ts(2,1): error TS2554: Expected 2 arguments, but got 1.');process.exit(2)}"`;
-  write(
-    join(F.WT2, "integrations/q/package.json"),
-    `${JSON.stringify({ name: "q", private: true, scripts: { check: qsig } }, null, 2)}\n`,
-  );
-  write(join(F.WT2, "integrations/q/q.ts"), 'import { p } from "../../packages/p/p.ts";\np(1);\n');
-  gDo(F.WT2, "add", "-A");
-  gDo(F.WT2, "commit", "-q", "-m", "the trunk adds an integration calling the package");
-  gDo(F.WT2, "push", "-q", "origin", "HEAD:main");
-  write(join(F.WT1, "packages/p/p.ts"), "export const p = (a: number, b: number): number => a + b;\n");
-  r = land(1, ["thread one"], { merge: true });
-  is("a package change that breaks a trunk integration only on the merged tree exits 3", r.rc, "3");
-  has(
-    "…naming the integration and its check's error line",
-    r.out,
-    `NOT CLOSED: integrations/q's check fails on the merged tree in ${F.WT1}: q.ts(2,1): error TS2554: Expected 2 arguments, but got 1.`,
-  );
-  is("…and nothing of it was pushed", onMain(F.CODE, "packages/p/p.ts"), "no");
-
-  // 3. The REAL roadmap gate over a row-by-row ROADMAP merge: two threads each add
-  //    a row to one project, the second landing after the first. Thread one
-  //    also finishes R1, so thread two's own table still says R1 is next while
-  //    the merged one says R2 (R2 depends on R1). The merged table leaves
-  //    nothing open, so it lands, and next: is the merged table's.
-  fixture("c14gi");
-  write(join(F.CODE, RMP, "ROADMAP.md"), lines(...tableHead(), "| R1 | first | — | planned | `specs/001-first/` |"));
-  write(join(F.CODE, RMP, "specs/001-first/spec.md"), "# spec\n");
-  write(
-    join(F.CODE, RMP, "README.md"),
-    '---\nproject: rows\nstatus: active\nnext: "R1: first"\n---\n\n# Project: rows\n',
-  );
-  gDo(F.CODE, "add", "-A");
-  gDo(F.CODE, "commit", "-q", "-m", "a project");
-  gDo(F.CODE, "push", "-q", "origin", "main");
-  for (const wt of [F.WT1, F.WT2]) {
-    gDo(wt, "fetch", "-q", "origin");
-    gDo(wt, "reset", "-q", "--hard", "origin/main");
-  }
-  const addRow = (wt: string, row: string): void => {
-    writeFileSync(join(wt, RMP, "ROADMAP.md"), `${readFileSync(join(wt, RMP, "ROADMAP.md"), "utf8")}${row}\n`);
-    roadmap(join(wt, RMP), "--sync-next");
-  };
-  roadmap(join(F.WT1, RMP), "--set", "R1", "done");
-  addRow(F.WT1, "| R3 | third | — | planned | — |");
-  addRow(F.WT2, "| R2 | second | R1 | planned | — |");
-  is("thread two's own table names R1", nextLine(cat(join(F.WT2, RMP, "README.md"))), '"R1: first"');
-  const r1 = land(1, ["thread one"], { merge: true });
-  is("the first row's project change lands past the real checker", r1.rc, "0");
-  const r2 = land(2, ["thread two"], { merge: true });
-  is("the second lands on the merged table", r2.rc, "0");
-  if (r2.rc !== 0) process.stdout.write(`${r2.out.split("\n").slice(-3).join("\n")}\n`);
-  gOk(F.CODE, "fetch", "-q", "origin");
-  const merged = g(F.CODE, "show", `origin/main:${RMP}/ROADMAP.md`);
-  has("origin's ROADMAP holds thread one's row", merged, "| R3 | third |");
-  has("…and thread two's", merged, "| R2 | second |");
-  is(
-    "…and next: is the merged table's first ready row, not thread two's own",
-    nextLine(g(F.CODE, "show", `origin/main:${RMP}/README.md`)),
-    '"R2: second"',
-  );
-});
-
 
 // ── Case 14s ──────────────────────────────────────────────────────────────
 //
@@ -2458,18 +2110,16 @@ kase("Case 14s: the secrets and standards gates", () => {
   r = land(1, ["thread one"], { merge: true });
   is("a clean change passes both gates", r.rc, "0");
 
-  // Each checker is found in whichever ledger worktree holds IT: a worktree with
-  // some of .agents/checks/ must not hide a checker only a later one carries.
+  // The checks run from the workbench worktree alone: one without the scanner
+  // names the check it could not run, and the close still lands.
   fixture("c14se");
   checksStub(F.WT1);
   gDo(F.WT1, "rm", "-q", ".agents/checks/check-secrets.ts");
   gDo(F.WT1, "commit", "-q", "-m", "no scanner here");
-  SAT1 = writeRoot(1, F.PROD).out;
-  checksStub(SAT1);
-  write(join(F.WT1, "config.txt"), "key = AKIA0000\n");
+  write(join(F.WT1, "notes.md"), "clean\n");
   r = land(1, ["thread one"], { merge: true });
-  is("a scanner only a later ledger worktree holds still runs", r.rc, "3");
-  has("…and refuses the secret", r.out, `secret scan rejected in ${F.WT1}`);
+  is("a workbench worktree without the scanner still lands", r.rc, "0");
+  has("…naming the check it could not run", r.out, "secret scan: not checked");
 });
 
 
@@ -2672,12 +2322,15 @@ kase("Case 15q: a project folder with an accent is judged and re-derived", () =>
   );
 });
 
-// A STEP WAITING ON THE USER, OR A HALF-BUILT ROW, HOLDS THE CLOSE. Each open row the
-// push adds is printed on its own line above the one NOT CLOSED, nothing is
-// pushed, and the worktree keeps the change for the re-run.
-kase("Case 15o: a manual row and an in-progress row are NOT CLOSED", () => {
+// AN UNDATED STEP FOR THE USER, OR A HALF-BUILT ROW, HOLDS THE CLOSE; A PLANNED
+// STEP FOR THE USER RIDES (a row sets it for a later session). Each open row the push adds is printed on its own line above the
+// one NOT CLOSED, nothing is pushed, and the worktree keeps the change.
+kase("Case 15o: an undated step for the user and an in-progress row are NOT CLOSED", () => {
   fixture("c15o");
   write(join(F.CODE, RMP, "ROADMAP.md"), lines(...tableHead(), "| R1 | first | — | done | — |"));
+  // A finished spec with no live checks: nothing holds its row for a release.
+  write(join(F.CODE, RMP, "specs/007-built/spec.md"), "# spec\n");
+  write(join(F.CODE, RMP, "specs/007-built/report.md"), "---\nspec: x\nspec-status: complete\n---\n");
   write(join(F.CODE, RMP, "README.md"), "---\nproject: rows\nstatus: completed\n---\n\n# Project: rows\n");
   gDo(F.CODE, "add", "-A");
   gDo(F.CODE, "commit", "-q", "-m", "roadmap");
@@ -2692,17 +2345,25 @@ kase("Case 15o: a manual row and an in-progress row are NOT CLOSED", () => {
       "| R1 | first | — | done | — |",
       "| R4 | renew | — | planned | manual |",
       "| R5 | build | — | in-progress | — |",
+      "| R6 | book | — | blocked: the user books the visit | manual |",
+      "| R7 | built | — | in-progress | `specs/007-built/` |",
     ),
   );
   entry(jf(1, "open rows"), "open-rows", "two open rows");
   const r = land(1, ["two open rows"], { merge: true });
   is("the close is refused", r.rc, "3");
   has(
-    "…naming R4 as a step waiting on the user",
+    "…naming R6 as a step for the user with no date",
     r.out,
-    'ROADMAP.md: R4 "planned" (Sub-spec manual): a step waiting on the user',
+    'ROADMAP.md: R6 "blocked: the user books the visit" (Sub-spec manual): a step for the user with no date',
   );
   has("…and R5 as half-built", r.out, 'ROADMAP.md: R5 "in-progress" (Sub-spec —): half-built');
+  has(
+    "…and R7, its report complete but no live check to await, as half-built too",
+    r.out,
+    'ROADMAP.md: R7 "in-progress" (Sub-spec specs/007-built): half-built',
+  );
+  hasnt("…and not the planned manual row R4", r.out, "ROADMAP.md: R4 ");
   has("…above one NOT CLOSED", r.out, "NOT CLOSED: something left open in a roadmap or report rejected");
   gOk(F.CODE, "fetch", "-q", "origin");
   is("…nothing is pushed", g(F.CODE, "rev-parse", "origin/main"), before);
@@ -2924,6 +2585,59 @@ kase("Case 15s: a project waiting on another project's row is re-derived in the 
   );
 });
 
+// The resync set is a string match, resolution not consulted
+// (roadmap.ts projectsNaming): a landing that only ADDS a second project named
+// other-proj makes waiting's `other-proj R2` ambiguous, so waiting's README
+// changes though no row it waits on did, and it is re-derived in the same push.
+// The open step's narrower set (projectsWaitingOn) would leave it stale.
+kase("Case 15t: a project whose entry a new same-named project makes ambiguous is still re-derived", () => {
+  fixture("c15t");
+  const OTHER = "projects/demo/2026-01-02_other-proj";
+  const SAME = "projects/other/2026-02-01_other-proj";
+  const WAIT = "projects/fin/2026-01-01_waiting";
+  write(
+    join(F.CODE, OTHER, "ROADMAP.md"),
+    lines(...tableHead(), "| R1 | first | — | done | — |", "| R2 | the decision | — | planned | — |"),
+  );
+  write(
+    join(F.CODE, OTHER, "README.md"),
+    '---\nproject: other\nstatus: active\nnext: "R2: the decision"\n---\n\n# P\n',
+  );
+  write(
+    join(F.CODE, WAIT, "ROADMAP.md"),
+    lines(
+      ...tableHead(),
+      "| R1 | convert | other-proj R2 | planned | — |",
+      "| R2 | vendor | — | blocked: vendor reply | — |",
+    ),
+  );
+  write(
+    join(F.CODE, WAIT, "README.md"),
+    '---\nproject: waiting\nstatus: blocked\nblocked-on: "R1: waits on other-proj R2"\n---\n\n# P\n',
+  );
+  gDo(F.CODE, "add", "-A");
+  gDo(F.CODE, "commit", "-q", "-m", "two projects");
+  gDo(F.CODE, "push", "-q", "origin", "main");
+  gDo(F.WT1, "fetch", "-q", "origin");
+  gDo(F.WT1, "reset", "-q", "--hard", "origin/main");
+  write(join(F.WT1, SAME, "ROADMAP.md"), lines(...tableHead(), "| R1 | first | — | planned | — |"));
+  write(join(F.WT1, SAME, "README.md"), '---\nproject: same\nstatus: active\nnext: "R1: first"\n---\n\n# P\n');
+  entry(jf(1, "same name"), "same-name", "a second other-proj");
+  const r = land(1, ["a second other-proj"], { merge: true });
+  is("the landing lands", r.rc, "0");
+  if (r.rc !== 0) process.stdout.write(`${r.out.split("\n").slice(-3).join("\n")}\n`);
+  gOk(F.CODE, "fetch", "-q", "origin");
+  const readme = g(F.CODE, "show", `origin/main:${WAIT}/README.md`);
+  const derived = sh(process.execPath, ["--experimental-strip-types", ROADMAP, join(F.WT1, WAIT), "--derive"]).out;
+  has("…the pushed tree derives the vendor wait now", derived, 'blocked-on: "R2: vendor reply"');
+  for (const l of derived.split("\n")) has(`…waiting's README on origin carries "${l}"`, readme, l);
+  has(
+    "…in the re-derive commit of the same push",
+    g(F.CODE, "show", "--name-only", "--format=%s", "origin/main"),
+    `${WAIT}/README.md`,
+  );
+});
+
 // A folder outside projects/ that holds a README.md and a ROADMAP.md — the
 // project templates, whose rows are placeholders on purpose — is not a project,
 // and editing both must not stop the close on a table that never reads.
@@ -2963,7 +2677,7 @@ kase("Case 12x: a failed git read never reads as clean", () => {
     extra: { PATH: `${join(F.S, "failgit")}:${process.env.PATH ?? ""}` },
   });
   is("a failed git read of the change stops the close", r.rc, "3");
-  has("…saying it could not list the change", r.out, `could not list what ${F.WT1} changed`);
+  has("…saying it could not list the change", r.out, "could not list");
   is("…and the record did not reach main", onMain(F.CODE, "projects/x/decisions/0001-a.md"), "no");
 
   // The same for the worktree's status: a failed read is not a clean tree.
@@ -3032,7 +2746,7 @@ kase("Case 12x: a failed git read never reads as clean", () => {
   write(join(F.WT1, ".agents/skills/y/scripts/new.sh"), "echo new\n");
   r = land(1, ["thread one"], { merge: true, extra: { PATH: `${ONCE}:${process.env.PATH ?? ""}` } });
   is("a failed listing in the script gate stops the close", r.rc, "3");
-  has("…saying it could not list the change", r.out, `could not list what ${F.WT1} changed`);
+  has("…saying it could not list the change", r.out, "could not list");
   is("…and the script did not reach main", onMain(F.CODE, ".agents/skills/y/scripts/new.sh"), "no");
 });
 
@@ -3068,17 +2782,19 @@ kase("Case 15r: a repo retired into another still lists in the ledger", () => {
   const LANDED_FILE = threadFile(TID1, "landed");
   writeFileSync(LANDED_FILE, `${readFileSync(LANDED_FILE, "utf8")}${LIB}\t${LIB_SHA}\n`);
   r = land(1, ["--check", "--verbose"], { merge: true });
-  is("--check passes when a retired repo's SHA is on a surviving trunk", r.rc, "0");
-  has("…and says where it found it", r.out, `retired, ancestor-of-land-${PID}-c15r-code`);
+  is("--check passes over a retired repo's line", r.rc, "0");
+  has("…proving the repos that remain", r.out, "— closing this tab loses nothing.");
 
+  //    A retired repo's line is skipped whatever its SHA (R2: the refusal for
+  //    one on no surviving trunk stopped nothing in 60 days).
   writeFileSync(LANDED_FILE, `${readFileSync(LANDED_FILE, "utf8")}${LIB}\t0123456789abcdef0123456789abcdef01234567\n`);
   r = land(1, ["--check"], { merge: true });
-  is("--check refuses a retired repo's SHA that is on no surviving trunk", r.rc, "3");
-  has(
-    "…naming the repo and the SHA",
-    r.out,
-    `${LIB} is gone and 0123456789abcdef0123456789abcdef01234567 is on no surviving repo's trunk`,
-  );
+  is("--check passes over a retired repo's SHA on no surviving trunk", r.rc, "0");
+  //    The same when the folder is still there but no longer a repository.
+  mkdirSync(LIB, { recursive: true });
+  write(join(LIB, "left-behind.md"), "a file\n");
+  r = land(1, ["--check"], { merge: true });
+  is("--check passes over a retired folder that is no longer a repository", r.rc, "0");
 });
 
 // ── Case 16 ───────────────────────────────────────────────────────────────
@@ -3204,47 +2920,13 @@ kase("Case 17: the script-tests gate", () => {
   is("a close carrying a tested script lands", r.rc, "0");
   is("and the script is on main", onMain(F.CODE, ".agents/skills/y/scripts/new.sh"), "yes");
 
-  // 4. A changed script with no checker in any ledger worktree is refused, not skipped.
+  // 4. A changed script with no checker in the workbench worktree lands, named.
   fixture("c17d", undefined, undefined, false);
   write(join(F.WT1, ".agents/skills/y/scripts/new.sh"), "echo new\n");
   write(join(F.WT1, ".agents/skills/y/scripts/new.test.sh"), "bash .agents/skills/y/scripts/new.sh\n");
   r = land(1, ["thread one"], { merge: true });
-  is("a script with no resolvable checker exits 3", r.rc, "3");
-  has(
-    "saying no worktree holds the checker",
-    r.out,
-    `scripts changed in ${F.WT1}, but no worktree this thread owns holds .agents/checks/check-scripts.ts`,
-  );
-
-  //    Removing a script's only TEST is a changed script too: the deleted path
-  //    selects the gate, so a worktree without the checker is refused for it.
-  fixture("c17e", undefined, undefined, false);
-  write(join(F.WT1, ".agents/skills/y/scripts/old.sh"), "echo old\n");
-  write(join(F.WT1, ".agents/skills/y/scripts/old.test.sh"), "bash .agents/skills/y/scripts/old.sh\n");
-  gDo(F.WT1, "add", "-A");
-  gDo(F.WT1, "commit", "-q", "-m", "old with its test");
-  gDo(F.WT1, "push", "-q", "origin", "HEAD:main");
-  rmSync(join(F.WT1, ".agents/skills/y/scripts/old.test.sh"));
-  r = land(1, ["thread one"], { merge: true });
-  is("deleting a script's only test with no checker exits 3", r.rc, "3");
-  has("…for want of the checker", r.out, `scripts changed in ${F.WT1}, but no worktree this thread owns holds`);
-
-  //    No checker and no script changed: a journal entry and a record land.
-  fixture("c17f", undefined, undefined, false);
-  write(join(F.WT1, "journal/2026-09-29/1200-x.md"), "entry\n");
-  write(join(F.WT1, "projects/x/README.md"), "record\n");
-  write(join(F.WT1, "docs/notes.sh"), "prose\n"); // a .sh outside .agents/ is not one
-  write(join(F.WT1, "site/public/app.js"), "x\n"); // nor a .js: part (c) judges .agents/ only
-  r = land(1, ["thread one"], { merge: true });
-  is("a close that changes no script under .agents/ needs no checker", r.rc, "0");
-
-  //    Part (c) reads every file under .agents/: a .cjs there is the checker's
-  //    to judge, so a worktree without it is refused for one.
-  fixture("c17g", undefined, undefined, false);
-  write(join(F.WT1, ".agents/site/app.cjs"), "x\n");
-  r = land(1, ["thread one"], { merge: true });
-  is("a .agents/site/app.cjs with no checker exits 3", r.rc, "3");
-  has("…for want of the checker", r.out, `scripts changed in ${F.WT1}, but no worktree this thread owns holds`);
+  is("a script with no checker lands", r.rc, "0");
+  has("…naming the check it could not run", r.out, "script tests: not checked");
   //    A dependency's file under node_modules/ is never the checker's.
   fixture("c17i", undefined, undefined, false);
   write(join(F.WT1, ".agents/site/node_modules/m/index.js"), "x\n");
@@ -3473,37 +3155,6 @@ kase("Case 20: every kill point in a landing leaves a retry that polls or refuse
   r = land(1, ["push fails"], { merge: true });
   is("the next close pushes and closes", r.rc, "0");
   is("…polling once", polledCount(), "1");
-});
-
-// ── Case 21: land.ts's script roots are check-scripts.ts's ROOTS ─────────
-//
-// changedScripts decides whether a close runs check-scripts.ts at all, by a
-// regex of the checker's roots — a second copy of a list the checker owns. A
-// root moved in one and left behind in the other would let a script-only
-// change close without its tests ever being asked for. Read from both
-// sources, so neither can move alone.
-kase("Case 21: land.ts's script roots are check-scripts.ts's ROOTS", () => {
-  const land = readFileSync(join(HERE, "land.ts"), "utf8");
-  const m = /\/\^(.*?)\\\/\.\*\\\.\(sh\|ts\|mjs\|js\|cjs\|py\)\$\/s/.exec(land);
-  assert.ok(m?.[1], "land.ts: the changedScripts root regex was not found");
-  // `\.agents` or `(a|b(c|d))` → the plain paths it matches.
-  const body = m[1].replace(/\\\//g, "/").replace(/\\\./g, ".");
-  const inner = body.startsWith("(") && body.endsWith(")") ? body.slice(1, -1) : body;
-  const roots: string[] = [];
-  for (const alt of inner.split(/\|(?![^(]*\))/)) {
-    const group = /^(.*)\((.*)\)$/.exec(alt);
-    if (group) for (const g of (group[2] ?? "").split("|")) roots.push(`${group[1]}${g}`);
-    else roots.push(alt);
-  }
-  const checker = readFileSync(join(REPO, "checks/check-scripts.ts"), "utf8");
-  const block = /const ROOTS = \[([\s\S]*?)\];/.exec(checker);
-  assert.ok(block?.[1], "check-scripts.ts: ROOTS was not found");
-  const want = [...block[1].matchAll(/"([^"]+)"/g)].map((x) => x[1] ?? "");
-  is(
-    "land.ts's script roots match check-scripts.ts's ROOTS",
-    JSON.stringify([...roots].sort()),
-    JSON.stringify([...want].sort()),
-  );
 });
 
 // ── Case 22: every landing checks the harness home links ─────────────────
@@ -3787,8 +3438,10 @@ function approveReceipt(report: string, base = "HEAD"): void {
     "begin",
     "--repo",
     F.WT1,
+    // The worktree's real tree: since b52e7d7053 `begin` diffs the tree it
+    // is given, and a made-up name failed every case that approves a receipt.
     "--tree",
-    "t",
+    g(F.WT1, "rev-parse", "HEAD^{tree}"),
     "--mode",
     "range",
     "--bucket",
@@ -3862,6 +3515,55 @@ kase("Case 24r: implementation source lands only on a review receipt of what is 
   r = land(1, ["thread one"], { merge: true });
   is("(c) a receipt of the merged content lands", r.rc, "0");
   is("(c) …with the change on main", onMain(F.CODE, ".agents/skills/foo/x.ts"), "yes");
+});
+
+// The user may override the review for one landing, in their own words with
+// their name and the date (.agents/skills/review/authorized-by.ts); verify and
+// land.ts both read it.
+kase("Case 24o: the user's override, in their words, lands what no review covers; anything less does not", () => {
+  fixture("c24o");
+  write(join(F.WT1, ".agents/skills/foo/x.ts"), "export const x = 3;\n");
+  write(
+    join(F.WT1, "projects/demo/p/specs/001-x/report.md"),
+    `# r\n<!-- review-coverage:v1 -->\n${JSON.stringify({
+      base: "HEAD",
+      scope: ".agents/skills/foo",
+      entryPoints: [{ id: "E1", path: ".agents/skills/foo/x.ts" }],
+      dependencies: [],
+      claims: [],
+    })}\n<!-- /review-coverage -->\n`,
+  );
+  entry(jf(1, "overridden"), "overridden", "an overridden change");
+  const withOverride = (words: string, body: () => void) => {
+    const was = process.env.CLOSE_REVIEW_OVERRIDDEN_BY;
+    process.env.CLOSE_REVIEW_OVERRIDDEN_BY = words;
+    try {
+      body();
+    } finally {
+      if (was === undefined) delete process.env.CLOSE_REVIEW_OVERRIDDEN_BY;
+      else process.env.CLOSE_REVIEW_OVERRIDDEN_BY = was;
+    }
+  };
+
+  // (a) Words without a name and a date: still refused, nothing reaches main.
+  const before = g(F.CODE, "rev-parse", "origin/main");
+  withOverride("just land it, no more reviews", () => {
+    const r = land(1, ["thread one"], { merge: true });
+    is("(a) a bare override exits 3", r.rc, "3");
+    has("(a) …through the verify gate", r.out, "NOT CLOSED: verify has not passed");
+  });
+  gOk(F.CODE, "fetch", "-q", "origin");
+  is("(a) …and nothing reaches main", g(F.CODE, "rev-parse", "origin/main"), before);
+
+  // (b) The user's words: verify passes naming it, and the landing names it and lands.
+  withOverride(`"I'm overriding any further reviews" — Robin, 2026-11-19`, () => {
+    const v = verify(1);
+    has("(b) verify names the override", v.out, "ok review overridden for this landing");
+    const r = land(1, ["thread one"], { merge: true });
+    is("(b) the override lands", r.rc, "0");
+    has("(b) …saying so", r.out, "review: overridden for this landing");
+  });
+  is("(b) …with the change on main", onMain(F.CODE, ".agents/skills/foo/x.ts"), "yes");
 });
 
 // ── Case 25 ───────────────────────────────────────────────────────────────
@@ -3969,7 +3671,7 @@ kase("Case 25: a finished spec's row is set done by the close", () => {
   is("(e) the merged-in row naming this push's spec is done", mainRows(), "R1=done R6=done");
   is(
     "(e) …both files committed on the merged tree",
-    filesInCommit(F.CODE, "finish the new spec (finished rows set done on the merged table)"),
+    filesInCommit(F.CODE, "finish the new spec (rows set done, audit lines quoted)"),
     `${RMP}/README.md ${RMP}/ROADMAP.md `,
   );
 
@@ -4114,7 +3816,7 @@ kase("Case 26: audit lines, harness links and the saved report", () => {
   ok("(g) …with the closed marker", existsSync(threadFile(TID1, "closed")), "no closed marker");
 
   // (h) The trunk changes the audit line of a spec this push also changed:
-  // the merged verdict is quoted too, and committed before the push.
+  // the merged verdict, the one that lands, is quoted and committed.
   fixture("c26h");
   seedRows("| R1 | first | — | in-progress | `specs/001-first/` |");
   write(join(F.CODE, RMP, "specs/001-first/plan.md"), "# plan\n\n- spec-audit: codex round-1; spirit MATCH\n");
@@ -4127,8 +3829,7 @@ kase("Case 26: audit lines, harness links and the saved report", () => {
   r = land(1, ["finish R1"], { merge: true });
   is("(h) the close lands over the merge", r.rc, "0");
   const entryOnMain = g(F.CODE, "show", `origin/main:${relative(F.WT1, cat(threadFile(TID1, "journal")))}`);
-  has("(h) the verdict this branch saw is quoted", entryOnMain, "- spec-audit: codex round-1; spirit MATCH");
-  has("(h) …and the merged one too", entryOnMain, "- spec-audit: codex round-2; spirit MATCH");
+  has("(h) the merged verdict is quoted", entryOnMain, "- spec-audit: codex round-2; spirit MATCH");
 });
 
 // ── Case 27 ───────────────────────────────────────────────────────────────
@@ -4186,12 +3887,17 @@ const owedCommit = (key: string): string =>
 
 kase("Case 27: live checks are owed, run and proved before a held close is released", () => {
   // (a) Workbench checks: owed and held without --hold, never cleared by a
-  // landing, refused until each passes on what is live, then released.
+  // landing, refused until each passes on what is live, then released. The
+  // rows of the held specs stay as they were until the release that proves
+  // them sets them done: R1, set in-progress by this session, rides
+  // the held landing in-progress.
   fixture("c27a");
   seedRows(
-    "| R1 | first | — | in-progress | `specs/001-first/` |",
+    "| R1 | first | — | planned | `specs/001-first/` |",
     "| R2 | second | — | planned | `specs/002-second/` |",
+    "| R3 | third | — | planned | — |",
   );
+  roadmap(join(F.WT1, RMP), "--set", "R1", "in-progress");
   finishSpec(
     "001-first",
     liveBlock(
@@ -4201,6 +3907,13 @@ kase("Case 27: live checks are owed, run and proved before a held close is relea
   );
   let r = liveLand(["ship R1"]);
   is("(a) a landing that owes live checks holds without --hold", r.rc, "4");
+  hasnt("(a) …not refusing R1, in-progress with its report complete and live checks owed", r.out, "half-built");
+  is("(a) …and origin's R1 is still in-progress, not done", mainRows(), "R1=in-progress R2=planned R3=planned");
+  has(
+    "(a) …saying the release sets it done",
+    r.out,
+    `roadmap: ${RMP} specs/001-first reads complete — its row is set done when land.ts --release proves its live checks`,
+  );
   has(
     "(a) …listing the command check",
     r.out,
@@ -4215,14 +3928,6 @@ kase("Case 27: live checks are owed, run and proved before a held close is relea
   has("(a) …with the owed checks", gate, "owed: rows/001-first/shot");
   is("(a) --check while held exits 4", liveLand(["--check"]).rc, "4");
 
-  write(join(F.WT1, "two.txt"), "two\n");
-  r = liveLand(["a plain landing"]);
-  is("(a) an ordinary landing while held is refused", r.rc, "3");
-  has("(a) …saying so", r.out, "NOT CLOSED: a hold is open — land with --hold, or --release");
-  is("(a) …and the hold is intact", cat(threadFile(TID1, "held")), "ship R1");
-  is("(a) …nothing of it was pushed", onMain(F.CODE, "two.txt"), "no");
-  rmSync(join(F.WT1, "two.txt"));
-
   deployed(tip1);
   r = liveLand(["--release"]);
   is("(a) a release with a failing command and no evidence is refused", r.rc, "3");
@@ -4234,6 +3939,7 @@ kase("Case 27: live checks are owed, run and proved before a held close is relea
   );
   hasnt("(a) …and no proof line", r.out, "loses nothing");
   ok("(a) …the hold is kept", isFile(threadFile(TID1, "held")), "hold cleared");
+  is("(a) …and origin's R1 is still in-progress", mainRows(), "R1=in-progress R2=planned R3=planned");
 
   const shot = join(F.S, "shot.png");
   write(shot, "png\n");
@@ -4298,10 +4004,41 @@ kase("Case 27: live checks are owed, run and proved before a held close is relea
   r = liveLand(["--release"]);
   is("(a) evidence taken before the fix deployed is void at release", r.rc, "3");
   has("(a) …saying so", r.out, "NOT CLOSED: live check rows/001-first/shot: its evidence was taken on");
+  is(
+    "(a) …R1 and R2, held by their checks, still as they were on origin",
+    mainRows(),
+    "R1=in-progress R2=planned R3=planned",
+  );
+  liveLand(["--live-start", "rows/001-first/shot"]);
+  liveLand(["--live-pass", "rows/001-first/shot", shot, "--saw", "one is shown"]);
+  // Every check passes, but the push of the rows it sets done fails: the
+  // release stays held, says why, and the next one pushes them.
+  gDo(F.CODE, "remote", "set-url", "--push", "origin", join(F.S, "origins/does-not-exist.git"));
+  r = liveLand(["--release"]);
+  is("(a) a release whose push of the rows fails is refused", r.rc, "3");
+  has("(a) …naming the push", r.out, `NOT CLOSED: push of ${F.CODE} failed`);
+  hasnt("(a) …with no proof line", r.out, "loses nothing");
+  ok("(a) …the hold kept", isFile(threadFile(TID1, "held")) && isFile(threadFile(TID1, "live-owed")), "hold cleared");
+  is("(a) …and origin's rows unmoved", mainRows(), "R1=in-progress R2=planned R3=planned");
+  has("(a) …saying the rows commit is taken back out", r.out, `the rows set done in ${F.WT1} did not land`);
+  gDo(F.CODE, "config", "--unset", "remote.origin.pushurl");
+  is("(a) …leaving the worktree at what it landed", g(F.WT1, "rev-parse", "HEAD"), originTip("code"));
+  // A fix landed --hold after it must not publish the rows the failed release set.
+  write(join(F.WT1, "after.txt"), "a fix after the failed release\n");
+  r = liveLand(["a fix after the failed release", "--hold"]);
+  is("(a) a fix landed --hold after the failed release holds", r.rc, "4");
+  is("(a) …and carries no row set done", mainRows(), "R1=in-progress R2=planned R3=planned");
+  deployed(originTip("code"));
   liveLand(["--live-start", "rows/001-first/shot"]);
   liveLand(["--live-pass", "rows/001-first/shot", shot, "--saw", "one is shown"]);
   r = liveLand(["--release"]);
   is("(a) every check passed on what is live: released", r.rc, "0");
+  is("(a) …the rows of both held specs set done on origin", mainRows(), "R1=done R2=done R3=planned");
+  is(
+    "(a) …and next: re-derived from that table",
+    nextLine(g(F.CODE, "show", `origin/main:${RMP}/README.md`)),
+    '"R3: third"',
+  );
   has("(a) …reporting the first held subject", r.out, "**Shipped:** ship R1");
   has(
     "(a) …each command check that passed",
@@ -4333,7 +4070,7 @@ kase("Case 27: live checks are owed, run and proved before a held close is relea
     "001-first",
     liveBlock(
       `api | ${T} | command | if [ -f "$LIVE_CHECKS_TEST_SOURCES.flip" ]; then cp "$LIVE_CHECKS_TEST_SOURCES.flip" "$LIVE_CHECKS_TEST_SOURCES"; fi`,
-      `slow | ${T} | command | if [ -f "$LIVE_CHECKS_TEST_SOURCES.hang" ]; then sleep 30 & echo $! > "$LIVE_CHECKS_TEST_SOURCES.pid"; wait; fi`,
+      `slow | ${T} | command | if [ -f "$LIVE_CHECKS_TEST_SOURCES.hang" ]; then trap 'sleep 7; touch "$LIVE_CHECKS_TEST_SOURCES.cleaned"; exit 1' TERM; sleep 30 & wait; fi`,
       `rel | ${T} | command | test -f ./.agents/skills/close/scripts/land.ts`,
       `fresh | ${T} | command | test ! -e ./dirt.txt`,
     ),
@@ -4389,29 +4126,11 @@ kase("Case 27: live checks are owed, run and proved before a held close is relea
     r.out,
     "live check rows/001-first/slow failed: killed after 2 s",
   );
-  const alive = (): boolean => {
-    const pid = Number(readFileSync(`${liveStub()}.pid`, "utf8").trim());
-    try {
-      process.kill(pid, 0);
-      return true;
-    } catch {
-      return false;
-    }
-  };
-  is("(b) …and the child it started is killed with it", String(alive()), "false");
-  // With no timeout(1) or gtimeout (stock macOS), the fallback still ends the
-  // command's whole process group: it killed only bash, and the sleep it
-  // started outlived the check (Contextium v9.2.0 review).
-  rmSync(`${liveStub()}.pid`, { force: true });
-  const t0 = Date.now();
-  r = liveLand(["--release"], { LAND_TIMEOUT_BINS: "" });
-  has(
-    "(b) with no timeout program, a command that hangs is killed and failed",
-    r.out,
-    "live check rows/001-first/slow failed: killed after 2 s",
+  ok(
+    "(b) …after the time its own cleanup takes on the signal (7 s, past the old 5 s grace)",
+    isFile(`${liveStub()}.cleaned`),
+    "the cleanup was killed",
   );
-  is("(b) …and with no timeout program the child is killed too", String(alive()), "false");
-  is("(b) …within the limit, not when the child ends", String(Date.now() - t0 < 25_000), "true");
   rmSync(`${liveStub()}.hang`);
   rmSync(`${liveStub()}.pid`, { force: true });
   write(join(F.CODE, "dirt.txt"), "left in the shared checkout\n");
@@ -4537,6 +4256,7 @@ kase("Case 27: live checks are owed, run and proved before a held close is relea
   write(join(F.WT1, RMP, "specs/002-second/tasks.md"), "# Tasks\n\n```live-checks\n```\n");
   liveLand(["drop R2's check", "--hold"]);
   is("(d) a held re-landing that empties the block owes nothing for it", owedKeys(), "");
+  is("(d) …and sets R2 done, since no release would", mainRows(), "R1=done R2=done");
   write(join(F.WT1, RMP, "specs/002-second/tasks.md"), liveBlock("ping | workbench | command | false"));
   liveLand(["restore R2's check", "--hold"]);
   is("(d) …and one that restores it owes it again", owedKeys(), "rows/002-second/ping");
@@ -4567,39 +4287,1015 @@ kase("Case 27: live checks are owed, run and proved before a held close is relea
   liveLand(["another unrelated change", "--hold"]);
   is("(d) an owed check whose spec is gone is cleared", owedKeys(), "rows/002-second/ping");
 
-  // (e) Nothing records what serves: the fixture's origin is not on GitHub, so
-  // the reader cannot tell which commit is live. No live check can be tied to
-  // the commit it proves, so every one is refused, saying why. A command check
-  // that passes proves nothing either: with B's deploy failed, a probe of the
-  // still-healthy A succeeds and would release B (fourth v9.2.0 review) — the
-  // fixture's `true` is that probe.
+  // (e) A release publishes only the rows it sets done. Work committed since
+  // the last landing is refused before any check runs: the checks it would
+  // prove are the landed ones. Here the landed check passes (`true`) and the
+  // committed one would fail (`false`).
   fixture("c27e");
-  seedRows("| R1 | first | — | in-progress | `specs/001-first/` |");
-  finishSpec(
-    "001-first",
-    liveBlock("ping | workbench | command | true", "shot | workbench | evidence | the page shows one"),
-  );
-  r = liveLand(["ship R1"]);
-  is("(e) it holds", r.rc, "4");
-  r = liveLand(["--live-start", "rows/001-first/shot"]);
-  is("(e) --live-start where nothing records what serves is refused", r.rc, "3");
-  has(
-    "(e) …saying what live checks need",
-    r.out,
-    "live checks need a repo whose deploys GitHub records as production deployments",
-  );
-  r = liveLand(["--release"]);
-  is("(e) the release is refused", r.rc, "3");
-  has("(e) …naming the evidence check", r.out, "live check rows/001-first/shot: cannot tell which commit is live on workbench");
-  has("(e) …and the command check", r.out, "live check rows/001-first/ping: cannot tell which commit is live on workbench");
+  seedRows("| R1 | first | — | planned | `specs/001-first/` |");
+  roadmap(join(F.WT1, RMP), "--set", "R1", "in-progress");
   finishSpec("001-first", liveBlock("ping | workbench | command | true"));
-  liveLand(["only the command check", "--hold"]);
+  r = liveLand(["ship R1"]);
+  is("(e) the landing holds", r.rc, "4");
+  deployed(originTip("code"));
+  write(join(F.WT1, RMP, "specs/001-first/tasks.md"), liveBlock("ping | workbench | command | false"));
+  gDo(F.WT1, "commit", "-q", "-am", "the check, corrected but not landed");
+  // Verified as it is now, so nothing but the release itself stands in its way.
+  prereqs(1, F.script);
   r = liveLand(["--release"]);
-  is("(e) with only a passing command check owed, the release is still refused", r.rc, "3");
+  is("(e) a release over a committed change that has not landed is refused", r.rc, "3");
+  has("(e) …naming it", r.out, `NOT CLOSED: 1 commit(s) in ${F.WT1} have not landed`);
+  hasnt("(e) …before any check ran", cat(threadFile(TID1, "live-passed")), "rows/001-first/ping");
+  is("(e) …origin's R1 still in-progress", mainRows(), "R1=in-progress");
   has(
-    "(e) …naming why",
-    r.out,
-    "live check rows/001-first/ping: cannot tell which commit is live on workbench",
+    "(e) …and the change not on origin",
+    g(F.CODE, "show", `origin/main:${RMP}/specs/001-first/tasks.md`),
+    "ping | workbench | command | true",
   );
-  hasnt("(e) …and the command is not reported as passed", r.out, "`true` passed on");
+  r = liveLand(["land the corrected check", "--hold"]);
+  is("(e) landed --hold, it holds", r.rc, "4");
+  deployed(originTip("code"));
+  r = liveLand(["--release"]);
+  is("(e) …and its release runs the corrected check, which fails", r.rc, "3");
+  has("(e) …naming it", r.out, "live check rows/001-first/ping failed (exit 1)");
+  is("(e) …R1 still in-progress", mainRows(), "R1=in-progress");
+
+  // (f) A row set in-progress for a spec already complete on the trunk, its
+  // checks unchanged, owes no check: nothing would hold for it or ever set it
+  // done, so the gate refuses it as half-built, a declared check
+  // notwithstanding.
+  fixture("c27f");
+  seedRows("| R1 | first | — | done | `specs/001-first/` |");
+  write(join(F.CODE, RMP, "specs/001-first/tasks.md"), liveBlock("ping | workbench | command | true"));
+  write(join(F.CODE, RMP, "specs/001-first/report.md"), complete());
+  commitOnTrunk("R1 finished");
+  gDo(F.WT1, "fetch", "-q", "origin");
+  gDo(F.WT1, "reset", "-q", "--hard", "origin/main");
+  write(join(F.WT1, RMP, "ROADMAP.md"), lines(...tableHead(), "| R1 | first | — | in-progress | `specs/001-first/` |"));
+  r = liveLand(["reopen R1"]);
+  is("(f) an in-progress row for a spec this landing owes nothing is refused", r.rc, "3");
+  has("(f) …as half-built", r.out, 'ROADMAP.md: R1 "in-progress" (Sub-spec specs/001-first): half-built');
+  hasnt("(f) …never held", r.out, "HELD:");
+  is("(f) …and origin's R1 still done", mainRows(), "R1=done");
+
+  // (g) A release whose rows commit reaches origin and whose deploy then
+  // fails keeps that commit: only a commit that never landed is taken back
+  // out. The next release polls the deploy again and closes.
+  fixture("c27g");
+  writeAwaitStub();
+  seedRows("| R1 | first | — | planned | `specs/001-first/` |");
+  roadmap(join(F.WT1, RMP), "--set", "R1", "in-progress");
+  finishSpec("001-first", liveBlock("ping | workbench | command | true"));
+  r = liveLand(["ship R1"]);
+  is("(g) the landing holds", r.rc, "4");
+  deployed(originTip("code"));
+  r = liveLand(["--release"], { AWAIT_STUB_RC: "1", AWAIT_STUB_LINE: "deploy: failure (run_rows)" });
+  is("(g) a release whose rows land but whose deploy fails is refused", r.rc, "3");
+  has("(g) …naming the deploy", r.out, "is on origin but its deploy did not succeed");
+  is("(g) …the rows set done on origin", mainRows(), "R1=done");
+  hasnt("(g) …never saying they are taken back out", r.out, "did not land");
+  is("(g) …the rows commit kept in the worktree", g(F.WT1, "rev-parse", "HEAD"), originTip("code"));
+  ok("(g) …and the hold kept", isFile(threadFile(TID1, "held")), "hold cleared");
+  r = liveLand(["--release"]);
+  is("(g) the next release polls the deploy again and closes", r.rc, "0");
+  is("(g) …R1 still done", mainRows(), "R1=done");
+
+  // (h) A release that sets no row publishes nothing: a worktree that only
+  // moved to a newer trunk since its landing is not landed again, so the
+  // release neither records nor polls another session's commit.
+  fixture("c27h");
+  writeAwaitStub();
+  seedRows("| R1 | first | — | planned | `specs/001-first/` |");
+  roadmap(join(F.WT1, RMP), "--set", "R1", "in-progress");
+  finishSpec("001-first", liveBlock("ping | workbench | command | true"));
+  r = liveLand(["ship R1"]);
+  is("(h) the landing holds", r.rc, "4");
+  // Another session sets R1 done on the trunk; this worktree fast-forwards to it.
+  write(join(F.CODE, RMP, "ROADMAP.md"), lines(...tableHead(), "| R1 | first | — | done | `specs/001-first/` |"));
+  commitOnTrunk("another session sets R1 done");
+  const other = originTip("code");
+  gDo(F.WT1, "fetch", "-q", "origin");
+  gDo(F.WT1, "merge", "-q", "--ff-only", "origin/main");
+  deployed(other);
+  r = liveLand(["--release"], { AWAIT_STUB_FAIL_SHA: other });
+  is("(h) a release that sets no row closes", r.rc, "0");
+  hasnt("(h) …landing nothing", r.out, `landed ${F.CODE} at ${other}`);
+  hasnt("(h) …and polling no deploy of the other session's commit", polledLines().join("\n"), other);
+});
+
+// ── Case 28 ───────────────────────────────────────────────────────────────
+//
+// A CLOSE WAITS FOR EVERY HELPER TO REPORT BACK. A helper the thread
+// started (a T3-delegated task or the harness's own subagent) that is still
+// working, or whose result T3 has not yet handed over, would bring its news
+// after the close and force a second one. The landing refuses before anything
+// is touched — the refusal comes ahead of the block that starts a new
+// reporting window — and lands once every helper has reported back. The T3
+// database is a v2 file here, with the thread rows thread.ts reads and the
+// helper rows land.ts reads.
+
+/**
+ * Rewrite the fixture's T3 database as a v2 file with these helpers of thread
+ * one. `handed`, when given, is the status of the parent turn a claimed result
+ * was handed to (the message that starts it names the helper).
+ */
+function helpersDb(
+  helpers: [title: string, status: string, delivery: string | null, handed?: string][],
+  table = true,
+): void {
+  const path = join(F.S, "t3home/userdata/statev2.sqlite");
+  rmSync(path, { force: true });
+  const r = spawnSync(
+    process.execPath,
+    [
+      "--disable-warning=ExperimentalWarning",
+      "-e",
+      `
+const { DatabaseSync } = require("node:sqlite");
+const [path, t1, w1, t2, w2, helpers, table] = process.argv.slice(1);
+const db = new DatabaseSync(path);
+db.exec("create table orchestration_v2_projection_threads (thread_id TEXT, title TEXT, created_at TEXT, deleted_at TEXT, payload_json TEXT)");
+const th = db.prepare("insert into orchestration_v2_projection_threads values (?,?,?,null,?)");
+th.run(t1, "one", "2026-09-14T03:15:00.000Z", JSON.stringify({ branch: "t3code/one", worktreePath: w1 }));
+th.run(t2, "two", "2026-09-14T04:20:00.000Z", JSON.stringify({ branch: "t3code/two", worktreePath: w2 }));
+db.exec("create table orchestration_v2_projection_messages (message_id TEXT, thread_id TEXT, run_id TEXT, created_at TEXT, payload_json TEXT)");
+db.exec("create table orchestration_v2_projection_runs (run_id TEXT, thread_id TEXT, status TEXT, payload_json TEXT)");
+if (table === "yes") {
+  db.exec("create table orchestration_v2_projection_subagents (subagent_id TEXT, thread_id TEXT, origin TEXT, status TEXT, started_at TEXT, payload_json TEXT, completion_delivery_state TEXT)");
+  const ins = db.prepare("insert into orchestration_v2_projection_subagents values (?,?,?,?,?,?,?)");
+  JSON.parse(helpers).forEach(([title, status, delivery, handed], i) => {
+    ins.run("s" + i, t1, "app_owned", status, "2026-11-04T10:00:0" + i + "Z", JSON.stringify({ title }), delivery);
+    if (!handed) return;
+    db.prepare("insert into orchestration_v2_projection_runs values (?,?,?,?)").run("r" + i, t1, handed,
+      JSON.stringify({ startedAt: handed === "queued" ? null : "2026-11-04T10:01:00Z" }));
+    db.prepare("insert into orchestration_v2_projection_messages values (?,?,?,?,?)").run(
+      "m" + i, t1, "r" + i, "2026-11-04T10:01:0" + i + "Z", JSON.stringify({ delegatedCompletion: { taskIds: ["s" + i] } }));
+  });
+}
+`,
+      path,
+      TID1,
+      F.WT1,
+      TID2,
+      F.WT2,
+      JSON.stringify(helpers),
+      table ? "yes" : "no",
+    ],
+    { encoding: "utf8" },
+  );
+  if (r.status !== 0) throw new Error(`helpersDb: ${r.stderr}`);
+}
+
+/** Every file in thread one's state folder, with its bytes. */
+function stateSnapshot(): string {
+  const dir = join(F.HOME_DIR, ".cache/workbench/threads", TID1);
+  return readdirSync(dir)
+    .sort()
+    .map((f) => (isFile(join(dir, f)) ? `== ${f}\n${readFileSync(join(dir, f), "utf8")}` : `== ${f}/`))
+    .join("\n");
+}
+
+kase("Case 28: a close waits until every helper has reported back", () => {
+  fixture("c28");
+  helpersDb([]);
+  write(join(F.WT1, "first.txt"), "first\n");
+  let r = land(1, ["first close"]);
+  is("(setup) with no helpers the thread closes as before", r.rc, "0");
+  ok("(setup) …writing closed and the saved report", isFile(threadFile(TID1, "closed")), "no closed");
+  write(threadFile(TID1, "deploy.log"), "a deploy the first close reported\n");
+
+  // (a) One helper still working, on a thread that closed before.
+  write(join(F.WT1, "second.txt"), "second\n");
+  prereqs(1);
+  helpersDb([["review round 2", "running", null]]);
+  const before = stateSnapshot();
+  const trunk = g(F.CODE, "rev-parse", "origin/main");
+  r = land(1, ["second close"]);
+  is("(a) a landing with a helper still working is refused", r.rc, "3");
+  has("(a) …NOT CLOSED, naming the helper and its status", r.out, "NOT CLOSED: 1 helper has not reported back");
+  has("(a) …the helper by title", r.out, '"review round 2" — running');
+  has("(a) …saying to wait or cancel it", r.out, "Wait for each helper's result, or cancel it with T3's task cancel");
+  gDo(F.CODE, "fetch", "-q", "origin");
+  is("(a) …nothing reached the trunk", g(F.CODE, "rev-parse", "origin/main"), trunk);
+  is("(a) …and the state folder is byte-identical", stateSnapshot(), before);
+
+  // (b) Two helpers still working, named in one refusal, oldest first.
+  helpersDb([
+    ["lookup", "running", null],
+    ["review round 3", "queued", null],
+  ]);
+  r = land(1, ["second close"]);
+  is("(b) two helpers still working: refused", r.rc, "3");
+  has(
+    "(b) …both in one refusal, oldest first",
+    r.out,
+    '2 helpers have not reported back: "lookup" — running; "review round 3" — queued',
+  );
+
+  // (c) A helper that finished but whose result T3 is still handing over.
+  helpersDb([["handing over", "completed", "claimed"]]);
+  r = land(1, ["second close"]);
+  is("(c) a finished helper whose result is still claimed: refused", r.rc, "3");
+  has("(c) …naming it with its delivery state", r.out, '"handing over" — completed, delivery claimed');
+  is("(c) …the state folder still byte-identical", stateSnapshot(), before);
+  helpersDb([["queued wake", "completed", "claimed", "queued"]]);
+  r = land(1, ["second close"]);
+  is("(c) a result claimed for a parent turn still queued: refused", r.rc, "3");
+  has("(c) …naming it", r.out, '"queued wake" — completed, delivery claimed');
+
+  // (d) Every helper finished and delivered — one of them claimed for the turn
+  // now running, which is the turn reading its result: the close lands, once.
+  helpersDb([
+    ["lookup", "completed", "delivered"],
+    ["review round 3", "failed", "acknowledged"],
+    ["read in this turn", "completed", "claimed", "running"],
+  ]);
+  r = land(1, ["second close"]);
+  is("(d) every helper reported back: it lands", r.rc, "0");
+  is("(d) …second.txt reached the trunk", onMain(F.CODE, "second.txt"), "yes");
+
+  // (e) The helper read fails (no subagents table): one warning, and it lands.
+  helpersDb([], false);
+  write(join(F.WT1, "third.txt"), "third\n");
+  r = land(1, ["third close"], { merge: true });
+  is("(e) a helper read that fails does not stop the landing", r.rc, "0");
+  is(
+    "(e) …printing one warning line",
+    r.out.split("\n").filter((l) => l.startsWith("land: helpers not checked")).length,
+    1,
+  );
+  is("(e) …third.txt reached the trunk", onMain(F.CODE, "third.txt"), "yes");
+
+  // --check and --gate never wait.
+  helpersDb([["still going", "running", null]]);
+  hasnt(
+    "--check does not wait for a running helper",
+    land(1, ["--check"], { merge: true }).out,
+    "has not reported back",
+  );
+  is("--gate answers as before", land(1, ["--gate"]).out, "fired");
+
+  // (f) A held close's release waits too, and its refusal keeps the hold.
+  helpersDb([]);
+  write(join(F.WT1, "fourth.txt"), "fourth\n");
+  r = land(1, ["fourth close", "--hold"], { merge: true });
+  is("(f) the landing holds", r.rc, "4");
+  helpersDb([["late review", "running", null]]);
+  const held = stateSnapshot();
+  r = land(1, ["--release"], { merge: true });
+  is("(f) a release with a helper still working is refused", r.rc, "3");
+  has("(f) …naming it", r.out, 'NOT CLOSED: 1 helper has not reported back: "late review" — running');
+  hasnt("(f) …and never prints the line", r.out, "loses nothing");
+  is("(f) …the state folder, the hold included, byte-identical", stateSnapshot(), held);
+  helpersDb([["late review", "completed", "delivered"]]);
+  r = land(1, ["--release"], { merge: true });
+  is("(f) once it has reported back the release passes", r.rc, "0");
+  has("(f) …reporting the held subject", r.out, "**Shipped:** fourth close");
+});
+
+// ── Case 29 ───────────────────────────────────────────────────────────────
+//
+// THE REPO LOCK IS NEVER HELD WHILE A GATE OR A DEPLOY RUNS. Until 2026-11-07
+// land.ts took `/tmp/<repo>-git.lock` before its first gate and let it go
+// only after the push, so the merged-tree app checks, the review receipt and
+// the poll of an earlier owed deploy all ran under it. A close running two app
+// checks held it for 21 minutes, and the deploy, dashboard-sync and
+// rebuild-project-index runs of another push, each waiting `flock -w 120` on
+// it to fetch, timed out and failed: that push never deployed. Now the gates
+// run unlocked, and the push takes the lock, fetches, and pushes only when the
+// trunk is still where the gates checked it. A trunk that moved is merged and
+// checked again — its app checks skipped when it brought only Markdown — and
+// one that keeps moving is NOT CLOSED with nothing pushed.
+
+/** The trunk's app `x`, whose check is slow-check.ts below; the branch adds a.ts beside it. */
+function slowCheckFixture(name: string): { LOCK: string; CLONE: string } {
+  fixture(name);
+  gDo(F.WT2, "pull", "-q", "origin", "main");
+  write(
+    join(F.WT2, "apps/x/package.json"),
+    `${JSON.stringify({ name: "x", private: true, scripts: { check: "node --experimental-strip-types slow-check.ts" } }, null, 2)}\n`,
+  );
+  // Counts its runs, marks that it started, pushes a commit to the trunk from
+  // another clone (on its first run, or every run), then sleeps.
+  write(
+    join(F.WT2, "apps/x/slow-check.ts"),
+    `import { execFileSync } from "node:child_process";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname } from "node:path";
+const home = process.env.HOME ?? "";
+const runs = \`\${home}/.app-check-runs\`;
+const n = existsSync(runs) ? readFileSync(runs, "utf8").split("\\n").filter(Boolean).length : 0;
+appendFileSync(runs, "run\\n");
+writeFileSync(\`\${home}/.app-check-started\`, "");
+const clone = process.env.SLOW_CHECK_CLONE ?? "";
+const what = process.env.SLOW_CHECK_PUSH ?? "";
+if (clone && what && (n === 0 || process.env.SLOW_CHECK_EVERY)) {
+  const f = what === "md" ? \`notes/moved-\${n}.md\` : \`apps/x/moved-\${n}.ts\`;
+  mkdirSync(dirname(\`\${clone}/\${f}\`), { recursive: true });
+  writeFileSync(\`\${clone}/\${f}\`, "moved\\n");
+  for (const a of [["add", "-A"], ["commit", "-q", "-m", \`moved \${n}\`], ["push", "-q", "origin", "HEAD:main"]])
+    execFileSync("git", ["-C", clone, ...a], { stdio: "ignore" });
+  // A sibling worktree fetching now moves the shared origin/main ref under
+  // the close without its HEAD merging it.
+  const sibling = process.env.SLOW_CHECK_FETCH ?? "";
+  if (sibling) execFileSync("git", ["-C", sibling, "fetch", "-q", "origin", "main"], { stdio: "ignore" });
+}
+const ms = Number(process.env.SLOW_CHECK_MS ?? "0");
+if (ms > 0) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+`,
+  );
+  gDo(F.WT2, "add", "-A");
+  gDo(F.WT2, "commit", "-q", "-m", "the trunk adds the slow app");
+  gDo(F.WT2, "push", "-q", "origin", "HEAD:main");
+  write(join(F.WT1, "apps/x/a.ts"), "export const a = 1;\n");
+  const CLONE = join(F.S, "other-writer");
+  gDo(F.S, "clone", "-q", g(F.CODE, "config", "--get", "remote.origin.url"), CLONE);
+  gDo(CLONE, "config", "user.email", "o@example.com");
+  gDo(CLONE, "config", "user.name", "other");
+  for (const f of [".app-check-runs", ".app-check-started"]) rmSync(join(F.HOME_DIR, f), { force: true });
+  return { LOCK: `/tmp/${basename(F.CODE)}-git.lock`, CLONE };
+}
+const checkRuns = (): string => countLines(join(F.HOME_DIR, ".app-check-runs"), (l) => l === "run") || "0";
+
+kase("Case 29: the repo lock is free while the gates and an owed deploy run", async () => {
+  // (a) A gate running longer than another writer's `flock -w 1` wait.
+  const { LOCK } = slowCheckFixture("c29a");
+  prereqs(1);
+  const child = spawn(process.execPath, ["--experimental-strip-types", LAND, "slow gate"], {
+    cwd: F.WT1,
+    env: envOf(1, F.WT1, { SLOW_CHECK_MS: "4000" }),
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  let out = "";
+  child.stdout?.on("data", (b: Buffer) => {
+    out += b.toString();
+  });
+  child.stderr?.on("data", (b: Buffer) => {
+    out += b.toString();
+  });
+  const exited = new Promise<number>((done) => child.on("exit", (code) => done(code ?? 1)));
+  const started = join(F.HOME_DIR, ".app-check-started");
+  const deadline = Date.now() + 60_000;
+  while (!existsSync(started) && Date.now() < deadline) await sleep(50);
+  const waiter = spawnSync("flock", ["-w", "1", LOCK, "true"]);
+  const rc = await exited;
+  is("(a) the slow app check started", existsSync(started) ? "started" : "not", "started");
+  is("(a) another writer's 1 s lock wait succeeds while the gate runs", String(waiter.status), "0");
+  is("(a) …and the close still lands", rc, 0);
+  hasnt("(a) …refusing nothing", out, "NOT CLOSED");
+  is("(a) …its file on main", onMain(F.CODE, "apps/x/a.ts"), "yes");
+
+  // (b) An earlier deploy owed on a SHA the push does not descend from is
+  //     polled first; the deploy it waits on takes the same lock to fetch.
+  fixture("c29b");
+  writeAwaitStub();
+  const side = g(F.CODE, "commit-tree", "HEAD^{tree}", "-p", "HEAD", "-m", "a push no branch kept");
+  write(threadFile(TID1, "deploy-owed"), `${F.CODE}\t${side}\n`);
+  write(join(F.WT1, "one.txt"), "one\n");
+  let r = land(1, ["owed elsewhere"], { merge: true, extra: { AWAIT_STUB_LOCK: `/tmp/${basename(F.CODE)}-git.lock` } });
+  is("(b) a deploy that waits for the repo lock is never polled under it", r.rc, "0");
+  hasnt("(b) …no lock wait timed out", r.out, "lock wait timed out");
+  has("(b) …the owed SHA was polled", polledLines().join("\n"), `polled ${side} `);
+  is("(b) …and nothing is owed any more", cat(threadFile(TID1, "deploy-owed")), "");
+
+  // (c) The trunk moves while the gates run: the close merges it and checks again.
+  let fx = slowCheckFixture("c29c");
+  r = land(1, ["trunk moved"], { merge: true, extra: { SLOW_CHECK_CLONE: fx.CLONE, SLOW_CHECK_PUSH: "code" } });
+  is("(c) a close whose trunk moved under its gates lands", r.rc, "0");
+  has("(c) …saying the trunk moved", r.out, "moved while its gates ran");
+  is("(c) …the app check ran again on the new merge", checkRuns(), "2");
+  is("(c) …the other writer's commit kept", onMain(F.CODE, "apps/x/moved-0.ts"), "yes");
+  is("(c) …beside this close's file", onMain(F.CODE, "apps/x/a.ts"), "yes");
+
+  // (d) A trunk that brought only Markdown leaves the app checks standing.
+  fx = slowCheckFixture("c29d");
+  r = land(1, ["notes moved"], { merge: true, extra: { SLOW_CHECK_CLONE: fx.CLONE, SLOW_CHECK_PUSH: "md" } });
+  is("(d) a close whose trunk gained only Markdown lands", r.rc, "0");
+  is("(d) …the app check ran once", checkRuns(), "1");
+  has("(d) …saying why it stands", r.out, "the trunk brought only Markdown since they passed");
+  is("(d) …the note kept", onMain(F.CODE, "notes/moved-0.md"), "yes");
+
+  // (e) A trunk that moves under every attempt is NOT CLOSED, nothing pushed.
+  fx = slowCheckFixture("c29e");
+  const extra = { SLOW_CHECK_CLONE: fx.CLONE, SLOW_CHECK_PUSH: "code", SLOW_CHECK_EVERY: "1" };
+  r = land(1, ["never still"], { merge: true, extra });
+  is("(e) a trunk that never holds still does not close", r.rc, "3");
+  has("(e) …saying so", r.out, "kept moving while this close checked it");
+  is("(e) …after three rounds of checks", checkRuns(), "3");
+  is("(e) …and nothing of it was pushed", onMain(F.CODE, "apps/x/a.ts"), "no");
+  r = land(1, ["never still"], { merge: true });
+  is("(e) the re-run, once the trunk is still, lands", r.rc, "0");
+  is("(e) …its file on main", onMain(F.CODE, "apps/x/a.ts"), "yes");
+
+  // (f) The trunk moves while the gates run AND a sibling worktree of the same
+  //     repo fetches it, moving the shared origin/main ref this close reads.
+  //     The trunk the gates checked is the one fetched under the lock, so the
+  //     close still sees the move, merges it and lands — it never pushes a
+  //     HEAD that lacks the new commit.
+  fx = slowCheckFixture("c29f");
+  r = land(1, ["sibling fetched"], {
+    merge: true,
+    extra: { SLOW_CHECK_CLONE: fx.CLONE, SLOW_CHECK_PUSH: "code", SLOW_CHECK_FETCH: F.CODE },
+  });
+  is("(f) a close whose trunk a sibling worktree fetched mid-gate lands", r.rc, "0");
+  has("(f) …saying the trunk moved", r.out, "moved while its gates ran");
+  is("(f) …the other writer's commit kept", onMain(F.CODE, "apps/x/moved-0.ts"), "yes");
+  is("(f) …beside this close's file", onMain(F.CODE, "apps/x/a.ts"), "yes");
+});
+
+// ── Case 30 ───────────────────────────────────────────────────────────────
+//
+// A HELD CLOSE KEEPS EVERY PRODUCT WORKTREE UNTIL ITS RELEASE. A live check
+// that fails during a hold is fixed in the product's worktree and reviewed
+// there; a landing that deleted the worktree would take its review's declared
+// paths with it. Every satellite's
+// removal waits for the end of the run, which keeps it while the close stays
+// held — by --hold or by an owed live check — and removes it otherwise.
+
+kase("Case 30: a held close keeps a product worktree until release", () => {
+  const heldRemovals = (): string =>
+    isFile(threadFile(TID1, "held-removals")) ? cat(threadFile(TID1, "held-removals")) : "";
+
+  // (a)-(c) Held by --hold: kept through a second landing, removed by --release.
+  fixture("c30a");
+  let SAT = writeRoot(1, F.PROD).out;
+  const BRANCH = g(SAT, "rev-parse", "--abbrev-ref", "HEAD");
+  write(join(SAT, "one-prod.md"), "prod\n");
+  write(join(F.WT1, "one.txt"), "one\n");
+  let r = land(1, ["thread one", "--hold"], { merge: true });
+  is("(a) the held landing exits 4", r.rc, "4");
+  ok("(a) …and keeps the product worktree", isDir(SAT), `the held close removed ${SAT}:\n${r.out}`);
+  has("(a) …listing it to remove at release", heldRemovals(), `${SAT}\t`);
+  write(join(SAT, "fix.md"), "the live check's fix\n");
+  r = land(1, ["fix what the live check found", "--hold"], { merge: true });
+  is("(b) a fix landed from it during the hold exits 4", r.rc, "4");
+  is("(b) …the fix is on the product's trunk", onMain(F.PROD, "fix.md"), "yes");
+  ok("(b) …and the worktree is still there", isDir(SAT), `the second landing removed ${SAT}:\n${r.out}`);
+  r = land(1, ["--release"], { merge: true });
+  is("(c) the release passes", r.rc, "0");
+  has("(c) …and prints the line", lastLine(r.out), "— closing this tab loses nothing.");
+  ok("(c) …and only then removes the worktree", !isDir(SAT), `the release kept ${SAT}:\n${r.out}`);
+  is(
+    "(c) …and its branch",
+    gOk(F.PROD, "rev-parse", "--verify", "-q", `refs/heads/${BRANCH}`) ? "present" : "gone",
+    "gone",
+  );
+  ok("(c) …and clears the held-removals list", heldRemovals() === "", `left: ${heldRemovals()}`);
+
+  // (d) Held only because a live check is owed: no --hold, kept the same.
+  fixture("c30d");
+  seedRows("| R1 | first | — | in-progress | `specs/001-first/` |");
+  finishSpec("001-first", liveBlock(`home | workbench | command | test -f "$LIVE_CHECKS_TEST_SOURCES.ok"`));
+  SAT = writeRoot(1, F.PROD).out;
+  write(join(SAT, "one-prod.md"), "prod\n");
+  r = liveLand(["ship R1"]);
+  is("(d) a landing that owes a live check holds", r.rc, "4");
+  ok("(d) …and keeps the product worktree", isDir(SAT), `the forced hold removed ${SAT}:\n${r.out}`);
+  has("(d) …listing it to remove at release", heldRemovals(), `${SAT}\t`);
+
+  // (f) A refused release keeps it; the passing one removes it.
+  deployed(originTip("code"));
+  r = liveLand(["--release"]);
+  is("(f) a release whose live check fails is refused", r.rc, "3");
+  ok("(f) …the product worktree still there", isDir(SAT), `the refused release removed ${SAT}:\n${r.out}`);
+  has("(f) …and still listed", heldRemovals(), `${SAT}\t`);
+  write(`${liveStub()}.ok`, "ok\n");
+  r = liveLand(["--release"]);
+  is("(f) once the check passes, the release passes", r.rc, "0");
+  ok("(f) …and removes the product worktree", !isDir(SAT), `the release kept ${SAT}:\n${r.out}`);
+  ok("(f) …clearing the list", heldRemovals() === "", `left: ${heldRemovals()}`);
+
+  // (e) An ordinary landing still removes it before it reports.
+  fixture("c30e");
+  SAT = writeRoot(1, F.PROD).out;
+  write(join(SAT, "one-prod.md"), "prod\n");
+  write(join(F.WT1, "one.txt"), "one\n");
+  r = land(1, ["thread one"], { merge: true });
+  is("(e) an ordinary landing closes", r.rc, "0");
+  ok("(e) …and removes the product worktree", !isDir(SAT), `an ordinary landing kept ${SAT}:\n${r.out}`);
+  ok("(e) …leaving no held-removals list", heldRemovals() === "", `left: ${heldRemovals()}`);
+  is("(e) …with the product's file on its trunk", onMain(F.PROD, "one-prod.md"), "yes");
+});
+
+// ── Case 31: the set a close landed is recorded for the open step ────────
+//
+// Before each push that moves the trunk, land.ts records the projects whose
+// ROADMAP.md the push changes, plus the projects waiting on a row it finished,
+// read from the tree it is about to push; `--landed-projects` prints the lines
+// whose SHA reached the trunk. The close's open
+// step reads it through open-active.ts --for-landed (Case 32).
+
+const C31_OTHER = "projects/demo/2026-01-02_other-proj";
+const C31_WAIT = "projects/fin/2026-01-01_waiting";
+const C31_UNREL = "projects/fin/2026-01-03_unrelated";
+
+/** `land.ts --landed-projects` as thread one, from its worktree (or `cwd`). */
+function landedProjects(cwd = F.WT1, extra: Record<string, string> = {}, merge = false): Res {
+  return sh(process.execPath, ["--experimental-strip-types", F.script ?? LAND, "--landed-projects"], {
+    cwd,
+    env: envOf(1, cwd, extra),
+    merge,
+  });
+}
+
+/** other-proj (R2 to finish, R9 left open), one project waiting on its R2 and
+ *  one waiting only on its R9, on the trunk; thread one reset onto it. */
+function seedC31(): void {
+  write(
+    join(F.CODE, C31_OTHER, "ROADMAP.md"),
+    lines(
+      ...tableHead(),
+      "| R1 | first | — | done | — |",
+      "| R2 | the decision | — | planned | — |",
+      "| R9 | later | — | planned | — |",
+    ),
+  );
+  write(
+    join(F.CODE, C31_OTHER, "README.md"),
+    '---\nproject: other\nstatus: active\nnext: "R2: the decision"\n---\n\n# P\n',
+  );
+  write(join(F.CODE, C31_WAIT, "ROADMAP.md"), lines(...tableHead(), "| R1 | convert | other-proj R2 | planned | — |"));
+  write(
+    join(F.CODE, C31_WAIT, "README.md"),
+    '---\nproject: waiting\nstatus: blocked\nblocked-on: "R1: waits on other-proj R2"\n---\n\n# P\n',
+  );
+  write(join(F.CODE, C31_UNREL, "ROADMAP.md"), lines(...tableHead(), "| R1 | other | other-proj R9 | planned | — |"));
+  write(
+    join(F.CODE, C31_UNREL, "README.md"),
+    '---\nproject: unrelated\nstatus: blocked\nblocked-on: "R1: waits on other-proj R9"\n---\n\n# P\n',
+  );
+  commitOnTrunk("projects");
+  for (const wt of [F.WT1, F.WT2]) {
+    gDo(wt, "fetch", "-q", "origin");
+    gDo(wt, "reset", "-q", "--hard", "origin/main");
+  }
+}
+/** other-proj and the project waiting on its R2, written into <dir> (uncommitted). */
+function seedC31Into(dir: string): void {
+  write(
+    join(dir, C31_OTHER, "ROADMAP.md"),
+    lines(...tableHead(), "| R1 | first | — | done | — |", "| R2 | the decision | — | planned | — |"),
+  );
+  write(
+    join(dir, C31_OTHER, "README.md"),
+    '---\nproject: other\nstatus: active\nnext: "R2: the decision"\n---\n\n# P\n',
+  );
+  write(join(dir, C31_WAIT, "ROADMAP.md"), lines(...tableHead(), "| R1 | convert | other-proj R2 | planned | — |"));
+  write(
+    join(dir, C31_WAIT, "README.md"),
+    '---\nproject: waiting\nstatus: blocked\nblocked-on: "R1: waits on other-proj R2"\n---\n\n# P\n',
+  );
+}
+/** Thread one finishes other-proj R2. */
+function finishOtherR2(): void {
+  if (roadmap(join(F.WT1, C31_OTHER), "--set", "R2", "done")) roadmap(join(F.WT1, C31_OTHER), "--sync-next");
+}
+
+kase("Case 31: the set a close landed is recorded for the open step", () => {
+  // (a) A finished row: its project and the one waiting on it, not the one
+  // waiting on another row; a dependent only the pushed tree has; an
+  // unreadable table found while dependents are looked for.
+  fixture("c31a");
+  seedC31();
+  const BROKEN = "projects/fin/2026-01-05_broken";
+  write(join(F.CODE, BROKEN, "ROADMAP.md"), "no table here\n");
+  write(join(F.CODE, BROKEN, "README.md"), "---\nproject: broken\nstatus: active\n---\n\n# P\n");
+  commitOnTrunk("a broken table");
+  // A dependent another thread put on the trunk: in the tree this landing
+  // pushes, never in the shared checkout, which an uncommitted edit keeps from
+  // fast-forwarding.
+  const NEWDEP = "projects/fin/2026-01-04_newdep";
+  write(join(F.WT2, NEWDEP, "ROADMAP.md"), lines(...tableHead(), "| R1 | next | other-proj R2 | planned | manual |"));
+  write(
+    join(F.WT2, NEWDEP, "README.md"),
+    '---\nproject: newdep\nstatus: blocked\nblocked-on: "R1: waits on other-proj R2"\n---\n\n# P\n',
+  );
+  gDo(F.WT2, "add", "-A");
+  gDo(F.WT2, "commit", "-q", "-m", "newdep");
+  gDo(F.WT2, "fetch", "-q", "origin");
+  gDo(F.WT2, "rebase", "-q", "origin/main");
+  gDo(F.WT2, "push", "-q", "origin", "HEAD:main");
+  write(join(F.CODE, "seed.txt"), "an uncommitted edit\n");
+  finishOtherR2();
+  entry(jf(1, "decided"), "decided", "the decision is made");
+  let r = land(1, ["the decision is made"], { merge: true });
+  is("(a) the landing lands", r.rc, "0");
+  if (r.rc !== 0) process.stdout.write(`${r.out.split("\n").slice(-3).join("\n")}\n`);
+  ok("(a) …the shared checkout does not have the new dependent", !isDir(join(F.CODE, NEWDEP)), "it was advanced");
+  let p = landedProjects();
+  is("(a) --landed-projects exits 0", p.rc, "0");
+  is(
+    "(a) …naming the project, the projects waiting on R2 (one only the pushed tree has), and the unreadable table",
+    p.out,
+    [C31_OTHER, C31_WAIT, NEWDEP, `unreadable ${BROKEN}: no \`# Roadmap\` heading in ROADMAP.md`].join("\n"),
+  );
+  is(
+    "(a) …the unreadable project's README is unchanged on origin",
+    g(F.CODE, "show", `origin/main:${BROKEN}/README.md`),
+    "---\nproject: broken\nstatus: active\n---\n\n# P",
+  );
+  write(join(F.CODE, "seed.txt"), "seed\n");
+
+  // (b) A finished close, then a landing that changes only a journal entry.
+  entry(jf(1, "notes"), "notes", "only a journal entry");
+  r = land(1, ["only notes"], { merge: true });
+  is("(b) the journal-only landing lands", r.rc, "0");
+  p = landedProjects();
+  is("(b) …and --landed-projects prints nothing: the record was cleared at the new close", `${p.rc}:${p.out}`, "0:");
+
+  // (c) A landing that fails after its push, then its retry.
+  fixture("c31c");
+  seedC31();
+  writeAwaitStub();
+  write(join(F.WT1, "apps/x/y.ts"), "code\n");
+  finishOtherR2();
+  r = land(1, ["fails after the push"], {
+    merge: true,
+    extra: { AWAIT_STUB_RC: "1", AWAIT_STUB_LINE: "deploy: failure (run_bad)\ndeploy failure" },
+  });
+  is("(c) a failed deploy after the push is NOT CLOSED", r.rc, "3");
+  is("(c) …and the push's projects are printed", landedProjects().out, `${C31_OTHER}\n${C31_WAIT}`);
+  r = land(1, ["fails after the push"], { merge: true });
+  is("(c) the retry closes", r.rc, "0");
+  is("(c) …still printing the first push's projects", landedProjects().out, `${C31_OTHER}\n${C31_WAIT}`);
+
+  // (d) Killed after the push, before the landed SHA; the retry has nothing to push.
+  fixture("c31d");
+  seedC31();
+  finishOtherR2();
+  r = land(1, ["killed"], { merge: true, extra: { LAND_TEST_KILL_AT: "pushed:1" } });
+  is("(d) the close was killed after the push", r.rc, "1");
+  r = land(1, ["killed"], { merge: true });
+  is("(d) the retry closes", r.rc, "0");
+  has("(d) …with nothing to push", r.out, "nothing to push");
+  is("(d) …and the first attempt's projects are printed", landedProjects().out, `${C31_OTHER}\n${C31_WAIT}`);
+
+  // (e) A push that fails records a SHA that never reaches the trunk.
+  fixture("c31e");
+  seedC31();
+  finishOtherR2();
+  const PUSHURL = g(F.CODE, "remote", "get-url", "origin");
+  gDo(F.CODE, "remote", "set-url", "--push", "origin", join(F.S, "origins/gone.git"));
+  r = land(1, ["push fails"], { merge: true });
+  is("(e) a failed push does not close", r.rc, "3");
+  p = landedProjects();
+  is("(e) …and --landed-projects prints nothing for it", `${p.rc}:${p.out}`, "0:");
+  gDo(F.CODE, "remote", "set-url", "--push", "origin", PUSHURL);
+  r = land(1, ["push fails"], { merge: true });
+  is("(e) the next landing pushes", r.rc, "0");
+  is("(e) …and its projects print once each, sorted", landedProjects().out, `${C31_OTHER}\n${C31_WAIT}`);
+
+  // (e2) A refused push whose retry pushes another tree — the row put back —
+  // never confirms what was recorded for the refused one.
+  fixture("c31e2");
+  seedC31();
+  finishOtherR2();
+  const PUSHURL2 = g(F.CODE, "remote", "get-url", "origin");
+  gDo(F.CODE, "remote", "set-url", "--push", "origin", join(F.S, "origins/gone.git"));
+  r = land(1, ["push fails"], { merge: true });
+  is("(e2) a failed push does not close", r.rc, "3");
+  gDo(F.CODE, "remote", "set-url", "--push", "origin", PUSHURL2);
+  if (roadmap(join(F.WT1, C31_OTHER), "--set", "R2", "planned")) roadmap(join(F.WT1, C31_OTHER), "--sync-next");
+  r = land(1, ["push fails"], { merge: true });
+  is("(e2) the retry with R2 put back lands", r.rc, "0");
+  p = landedProjects();
+  is("(e2) …and the refused push's projects are not printed", `${p.rc}:${p.out}`, "0:");
+
+  // (f) A held landing and its release: the union, the release's dependents included.
+  fixture("c31f");
+  seedRows("| R1 | first | — | planned | `specs/001-first/` |", "| R2 | second | — | planned | — |");
+  const WAITF = "projects/fin/2026-01-06_after-rows";
+  write(join(F.CODE, WAITF, "ROADMAP.md"), lines(...tableHead(), "| R1 | then | rows R1 | planned | manual |"));
+  write(
+    join(F.CODE, WAITF, "README.md"),
+    '---\nproject: after-rows\nstatus: blocked\nblocked-on: "R1: waits on rows R1"\n---\n\n# P\n',
+  );
+  // …and one waiting only on rows R2, which another thread finishes below.
+  const WAITR2 = "projects/fin/2026-01-08_after-rows-r2";
+  write(join(F.CODE, WAITR2, "ROADMAP.md"), lines(...tableHead(), "| R1 | then | rows R2 | planned | manual |"));
+  write(
+    join(F.CODE, WAITR2, "README.md"),
+    '---\nproject: after-rows-r2\nstatus: blocked\nblocked-on: "R1: waits on rows R2"\n---\n\n# P\n',
+  );
+  commitOnTrunk("a project after rows R1");
+  gDo(F.WT1, "fetch", "-q", "origin");
+  gDo(F.WT1, "reset", "-q", "--hard", "origin/main");
+  roadmap(join(F.WT1, RMP), "--set", "R1", "in-progress");
+  finishSpec("001-first", liveBlock(`home | workbench | command | test -f "$LIVE_CHECKS_TEST_SOURCES.ok"`));
+  r = liveLand(["ship R1"]);
+  is("(f) the landing holds for its live check", r.rc, "4");
+  is("(f) …and the held push's project prints, not yet the one waiting on R1", landedProjects().out, RMP);
+  // Another thread finishes a row of an unrelated project during the hold:
+  // its table is in the close's range, but none of the close's pushes touched it.
+  seedC31Into(F.WT2);
+  gDo(F.WT2, "add", "-A");
+  gDo(F.WT2, "commit", "-q", "-m", "another thread adds other-proj");
+  gDo(F.WT2, "fetch", "-q", "origin");
+  gDo(F.WT2, "rebase", "-q", "origin/main");
+  gDo(F.WT2, "push", "-q", "origin", "HEAD:main");
+  if (roadmap(join(F.WT2, C31_OTHER), "--set", "R2", "done")) roadmap(join(F.WT2, C31_OTHER), "--sync-next");
+  gDo(F.WT2, "commit", "-q", "-am", "another thread finishes other-proj R2");
+  gDo(F.WT2, "push", "-q", "origin", "HEAD:main");
+  // …and finishes rows R2, in the very table this close's own pushes change.
+  if (roadmap(join(F.WT2, RMP), "--set", "R2", "done")) roadmap(join(F.WT2, RMP), "--sync-next");
+  gDo(F.WT2, "commit", "-q", "-am", "another thread finishes rows R2");
+  gDo(F.WT2, "push", "-q", "origin", "HEAD:main");
+  deployed(originTip("code"));
+  write(`${liveStub()}.ok`, "ok\n");
+  r = liveLand(["--release"]);
+  is("(f) the release passes", r.rc, "0");
+  is(
+    "(f) …and both pushes' projects print, with the one waiting on the row it set done — not another thread's",
+    landedProjects().out,
+    `${RMP}\n${WAITF}`,
+  );
+
+  // (h) A push record that cannot be written refuses the landing before
+  // anything is pushed or owed — in either repo of a two-repo landing.
+  fixture("c31h");
+  seedC31();
+  finishOtherR2();
+  const SATH = writeRoot(1, F.PROD).out;
+  write(join(SATH, "h-prod.md"), "prod\n");
+  mkdirSync(join(threadFile(TID1, "landed-pushes"), "in-the-way"), { recursive: true });
+  r = land(1, ["the record cannot be written"], { merge: true });
+  is("(h) the landing refuses", r.rc, "3");
+  has("(h) …saying the push could not be recorded", r.out, "NOT CLOSED: could not record this round's pushes in");
+  gOk(F.CODE, "fetch", "-q", "origin");
+  hasnt(
+    "(h) …with nothing pushed",
+    g(F.CODE, "show", `origin/main:${C31_OTHER}/ROADMAP.md`),
+    "| R2 | the decision | — | done |",
+  );
+  is("(h) …nor in the product repo", onMain(F.PROD, "h-prod.md"), "no");
+  is(
+    "(h) …and no deploy owed",
+    isFile(threadFile(TID1, "deploy-owed")) ? cat(threadFile(TID1, "deploy-owed")) : "",
+    "",
+  );
+  rmSync(threadFile(TID1, "landed-pushes"), { recursive: true, force: true });
+
+  // (i) A project whose table the push deletes is still one the push changed.
+  fixture("c31i");
+  seedC31();
+  rmSync(join(F.WT1, C31_UNREL), { recursive: true, force: true });
+  r = land(1, ["retire unrelated"], { merge: true });
+  is("(i) the deleting landing lands", r.rc, "0");
+  is("(i) …and its project prints", landedProjects().out, C31_UNREL);
+
+  // (j) A table read that fails is never read as absent: only the table as the
+  // trunk had it before this close is unreadable, and a project waits on
+  // other-proj R1, done before the close. Read as absent, R1 would look newly
+  // finished and that project would be opened; instead the read fails loudly.
+  fixture("c31j");
+  seedC31();
+  const DEPR1 = "projects/fin/2026-01-07_after-r1";
+  write(join(F.CODE, DEPR1, "ROADMAP.md"), lines(...tableHead(), "| R1 | then | other-proj R1 | planned | manual |"));
+  write(join(F.CODE, DEPR1, "README.md"), '---\nproject: after-r1\nstatus: active\nnext: "R1: then"\n---\n\n# P\n');
+  commitOnTrunk("a project after other-proj R1");
+  gDo(F.WT1, "fetch", "-q", "origin");
+  gDo(F.WT1, "reset", "-q", "--hard", "origin/main");
+  const TRUNK_J = g(F.CODE, "rev-parse", "origin/main");
+  finishOtherR2();
+  r = land(1, ["finish R2"], { merge: true });
+  is("(j) the landing lands", r.rc, "0");
+  failingGit(join(F.S, "failshow"), ` show ${TRUNK_J}:${C31_OTHER}/ROADMAP.md`);
+  p = landedProjects(F.WT1, { PATH: `${join(F.S, "failshow")}:${process.env.PATH ?? ""}` }, true);
+  is("(j) --landed-projects exits 1 when the old table cannot be read", p.rc, "1");
+  has("(j) …saying which read failed", p.out, `could not read ${C31_OTHER}/ROADMAP.md at ${TRUNK_J}`);
+  hasnt("(j) …and never names the project waiting on R1", p.out, DEPR1);
+  is("(j) with the read working, the close's projects print", landedProjects().out, `${C31_OTHER}\n${C31_WAIT}`);
+
+  // (k) A push accepted though its answer was lost (killed after it), then a
+  // trunk another thread moved: the retry merges and pushes a newer tip, and
+  // the accepted push's projects are still printed — confirmed on the trunk.
+  fixture("c31k");
+  seedC31();
+  finishOtherR2();
+  r = land(1, ["killed"], { merge: true, extra: { LAND_TEST_KILL_AT: "pushed:1" } });
+  is("(k) the close was killed after its push", r.rc, "1");
+  write(join(F.WT2, "two.txt"), "two\n");
+  gDo(F.WT2, "add", "-A");
+  gDo(F.WT2, "commit", "-q", "-m", "another thread");
+  gDo(F.WT2, "fetch", "-q", "origin");
+  gDo(F.WT2, "rebase", "-q", "origin/main");
+  gDo(F.WT2, "push", "-q", "origin", "HEAD:main");
+  r = land(1, ["killed"], { merge: true });
+  is("(k) the retry lands over the moved trunk", r.rc, "0");
+  is("(k) …and the accepted push's projects print", landedProjects().out, `${C31_OTHER}\n${C31_WAIT}`);
+
+  // (e3) A refused push, then a held landing that puts the row back and its
+  // release: the later pushes descend from the refused SHA, and the refused
+  // marker keeps them from confirming it.
+  fixture("c31e3");
+  seedC31();
+  finishOtherR2();
+  const PUSHURL3 = g(F.CODE, "remote", "get-url", "origin");
+  gDo(F.CODE, "remote", "set-url", "--push", "origin", join(F.S, "origins/gone.git"));
+  r = land(1, ["push fails"], { merge: true });
+  is("(e3) a refused push does not close", r.rc, "3");
+  gDo(F.CODE, "remote", "set-url", "--push", "origin", PUSHURL3);
+  if (roadmap(join(F.WT1, C31_OTHER), "--set", "R2", "planned")) roadmap(join(F.WT1, C31_OTHER), "--sync-next");
+  r = land(1, ["push fails", "--hold"], { merge: true });
+  is("(e3) the held landing with R2 put back lands", r.rc, "4");
+  write(join(F.WT1, "fix.txt"), "a fix during the hold\n");
+  r = land(1, ["a fix during the hold", "--hold"], { merge: true });
+  is("(e3) a second held landing, whose push descends from both, lands", r.rc, "4");
+  r = land(1, ["--release"], { merge: true });
+  is("(e3) …and its release closes", r.rc, "0");
+  p = landedProjects();
+  is("(e3) …and the refused push's projects are never printed", `${p.rc}:${p.out}`, "0:");
+
+  // (e4) A refused push finished R2; the held retry put it back; another
+  // thread then finished R2 itself, and a later fix merged that in. The refused
+  // push never reached the trunk, so R2 is not this close's and the project
+  // waiting on it is not printed.
+  fixture("c31e4");
+  seedC31();
+  finishOtherR2();
+  const PUSHURL4 = g(F.CODE, "remote", "get-url", "origin");
+  gDo(F.CODE, "remote", "set-url", "--push", "origin", join(F.S, "origins/gone.git"));
+  r = land(1, ["push fails"], { merge: true });
+  is("(e4) a refused push does not close", r.rc, "3");
+  gDo(F.CODE, "remote", "set-url", "--push", "origin", PUSHURL4);
+  if (roadmap(join(F.WT1, C31_OTHER), "--set", "R2", "planned")) roadmap(join(F.WT1, C31_OTHER), "--sync-next");
+  r = land(1, ["push fails", "--hold"], { merge: true });
+  is("(e4) the held retry with R2 put back lands", r.rc, "4");
+  gDo(F.WT2, "fetch", "-q", "origin");
+  gDo(F.WT2, "reset", "-q", "--hard", "origin/main");
+  if (roadmap(join(F.WT2, C31_OTHER), "--set", "R2", "done")) roadmap(join(F.WT2, C31_OTHER), "--sync-next");
+  gDo(F.WT2, "commit", "-q", "-am", "another thread finishes other-proj R2");
+  gDo(F.WT2, "push", "-q", "origin", "HEAD:main");
+  write(join(F.WT1, "fix4.txt"), "a fix during the hold\n");
+  r = land(1, ["a fix during the hold", "--hold"], { merge: true });
+  is("(e4) a fix that merges the other thread's R2 lands held", r.rc, "4");
+  r = land(1, ["--release"], { merge: true });
+  is("(e4) …and the release closes", r.rc, "0");
+  p = landedProjects();
+  is("(e4) --landed-projects exits 0", p.rc, "0");
+  hasnt("(e4) …and never names the project waiting on the other thread's R2", p.out, C31_WAIT);
+
+  // (h2) A valid record from a refused push, then a two-repo retry whose
+  // record cannot be written: nothing moves in either repo, nothing is owed,
+  // and the record keeps its bytes.
+  fixture("c31h2");
+  seedC31();
+  finishOtherR2();
+  const SATH2 = writeRoot(1, F.PROD).out;
+  write(join(SATH2, "h2-prod.md"), "prod\n");
+  const PUSHURLH = g(F.CODE, "remote", "get-url", "origin");
+  gDo(F.CODE, "remote", "set-url", "--push", "origin", join(F.S, "origins/gone.git"));
+  r = land(1, ["push fails"], { merge: true });
+  is("(h2) a refused push does not close", r.rc, "3");
+  gDo(F.CODE, "remote", "set-url", "--push", "origin", PUSHURLH);
+  const RECH = threadFile(TID1, "landed-pushes");
+  const bytesBefore = cat(RECH);
+  ok("(h2) …leaving a record", bytesBefore.includes(F.CODE), `record: ${bytesBefore}`);
+  const codeTip = originTip("code");
+  const prodTip = originTip("prod");
+  prereqs(1);
+  chmodSync(dirname(RECH), 0o555);
+  r = land(1, ["push fails"], { merge: true, bare: true });
+  chmodSync(dirname(RECH), 0o755);
+  is("(h2) the retry refuses", r.rc, "3");
+  has("(h2) …because the record could not be written", r.out, "NOT CLOSED: could not record this round's pushes in");
+  is("(h2) …the code repo's trunk unmoved", originTip("code"), codeTip);
+  is("(h2) …the product repo's trunk unmoved", originTip("prod"), prodTip);
+  is("(h2) …nothing owed", isFile(threadFile(TID1, "deploy-owed")) ? cat(threadFile(TID1, "deploy-owed")) : "", "");
+  is("(h2) …and the record keeps its bytes", cat(RECH), bytesBefore);
+
+  // (l) A start point a new close cannot clear refuses that close before it
+  // lands anything: left in place, it would widen the new close's range to the
+  // last close's work.
+  fixture("c31l");
+  seedC31();
+  finishOtherR2();
+  r = land(1, ["first close"], { merge: true });
+  is("(l) the first close lands", r.rc, "0");
+  ok("(l) …leaving its push record", isFile(threadFile(TID1, "landed-pushes")), "no landed-pushes");
+  write(join(F.WT1, "second.txt"), "second\n");
+  prereqs(1);
+  const STATE_DIR = dirname(threadFile(TID1, "landed-pushes"));
+  chmodSync(STATE_DIR, 0o555);
+  r = land(1, ["second close"], { merge: true, bare: true });
+  chmodSync(STATE_DIR, 0o755);
+  is("(l) the next close refuses", r.rc, "3");
+  has(
+    "(l) …saying the record could not be cleared",
+    r.out,
+    `NOT CLOSED: could not clear ${threadFile(TID1, "landed-pushes")}`,
+  );
+  is("(l) …before landing anything", onMain(F.CODE, "second.txt"), "no");
+  r = land(1, ["second close"], { merge: true });
+  is("(l) once the folder is writable again, the retry closes", r.rc, "0");
+  p = landedProjects(F.WT1, {}, true);
+  is("(l) …and its record reads as this close's: nothing changed, never an older land.ts", `${p.rc}:${p.out}`, "0:");
+
+  // (n) A close an older land.ts landed has no record at all: said, never
+  // read as a close that changed nothing.
+  rmSync(threadFile(TID1, "landed-pushes"), { recursive: true, force: true });
+  p = landedProjects(F.WT1, {}, true);
+  is("(n) a close with no landed-pushes record exits 1", p.rc, "1");
+  has("(n) …saying an older land.ts landed it", p.out, "a land.ts older than its open step landed it");
+
+  // (n2) A hold an older land.ts landed (no record), released by this one:
+  // the release does not make a blank record, so its projects are said to be
+  // unknown rather than read as none.
+  fixture("c31n2");
+  seedRows("| R1 | first | — | planned | `specs/001-first/` |");
+  roadmap(join(F.WT1, RMP), "--set", "R1", "in-progress");
+  finishSpec("001-first", liveBlock(`home | workbench | command | test -f "$LIVE_CHECKS_TEST_SOURCES.ok"`));
+  r = liveLand(["ship R1"]);
+  is("(n2) the landing holds", r.rc, "4");
+  rmSync(threadFile(TID1, "landed-pushes"), { force: true });
+  deployed(originTip("code"));
+  write(`${liveStub()}.ok`, "ok\n");
+  r = liveLand(["--release"]);
+  is("(n2) the release passes", r.rc, "0");
+  p = landedProjects(F.WT1, {}, true);
+  is("(n2) --landed-projects exits 1", p.rc, "1");
+  has("(n2) …saying an older land.ts landed the close", p.out, "a land.ts older than its open step landed it");
+
+  // (e5) A refused push that another thread later lands on top of: the retry
+  // fast-forwards to that tip with nothing to push. The refused push is marked
+  // refused, so it never counts.
+  fixture("c31e5");
+  seedC31();
+  finishOtherR2();
+  const PUSHURL5 = g(F.CODE, "remote", "get-url", "origin");
+  gDo(F.CODE, "remote", "set-url", "--push", "origin", join(F.S, "origins/gone.git"));
+  r = land(1, ["push fails"], { merge: true });
+  is("(e5) a refused push does not close", r.rc, "3");
+  has("(e5) …and is marked refused", cat(threadFile(TID1, "landed-pushes")), "\nrefused\t");
+  gDo(F.CODE, "remote", "set-url", "--push", "origin", PUSHURL5);
+  const REFUSED = g(F.WT1, "rev-parse", "HEAD");
+  gDo(F.WT2, "checkout", "-q", "--detach", REFUSED);
+  write(join(F.WT2, "on-top.txt"), "another thread\n");
+  gDo(F.WT2, "add", "-A");
+  gDo(F.WT2, "commit", "-q", "-m", "another thread lands on top");
+  gDo(F.WT2, "push", "-q", "origin", "HEAD:main");
+  r = land(1, ["push fails"], { merge: true });
+  is("(e5) the retry closes", r.rc, "0");
+  p = landedProjects();
+  is("(e5) …and the refused push counts for nothing", `${p.rc}:${p.out}`, "0:");
+
+  // (n3) A close an older land.ts began and was killed in, after its push and
+  // before its landed line (its deploy still owed): the retry makes no record.
+  fixture("c31n3");
+  seedC31();
+  finishOtherR2();
+  r = land(1, ["killed"], { merge: true, extra: { LAND_TEST_KILL_AT: "pushed:1" } });
+  is("(n3) the close was killed after its push", r.rc, "1");
+  rmSync(threadFile(TID1, "landed-pushes"), { force: true });
+  r = land(1, ["killed"], { merge: true });
+  is("(n3) the retry closes", r.rc, "0");
+  p = landedProjects(F.WT1, {}, true);
+  is("(n3) --landed-projects exits 1", p.rc, "1");
+  has("(n3) …saying an older land.ts landed the close", p.out, "a land.ts older than its open step landed it");
+
+  // (h3) Killed while building the second repo's record line: nothing is
+  // written and nothing is pushed in either repo.
+  fixture("c31h3");
+  seedC31();
+  finishOtherR2();
+  const SATH3 = writeRoot(1, F.PROD).out;
+  write(join(SATH3, "h3-prod.md"), "prod\n");
+  const codeTip3 = originTip("code");
+  const prodTip3 = originTip("prod");
+  r = land(1, ["killed while recording"], { merge: true, extra: { LAND_TEST_KILL_AT: "record-built:2" } });
+  is("(h3) the close was killed building the record", r.rc, "1");
+  is("(h3) …the code repo's trunk unmoved", originTip("code"), codeTip3);
+  is("(h3) …the product repo's trunk unmoved", originTip("prod"), prodTip3);
+  is("(h3) …and the record as it was", cat(threadFile(TID1, "landed-pushes")), "");
+
+  // (e6) A refused attempt, then the same SHA pushed by the retry, killed
+  // right after; another thread then moves the trunk and the next retry has
+  // nothing to push. The refusal was that attempt's alone: the retry's push
+  // counts.
+  fixture("c31e6");
+  seedC31();
+  finishOtherR2();
+  const PUSHURL6 = g(F.CODE, "remote", "get-url", "origin");
+  gDo(F.CODE, "remote", "set-url", "--push", "origin", join(F.S, "origins/gone.git"));
+  r = land(1, ["push fails"], { merge: true });
+  is("(e6) a refused attempt does not close", r.rc, "3");
+  gDo(F.CODE, "remote", "set-url", "--push", "origin", PUSHURL6);
+  r = land(1, ["push fails"], { merge: true, extra: { LAND_TEST_KILL_AT: "pushed:1" } });
+  is("(e6) the retry pushes the same SHA and is killed after", r.rc, "1");
+  write(join(F.WT2, "two6.txt"), "two\n");
+  gDo(F.WT2, "add", "-A");
+  gDo(F.WT2, "commit", "-q", "-m", "another thread");
+  gDo(F.WT2, "fetch", "-q", "origin");
+  gDo(F.WT2, "rebase", "-q", "origin/main");
+  gDo(F.WT2, "push", "-q", "origin", "HEAD:main");
+  r = land(1, ["push fails"], { merge: true });
+  is("(e6) the next retry closes", r.rc, "0");
+  is("(e6) …and the pushed attempt's projects print", landedProjects().out, `${C31_OTHER}\n${C31_WAIT}`);
+
+  // (g) No thread.
+  const none = sh(process.execPath, ["--experimental-strip-types", LAND, "--landed-projects"], {
+    cwd: F.S,
+    env: envOf(1, F.S),
+  });
+  is("(g) --landed-projects with no thread exits 2", none.rc, "2");
 });

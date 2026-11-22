@@ -11,7 +11,7 @@
 
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { after, test } from "node:test";
@@ -50,6 +50,10 @@ writeFileSync(join(CLI, "package.json"), '{"scripts":{"qa:cmd":"node ."}}');
 const RENDER = join(TMP, "renderer");
 mkdirSync(RENDER);
 writeFileSync(join(RENDER, "package.json"), '{"scripts":{"qa:render":"node render.js"}}');
+// fixture: an email target
+const EMAIL = join(TMP, "mailer");
+mkdirSync(EMAIL);
+writeFileSync(join(EMAIL, "package.json"), '{"scripts":{"qa:email":"node qa-email.js"}}');
 
 // ── usage ──
 test("no repo → 2", () => {
@@ -158,6 +162,24 @@ test("render target → tree marker without a stamp", () => {
     ls().some((f) => f.startsWith("renderer-") && f.endsWith(`-${TREE}`)),
     ls().join(" "),
   );
+});
+
+// ── an email target is QA'd by the user's check of a delivered copy ──
+test("email target without the user's delivered check → 3, naming the phone check", () => {
+  const r = run(["--tree", TREE, EMAIL]);
+  assert.equal(r.rc, 3);
+  assert.match(r.out, /--delivered/);
+  assert.match(r.out, /on a phone/);
+  assert.ok(!ls().some((f) => f.startsWith("mailer-") && f.endsWith(`-${TREE}`)), ls().join(" "));
+});
+test("email target with an empty delivered check → 2", () =>
+  assert.equal(run(["--tree", TREE, "--delivered", " ", EMAIL]).rc, 2));
+test("email target with the user's delivered check → tree marker holding their words", () => {
+  const r = run(["--tree", TREE, "--delivered", "looks right on my phone", EMAIL]);
+  assert.equal(r.rc, 0, r.out);
+  const m = ls().find((f) => f.startsWith("mailer-") && f.endsWith(`-${TREE}`));
+  assert.ok(m, ls().join(" "));
+  assert.match(readFileSync(join(DONE, m), "utf8"), /looks right on my phone/);
 });
 
 // QA_DONE_DIR unset falls back to /tmp/qa-done — only the path is checked, nothing written

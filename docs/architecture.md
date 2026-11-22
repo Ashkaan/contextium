@@ -309,20 +309,22 @@ edge case costs one line to add to a spec and a rewrite to add after the impleme
 checks with different jobs — a reviewer attacking the design, and the spirit check, which reads only
 your verbatim ask and the behavior contract and asks whether the spec describes the thing you actually
 asked for. The second catches what the first structurally cannot: a spec that is internally excellent
-and solves the wrong problem. It skips non-material edits on its own, so fixing a typo in a spec
-doesn't spend a reviewer call.
+and solves the wrong problem. After the first review, up to three follow-up rounds re-read the
+edited spec and mark each finding resolved or open. It skips non-material edits on its own, so
+fixing a typo in a spec doesn't spend a reviewer call.
 
 `/implement-audit` is the code reviewer. Each review leaves a receipt naming the content it read —
 the changed files plus the entry points, instructions and test records the report declares — and a
 later call reuses it only while that content is unchanged; anything that moved since, a fix or a
 held nit included, is reviewed before the close will land it. Later rounds review only the fixes:
 re-reading everything each round makes the reviewer re-decide settled code and turns each round's own
-fixes into the next round's findings. Held nits are fixed inside a reviewed round, never after the
-last review. A finding closes when a round shown it finishes without raising it again. The loop
-stops when nothing changed since the last round, at a clean round, or at round ten, which the script
-enforces; round ten's fixes get one final review. A finding beside one the last review left open
-prints `REPEAT SPOT`, and the build rewrites that piece as a whole instead of stopping or patching it
-again.
+fixes into the next round's findings. Every must-fix or should-fix gets a short id, and each later
+round must judge every open one by that id — fixed, disproved or still open — so a finding closes only
+on a verdict, never by being left out. The loop is one first review and up to three repairs, each
+reviewed, the third repair's review being the one final review; the script enforces it. A finding
+judged open after two repairs in a row prints `STILL OPEN`, and the build changes its approach
+instead of patching again. Improvements the reviewer suggests come back as `IDEA:` lines and never
+hold the build; they are listed in the report and become one improvements row on the roadmap.
 
 Each reviewer records a one-line verdict where the artifact lives: `spec-audit:` into the spec's
 `plan.md`, and `implement-audit:` into the row's `report.md`, naming who reviewed and what is still

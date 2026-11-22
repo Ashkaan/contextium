@@ -53,6 +53,7 @@ test("a failed spec scan is work-remains", () => {
   mkdirSync(scripts, { recursive: true });
   symlinkSync(join(dirname(GEN), "../../../packages"), join(root, ".agents/packages"));
   copyFileSync(GEN, join(scripts, "project-remaining-work.ts"));
+  copyFileSync(join(dirname(GEN), "trunk.ts"), join(scripts, "trunk.ts"));
   writeFileSync(join(scripts, "spec-state.ts"), 'process.stderr.write("spec-state: boom\\n");\nprocess.exit(3);\n');
   const d = mkproj("2026-01-01_crashed-scanner", "active");
   const r = spawnSync(process.execPath, ["--no-warnings", "--experimental-strip-types", join(scripts, "project-remaining-work.ts"), d], {

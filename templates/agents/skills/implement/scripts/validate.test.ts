@@ -1740,6 +1740,186 @@ test("receipt: an interrupted attempt never inherits the earlier approval for ne
   assert.equal(check("r-intr").rc, 0, "restoring the reviewed bytes is the recovery");
 });
 
+test("the driver honors a receipt-selected merge delta and allowance even for a full-review request", () => {
+  const selected = git(REPO, "rev-parse", "HEAD^{tree}").trim();
+  const log = join(TMP, "selected-merge.json");
+  const checkLog = join(TMP, "selected-merge-checks.jsonl"),
+    checks = join(TMP, "selected-checks.ts");
+  writeFileSync(
+    checks,
+    `import{appendFileSync}from"node:fs";import{spawnSync}from"node:child_process";appendFileSync(${JSON.stringify(checkLog)},JSON.stringify(process.argv.slice(2))+"\\n");const r=spawnSync(process.execPath,["--experimental-strip-types",${JSON.stringify(join(SKILLS_DIR, "implement-audit/scripts/run-automated-checks.ts"))},...process.argv.slice(2)],{stdio:"inherit"});process.exitCode=r.status??1;\n`,
+  );
+  const audit = join(TMP, "select-merge.ts");
+  writeFileSync(
+    audit,
+    `process.stdout.write(process.argv[2] === "begin" ? "RECEIPT=review\\nREVIEW_BUCKET=merge\\nREVIEW_SINCE=${selected}\\n" : "APPROVED=1\\n");\n`,
+  );
+  const reviewer = join(TMP, "selected-merge-reviewer.ts");
+  writeFileSync(
+    reviewer,
+    `import {writeFileSync} from "node:fs";\nif (process.argv[2] === "--snapshot") process.stdout.write("current-tree\\n");\nelse {writeFileSync(${JSON.stringify(log)}, JSON.stringify({args:process.argv.slice(2),bucket:process.env.CODE_REVIEW_BUCKET})); process.stdout.write("NO_FINDINGS\\n");}\n`,
+  );
+  const r = runNode(
+    VALIDATE,
+    ["--repo", REPO, "--phase", "review", "--base", "HEAD", "--head", "HEAD", "--scope", "seed.txt"],
+    {
+      env: {
+        ...process.env,
+        VALIDATE_AUDIT_DEDUPE: audit,
+        VALIDATE_AUTOMATED_CHECKS: checks,
+        VALIDATE_CODE_REVIEW: reviewer,
+      },
+    },
+  );
+  assert.equal(r.status, 0, r.stderr);
+  assert.deepEqual(JSON.parse(readFileSync(log, "utf8")), { args: ["--since", selected], bucket: "merge" });
+  assert.ok(
+    readFileSync(checkLog, "utf8")
+      .split("\n")
+      .some((line) => line.includes(selected)),
+    "deterministic checks must also use the selected review delta",
+  );
+});
+
+test("a receipt-selected older merge delta must pass layers before any vendor call", () => {
+  const previousHead = git(REPO, "rev-parse", "HEAD").trim(),
+    oldSeed = readFileSync(join(REPO, "seed.txt"), "utf8");
+  const scripts = scriptsCopy("selected-merge-failure"),
+    seen = join(TMP, "selected-layer-files.json");
+  writeFileSync(
+    join(scripts, "layer-1.ts"),
+    `import{readFileSync,writeFileSync}from"node:fs";const files=readFileSync(0,"utf8").split("\\0").filter(Boolean);writeFileSync(${JSON.stringify(seen)},JSON.stringify(files));process.stdout.write("FAIL: deliberately invalid merge-only.ts\\n");process.exitCode=files.includes("merge-only.ts")?1:0;\n`,
+  );
+  const selected = git(REPO, "rev-parse", "HEAD^{tree}").trim();
+  writeFileSync(join(REPO, "merge-only.ts"), "export const value: number = 'invalid';\n");
+  git(REPO, "add", "merge-only.ts");
+  git(REPO, "commit", "-qm", "committed upstream delta");
+  const audit = join(TMP, "select-unvalidated.ts"),
+    called = join(TMP, "unvalidated-vendor-called");
+  writeFileSync(
+    audit,
+    `process.stdout.write(process.argv[2]==="begin"?"RECEIPT=review\\nREVIEW_BUCKET=merge\\nREVIEW_SINCE=${selected}\\n":"APPROVED=0\\n");\n`,
+  );
+  const reviewer = tsWrap(
+    writeExec(
+      join(TMP, "unvalidated-review.sh"),
+      `#!/bin/sh\n${SNAPSHOT_BLOCK}touch ${shq(called)}\necho NO_FINDINGS\n`,
+    ),
+  );
+  try {
+    const r = runNode(
+      join(scripts, "validate.ts"),
+      ["--repo", REPO, "--phase", "review", "--base", "HEAD", "--head", "HEAD"],
+      {
+        env: {
+          ...process.env,
+          VALIDATE_AUDIT_DEDUPE: audit,
+          VALIDATE_AUTOMATED_CHECKS: NOOP_TS,
+          VALIDATE_CODE_REVIEW: reviewer,
+        },
+      },
+    );
+    assert.equal(r.status, 1, r.stdout + r.stderr);
+    assert.ok(
+      JSON.parse(readFileSync(seen, "utf8")).includes("merge-only.ts"),
+      "layers must receive the committed file from the selected older delta",
+    );
+    assert.equal(existsSync(called), false, "failed validation of the selected merge delta must stop dispatch");
+    assert.doesNotMatch(
+      r.stderr,
+      /reviewer exited|Restore a vendor/,
+      "a validation failure must not be diagnosed as a provider outage",
+    );
+  } finally {
+    git(REPO, "reset", "--hard", previousHead);
+    writeFileSync(join(REPO, "seed.txt"), oldSeed);
+  }
+});
+
+test("an upstream-merge review's path list narrows the layers, the checks and the reviewer to this branch's files", () => {
+  const previousHead = git(REPO, "rev-parse", "HEAD").trim(),
+    oldSeed = readFileSync(join(REPO, "seed.txt"), "utf8");
+  const scripts = scriptsCopy("merge-path-list"),
+    seen = join(TMP, "merge-path-list-layers.json");
+  writeFileSync(
+    join(scripts, "layer-1.ts"),
+    `import{readFileSync,writeFileSync}from"node:fs";writeFileSync(${JSON.stringify(seen)},JSON.stringify(readFileSync(0,"utf8").split("\\0").filter(Boolean)));\n`,
+  );
+  const selected = git(REPO, "rev-parse", "HEAD^{tree}").trim();
+  // The trunk's file, invalid on purpose, and this branch's own file.
+  writeFileSync(join(REPO, "trunk-only.ts"), "export const value: number = 'invalid';\n");
+  writeFileSync(join(REPO, "mine.ts"), "export const mine = 1;\n");
+  git(REPO, "add", "trunk-only.ts", "mine.ts");
+  git(REPO, "commit", "-qm", "merged trunk plus own work");
+  const list = join(TMP, "merge-path-list.txt");
+  writeFileSync(list, "mine.ts\0");
+  const audit = join(TMP, "merge-path-list-audit.ts");
+  writeFileSync(
+    audit,
+    `process.stdout.write(process.argv[2]==="begin"?"RECEIPT=review\\nREVIEW_BUCKET=merge\\nREVIEW_SINCE=${selected}\\nREVIEW_PATHS_FILE=${list}\\n":"APPROVED=1\\n");\n`,
+  );
+  const checkLog = join(TMP, "merge-path-list-checks.jsonl"),
+    checks = join(TMP, "merge-path-list-checks.ts");
+  writeFileSync(
+    checks,
+    // Fails any run that is not handed the list: an unfiltered check would read
+    // the trunk's invalid file and stop this branch's review.
+    `import{appendFileSync}from"node:fs";appendFileSync(${JSON.stringify(checkLog)},JSON.stringify(process.argv.slice(2))+"\\n");process.exitCode=process.argv.includes("--paths-file")?0:1;\n`,
+  );
+  const reviewLog = join(TMP, "merge-path-list-review.json"),
+    reviewer = join(TMP, "merge-path-list-reviewer.ts");
+  writeFileSync(
+    reviewer,
+    `import {writeFileSync} from "node:fs";\nif (process.argv[2] === "--snapshot") process.stdout.write("current-tree\\n");\nelse {writeFileSync(${JSON.stringify(reviewLog)}, JSON.stringify({paths:process.env.CODE_REVIEW_PATHS_FILE ?? null})); process.stdout.write("NO_FINDINGS\\n");}\n`,
+  );
+  try {
+    const r = runNode(
+      join(scripts, "validate.ts"),
+      ["--repo", REPO, "--phase", "review", "--base", "HEAD", "--head", "HEAD"],
+      {
+        env: {
+          ...process.env,
+          VALIDATE_AUDIT_DEDUPE: audit,
+          VALIDATE_AUTOMATED_CHECKS: checks,
+          VALIDATE_CODE_REVIEW: reviewer,
+        },
+      },
+    );
+    assert.equal(r.status, 0, r.stdout + r.stderr);
+    assert.deepEqual(
+      JSON.parse(readFileSync(seen, "utf8")),
+      ["mine.ts"],
+      "the trunk's file is not this branch's to lint",
+    );
+    const selectedChecks = readFileSync(checkLog, "utf8")
+      .split("\n")
+      .filter((l) => l.includes(selected));
+    assert.equal(selectedChecks.length, 1, "the receipt-selected checks ran once");
+    assert.deepEqual(JSON.parse(selectedChecks[0]).slice(-2), ["--paths-file", list]);
+    assert.deepEqual(JSON.parse(readFileSync(reviewLog, "utf8")), { paths: list }, "the reviewer is handed the list");
+    // A follow-up called with the same tree the keeper selects (--since): its own
+    // layer run must wait for the list too. A layer 1 that fails on the trunk's
+    // file proves it was never handed that file.
+    writeFileSync(
+      join(scripts, "layer-1.ts"),
+      `import{readFileSync,writeFileSync}from"node:fs";const files=readFileSync(0,"utf8").split("\\0").filter(Boolean);writeFileSync(${JSON.stringify(seen)},JSON.stringify(files));process.exitCode=files.includes("trunk-only.ts")?1:0;\n`,
+    );
+    const followUp = runNode(join(scripts, "validate.ts"), ["--repo", REPO, "--phase", "review", "--since", selected], {
+      env: {
+        ...process.env,
+        VALIDATE_AUDIT_DEDUPE: audit,
+        VALIDATE_AUTOMATED_CHECKS: checks,
+        VALIDATE_CODE_REVIEW: reviewer,
+      },
+    });
+    assert.equal(followUp.status, 0, followUp.stdout + followUp.stderr);
+    assert.deepEqual(JSON.parse(readFileSync(seen, "utf8")), ["mine.ts"], "the follow-up's layers got the list too");
+  } finally {
+    git(REPO, "reset", "--hard", previousHead);
+    writeFileSync(join(REPO, "seed.txt"), oldSeed);
+  }
+});
+
 // ── Pieces: a full review in parts over one base and head ────────────────
 function pieceList(name: string, paths: string[]): string {
   const f = join(TMP, `vpiece-${name}`);
@@ -1845,4 +2025,53 @@ test("pieces: --slice is a caller error with --since, without --base/--head, or 
   assert.equal(qa.rc, 2, qa.all);
   assert.match(qa.err, /--slice applies only to --phase review/);
   assert.equal(calls(), 0);
+});
+
+// ── What does not hold the build reaches it, and the builder's evidence reaches the reviewer ──
+// audit-dedupe finish prints IDEA, NOTED, DISPROVED and STILL OPEN lines; the
+// build lists the first three in its report's § Not built, so the driver must
+// pass them on. `--rebuttal` hands the reviewer the builder's evidence.
+test("receipt: ideas and notes are relayed, and --rebuttal reaches the reviewer", () => {
+  resetRepo();
+  const log = join(TMP, "rcalls-ideas.log");
+  const json = JSON.stringify({
+    vendor: "grok/stub",
+    attempt: 1,
+    findings: [],
+    coverage: JSON.parse(ALL_CHECKED),
+    ideas: ["[idea] .agents/skills/demo/lib.ts: show the count too"],
+    noted: ["[must-fix] other/x.ts:3: another project's bug — witness: a → b"],
+  });
+  const stub = tsWrap(
+    writeExec(
+      join(TMP, "rreviewer-ideas.sh"),
+      `#!/bin/sh
+if [ "\${1:-}" = "--snapshot" ]; then
+  idx="$(mktemp)"; rm -f "$idx"
+  GIT_INDEX_FILE="$idx" git -C ${shq(RREPO)} read-tree HEAD
+  GIT_INDEX_FILE="$idx" git -C ${shq(RREPO)} add -A
+  GIT_INDEX_FILE="$idx" git -C ${shq(RREPO)} write-tree
+  rm -f "$idx"
+  exit 0
+fi
+printf 'rebuttal=%s\\n' "\${CODE_REVIEW_REBUTTAL_FILE:-none}" >>${shq(log)}
+if [ -n "\${CODE_REVIEW_RESULT_FILE:-}" ]; then printf '%s\\n' ${shq(json)} >"$CODE_REVIEW_RESULT_FILE"; fi
+printf 'NO_FINDINGS\\n'
+exit 0
+`,
+    ),
+  );
+  const first = full("r-ideas", stub);
+  assert.equal(first.rc, 0, first.all);
+  assert.match(first.out, /^IDEA: \[idea\] \.agents\/skills\/demo\/lib\.ts: show the count too$/m);
+  assert.match(first.out, /^NOTED: \[must-fix\] other\/x\.ts:3: another project's bug/m);
+  const snap = execFileSync("bash", [stub.replace(/\.ts$/, ".sh"), "--snapshot"], { encoding: "utf8" }).trim();
+  writeFileSync(join(RREPO, ".agents/skills/demo/lib.ts"), "export const lib = 3;\n");
+  const reb = join(TMP, "rebuttal-ideas.txt");
+  writeFileSync(reb, "Fabcdef: the fallback covers it\n");
+  const next = rv("r-ideas", stub, [
+    "--phase", "review", "--base", RBASE, "--since", snap, "--scope", ".agents/skills/demo", "--report", RREPORT, "--rebuttal", reb,
+  ]);
+  assert.equal(next.rc, 0, next.all);
+  assert.match(readFileSync(log, "utf8"), new RegExp(`^rebuttal=${reb.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`, "m"));
 });

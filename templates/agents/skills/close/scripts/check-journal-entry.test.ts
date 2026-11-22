@@ -1191,10 +1191,11 @@ function f11(name: string, body: string) {
   return check([path]);
 }
 
-// ─── F12: nothing under Blocked waits on the user ───────────────────────
-// A close means the work is done: a step for the user's hands keeps the
-// session open, so no `- act:` rides a close, and a
-// `- wait:` is a check set for a future date or it is not a wait.
+// ─── F12: nothing under Blocked is left undated ───────────────────────
+// A close carries nothing meant for this session, and a step is set for a
+// later one either by a date or by a row. So no undated `- act:` rides a
+// close, and a `- wait:` — the user's or anyone's — is a check set for a date
+// on or after the entry's, or it is not a wait.
 
 function f12(name: string, body: string, date = "2026-12-01", time = "12:00") {
   mkdirSync(join(TMP, name), { recursive: true });
@@ -1206,10 +1207,10 @@ function f12(name: string, body: string, date = "2026-12-01", time = "12:00") {
   return check([path]);
 }
 
-test("f12: an act for the user blocks, and says the session stays open", () => {
+test("f12: an act for the user blocks, and says to do it together or set it for later", () => {
   const r = f12("f12-act", "**Blocked:**\n- act: send the drafted reply to the client");
   assert.notEqual(r.rc, 0);
-  assert.ok(r.out.includes("F12") && r.out.includes("stays open until they have done it"), r.out);
+  assert.ok(r.out.includes("F12") && r.out.includes("set it for a later session"), r.out);
 });
 
 test("f12: a wait needs a date on or after the entry's", () => {
@@ -1219,7 +1220,18 @@ test("f12: a wait needs a date on or after the entry's", () => {
     ["f12-code-span", "- wait: see `2099-01-01`", "no date"],
     ["f12-not-a-day", "- wait: 2099-99-99 x", "no date"],
     ["f12-long-digits", "- wait: 2099-01-010 x", "no date"],
-    ["f12-names-user", "- wait: 2099-01-01 the user sends the drafted reply", "waits on them"],
+    ["f12-names-user-undated", "- wait: the user sends the drafted reply", "leads the bullet"],
+    ["f12-names-user-past", "- wait: 2026-10-01 the user sends the drafted reply", "leads the bullet"],
+    [
+      "f12-names-user-past-lead-future-later",
+      "- wait: 2026-10-01 the user books the 2099-01-01 appointment",
+      "leads the bullet",
+    ],
+    [
+      "f12-names-user-date-not-leading",
+      "- wait: the user sends the form; the vendor replies 2099-12-01",
+      "leads the bullet",
+    ],
   ] as const) {
     const r = f12(name, `**Blocked:**\n${line}`);
     assert.notEqual(r.rc, 0, name);
@@ -1231,6 +1243,7 @@ test("f12: a wait dated the entry's own day, or later, passes", () => {
   for (const [name, line] of [
     ["f12-same-day", "- wait: 2026-12-01 the vendor's quote"],
     ["f12-later", "- wait: the vendor's quote, due 2027-01-15"],
+    ["f12-names-user-dated", "- wait: 2026-12-20 the user reviews the quote with the agent"],
   ] as const) {
     const r = f12(name, `**Blocked:**\n${line}`);
     assert.equal(r.rc, 0, `${name}: ${r.out}`);
@@ -1259,6 +1272,44 @@ test("f12: the Next and F11 messages no longer offer an act line", () => {
   assert.ok(next.out.includes("F6") && !next.out.includes("- act:") && !next.out.includes("**Blocked:**"), next.out);
   const parked = f12("f12-parked", "**Findings:**\n- waiting on the user for the colour palette");
   assert.ok(parked.out.includes("F11") && !parked.out.includes("- act:"), parked.out);
+});
+
+test("f9: a Blocked wait worded as waiting on the user is a question, whatever its date", () => {
+  for (const [name, line] of [
+    ["f9-dated-parked", "- wait: 2026-12-20 waiting on the user to bring the signed quote"],
+    ["f9-dated-decision", "- wait: 2026-12-20 waiting on the user for a decision on the vendor"],
+    ["f9-insurer-decision", "- wait: 2026-12-20 the user sends the form. The insurer's decision is final."],
+    ["f9-your-decision", "- wait: 2026-12-20 your decision is still required"],
+    ["f9-joint-approval", "- wait: 2026-12-20 the user's and the vendor's approval is still required"],
+  ] as const) {
+    const r = f12(name, `**Blocked:**\n${line}`);
+    assert.notEqual(r.rc, 0, name);
+    assert.ok(r.out.includes("F9") && r.out.includes("open decision"), `${name}: ${r.out}`);
+  }
+});
+
+test("f11: a dated body line saying what the user does passes; every line worded as waiting on the user holds", () => {
+  const ok = f12(
+    "f11-dated",
+    "**Findings:**\n- 2026-12-20: the user reviews the quote\n- 2026-12-20: the user calls the clinic. The insurer's decision is final.",
+  );
+  assert.equal(ok.rc, 0, ok.out);
+  for (const [name, line] of [
+    ["f11-dated-wait", "- 2026-12-20: waiting on the user, who reviews the quote"],
+    ["f11-dated-decision", "- 2026-12-20: waiting on the user for a decision on the vendor"],
+    ["f11-date-mid-sentence", "- waiting on the user to call the clinic on 2026-12-20"],
+    ["f11-undated", "- waiting on the user for the signed quote"],
+    ["f11-past", "- 2026-11-01: waiting on the user, who reviews the quote"],
+    ["f11-dated-ruling", "- 2026-12-20 pending your approval of the copy"],
+    ["f11-mixed", "- waiting on the user 2026-12-20 for the quote; waiting on the user to send the form"],
+    ["f11-ruling-next-sentence", "- 2026-12-20: waiting on the user. Your approval is still required"],
+    ["f11-vendor-date", "- waiting on the user to send the form; waiting on the vendor until 2026-12-20"],
+    ["f11-date-not-leading", "- waiting on the user: 2026-12-20 they review the quote"],
+  ] as const) {
+    const r = f12(name, `**Findings:**\n${line}`);
+    assert.notEqual(r.rc, 0, name);
+    assert.ok(r.out.includes("F11"), `${name}: ${r.out}`);
+  }
 });
 
 test("f11: a rejected: line parked on the user blocks", () => {

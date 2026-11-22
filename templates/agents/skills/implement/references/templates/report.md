@@ -14,10 +14,13 @@ spec-status: complete
 
 ## Review coverage
 
-Written before the audit (phase-4.7); the review receipt binds these exact
+Written before QA (phase-4.6); the review receipt binds these exact
 bytes, so prose elsewhere in this report is free and an edit between the two
 markers needs a new review. Paths are repo-relative; a dependency in another
-repo adds `"repo": "<absolute worktree path>"`. Each claim names exactly one
+repo adds `"repo": "<absolute worktree path>"`, and so does a claim's
+`negativeTest` whose recorded runs live in another repo. A row that changes
+two repos gives each its own declaration (`.agents/skills/implement/SKILL.md` § "A row
+whose code is in another repo"). Each claim names exactly one
 of `negativeTest` (the input that makes it fail, the failure expected, and the
 recorded runs that show it failing and then passing) or `inapplicable` (why
 no such test exists). A dependency with `"required": false` may be left
@@ -89,3 +92,7 @@ unchecked; every other item must be checked for the receipt to approve.
 | Test File | Test Cases |
 |---|---|
 | `apps/<slug>/tests/foo.test.ts` | {boundary-cases-covered list} |
+
+## Not built
+
+{One line per IDEA, NOTED and DISPROVED line the review driver printed, as `.agents/skills/implement/SKILL.md` § Not built, and the improvements row says — or "None."}

@@ -20,8 +20,10 @@
 //     declaration's own bytes. An unchanged caller or instruction that changes
 //     makes the receipt stale even when the implementation did not move;
 //   - the result: the answering reviewer, the writers it excluded, the
-//     unresolved must-fix/should-fix lines, the held nits, and the reviewer's
-//     checked/unchecked status for each declared item.
+//     unresolved must-fix/should-fix lines, cosmetic suggestions, and the reviewer's
+//     checked/unchecked status for each declared item. A follow-up round
+//     keeps the earlier review's check of an item it left unchecked when the
+//     declaration and every path the item names are as that review read them.
 //
 // A review attempt is written `incomplete` BEFORE dispatch, so an interrupted or
 // failed attempt never inherits the earlier success; only the earlier complete
@@ -64,7 +66,12 @@
 // branch base, scope, writer set or declaration starts a new set. Every piece
 // spends a round from the same allowance (code-review.ts).
 //
-// State: ~/.cache/workbench/threads/<owner>/review.json, written atomically.
+// State: ~/.cache/workbench/threads/<owner>/review.json, one entry per repo,
+// written atomically under an exclusive lock on review.json.lock beside it:
+// each command re-reads the record under the lock and replaces only its own
+// repo's entry, so two commands for two repos at once keep both.
+// Readers take no lock. A write that cannot take the lock within 30 s, or finds
+// the record unreadable, refuses (exit 1) and writes nothing.
 // Counters: <owner dir>/review-rounds[-qa]/<loop key>[.final|.full], or under
 // CODE_REVIEW_ROUND_STATE_DIR[-qa] when that is set (the suites set it).
 //
@@ -111,22 +118,41 @@
 //   audit-dedupe.ts check --owner <id> <worktree>...
 //       the close's reader: exit 0 when every worktree that needs a review has
 //       a valid receipt, else 1 with one `review: <worktree>: <why>` line each.
+// Test-only environment (the suite sets these; nothing else should):
+//   AUDIT_DEDUPE_LOCK_WAIT_SECONDS=<s>   the record lock's wait, in place of 30
+//   AUDIT_DEDUPE_TEST_WRITE_BARRIER=<p>  before the first record write, create
+//                                        <p>.waiting and wait (at most 30 s) for <p>
 // Exit: 0 ok · 1 refused (reasons on stderr) · 2 usage or caller error.
 
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, writeFileSync, lstatSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, isAbsolute, join, resolve } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { exit, runToExit } from "../../../packages/cli-exit/cli-exit.ts";
+import { withLock } from "../../../packages/file-lock/file-lock.ts";
+import { authorizedBy } from "../../review/authorized-by.ts";
 import { inT3ReviewContext, reviewSessionId } from "../../close/scripts/t3-db.ts";
 import { digest } from "../../close/scripts/verify.ts";
 
-export type Bucket = "build" | "qa";
+export type Bucket = "build" | "qa" | "merge";
 export type Mode = "range" | "since" | "final";
 
 const sha256 = (s: string | Buffer): string => createHash("sha256").update(s).digest("hex");
+
+/** Whether a path is known not to exist: lstat says so (ENOENT, ENOTDIR). A read
+ *  that fails any other way (EACCES on its folder) proves nothing, and a path
+ *  that may still be there is never let go unreviewed. */
+function confirmedGone(p: string): boolean {
+  try {
+    lstatSync(p);
+    return false;
+  } catch (e) {
+    const code = (e as NodeJS.ErrnoException).code;
+    return code === "ENOENT" || code === "ENOTDIR";
+  }
+}
 
 // ── Identity ────────────────────────────────────────────────────────────────
 
@@ -177,10 +203,17 @@ export function canonicalRepo(repo: string): string {
 }
 
 /** One fix loop's counter key: the owner AND the repo. Empty without an owner. */
-export function loopKey(repo: string): string {
+export function loopKey(repo: string, bucket: Bucket = "build"): string {
   const sid = reviewSid();
   if (sid === "") return "";
-  return `${sid}-${sha256(canonicalRepo(repo)).slice(0, 12)}`;
+  const key = `${sid}-${sha256(canonicalRepo(repo)).slice(0, 12)}`;
+  if (bucket !== "merge") return key;
+  const state = readState(reviewOwner());
+  if ("corrupt" in state) return "";
+  const rs = state.state.repos[canonicalRepo(repo)];
+  return rs?.integration && rs.receipt?.bucket === "merge" && rs.receipt.status === "incomplete"
+    ? `${key}-${rs.integration.id}`
+    : "";
 }
 
 const safeName = (s: string): string => s.replace(/[^A-Za-z0-9_.-]/g, "_");
@@ -202,6 +235,7 @@ export interface ItemResult {
   id: string;
   status: "checked" | "unchecked";
   evidence: string[];
+  carriedFrom?: string;
 }
 export interface Receipt {
   status: "incomplete" | "complete";
@@ -209,7 +243,7 @@ export interface Receipt {
   bucket: Bucket;
   tree: string;
   since?: string;
-  /** The commit a full review's committed range ended at. */
+  /** HEAD at review time (or the explicitly requested full-range head). */
   head?: string;
   base: string;
   scope: string;
@@ -217,6 +251,9 @@ export interface Receipt {
   finishedAt?: string;
   block: string | null;
   covered: Record<string, string>;
+  /** Issued trees of declared companion repos, for merge provenance. */
+  companionTrees?: Record<string, string>;
+  companionHeads?: Record<string, string>;
   requiredItems: string[];
   /** Each declared path's covered key and the item the reviewer reports it under. */
   itemKeys?: Record<string, string>;
@@ -225,10 +262,22 @@ export interface Receipt {
    * keeps one item per path: claims that share an evidence file each keep it.
    */
   itemPaths?: Record<string, string[]>;
+  /** Items whose review checks a recorded run rather than the current code. */
+  evidenceItems?: string[];
   authors: string;
   reviewer?: string;
   items?: ItemResult[];
   blocking?: string[];
+  /** Improvements the reviewers suggested that the spec did not ask for, kept across the loop (sortFindings). */
+  ideas?: string[];
+  /** Findings set aside as outside this build's change, kept across the loop (sortFindings). */
+  noted?: string[];
+  /** Blockers a reviewer judged not a bug after the builder's evidence: "<id> <finding> — <evidence>". */
+  disproved?: string[];
+  /** How many rounds in a row each open blocker was judged still open, by findingId. */
+  stillOpen?: Record<string, number>;
+  /** Before 2026-11-22: a fix round's non-blocking findings; read as ideas. */
+  deferred?: string[];
   nits?: string[];
   gaps?: string[];
   approved?: boolean;
@@ -266,6 +315,10 @@ export interface RepoState {
   spendInit: Partial<Record<Bucket, boolean>>;
   receipt?: Receipt;
   last?: Receipt;
+  /** Last clean approval, retained through incomplete attempts and integration fixes. */
+  approvedReceipt?: Receipt;
+  /** One bounded fix loop for a real upstream merge after approval. */
+  integration?: { id: string; anchor: string; merge: string; complete: boolean };
   /** The completed pieces of the set being reviewed; absent reads as no set. */
   slices?: Receipt[];
   sliceSet?: SliceSet;
@@ -277,6 +330,29 @@ export interface State {
 }
 type Read = { state: State } | { corrupt: string };
 
+// ── A declared record is bound by presence, not bytes ──
+// A claim's evidence is a recorded test run. Rerunning the same tests on the
+// same code rewrites it, and until this its new bytes made the receipt stale
+// and sent every claim it backs back to the reviewer, round after round
+// re-reading rerun logs of code nobody had touched. The code those
+// runs exercise is covered by its own bytes, so a change to it still reopens
+// the review; the record only has to exist.
+export const RECORD_PRESENT = "record";
+function recordKey(key: string): boolean {
+  if (key.startsWith("contract:")) return false;
+  const sep = key.indexOf("::");
+  return isRecord(sep < 0 ? key : key.slice(sep + 2));
+}
+/** A covered map with every present record's value replaced by RECORD_PRESENT. */
+export function boundByPresence(covered: Record<string, string>): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(covered)) out[k] = v !== "absent" && recordKey(k) ? RECORD_PRESENT : v;
+  return out;
+}
+function presenceReceipt(r: Receipt | undefined): void {
+  if (r?.covered) r.covered = boundByPresence(r.covered);
+}
+
 export function readState(owner: string): Read {
   const f = statePath(owner);
   if (!existsSync(f)) return { state: { version: 1, owner, repos: {} } };
@@ -284,13 +360,69 @@ export function readState(owner: string): Read {
     const s = JSON.parse(readFileSync(f, "utf8")) as State;
     if (s?.version !== 1 || typeof s.repos !== "object" || s.repos === null)
       return { corrupt: `${f} is not version 1` };
+    // Receipts written before 2026-11-20 hold a record's bytes; read them the
+    // way coverageNow writes now, so none goes stale on the change alone.
+    for (const rs of Object.values(s.repos)) {
+      for (const r of [rs.receipt, rs.last, rs.approvedReceipt, ...(rs.slices ?? [])]) presenceReceipt(r);
+    }
     return { state: s };
   } catch (e) {
     return { corrupt: `${f} could not be read: ${(e as Error).message}` };
   }
 }
-function writeState(owner: string, s: State): void {
-  writeAtomic(statePath(owner), `${JSON.stringify(s, null, 1)}\n`);
+let barrierPassed = false;
+/**
+ * Test-only (AUDIT_DEDUPE_TEST_WRITE_BARRIER=<path>): before this command's
+ * first record write, create `<path>.waiting` and wait, at most 30 s, until
+ * `<path>` exists — so the suite can run another writer in between.
+ */
+function testWriteBarrier(): void {
+  const b = process.env.AUDIT_DEDUPE_TEST_WRITE_BARRIER;
+  if (!b || barrierPassed) return;
+  barrierPassed = true;
+  writeFileSync(`${b}.waiting`, "");
+  const until = Date.now() + 30_000;
+  const cell = new Int32Array(new SharedArrayBuffer(4));
+  while (!existsSync(b) && Date.now() < until) Atomics.wait(cell, 0, 0, 20);
+}
+/** How long a write waits for the record's lock: AUDIT_DEDUPE_LOCK_WAIT_SECONDS (test-only), else 30 s. */
+function lockWaitSeconds(): number {
+  const v = Number(process.env.AUDIT_DEDUPE_LOCK_WAIT_SECONDS);
+  return Number.isFinite(v) && v > 0 ? v : 30;
+}
+/**
+ * Record one repo's entry. Two commands for different repos under one owner
+ * may run at once (a workbench review beside a product review), and each read
+ * the record when it started; writing back the whole copy it read would erase
+ * the other's entry. So under an exclusive lock
+ * beside the record, re-read it as it stands now, replace only this repo's
+ * entry, and write it atomically. Readers take no lock: the rename means they
+ * always see one whole version. Throws, writing nothing, when the lock cannot
+ * be taken or the record re-read is unreadable.
+ */
+function writeRepo(owner: string, repo: string, rs: RepoState): void {
+  testWriteBarrier();
+  // The lock file is opened inside the owner's folder, which opening does not create.
+  mkdirSync(ownerDir(owner), { recursive: true });
+  withLock(
+    `${statePath(owner)}.lock`,
+    () => {
+      const now = readState(owner);
+      if ("corrupt" in now) throw new Error(`${now.corrupt} — refusing rather than reading it as no review`);
+      now.state.repos[repo] = rs;
+      writeAtomic(statePath(owner), `${JSON.stringify(now.state, null, 1)}\n`);
+    },
+    { waitSeconds: lockWaitSeconds() },
+  );
+}
+/** mark and begin: a write that cannot be made safely ends the command. */
+function recordOrExit(owner: string, repo: string, rs: RepoState): void {
+  try {
+    writeRepo(owner, repo, rs);
+  } catch (e) {
+    warn(`implement-audit: could not record the review: ${(e as Error).message}`);
+    exit(1);
+  }
 }
 
 // ── Spending ────────────────────────────────────────────────────────────────
@@ -299,12 +431,17 @@ export interface Spend {
   rounds: number;
   final: boolean;
   full: boolean;
+  /** Pieces of the first review after the first: the set counts as one review. */
+  pieces?: number;
 }
 export function roundDirs(bucket: Bucket): { dir: string; legacy: string | null } {
-  const sfx = bucket === "qa" ? "-qa" : "";
+  const sfx = bucket === "build" ? "" : `-${bucket}`;
   const o = process.env.CODE_REVIEW_ROUND_STATE_DIR;
   if (o) return { dir: `${o}${sfx}`, legacy: null };
-  return { dir: join(ownerDir(reviewOwner()), `review-rounds${sfx}`), legacy: `/tmp/code-review-rounds${sfx}` };
+  return {
+    dir: join(ownerDir(reviewOwner()), `review-rounds${sfx}`),
+    legacy: bucket === "merge" ? null : `/tmp/code-review-rounds${sfx}`,
+  };
 }
 function readCount(p: string): number | "absent" | "corrupt" {
   if (!existsSync(p)) return "absent";
@@ -329,8 +466,8 @@ function spendRegistered(repo: string, bucket: Bucket): boolean | "corrupt" {
  * read, or is missing after the audit registered one — spent, never zero.
  */
 export function readSpend(repo: string, bucket: Bucket): Spend | { unknown: string } | null {
-  const key = loopKey(repo);
-  if (key === "") return null;
+  const key = loopKey(repo, bucket);
+  if (key === "") return bucket === "merge" ? { unknown: "no verified upstream integration attempt is open" } : null;
   const { dir, legacy } = roundDirs(bucket);
   const d = readCount(`${dir}/${key}`);
   const l = legacy ? readCount(`${legacy}/${key}`) : "absent";
@@ -338,6 +475,9 @@ export function readSpend(repo: string, bucket: Bucket): Spend | { unknown: stri
     return { unknown: `the ${bucket} round counter for this audit is unreadable` };
   const final = existsSync(`${dir}/${key}.final`) || (legacy !== null && existsSync(`${legacy}/${key}.final`));
   const full = existsSync(`${dir}/${key}.full`);
+  const p = readCount(`${dir}/${key}.pieces`);
+  if (p === "corrupt") return { unknown: `the ${bucket} piece counter for this audit is unreadable` };
+  const pieces = p === "absent" ? 0 : p;
   if (d === "absent") {
     // Once the audit registered its durable counter, a missing one is spent:
     // the /tmp counter it was migrated from can be older than what was spent
@@ -345,19 +485,20 @@ export function readSpend(repo: string, bucket: Bucket): Spend | { unknown: stri
     const reg = spendRegistered(repo, bucket);
     if (reg === "corrupt") return { unknown: "the review state for this audit is unreadable" };
     if (reg) return { unknown: `the ${bucket} round counter is missing although this audit registered one` };
-    if (l === "absent") return { rounds: 0, final, full };
+    if (l === "absent") return { rounds: 0, final, full, pieces };
   }
-  return { rounds: Math.max(d === "absent" ? 0 : d, l === "absent" ? 0 : l), final, full };
+  return { rounds: Math.max(d === "absent" ? 0 : d, l === "absent" ? 0 : l), final, full, pieces };
 }
 
 export function writeSpend(repo: string, bucket: Bucket, s: Spend): void {
-  const key = loopKey(repo);
+  const key = loopKey(repo, bucket);
   if (key === "") return;
   const { dir } = roundDirs(bucket);
   writeAtomic(`${dir}/${key}`, `${s.rounds}\n`);
   if (s.final && !existsSync(`${dir}/${key}.final`))
     writeAtomic(`${dir}/${key}.final`, `${new Date().toISOString()}\n`);
   if (s.full && !existsSync(`${dir}/${key}.full`)) writeAtomic(`${dir}/${key}.full`, `${new Date().toISOString()}\n`);
+  if (s.pieces) writeAtomic(`${dir}/${key}.pieces`, `${s.pieces}\n`);
 }
 
 // ── The coverage declaration ────────────────────────────────────────────────
@@ -373,7 +514,7 @@ export interface Declaration {
   claims: {
     id: string;
     claim: string;
-    negativeTest?: { trigger: string; expected: string; evidence: string[] };
+    negativeTest?: { trigger: string; expected: string; evidence: string[]; repo?: string };
     inapplicable?: string;
   }[];
 }
@@ -486,7 +627,7 @@ export function parseDeclaration(report: string): { decl: Declaration; hash: str
     if (c.negativeTest !== undefined) {
       const t = c.negativeTest;
       if (!isObj(t)) throw new Error(`claim ${c.id}: negativeTest is not an object`);
-      exactKeys(t, ["trigger", "expected", "evidence"], [], `claim ${c.id}'s negativeTest`);
+      exactKeys(t, ["trigger", "expected", "evidence"], ["repo"], `claim ${c.id}'s negativeTest`);
       if (!str(t.trigger) || !str(t.expected)) throw new Error(`claim ${c.id}: trigger and expected must be named`);
       if (
         !Array.isArray(t.evidence) ||
@@ -494,9 +635,18 @@ export function parseDeclaration(report: string): { decl: Declaration; hash: str
         !t.evidence.every((p) => typeof p === "string" && relPath(p))
       )
         throw new Error(`claim ${c.id}: evidence must list repo-relative paths`);
+      if (t.repo !== undefined && (typeof t.repo !== "string" || !isAbsolute(t.repo)))
+        throw new Error(`claim ${c.id}: repo must be an absolute path`);
     }
   }
   return { decl: v as unknown as Declaration, hash: sha256(Buffer.from(inner, "utf8")) };
+}
+
+/** A claim's recorded runs as covered keys: "<repo>::<path>" when they live in another repo. */
+function evidenceKeys(c: Declaration["claims"][number]): string[] {
+  const t = c.negativeTest;
+  if (!t) return [];
+  return t.repo ? t.evidence.map((p) => `${canonicalRepo(t.repo as string)}::${p}`) : [...t.evidence];
 }
 
 /** Each declared path's covered key, mapped to the item that names it. */
@@ -505,7 +655,7 @@ export function declaredKeys(decl: Declaration | null): Record<string, string> {
   if (!decl) return keys;
   for (const e of decl.entryPoints) keys[e.path] = e.id;
   for (const d of decl.dependencies) keys[d.repo ? `${canonicalRepo(d.repo)}::${d.path}` : d.path] = d.id;
-  for (const c of decl.claims) for (const p of c.negativeTest?.evidence ?? []) keys[p] = c.id;
+  for (const c of decl.claims) for (const k of evidenceKeys(c)) keys[k] = c.id;
   return keys;
 }
 
@@ -515,7 +665,7 @@ export function declaredItemPaths(decl: Declaration | null): Record<string, stri
   if (!decl) return paths;
   for (const e of decl.entryPoints) paths[e.id] = [e.path];
   for (const d of decl.dependencies) paths[d.id] = [d.repo ? `${canonicalRepo(d.repo)}::${d.path}` : d.path];
-  for (const c of decl.claims) paths[c.id] = [...(c.negativeTest?.evidence ?? [])];
+  for (const c of decl.claims) paths[c.id] = evidenceKeys(c);
   return paths;
 }
 
@@ -537,7 +687,7 @@ export function declarationItems(decl: Declaration | null): { id: string; requir
       id: c.id,
       required: true,
       text: c.negativeTest
-        ? `claim: ${c.claim}; negative test: ${c.negativeTest.trigger} must produce ${c.negativeTest.expected}; observed in ${c.negativeTest.evidence.join(", ")} — read the evidence and say whether it shows that failure and the restored pass`
+        ? `claim: ${c.claim}; negative test: ${c.negativeTest.trigger} must produce ${c.negativeTest.expected}; observed in ${c.negativeTest.evidence.map((p) => (c.negativeTest?.repo ? `${c.negativeTest.repo}::${p}` : p)).join(", ")} — read the evidence and say whether it shows that failure and the restored pass`
         : `claim: ${c.claim}; no negative test, because ${c.inapplicable} — judge whether that is true`,
     })),
   ];
@@ -545,9 +695,24 @@ export function declarationItems(decl: Declaration | null): { id: string; requir
 
 // ── What a receipt covers ───────────────────────────────────────────────────
 
-/** Records /close and planning write: never a reason to review again unless declared. */
+/** A folder a project's scripts run from or read: what is under it is source,
+ *  whatever the extension — a fixture's .md or .json included. */
+const PROJECT_SOURCE_DIR = /^projects\/(?:[^/]+\/)*(?:scripts|tests?|fixtures|src|stubs|harness|prompts)\//;
+/** The planning assets a project keeps: notes, captures, page images and mockups. */
+const PLANNING_ASSET = /\.(?:md|png|jpe?g|gif|webp|svg|html?|txt|csv|log)$/i;
+/** Data a spec saved as evidence of a check. */
+const SPEC_EVIDENCE = /\/(?:specs|evidence)\/.*\.json$/i;
+
+/** Records /close and planning write: never a reason to review again unless
+ *  declared. Under projects/ only the planning assets listed above, and a
+ *  spec's saved JSON evidence, are records, and never under a source folder;
+ *  anything else there — a script, a PowerShell file a device manager runs, a config —
+ *  is source (a spec's mockup.html and an earlier row's evidence PNG and JSON
+ *  read as source would hold a planning-only close). */
 export function isRecord(p: string): boolean {
-  return /^(?:journal|knowledge|decisions)\//.test(p) || /^projects\/.*\.md$/.test(p);
+  if (/^(?:journal|knowledge|decisions)\//.test(p)) return true;
+  if (!/^projects\//.test(p) || PROJECT_SOURCE_DIR.test(p)) return false;
+  return PLANNING_ASSET.test(p) || SPEC_EVIDENCE.test(p);
 }
 
 /**
@@ -561,9 +726,9 @@ export function needsReview(p: string, workbench: boolean): boolean {
   // The installer links AGENTS.md to .agents/AGENTS.md, so a change edits
   // the installed file: both spellings are the working agreement.
   if (p === "AGENTS.md" || p === ".agents/AGENTS.md") return true;
-  // A project's own scripts run in layer-2 like an app's code, so they are
-  // reviewed like it; the project's records stay records.
-  if (/^projects\//.test(p) && /\.(?:ts|tsx|mts|cts|js|mjs|cjs|sh|py)$/.test(p)) return true;
+  // A project's own scripts run in layer-2 like an app's code, so they and the
+  // inputs they read are reviewed like it; the project's records stay records.
+  if (/^projects\//.test(p)) return !isRecord(p);
   if (/^(?:apps|integrations|packages|\.agents)\//.test(p) && !p.endsWith(".md")) return true;
   return /^\.agents\/(?:skills|agents)\//.test(p) && p.endsWith(".md");
 }
@@ -586,15 +751,132 @@ function gitLine(repo: string, args: string[]): string | null {
   return r.status === 0 ? (r.stdout ?? "").trim() : null;
 }
 
-/** Where this branch left its trunk: the merge-base with origin's trunk, else the declared base, else HEAD. */
+/** A real trunk merge that imports code beyond the approved history. */
+function integrationMerge(repo: string, approved: Receipt, report: string | null, companion = false): string | null {
+  const covered = new Set(
+    Object.keys(approved.covered).map((key) =>
+      key.startsWith(`contract:${repo}/`) ? key.slice(`contract:${repo}/`.length) : key,
+    ),
+  );
+  const reportPath = report?.startsWith(`${repo}/`) ? report.slice(repo.length + 1) : null;
+  const trunk = ["refs/remotes/origin/HEAD", "refs/remotes/origin/main", "refs/remotes/origin/master"].find(
+    (ref) => gitLine(repo, ["rev-parse", "--verify", "-q", ref]) !== null,
+  );
+  if (!trunk) return null;
+  const after = new Date(Date.parse(approved.startedAt) - 1000).toISOString();
+  const merges = gitLine(repo, ["rev-list", "--first-parent", "--min-parents=2", `--since=${after}`, "HEAD"]);
+  if (merges === null) throw new Error("could not read upstream merge history");
+  for (const merge of merges.split("\n").filter(Boolean)) {
+    const parents = gitLine(repo, ["show", "-s", "--format=%P", merge])?.split(" ") ?? [];
+    const first = parents[0];
+    if (!first || parents.length !== 2) continue;
+    const incoming = parents[1] as string;
+    if (gitLine(repo, ["merge-base", "--is-ancestor", incoming, trunk]) === null) continue;
+    if (gitLine(repo, ["merge-base", "--is-ancestor", incoming, first]) !== null) continue;
+    if (approved.head) {
+      if (gitLine(repo, ["merge-base", "--is-ancestor", approved.head, first]) === null) continue;
+      if (gitLine(repo, ["merge-base", "--is-ancestor", incoming, approved.head]) !== null) continue;
+    } else {
+      const committed = Number(gitLine(repo, ["show", "-s", "--format=%ct", merge]));
+      if (committed < Math.floor(Date.parse(approved.finishedAt ?? approved.startedAt) / 1000)) continue;
+    }
+    // New receipts prove history with HEAD ancestry above. Local fixes made
+    // since approval stay in the delta from the last completed review, so they
+    // cannot hide behind the upstream merge. Legacy receipts without HEAD need
+    // the stronger content match to prove their first-parent provenance.
+    if (
+      !approved.head &&
+      gitZ(repo, ["diff", "-z", "--no-renames", "--name-only", approved.tree, first]).some((p) =>
+        companion ? covered.has(p) : !isRecord(p) || covered.has(p),
+      )
+    )
+      continue;
+    const changed = gitZ(repo, ["diff", "-z", "--no-renames", "--name-only", first, merge]);
+    if (changed.some((p) => covered.has(p))) return merge;
+    // The report's bookkeeping may move freely; its coverage block is reviewed
+    // metadata. Compare that one fact instead of treating all prose as source.
+    if (reportPath && changed.includes(reportPath)) {
+      const before = gitLine(repo, ["show", `${first}:${reportPath}`]);
+      const after = gitLine(repo, ["show", `${merge}:${reportPath}`]);
+      if (before !== null && after !== null) {
+        try {
+          const oldBlock = parseDeclaration(before)?.hash ?? null;
+          const newBlock = parseDeclaration(after)?.hash ?? null;
+          if (oldBlock === approved.block && oldBlock !== newBlock) return merge;
+        } catch {
+          // Historical malformed metadata grants nothing. Current metadata is
+          // validated by coverage() before this history scan.
+          continue;
+        }
+      }
+    }
+  }
+  return null;
+}
+
+/** Use the existing snapshot program for companion source; no model call. */
+function companionTrees(repo: string, covered: Record<string, string>, report: string | null): Record<string, string> {
+  const roots = new Set(
+    Object.keys(covered)
+      .filter((k) => k.includes("::"))
+      .map((k) => k.slice(0, k.indexOf("::"))),
+  );
+  if (report) {
+    const root = gitLine(dirname(report), ["rev-parse", "--show-toplevel"]);
+    if (root && canonicalRepo(root) !== repo) roots.add(canonicalRepo(root));
+  }
+  const trees: Record<string, string> = {};
+  for (const root of roots) {
+    const r = spawnSync(
+      process.execPath,
+      ["--experimental-strip-types", fileURLToPath(new URL("../../review/code-review.ts", import.meta.url)), "--snapshot"],
+      {
+        env: { ...process.env, CODEX_REVIEW_REPO: root },
+        encoding: "utf8",
+        timeout: 60_000,
+      },
+    );
+    const tree = r.stdout?.trim();
+    if (r.status !== 0 || !/^[a-f0-9]{40,64}$/.test(tree ?? ""))
+      throw new Error(
+        `could not snapshot declared companion ${root}: ${r.stderr?.trim() || r.error?.message || r.status}`,
+      );
+    trees[root] = tree as string;
+  }
+  return trees;
+}
+
+/**
+ * Where this branch left its trunk: the merge-base with origin's trunk, else the declared base, else HEAD.
+ * A merge in progress counts as made (`git merge-base <trunk> HEAD MERGE_HEAD`): land.ts leaves a
+ * conflicted trunk merge uncommitted, and measured from HEAD alone everything that merge brings in
+ * read as this branch's own work.
+ */
 export function branchBase(repo: string, declared: string): string {
+  const merging = gitLine(repo, ["rev-parse", "--verify", "-q", "MERGE_HEAD"]) !== null;
   for (const ref of ["refs/remotes/origin/HEAD", "refs/remotes/origin/main", "refs/remotes/origin/master"]) {
     if (gitLine(repo, ["rev-parse", "--verify", "-q", ref]) === null) continue;
-    const mb = gitLine(repo, ["merge-base", "HEAD", ref]);
+    const mb = gitLine(repo, ["merge-base", ref, "HEAD", ...(merging ? ["MERGE_HEAD"] : [])]);
     if (mb) return mb;
   }
   if (declared && gitLine(repo, ["rev-parse", "--verify", "-q", `${declared}^{commit}`])) return declared;
   return "HEAD";
+}
+
+/** Whether a report bound by an earlier build in this thread has landed: its own
+ *  repo holds it unchanged against the trunk. A report that cannot be read or
+ *  placed in git has not, so coverageNow reports the problem rather than this
+ *  guessing it away. */
+export function reportLanded(report: string | null): boolean {
+  if (report === null || !existsSync(report)) return false;
+  try {
+    const top = gitLine(dirname(report), ["rev-parse", "--show-toplevel"]);
+    if (!top) return false;
+    const rel = relative(realpathSync(top), realpathSync(report));
+    return !changedSince(top, branchBase(top, "")).includes(rel);
+  } catch {
+    return false;
+  }
 }
 
 /** Every path changed since the branch base: committed, uncommitted and untracked, renames as two paths. */
@@ -604,6 +886,23 @@ export function changedSince(repo: string, base: string): string[] {
     ...gitZ(repo, ["ls-files", "-z", "--others", "--exclude-standard"]),
   ];
   return [...new Set(paths)].sort();
+}
+
+/**
+ * The paths an upstream-merge review reads: what changed between the last
+ * completed review's tree (`since`) and the tree about to be reviewed, kept to
+ * this branch's own files (changed since its trunk merge-base) and the covered
+ * files whose content moved since that review (`changedCovered`, repo-relative).
+ * Everything else the merge imported is another session's work, reviewed in
+ * that session; without this, a review after merging a busy trunk read every
+ * file the trunk had changed and was refused over the diff budget, so the
+ * thread could never close.
+ */
+export function mergeReviewPaths(repo: string, since: string, tree: string, changedCovered: string[]): string[] {
+  const own = new Set([...changedSince(repo, branchBase(repo, "")), ...changedCovered]);
+  return gitZ(repo, ["diff", "-z", "--no-renames", "--name-only", since, tree])
+    .filter((p) => own.has(p))
+    .sort();
 }
 
 /**
@@ -669,7 +968,12 @@ export function coverageNow(repo: string, base: string, report: string | null): 
       if (d.repo) add(d.path, d.repo, `${canonicalRepo(d.repo)}::${d.path}`);
       else add(d.path);
     }
-    for (const c of decl.claims) for (const p of c.negativeTest?.evidence ?? []) add(p);
+    for (const c of decl.claims) {
+      const t = c.negativeTest;
+      for (const p of t?.evidence ?? [])
+        if (t?.repo) add(p, t.repo, `${canonicalRepo(t.repo)}::${p}`);
+        else add(p);
+    }
     // The applicable instructions: every AGENTS.md at or above each changed path.
     const need = new Set(members.flatMap((p) => applicableInstructions(repo, p)));
     for (const ins of need)
@@ -680,7 +984,14 @@ export function coverageNow(repo: string, base: string, report: string | null): 
     const contract = join(dirname(report), "spec.md");
     if (existsSync(contract)) covered[`contract:${contract}`] = digest(contract);
   }
-  return { covered, block, decl, problems, changed, head: gitLine(repo, ["rev-parse", "--verify", "HEAD^{commit}"]) };
+  return {
+    covered: boundByPresence(covered),
+    block,
+    decl,
+    problems,
+    changed,
+    head: gitLine(repo, ["rev-parse", "--verify", "HEAD^{commit}"]),
+  };
 }
 
 /** The writer vendors of an `<vendors>|<thread>` authors string, normalised. */
@@ -751,14 +1062,6 @@ export function leadingPath(text: string): { path: string; loc: string; end: num
 }
 
 // ── REPEAT SPOT ──
-// A must-fix or should-fix within REPEAT_SPOT_LINES of one the last review left
-// open, in the same file, means the fix did not close the defect, or its patch
-// opened the next hole beside it: a handler patched through seven reviews drew
-// a new finding a few lines from the last each time, and only replacing the
-// patches with one design came back clean. The warning is a line for the build
-// to read on stderr; it changes no receipt. code-review.ts prints it for a
-// vendor's answer, and finish --fallback for the fresh-context fallback's.
-const REPEAT_SPOT_LINES = 25;
 // The spot is the finding's file and line, read by leadingPath: bare,
 // backticked or a markdown link (`[f.ts:9](/abs/f.ts:9)`), a path holding a
 // colon included. A regex of its own cut such a path at the colon.
@@ -769,26 +1072,115 @@ function spotOf(finding: string): { file: string; line: number } | null {
   const line = lead ? /^:(\d+)/.exec(lead.loc.slice(lead.path.length)) : null;
   return lead && line ? { file: lead.path, line: Number(line[1]) } : null;
 }
-/** One REPEAT SPOT warning per finding in <findings> beside one of <open>, the findings the last review left open. */
-export function repeatSpots(findings: string[], open: string[]): string[] {
-  const earlier = open.flatMap((f) => spotOf(f) ?? []);
-  const out: string[] = [];
-  for (const f of findings) {
-    const spot = spotOf(f);
-    if (!spot) continue;
-    const { file, line } = spot;
-    const prev = earlier.find((e) => e.file === file && Math.abs(e.line - line) <= REPEAT_SPOT_LINES);
-    if (prev)
-      out.push(
-        `[code-review] REPEAT SPOT: ${file}:${line} — the last review flagged ${file}:${prev.line} too. Stop patching this piece: redesign it as a whole, then review the redesign.`,
-      );
+
+// ── How a review's findings are sorted ──
+// A must-fix or should-fix is a bug in this build and holds it until a round
+// judges it fixed or disproved. An `[idea]` is an improvement the spec did not
+// ask for: it never holds the build and is kept for the improvements row. A
+// fix round that blocked only on `NOT FIXED:` or a cited `BROKE:` stayed open
+// to invented inputs (three NOT FIXED, each a different made-up layout; four
+// BROKE, all citing one broad spec line), while new real bugs were filed for
+// later. Anything that may touch sending, money or deleting always holds the
+// build, so an idea that reads that way is held as a should-fix the
+// builder disproves if it is wrong. The words are a backstop for the prompt's
+// own rule, not the rule.
+export const HELD_TOPIC =
+  /\b(?:send|sends|sent|sending|resend|e-?mails?|e-?mailed|sms|texts? messages?|money|payments?|pay|paid|charges?|charged|refunds?|invoices?|payouts?|delete[sd]?|deleting|deletion|purge[sd]?|wipe[sd]?|erase[sd]?)\b/i;
+// A finding in a file outside this build's change is another session's code,
+// unless it says how this change causes it: `caused by <changed path>`. Such a
+// break, in an untouched caller included, is this build's bug (Codex's review,
+// 2026-11-22: a retry change can double-send through a caller nobody edited).
+// A full stop ends the path only before a space or the end: "alpha.txt:2" is
+// one path, not "alpha".
+const CAUSED_BY = /caused by\s+`?([^\s`,;():]+?)(?::\d+(?:-\d+)?)?`?(?=[\s,;)]|[.](?:\s|$)|$)/gi;
+export function sortFindings(
+  lines: string[],
+  change: Set<string> | null,
+  open: string[],
+): { kept: string[]; ideas: string[]; noted: string[] } {
+  const openFiles = new Set(open.flatMap((f) => spotOf(f)?.file ?? []));
+  const kept: string[] = [];
+  const ideas: string[] = [];
+  const noted: string[] = [];
+  for (const raw of lines) {
+    const t = raw.trim();
+    if (t === "") continue;
+    if (/^\[idea\]/.test(t)) {
+      if (HELD_TOPIC.test(t))
+        kept.push(`[should-fix] ${t.replace(/^\[idea\]\s*/, "")} (held: it may touch sending, money or deleting; disprove it if not)`);
+      else ideas.push(t);
+      continue;
+    }
+    const spot = spotOf(t);
+    if (change !== null && spot && !change.has(spot.file) && !openFiles.has(spot.file)) {
+      const causes = [...t.matchAll(CAUSED_BY)].map((m) => (m[1] as string).replace(/^\.\//, ""));
+      if (!causes.some((c) => change.has(c))) {
+        noted.push(t);
+        continue;
+      }
+    }
+    kept.push(t);
   }
-  return out;
+  return { kept, ideas, noted };
+}
+/** A finding's stable id across rounds: F and six hex digits of its normalised line. */
+export function findingId(line: string): string {
+  return `F${sha256(findingKey(line)).slice(0, 6)}`;
+}
+/** The verdicts a follow-up gives the open findings it was shown. */
+export const VERDICTS = ["fixed", "disproved", "open"] as const;
+export type Verdict = { id: string; verdict: (typeof VERDICTS)[number]; evidence: string };
+
+/** The files the must-fix and should-fix findings among <findings> point at. */
+export function findingFiles(findings: string[]): Set<string> {
+  return new Set(findings.flatMap((f) => spotOf(f)?.file ?? []));
 }
 
 /** The form two finding lines are compared in: runs of whitespace collapsed, ends trimmed. */
 export function findingKey(line: string): string {
   return line.replace(/\s+/g, " ").trim();
+}
+
+function receiptItemKeys(receipt: Receipt, id: string): string[] {
+  return (
+    receipt.itemPaths?.[id] ??
+    Object.entries(receipt.itemKeys ?? {})
+      .filter(([, itemId]) => itemId === id)
+      .map(([key]) => key)
+  );
+}
+
+/** Checks a follow-up can omit from the prompt and retain in its receipt. */
+function unchangedChecks(current: Receipt, previous: Receipt | undefined): ItemResult[] {
+  if (current.mode === "range" || previous?.status !== "complete" || previous.slice || current.block !== previous.block)
+    return [];
+  const evidenceItems = new Set(current.evidenceItems);
+  return (previous.items ?? []).filter((item) => {
+    // A file can stay unchanged while the code it calls or constrains moves.
+    if (item.status !== "checked" || !evidenceItems.has(item.id)) return false;
+    const keys = receiptItemKeys(current, item.id);
+    const priorKeys = new Set(receiptItemKeys(previous, item.id));
+    return (
+      keys.length > 0 &&
+      keys.length === priorKeys.size &&
+      keys.every(
+        (key) =>
+          priorKeys.has(key) && Object.hasOwn(current.covered, key) && current.covered[key] === previous.covered[key],
+      )
+    );
+  });
+}
+
+/**
+ * A reviewer recorded under the user's override (code-review.ts
+ * CODE_REVIEW_REVIEWER_OVERRIDE_BY): `<vendor>/<model> (reviewer override:
+ * <their words>)`, the words quoted with their name and a date
+ * (authorized-by.ts). Only that lets a writer's vendor answer; anything short
+ * of it is a writer reviewing itself.
+ */
+export function overrideReviewer(v: string): boolean {
+  const m = /\(reviewer override: (.+)\)$/.exec(v);
+  return m !== null && authorizedBy(m[1] as string);
 }
 
 /** Why a receipt does not describe this content, or [] when it does. */
@@ -800,7 +1192,8 @@ export function receiptReasons(r: Receipt | undefined, cov: Coverage, scope: str
   const reviewers = r.reviewers ?? (r.reviewer ? [r.reviewer] : []);
   if (reviewers.length === 0) why.push("the review recorded no answering reviewer, so it is not a coverage receipt");
   for (const v of reviewers)
-    if (authorVendors(r.authors).includes(v.split("/")[0] ?? "")) why.push(`the reviewer ${v} is one of the writers`);
+    if (authorVendors(r.authors).includes(v.split("/")[0] ?? "") && !overrideReviewer(v))
+      why.push(`the reviewer ${v} is one of the writers`);
   if ((r.blocking ?? []).length > 0) why.push(`${(r.blocking ?? []).length} must-fix/should-fix finding(s) unresolved`);
   for (const g of r.gaps ?? []) why.push(`not reviewed: ${GAP_WORDS[g] ?? g}`);
   const status = new Map((r.items ?? []).map((i) => [i.id, i]));
@@ -845,11 +1238,6 @@ export function pieceSet(pieces: Receipt[], cov: Coverage, scope: string | null)
   const unread = cov.changed.filter(
     (p) => !isRecord(p) && !pieces.some((pc) => (pc.read ?? []).includes(p) && pc.covered[p] === now[p]),
   );
-  const keysOf = (pc: Receipt, id: string): string[] =>
-    pc.itemPaths?.[id] ??
-    Object.entries(pc.itemKeys ?? {})
-      .filter(([, v]) => v === id)
-      .map(([k]) => k);
   const ids = [...new Set(pieces.flatMap((pc) => (pc.items ?? []).map((i) => i.id)))];
   const items: ItemResult[] = [];
   const vouched = new Set<string>();
@@ -857,12 +1245,12 @@ export function pieceSet(pieces: Receipt[], cov: Coverage, scope: string | null)
     const pc = pieces.find(
       (x) =>
         (x.items ?? []).some((i) => i.id === id && i.status === "checked") &&
-        keysOf(x, id).every((k) => x.covered[k] === now[k]),
+        receiptItemKeys(x, id).every((k) => x.covered[k] === now[k]),
     );
     const it = pc?.items?.find((i) => i.id === id);
     if (pc && it) {
       items.push(it);
-      for (const k of keysOf(pc, id)) vouched.add(k);
+      for (const k of receiptItemKeys(pc, id)) vouched.add(k);
     }
   }
   const changed = new Set(cov.changed);
@@ -885,6 +1273,8 @@ export function pieceSet(pieces: Receipt[], cov: Coverage, scope: string | null)
     finishedAt: new Date().toISOString(),
     block: last.block,
     covered: { ...now },
+    ...(last.companionTrees ? { companionTrees: last.companionTrees } : {}),
+    ...(last.companionHeads ? { companionHeads: last.companionHeads } : {}),
     requiredItems: last.requiredItems,
     itemKeys: last.itemKeys,
     ...(last.itemPaths ? { itemPaths: last.itemPaths } : {}),
@@ -894,6 +1284,8 @@ export function pieceSet(pieces: Receipt[], cov: Coverage, scope: string | null)
     items,
     blocking: uniq(pieces.flatMap((pc) => pc.blocking ?? [])),
     nits: uniq(pieces.flatMap((pc) => pc.nits ?? [])),
+    ideas: uniq(pieces.flatMap((pc) => pc.ideas ?? [])),
+    noted: uniq(pieces.flatMap((pc) => pc.noted ?? [])),
     gaps: [...gaps],
     pieces: pieces.length,
     // One piece the fresh-context fallback reviewed makes the whole set NOT independent.
@@ -1028,7 +1420,7 @@ function summary(r: Receipt): string {
 /**
  * A numbered finding of the fallback reviewer's format (`N. **title**: `a.ts:12` —
  * nature — …`) with its location moved to the front (`a.ts:12: **title** — …`),
- * the shape a vendor's triage line has, so the REPEAT SPOT detector reads where
+ * the shape a vendor's triage line has, so a finding's spot reads where
  * it points. Where it points decides nothing else: a blocker closes when a
  * round shown it leaves it out (finish). The location is what leadingPath reads
  * right after the title (its closing `**`, else the first `: ` or ` — `): the
@@ -1164,7 +1556,7 @@ async function main(): Promise<void> {
         exit(1);
       }
       v.ok.trailer = trailer;
-      writeState(owner, state);
+      recordOrExit(owner, repo, rs);
       say(`implement-audit: receipt for ${repo} carries the trailer (${statePath(owner)})`);
       return;
     }
@@ -1182,8 +1574,9 @@ async function main(): Promise<void> {
         "--slice",
       ]);
       for (const k of ["--repo", "--tree", "--mode", "--bucket"]) if (!f[k]) usageExit(`begin needs ${k}`);
-      const mode = f["--mode"] as Mode;
-      const bucket = f["--bucket"] as Bucket;
+      let mode = f["--mode"] as Mode;
+      let bucket = f["--bucket"] as Bucket;
+      let since = f["--since"];
       if (!["range", "since", "final"].includes(mode)) usageExit(`unknown mode ${mode}`);
       if (!["build", "qa"].includes(bucket)) usageExit(`unknown bucket ${bucket}`);
       // A piece is one part of the build bucket's full review; refused here,
@@ -1202,7 +1595,20 @@ async function main(): Promise<void> {
       const report = f["--report"] ? resolve(f["--report"]) : null;
       const state = loadOrFail(owner);
       const now = new Date().toISOString();
-      const rs: RepoState = state.repos[repo] ?? {
+      // A full review given no --report, in a thread whose earlier build has
+      // landed (the report it was bound to is on the trunk unchanged), starts
+      // the repo's record afresh: that build's receipt, open findings and
+      // declaration described landed work, and carrying them made every later
+      // review re-check it (an earlier row's declaration would hold a
+      // planning-only change, each review asking for that row's code). Round counters are kept elsewhere and are not reset.
+      const registered = state.repos[repo];
+      const landed =
+        registered !== undefined &&
+        report === null &&
+        mode === "range" &&
+        registered.report !== null &&
+        reportLanded(registered.report);
+      const rs: RepoState = (landed ? undefined : registered) ?? {
         required: true,
         base: f["--base"] ?? "",
         scope: f["--scope"] ?? "",
@@ -1227,12 +1633,12 @@ async function main(): Promise<void> {
       try {
         cov = coverageNow(repo, rs.base, rs.report);
       } catch (e) {
-        writeState(owner, state);
+        recordOrExit(owner, repo, rs);
         warn(`implement-audit: ${(e as Error).message} — the review cannot be bound to its content`);
         exit(1);
       }
       if (cov.problems.length > 0) {
-        writeState(owner, state);
+        recordOrExit(owner, repo, rs);
         for (const p of cov.problems) warn(`implement-audit: coverage: ${p}`);
         warn("implement-audit: fix the report's coverage declaration before spending a review call");
         exit(1);
@@ -1289,51 +1695,221 @@ async function main(): Promise<void> {
       }
       const v = validity(rs, cov, rs.scope);
       if ("ok" in v && v.ok.authors === authors) {
-        writeState(owner, state);
+        recordOrExit(owner, repo, rs);
         say("RECEIPT=reuse");
         say(
           `NOTE: the ${v.ok.mode} review by ${byWhom(v.ok)} (${v.ok.finishedAt}) still covers this content — no review call`,
         );
         return;
       }
+      const prior = rs.receipt?.status === "complete" ? rs.receipt : rs.last;
+      if (
+        mode === "since" &&
+        rs.receipt?.status === "incomplete" &&
+        prior &&
+        !prior.slice &&
+        prior.authors === authors &&
+        prior.scope === rs.scope
+      )
+        since = prior.tree;
+      const approved = rs.approvedReceipt ?? [rs.receipt, rs.last].find((r) => r?.status === "complete" && r.approved);
+      // Imported trunk changes are new integration work, not more attempts at
+      // fixing this implementation. Keep one bounded allowance through its
+      // findings/retries; only another clean approval can close that loop.
+      if (!slice && bucket === "build" && prior && prior.authors === authors && prior.scope === rs.scope) {
+        if (!rs.integration || rs.integration.complete) {
+          let merge =
+            approved?.authors === authors && approved.scope === rs.scope
+              ? integrationMerge(repo, approved, rs.report)
+              : null;
+          if (!merge && approved?.authors === authors && approved.scope === rs.scope) {
+            for (const [root, tree] of Object.entries(approved.companionTrees ?? {})) {
+              const covered = Object.fromEntries(
+                Object.entries(approved.covered).flatMap(([key, value]) => {
+                  if (key.startsWith(`${root}::`)) return [[key.slice(root.length + 2), value]];
+                  if (key.startsWith(`contract:${root}/`)) return [[key.slice(`contract:${root}/`.length), value]];
+                  return [];
+                }),
+              );
+              const incoming = integrationMerge(
+                root,
+                { ...approved, tree, head: approved.companionHeads?.[root], covered },
+                rs.report,
+                true,
+              );
+              if (incoming) {
+                merge = `${root}::${incoming}`;
+                break;
+              }
+            }
+          }
+          if (merge && approved) {
+            rs.integration = {
+              id: sha256(`${approved.tree}\0${merge}`),
+              anchor: approved.tree,
+              merge,
+              complete: false,
+            };
+            rs.spendInit.merge = false;
+          }
+        }
+        if (rs.integration && !rs.integration.complete) {
+          bucket = "merge";
+          mode = "since";
+          since = prior.tree;
+          // Persist the proven anchor before initializing its separate counter.
+          recordOrExit(owner, repo, rs);
+        }
+      }
       if (rs.receipt?.status === "complete") rs.last = rs.receipt;
       if (sliceSet) rs.sliceSet = sliceSet;
       const items = declarationItems(cov.decl);
+      const itemKeys = declaredKeys(cov.decl),
+        itemPaths = declaredItemPaths(cov.decl);
+      const reportPath = rs.report?.startsWith(`${repo}/`) ? rs.report.slice(repo.length + 1) : null;
+      const declarationInDelta =
+        since &&
+        reportPath &&
+        gitZ(repo, ["diff", "-z", "--name-only", since, f["--tree"] as string]).includes(reportPath);
+      if (
+        mode !== "range" &&
+        (cov.block !== rs.last?.block || rs.last?.gaps?.includes("#declaration")) &&
+        rs.report &&
+        !declarationInDelta
+      ) {
+        items.push({
+          id: "@review-declaration",
+          required: true,
+          text: `coverage declaration ${rs.report}: read the current review-coverage block, verify its base and scope and every declared item; declaration: ${JSON.stringify(cov.decl)}`,
+        });
+      }
+      const contract = rs.report ? join(dirname(rs.report), "spec.md") : null;
+      const contractKey = contract ? `contract:${contract}` : null;
+      const contractPath = contract?.startsWith(`${repo}/`) ? contract.slice(repo.length + 1) : null;
+      const contractInDelta =
+        since &&
+        contractPath &&
+        gitZ(repo, ["diff", "-z", "--name-only", since, f["--tree"] as string]).includes(contractPath);
+      const contractDeclared =
+        contract &&
+        Object.keys(declaredKeys(cov.decl)).some((key) => {
+          const at = key.indexOf("::");
+          const path = at >= 0 ? join(key.slice(0, at), key.slice(at + 2)) : join(repo, key);
+          return canonicalRepo(path) === canonicalRepo(contract);
+        });
+      if (
+        mode !== "range" &&
+        contract &&
+        contractKey &&
+        cov.covered[contractKey] &&
+        (cov.covered[contractKey] !== rs.last?.covered[contractKey] || rs.last?.gaps?.includes(contractKey)) &&
+        !contractInDelta &&
+        !contractDeclared
+      ) {
+        items.push({
+          id: "@review-contract",
+          required: true,
+          text: `behavior contract ${contract}: read the current contract and confirm the implementation and declared checks still satisfy it`,
+        });
+        itemKeys[contractKey] = "@review-contract";
+        itemPaths["@review-contract"] = [contractKey];
+      }
+      const externalTrees = companionTrees(repo, cov.covered, rs.report);
+      const externalHeads = Object.fromEntries(
+        Object.keys(externalTrees).flatMap((root) => {
+          const head = gitLine(root, ["rev-parse", "--verify", "HEAD"]);
+          return head ? [[root, head]] : [];
+        }),
+      );
       rs.receipt = {
         status: "incomplete",
         mode,
         bucket,
         tree: f["--tree"] as string,
-        ...(f["--since"] ? { since: f["--since"] } : {}),
-        ...(mode === "range" && f["--head"] ? { head: headCommit || f["--head"] } : {}),
+        ...(since ? { since } : {}),
+        ...(mode === "range" && f["--head"] ? { head: headCommit || f["--head"] } : cov.head ? { head: cov.head } : {}),
         ...(slice ? { slice } : {}),
         base: rs.base,
         scope: rs.scope,
         startedAt: now,
         block: cov.block,
         covered: cov.covered,
+        companionTrees: externalTrees,
+        companionHeads: externalHeads,
         requiredItems: items.filter((i) => i.required).map((i) => i.id),
-        itemKeys: declaredKeys(cov.decl),
-        itemPaths: declaredItemPaths(cov.decl),
+        itemKeys,
+        itemPaths,
+        evidenceItems: cov.decl?.claims.filter((claim) => claim.negativeTest).map((claim) => claim.id),
         authors,
       };
       const itemsFile = join(ownerDir(owner), `review-items-${sha256(repo).slice(0, 12)}.json`);
       try {
-        writeState(owner, state);
+        writeRepo(owner, repo, rs);
+        if (bucket === "merge" && !rs.spendInit.merge) {
+          writeSpend(repo, bucket, { rounds: 0, final: false, full: false });
+          rs.spendInit.merge = true;
+          writeRepo(owner, repo, rs);
+        }
         // A follow-up is shown the findings still open, so a fix that does not
         // close one is re-reported rather than taken as settled, and one the
         // round leaves out is closed (finish).
         const openFindings = mode === "range" ? [] : (rs.last?.blocking ?? []);
+        const movedKeys =
+          mode === "range" || !rs.last
+            ? []
+            : Object.keys(cov.covered).filter((key) => cov.covered[key] !== rs.last?.covered[key]);
+        const pieces = rs.slices ?? [];
+        const earlier = slice && pieces.length > 0 ? pieceSet(pieces, cov, rs.scope) : null;
+        const settled = new Set(
+          (earlier?.combined.items ?? unchangedChecks(rs.receipt, rs.last)).map((item) => item.id),
+        );
+        let pendingItems = items.filter(({ id }) => !settled.has(id));
+        if (slice) {
+          const paths = new Set(slice);
+          const changedPaths = new Set(cov.changed.filter((path) => !isRecord(path)));
+          const lastPiece = (earlier?.unread ?? [...changedPaths]).every((path) => paths.has(path));
+          // The last piece gets outstanding checks so a missed earlier check
+          // can still be answered while covering the remaining diff.
+          if (!lastPiece) {
+            pendingItems = pendingItems.filter(({ id }) => {
+              const changedKeys = (itemPaths[id] ?? []).filter((key) => changedPaths.has(key));
+              return changedKeys.length === 0 || changedKeys.some((key) => paths.has(key));
+            });
+          }
+        }
         writeAtomic(
           itemsFile,
-          `${JSON.stringify({ items: items.map(({ id, text }) => ({ id, text })), openFindings })}\n`,
+          `${JSON.stringify({
+            items: pendingItems.map(({ id, text }) => ({ id, text })),
+            openFindings,
+            // The build's whole change, so a finding outside it can be told
+            // from a break this change causes (sortFindings).
+            changeFiles: cov.changed,
+            changedCoverage:
+              mode === "range" || !rs.last
+                ? []
+                : [...movedKeys, ...(cov.block !== rs.last.block ? [`coverage declaration ${rs.report}`] : [])],
+          })}\n`,
         );
+        // An upstream-merge review reads this branch's files and the covered
+        // ones that moved, never the rest of what the trunk imported
+        // (mergeReviewPaths). The list is NUL-separated for git's
+        // --pathspec-from-file and the checks' --paths-file.
+        if (bucket === "merge" && since) {
+          const plain = movedKeys.filter((k) => !k.includes("::") && !k.startsWith("contract:"));
+          const pathsFile = join(ownerDir(owner), `review-paths-${sha256(repo).slice(0, 12)}.txt`);
+          const paths = mergeReviewPaths(repo, since, f["--tree"] as string, plain);
+          writeAtomic(pathsFile, paths.map((p) => `${p}\0`).join(""));
+          say(`REVIEW_PATHS_FILE=${pathsFile}`);
+        }
       } catch (e) {
         warn(`implement-audit: could not record the attempt: ${(e as Error).message}`);
         exit(1);
       }
       say("RECEIPT=review");
       say(`ITEMS_FILE=${itemsFile}`);
+      if (bucket === "merge") say("REVIEW_BUCKET=merge");
+      if (since && since !== f["--since"]) say(`REVIEW_SINCE=${since}`);
       return;
     }
     case "finish": {
@@ -1361,7 +1937,7 @@ async function main(): Promise<void> {
         // fallback, a later invocation that runs no layer, must not forget it.
         if (f["--checks-failed"]) r.checksFailed = true;
         try {
-          writeState(owner, state);
+          writeRepo(owner, repo, rs);
         } catch (e) {
           warn(`implement-audit: could not record the attempt: ${(e as Error).message}`);
           say("APPROVED=0");
@@ -1381,7 +1957,13 @@ async function main(): Promise<void> {
       if (rc === 4 && rs.last) {
         // Converged: nothing was reviewed, so the earlier complete receipt stands as it was.
         rs.receipt = rs.last;
-        writeState(owner, state);
+        try {
+          writeRepo(owner, repo, rs);
+        } catch (e) {
+          warn(`implement-audit: could not record the review: ${(e as Error).message}`);
+          say("APPROVED=0");
+          exit(1);
+        }
         const why = receiptReasons(
           rs.receipt,
           { covered: r.covered, block: r.block, decl: null, problems: [], changed: [] },
@@ -1397,7 +1979,16 @@ async function main(): Promise<void> {
         say("APPROVED=0");
         return;
       }
-      let res: { vendor?: unknown; findings?: unknown; coverage?: unknown; shown?: unknown };
+      let res: {
+        vendor?: unknown;
+        findings?: unknown;
+        coverage?: unknown;
+        shown?: unknown;
+        ideas?: unknown;
+        noted?: unknown;
+        verdicts?: unknown;
+        deferred?: unknown;
+      };
       if (fallback !== undefined) {
         let parsed: ReturnType<typeof parseFallbackReply>;
         try {
@@ -1412,17 +2003,27 @@ async function main(): Promise<void> {
         }
         // The fallback reviewer was handed the items file, whose openFindings
         // are what begin wrote for this round (none for a full review): those
-        // are what it was shown, and what a repeat spot is measured against.
+        // are what it was shown. It re-reports each one the change does not
+        // close, so one it left out is its verdict "fixed", and one it
+        // re-raised stays open below.
         const handed = r.mode === "range" ? [] : (rs.last?.blocking ?? []);
-        for (const line of repeatSpots(parsed.findings, handed)) warn(line);
-        res = { vendor: "fresh-context/claude-fallback", ...parsed, shown: handed };
+        const raised = new Set(parsed.findings.map(findingKey));
+        const verdicts: Verdict[] = handed
+          .filter((h) => !raised.has(findingKey(h)))
+          .map((h) => ({
+            id: findingId(h),
+            verdict: "fixed",
+            evidence: "the fresh-context fallback was shown it and did not re-report it",
+          }));
+        res = { vendor: "fresh-context/claude-fallback", ...parsed, shown: handed, verdicts };
         r.independent = false;
         delete r.pendingFallback;
         // The chain's exit 3 charged nothing, as code-review.ts charges a first
         // full review only when it completes: this completion is that review,
         // so it is spent here, and a repeated full review counts as a round.
         if (r.mode === "range") {
-          const bucket: Bucket = process.env.CODE_REVIEW_BUCKET === "qa" ? "qa" : "build";
+          const bucket: Bucket =
+            process.env.CODE_REVIEW_BUCKET === "merge" ? "merge" : process.env.CODE_REVIEW_BUCKET === "qa" ? "qa" : "build";
           const spent = readSpend(repo, bucket);
           if (spent !== null && !("unknown" in spent) && !spent.full) writeSpend(repo, bucket, { ...spent, full: true });
         }
@@ -1452,6 +2053,21 @@ async function main(): Promise<void> {
       r.blocking = lines.filter((l) => /^\[(?:must-fix|should-fix)\]/.test(l));
       const prev = r.mode === "range" ? undefined : rs.last;
       r.nits = lines.filter((l) => l.startsWith("[nit]"));
+      const strings = (v: unknown): string[] =>
+        Array.isArray(v) ? (v as unknown[]).filter((x): x is string => typeof x === "string") : [];
+      // One record across the loop: a later round never drops an earlier idea,
+      // note or disproved blocker. A receipt saved before 2026-11-22 kept its
+      // non-blocking findings as `deferred`; they are ideas now.
+      const carry = (earlier: string[] | undefined, now: string[]): string[] =>
+        r.mode === "range" ? now : [...new Set([...(earlier ?? []), ...now])];
+      r.ideas = carry([...(rs.last?.ideas ?? []), ...(rs.last?.deferred ?? [])], [...strings(res.ideas), ...strings(res.deferred)]);
+      r.noted = carry(rs.last?.noted, strings(res.noted));
+      r.disproved = carry(rs.last?.disproved, []);
+      const verdicts = new Map<string, Verdict>();
+      if (Array.isArray(res.verdicts))
+        for (const v of res.verdicts as Verdict[])
+          if (typeof v?.id === "string" && (VERDICTS as readonly string[]).includes(v?.verdict))
+            verdicts.set(v.id, { id: v.id, verdict: v.verdict, evidence: typeof v.evidence === "string" ? v.evidence : "" });
       r.items = Array.isArray(res.coverage) ? (res.coverage as ItemResult[]) : [];
       const gaps: string[] = [];
       if (f["--checks-failed"] || r.checksFailed) gaps.push("#checks");
@@ -1484,7 +2100,8 @@ async function main(): Promise<void> {
         else {
           const delta = new Set(gitZ(repo, ["diff", "-z", "--no-renames", "--name-only", r.since ?? "", r.tree]));
           // A path in another repo (a companion, or the report beside a product) is
-          // never in this repo's delta, so its change is always a gap.
+          // never in this repo's delta, so its change is a gap unless it has left
+          // the change (leftChange, below).
           const rel = (abs: string): string => (abs.startsWith(`${repo}/`) ? abs.slice(repo.length + 1) : "\0");
           // A covered key is reviewed by this round when its file is in the
           // round's diff, or when it is a declared path whose item the reviewer
@@ -1501,9 +2118,9 @@ async function main(): Promise<void> {
           }
           const reviewed = (k: string): boolean => {
             if (delta.has(k.startsWith("contract:") ? rel(k.slice("contract:".length)) : k)) return true;
-            const id = k.startsWith("contract:")
-              ? byFile.get(canonicalRepo(k.slice("contract:".length)))
-              : r.itemKeys?.[k];
+            const id =
+              r.itemKeys?.[k] ??
+              (k.startsWith("contract:") ? byFile.get(canonicalRepo(k.slice("contract:".length))) : undefined);
             return id !== undefined && checked.has(id);
           };
           // A path the change no longer holds needs no review. When a release
@@ -1513,22 +2130,45 @@ async function main(): Promise<void> {
           // although nothing in it changed. This round's coverage
           // holds every path changed since the branch base, a file the change
           // deletes included (as absent), so a repo path missing from it has
-          // left the change. The behavior contract and another repo's paths
-          // are not paths of this change and are judged as before.
-          const leftChange = (k: string): boolean =>
-            !Object.hasOwn(r.covered, k) && !k.startsWith("#") && !k.startsWith("contract:") && !k.includes("::");
+          // left the change. The behavior contract is not a path of this change
+          // and is judged as before. Another repo's path is in this round's
+          // coverage only while the declaration names it, so one missing from
+          // it whose file is also gone (the missing-file test coverageNow uses,
+          // so a dangling symlink is still there) has left the change: a
+          // replaced red-run log in a companion repo. Judged otherwise, such
+          // logs stay a "not reviewed" gap on every later receipt, cleared only
+          // by recreating them and reviewing each repo again. One still on disk is judged as
+          // before, so evidence is never undeclared unreviewed.
+          const leftChange = (k: string): boolean => {
+            if (Object.hasOwn(r.covered, k) || k.startsWith("#") || k.startsWith("contract:")) return false;
+            const at = k.indexOf("::");
+            return at < 0 || confirmedGone(join(k.slice(0, at), k.slice(at + 2)));
+          };
           for (const k of [...new Set([...Object.keys(r.covered), ...Object.keys(prev.covered)])].sort()) {
             if (r.covered[k] === prev.covered[k] || leftChange(k)) continue;
             if (!reviewed(k)) gaps.push(k);
           }
-          if (r.block !== prev.block && !delta.has(rel(rs.report ?? ""))) gaps.push("#declaration");
+          if (r.block !== prev.block && !delta.has(rel(rs.report ?? "")) && !checked.has("@review-declaration"))
+            gaps.push("#declaration");
           // What the earlier receipt left unreviewed stays unreviewed until a
           // round's delta actually carries it, or the change no longer holds it.
           for (const g of prev.gaps ?? []) {
             if (g === "#checks" || gaps.includes(g) || leftChange(g)) continue;
-            if (g === "#declaration" ? delta.has(rel(rs.report ?? "")) : !g.startsWith("#") && reviewed(g)) continue;
+            if (
+              g === "#declaration"
+                ? delta.has(rel(rs.report ?? "")) || checked.has("@review-declaration")
+                : !g.startsWith("#") && reviewed(g)
+            )
+              continue;
             gaps.push(g);
           }
+          // Keep the local proof for checks omitted from this round's prompt.
+          const checks = new Map(r.items.map((item) => [item.id, item]));
+          for (const item of unchangedChecks(r, prev)) {
+            if (checks.get(item.id)?.status !== "checked")
+              checks.set(item.id, { ...item, carriedFrom: item.carriedFrom ?? prev.finishedAt });
+          }
+          r.items = [...checks.values()];
           // An earlier blocker stands until a round that was shown it completes
           // without re-raising it. The follow-up prompt lists every open
           // blocker and says one it does not re-report is recorded as closed,
@@ -1540,11 +2180,29 @@ async function main(): Promise<void> {
           // file from ever closing it, and guessing that file from free text
           // went wrong one new way per review (a later citation, a space or
           // colon in the name, an extensionless or unknown file).
+          // Now the round gives each blocker it was shown a verdict by its id
+          // (findingId): fixed and disproved close it, open keeps it. Leaving
+          // one out no longer closes it, and a shown blocker with no verdict
+          // stays open: an omission is not a judgment. A blocker judged open
+          // twice in a row survived two repairs: the approach, not the patch,
+          // is wrong.
           const shown = new Set(shownList.map(findingKey));
           const open = new Set(r.blocking.map(findingKey));
+          r.stillOpen = {};
           for (const b of prev.blocking ?? []) {
             const k = findingKey(b);
-            if (open.has(k) || shown.has(k)) continue;
+            const id = findingId(b);
+            const v = shown.has(k) ? verdicts.get(id) : undefined;
+            if (v && v.verdict !== "open" && !open.has(k)) {
+              if (v.verdict === "disproved") r.disproved.push(`${id} ${b} — ${v.evidence}`);
+              continue;
+            }
+            if (v?.verdict === "open" || open.has(k)) {
+              const n = (prev.stillOpen?.[id] ?? 0) + 1;
+              r.stillOpen[id] = n;
+              if (n >= 2) say(`STILL OPEN: ${id} ${b} — judged open after ${n} repairs in a row. Stop patching it: change the approach for that piece (the step that reads the input, the data it starts from) so the whole kind of failure goes, and say why in the report.`);
+            }
+            if (open.has(k)) continue;
             r.blocking.push(b);
             open.add(k);
           }
@@ -1589,14 +2247,24 @@ async function main(): Promise<void> {
       }
       const done = rs.receipt as Receipt;
       done.approved = why.length === 0 && pending === null;
+      if (done.approved) {
+        rs.approvedReceipt = done;
+        if (rs.integration) rs.integration.complete = true;
+      }
       try {
-        writeState(owner, state);
+        writeRepo(owner, repo, rs);
       } catch (e) {
         warn(`implement-audit: could not record the review: ${(e as Error).message}`);
         say("APPROVED=0");
         exit(1);
       }
       for (const w of why) warn(`implement-audit: ${w}`);
+      // None of these hold the build. The build lists each in its report's
+      // § Not built, and the ideas become one improvements row
+      // (.agents/skills/implement/SKILL.md).
+      for (const i of r.ideas ?? []) say(`IDEA: ${i}`);
+      for (const n of r.noted ?? []) say(`NOTED: ${n}`);
+      for (const d of r.disproved ?? []) say(`DISPROVED: ${d}`);
       say(`APPROVED=${done.approved ? 1 : 0}`);
       if (pending) {
         // Not a failure: the next piece reads these. Anything else that already

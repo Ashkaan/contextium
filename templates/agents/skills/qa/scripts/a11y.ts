@@ -31,6 +31,7 @@ import { join } from "node:path";
 import type { Page } from "playwright";
 import {
   qaAccessHeaders,
+  qaSignAccess,
   qaBrowsers,
   qaContextOptions,
   qaEnvCfAccess,
@@ -178,7 +179,8 @@ async function main(): Promise<void> {
     .map((w) => Number.parseInt(w.trim(), 10))
     .filter(Boolean);
 
-  const extraHTTPHeaders = qaAccessHeaders(ACCESS, AUTH_ACT_AS, JWT);
+  // Sent to the site only, never to a CDN it loads from (qaSignAccess).
+  const accessHeaders = qaAccessHeaders(ACCESS, AUTH_ACT_AS, JWT);
 
   // Chromium's shared-memory files go in a TMPDIR of the browser's own, removed
   // on exit: one is left behind whenever a process ends between making and
@@ -190,8 +192,9 @@ async function main(): Promise<void> {
   let graded = 0;
   for (const route of pages) {
     for (const width of widths) {
-      const ctx = await (await browsers.forWidth(width)).newContext({ ...qaContextOptions(width), extraHTTPHeaders });
+      const ctx = await (await browsers.forWidth(width)).newContext({ ...qaContextOptions(width) });
       const page = await ctx.newPage();
+      await qaSignAccess(page, base, accessHeaders);
       const url = base.replace(/\/$/, "") + (route.startsWith("/") ? route : `/${route}`);
       try {
         const resp = await gotoSurvivingNetworkChange(page, url, { waitUntil: "networkidle", timeout: 30000 });

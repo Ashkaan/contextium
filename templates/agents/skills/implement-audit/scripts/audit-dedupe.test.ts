@@ -10,7 +10,7 @@
 // written; snapshots are real git trees written through a temporary index.
 
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { type ChildProcess, spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
   chmodSync,
@@ -19,6 +19,7 @@ import {
   mkdtempSync,
   readdirSync,
   readFileSync,
+  renameSync,
   rmSync,
   symlinkSync,
   writeFileSync,
@@ -86,10 +87,28 @@ function result(name: string, findings: string[], coverage: unknown[] = [], vend
   writeFileSync(f, JSON.stringify({ vendor, findings, coverage }));
   return f;
 }
-/** A follow-up round's result as code-review.ts writes it: <shown> is the open findings its prompt listed. */
-function shownResult(name: string, findings: string[], shown: string[]): string {
+/** A finding's id as audit-dedupe.ts findingId gives it: F and six hex digits of the normalised line. */
+const fid = (line: string): string =>
+  `F${createHash("sha256").update(line.replace(/\s+/g, " ").trim()).digest("hex").slice(0, 6)}`;
+/**
+ * A follow-up round's result as code-review.ts writes it: <shown> is the open
+ * findings its prompt listed, each with a verdict — open when the round
+ * re-reports it, else <left> (fixed unless a case says otherwise).
+ */
+function shownResult(
+  name: string,
+  findings: string[],
+  shown: string[],
+  left: "fixed" | "disproved" | "open" | null = "fixed",
+  extra: Record<string, unknown> = {},
+): string {
   const f = join(TMP, `${name}.json`);
-  writeFileSync(f, JSON.stringify({ vendor: "grok/grok-4", findings, coverage: [], shown }));
+  const again = new Set(findings.map((l) => l.replace(/\s+/g, " ").trim()));
+  const verdicts = shown.flatMap((b) => {
+    const v = again.has(b.replace(/\s+/g, " ").trim()) ? "open" : left;
+    return v === null ? [] : [{ id: fid(b), verdict: v, evidence: "read the repair" }];
+  });
+  writeFileSync(f, JSON.stringify({ vendor: "grok/grok-4", findings, coverage: [], shown, verdicts, ...extra }));
   return f;
 }
 const owner = (id: string): NodeJS.ProcessEnv => ({
@@ -133,6 +152,584 @@ test("usage", () => {
   assert.equal(run(owner("u"), "check").rc, 2, "check without --owner");
 });
 
+test("a real upstream merge after approval gets a focused, separate review allowance", () => {
+  const d = repo("merge-allowance");
+  const env: Record<string, string | undefined> = {
+    ...owner("merge-allowance"),
+    POLICY_CHAIN_AUTHOR_VENDORS: "claude",
+  };
+  const initialSource = "export const a = 1;\n" + "// shared context\n".repeat(10) + "export const tail = 1;\n";
+  writeFileSync(join(d, ".agents/skills/demo/a.ts"), initialSource);
+  git(d, "commit", "-qam", "shared registry fixture");
+  const base = git(d, "rev-parse", "HEAD");
+  git(d, "update-ref", "refs/remotes/origin/main", base);
+  git(d, "checkout", "-qb", "work");
+  writeFileSync(join(d, ".agents/skills/demo/a.ts"), initialSource.replace("a = 1", "a = 2"));
+  git(d, "commit", "-qam", "own change");
+  const approvedTree = snap(d);
+  begin(env, d, "range", ["--base", base]);
+  assert.equal(
+    run(env, "finish", "--repo", d, "--rc", "0", "--result", result("merge-approved", [])).out,
+    "APPROVED=1",
+  );
+  // The stalled sessions were created before follow-ups recorded HEAD.
+  const legacyFile = join(HOME, ".cache/workbench/threads/merge-allowance/review.json");
+  const legacy = JSON.parse(readFileSync(legacyFile, "utf8"));
+  delete legacy.repos[d].receipt.head;
+  delete legacy.repos[d].approvedReceipt.head;
+  writeFileSync(legacyFile, JSON.stringify(legacy));
+  git(d, "checkout", "-q", "main");
+  writeFileSync(join(d, ".agents/skills/demo/a.ts"), initialSource.replace("tail = 1", "tail = 2"));
+  git(d, "commit", "-qam", "upstream change");
+  git(d, "update-ref", "refs/remotes/origin/main", "HEAD");
+  git(d, "checkout", "-q", "work");
+  git(d, "merge", "--no-edit", "main");
+  const started = begin(env, d);
+  assert.equal(started.rc, 0, started.err);
+  assert.match(
+    started.out,
+    /^REVIEW_BUCKET=merge$/m,
+    "imported code must not exhaust the implementation's fix allowance",
+  );
+  assert.match(
+    started.out,
+    new RegExp(`^REVIEW_SINCE=${approvedTree}$`, "m"),
+    "only the change since approval is reviewed",
+  );
+  assert.equal(run(env, "check", "--owner", "merge-allowance", d).rc, 1, "a merge still needs its own actual review");
+  const blocked = run(
+    env,
+    "finish",
+    "--repo",
+    d,
+    "--rc",
+    "0",
+    "--result",
+    result("merge-defect", ["[must-fix] b.ts:1: defect — fix — risk"]),
+  );
+  assert.equal(blocked.out, "APPROVED=0");
+  const stateFile = join(HOME, ".cache/workbench/threads/merge-allowance/review.json");
+  const first = JSON.parse(readFileSync(stateFile, "utf8")).repos[d].integration;
+  writeFileSync(join(d, ".agents/skills/demo/a.ts"), initialSource.replace("a = 1", "a = 2").replace("tail = 1", "tail = 3"));
+  const fixing = begin(env, d, "since", ["--since", approvedTree]);
+  assert.match(fixing.out, /^REVIEW_BUCKET=merge$/m);
+  assert.deepEqual(
+    JSON.parse(readFileSync(stateFile, "utf8")).repos[d].integration,
+    first,
+    "fixes and retries keep the same bounded integration budget",
+  );
+  // Drive the actual reviewer program against a stub vendor, with the ordinary
+  // implementation allowance exhausted. No receipt/counter is hand-reset.
+  const roundDir = env.CODE_REVIEW_ROUND_STATE_DIR as string;
+  const buildCounter = join(roundDir, readdirSync(roundDir).find((p) => !p.includes("."))!);
+  writeFileSync(buildCounter, "99\n");
+  const policy = join(TMP, "integration-policy.json");
+  writeFileSync(
+    policy,
+    JSON.stringify({
+      rows: {
+        "adversarial-review": { mode: "single", chain: [{ vendor: "codex", model: "codex", tracks: "gpt-{v}-sol" }] },
+      },
+    }),
+  );
+  const vendor = join(TMP, "integration-vendor.ts");
+  writeFileSync(
+    vendor,
+    '#!/usr/bin/env -S node --experimental-strip-types\nimport{readFileSync}from"node:fs";readFileSync(0);process.stdout.write("NO_FINDINGS\\n");\n',
+  );
+  chmodSync(vendor, 0o755);
+  const resolver = join(TMP, "integration-resolver.ts");
+  writeFileSync(resolver, '#!/usr/bin/env -S node --experimental-strip-types\nprocess.stdout.write("gpt-6-sol\\n");\n');
+  chmodSync(resolver, 0o755);
+  const review = (extra: string[] = []) =>
+    spawnSync(
+      process.execPath,
+      ["--experimental-strip-types", join(dirname(SUT), "../../review/code-review.ts"), "--since", approvedTree, ...extra],
+      {
+        encoding: "utf8",
+        env: {
+          ...baseEnv,
+          ...env,
+          CODE_REVIEW_BUCKET: "merge",
+          CODE_REVIEW_MAX_ROUNDS: "3",
+          CODEX_REVIEW_REPO: d,
+          POLICY_JSON: policy,
+          POLICY_CHAIN_RESOLVER: resolver,
+          CODEX_BIN: vendor,
+        },
+        timeout: 60_000,
+      },
+    );
+  assert.equal(review().status, 0, "a spent build allowance must not block the merge review");
+  assert.equal(review().status, 0);
+  assert.equal(review().status, 0, "integration starts at round one and has all three regular slots");
+  assert.equal(review().status, 5, "integration fix loops remain bounded");
+  assert.equal(review(["--final"]).status, 0);
+  assert.equal(review(["--final"]).status, 5, "there is only one final integration pass");
+  assert.equal(readFileSync(buildCounter, "utf8"), "99\n", "integration never resets or spends the build counter");
+  const clean = run(
+    env,
+    "finish",
+    "--repo",
+    d,
+    "--rc",
+    "0",
+    "--result",
+    shownResult("merge-fixed", [], ["[must-fix] b.ts:1: defect — fix — risk"]),
+  );
+  assert.equal(clean.out, "APPROVED=1", clean.err);
+  writeFileSync(join(d, ".agents/skills/demo/a.ts"), "export const a = 9;\n");
+  assert.doesNotMatch(
+    begin(env, d).out,
+    /^REVIEW_BUCKET=merge$/m,
+    "author edits alone cannot obtain a fresh integration allowance",
+  );
+});
+
+test("an upstream-merge review lists only this branch's files and the covered ones that moved, never the trunk's other work", () => {
+  const d = repo("merge-paths");
+  const env = { ...owner("merge-paths"), POLICY_CHAIN_AUTHOR_VENDORS: "claude" };
+  const source = "export const a = 1;\n" + "// shared context\n".repeat(10) + "export const tail = 1;\n";
+  writeFileSync(join(d, ".agents/skills/demo/a.ts"), source);
+  git(d, "commit", "-qam", "shared fixture");
+  const base = git(d, "rev-parse", "HEAD");
+  git(d, "update-ref", "refs/remotes/origin/main", base);
+  git(d, "checkout", "-qb", "work");
+  writeFileSync(join(d, ".agents/skills/demo/a.ts"), source.replace("a = 1", "a = 2"));
+  git(d, "commit", "-qam", "own change");
+  const approvedTree = snap(d);
+  begin(env, d, "range", ["--base", base]);
+  assert.equal(
+    run(env, "finish", "--repo", d, "--rc", "0", "--result", result("paths-approved", [])).out,
+    "APPROVED=1",
+  );
+  // The trunk moves this branch's own file and, separately, a file nobody here touched.
+  git(d, "checkout", "-q", "main");
+  writeFileSync(join(d, ".agents/skills/demo/a.ts"), source.replace("tail = 1", "tail = 2"));
+  mkdirSync(join(d, "apps/other"), { recursive: true });
+  writeFileSync(join(d, "apps/other/big.ts"), "export const other = 1;\n".repeat(50));
+  git(d, "add", "-A");
+  git(d, "commit", "-qm", "upstream work");
+  git(d, "update-ref", "refs/remotes/origin/main", "HEAD");
+  git(d, "checkout", "-q", "work");
+  git(d, "merge", "--no-edit", "main");
+  const started = begin(env, d);
+  assert.equal(started.rc, 0, started.err);
+  assert.match(started.out, /^REVIEW_BUCKET=merge$/m);
+  assert.match(started.out, new RegExp(`^REVIEW_SINCE=${approvedTree}$`, "m"));
+  const file = started.out.match(/^REVIEW_PATHS_FILE=(.*)$/m)?.[1];
+  assert.ok(file, `no REVIEW_PATHS_FILE in ${started.out}`);
+  assert.deepEqual(
+    readFileSync(file, "utf8").split("\0").filter(Boolean),
+    [".agents/skills/demo/a.ts"],
+    "the merged-in apps/other/big.ts is the trunk's own work and is not re-reviewed here",
+  );
+  // The reviewer program itself, with a stand-in vendor that records its prompt:
+  // the branch's file reaches it, the trunk's other file does not, and an empty
+  // list sends nothing at all (git reads an empty pathspec file as "everything").
+  const policy = join(TMP, "paths-policy.json");
+  writeFileSync(
+    policy,
+    JSON.stringify({
+      rows: {
+        "adversarial-review": { mode: "single", chain: [{ vendor: "codex", model: "codex", tracks: "gpt-{v}-sol" }] },
+      },
+    }),
+  );
+  const seenFile = join(TMP, "paths-seen.txt");
+  const vendor = join(TMP, "paths-vendor.ts");
+  writeFileSync(
+    vendor,
+    `#!/usr/bin/env -S node --experimental-strip-types\nimport{readFileSync,writeFileSync}from"node:fs";writeFileSync(${JSON.stringify(seenFile)},readFileSync(0));process.stdout.write("NO_FINDINGS\\n");\n`,
+  );
+  chmodSync(vendor, 0o755);
+  const resolver = join(TMP, "paths-resolver.ts");
+  writeFileSync(resolver, '#!/usr/bin/env -S node --experimental-strip-types\nprocess.stdout.write("gpt-6-sol\\n");\n');
+  chmodSync(resolver, 0o755);
+  const review = (pathsFile: string) =>
+    spawnSync(
+      process.execPath,
+      ["--experimental-strip-types", join(dirname(SUT), "../../review/code-review.ts"), "--since", approvedTree],
+      {
+        encoding: "utf8",
+        env: {
+          ...baseEnv,
+          ...env,
+          CODE_REVIEW_BUCKET: "merge",
+          CODE_REVIEW_PATHS_FILE: pathsFile,
+          CODEX_REVIEW_REPO: d,
+          POLICY_JSON: policy,
+          POLICY_CHAIN_RESOLVER: resolver,
+          CODEX_BIN: vendor,
+        },
+        timeout: 60_000,
+      },
+    );
+  const narrowed = review(file);
+  assert.equal(narrowed.status, 0, narrowed.stderr);
+  const prompt = readFileSync(seenFile, "utf8");
+  assert.match(prompt, /a = 2/, "the branch's own file reaches the reviewer");
+  assert.match(prompt, /tail = 2/, "including what the trunk changed inside it");
+  assert.doesNotMatch(prompt, /big\.ts|export const other/, "the trunk's other file does not");
+  rmSync(seenFile);
+  const emptyList = join(TMP, "paths-empty.txt");
+  writeFileSync(emptyList, "");
+  const nothing = review(emptyList);
+  assert.equal(nothing.status, 4, `an empty list is converged, not a review of everything: ${nothing.stderr}`);
+  assert.equal(existsSync(seenFile), false, "and no vendor call is made");
+});
+
+test("an ordinary follow-up names no path list: it reviews everything since its snapshot", () => {
+  const d = repo("no-merge-paths");
+  const env = { ...owner("no-merge-paths"), POLICY_CHAIN_AUTHOR_VENDORS: "claude" };
+  const base = git(d, "rev-parse", "HEAD");
+  git(d, "update-ref", "refs/remotes/origin/main", base);
+  begin(env, d, "range", ["--base", base]);
+  run(env, "finish", "--repo", d, "--rc", "0", "--result", result("no-merge-paths", ["[must-fix] a.ts:1: x — y — z"]));
+  writeFileSync(join(d, ".agents/skills/demo/a.ts"), "export const a = 3;\n");
+  const followUp = begin(env, d, "since", ["--since", snap(d)]);
+  assert.equal(followUp.rc, 0, followUp.err);
+  assert.doesNotMatch(followUp.out, /^REVIEW_PATHS_FILE=/m);
+});
+
+test("local merges and an unapproved implementation cannot obtain an integration allowance", () => {
+  for (const approved of [true, false]) {
+    const d = repo(`local-merge-${approved}`);
+    const env = owner(`local-merge-${approved}`);
+    const base = git(d, "rev-parse", "HEAD");
+    git(d, "update-ref", "refs/remotes/origin/main", base);
+    git(d, "checkout", "-qb", "work");
+    writeFileSync(join(d, ".agents/skills/demo/a.ts"), "export const a = 2;\n");
+    git(d, "commit", "-qam", "own change");
+    begin(env, d, "range", ["--base", base]);
+    const initial = run(
+      env,
+      "finish",
+      "--repo",
+      d,
+      "--rc",
+      "0",
+      "--result",
+      result(`local-merge-${approved}`, approved ? [] : ["[must-fix] a.ts:1: defect — fix — risk"]),
+    );
+    assert.equal(initial.out, `APPROVED=${approved ? 1 : 0}`);
+    git(d, "checkout", "-q", "main");
+    writeFileSync(join(d, ".agents/skills/demo/b.ts"), "export const b = 2;\n");
+    git(d, "commit", "-qam", "other branch");
+    if (!approved) git(d, "update-ref", "refs/remotes/origin/main", "HEAD");
+    git(d, "checkout", "-q", "work");
+    git(d, "merge", "--no-edit", "main");
+    assert.doesNotMatch(
+      begin(env, d).out,
+      /^REVIEW_BUCKET=merge$/m,
+      "a real upstream merge AND earlier approval are required",
+    );
+  }
+});
+
+test("an already-approved incoming ancestor cannot renew the allowance for later local edits", () => {
+  const d = repo("old-incoming"),
+    env = owner("old-incoming");
+  const src = "export const a = 1;\n" + "// context\n".repeat(10) + "export const tail = 1;\n";
+  writeFileSync(join(d, ".agents/skills/demo/a.ts"), src);
+  git(d, "commit", "-qam", "fixture");
+  const base = git(d, "rev-parse", "HEAD");
+  git(d, "update-ref", "refs/remotes/origin/main", base);
+  git(d, "checkout", "-qb", "work");
+  writeFileSync(join(d, ".agents/skills/demo/a.ts"), src.replace("a = 1", "a = 2"));
+  git(d, "commit", "-qam", "feature");
+  git(d, "checkout", "-q", "main");
+  writeFileSync(join(d, ".agents/skills/demo/a.ts"), src.replace("tail = 1", "tail = 2"));
+  git(d, "commit", "-qam", "upstream");
+  git(d, "update-ref", "refs/remotes/origin/main", "HEAD");
+  git(d, "checkout", "-q", "work");
+  git(d, "merge", "--no-edit", "main");
+  writeFileSync(join(d, ".agents/skills/demo/a.ts"), src.replace("a = 1", "a = 2"));
+  git(d, "commit", "-qam", "restore source");
+  begin(env, d, "range", ["--base", base]);
+  assert.equal(
+    run(env, "finish", "--repo", d, "--rc", "0", "--result", result("old-incoming-approved", [])).out,
+    "APPROVED=1",
+  );
+  writeFileSync(join(d, ".agents/skills/demo/a.ts"), src.replace("a = 1", "a = 9"));
+  assert.doesNotMatch(
+    begin(env, d, "range", ["--base", base]).out,
+    /^REVIEW_BUCKET=merge$/m,
+    "the incoming commit was already present when this source was approved",
+  );
+});
+
+test("a real upstream merge after a committed local fix reviews both changes in the integration allowance", () => {
+  const d = repo("local-fix-then-upstream"),
+    env = owner("local-fix-then-upstream");
+  const src = "export const a = 1;\n" + "// context\n".repeat(10) + "export const tail = 1;\n";
+  writeFileSync(join(d, ".agents/skills/demo/a.ts"), src);
+  git(d, "commit", "-qam", "fixture");
+  const base = git(d, "rev-parse", "HEAD");
+  git(d, "update-ref", "refs/remotes/origin/main", base);
+  git(d, "checkout", "-qb", "work");
+  writeFileSync(join(d, ".agents/skills/demo/a.ts"), src.replace("a = 1", "a = 2"));
+  git(d, "commit", "-qam", "feature");
+  const approved = snap(d);
+  begin(env, d, "range", ["--base", base]);
+  assert.equal(
+    run(env, "finish", "--repo", d, "--rc", "0", "--result", result("before-local-fix", [])).out,
+    "APPROVED=1",
+  );
+  writeFileSync(join(d, ".agents/skills/demo/b.ts"), "export const b = 3;\n");
+  git(d, "commit", "-qam", "local fix after approval");
+  git(d, "checkout", "-q", "main");
+  writeFileSync(join(d, ".agents/skills/demo/a.ts"), src.replace("tail = 1", "tail = 4"));
+  git(d, "commit", "-qam", "new upstream source");
+  git(d, "update-ref", "refs/remotes/origin/main", "HEAD");
+  git(d, "checkout", "-q", "work");
+  git(d, "merge", "--no-edit", "main");
+  const b = begin(env, d, "range", ["--base", base]);
+  assert.equal(b.rc, 0, b.err);
+  assert.match(b.out, /^REVIEW_BUCKET=merge$/m);
+  assert.match(b.out, new RegExp(`^REVIEW_SINCE=${approved}$`, "m"));
+  const diff = git(d, "diff", approved);
+  assert.match(diff, /\+export const b = 3;/);
+  assert.match(diff, /\+export const tail = 4;/);
+  assert.equal(
+    run(env, "check", "--owner", "local-fix-then-upstream", d).rc,
+    1,
+    "neither change is approved before review",
+  );
+});
+
+test("a malformed historical report cannot abort begin after the current declaration is repaired", () => {
+  const d = repo("malformed-parent"),
+    env = owner("malformed-parent");
+  const report = join(d, "projects/report.md");
+  const valid = `<!-- review-coverage:v1 -->\n${JSON.stringify({ base: "HEAD", scope: ".agents/skills/demo", entryPoints: [], dependencies: [], claims: [] })}\n<!-- /review-coverage -->\n`;
+  writeFileSync(report, valid);
+  git(d, "add", "-A");
+  git(d, "commit", "-qm", "report fixture");
+  const base = git(d, "rev-parse", "HEAD");
+  git(d, "update-ref", "refs/remotes/origin/main", base);
+  git(d, "checkout", "-qb", "work");
+  writeFileSync(join(d, ".agents/skills/demo/a.ts"), "export const a = 2;\n");
+  git(d, "commit", "-qam", "feature");
+  begin(env, d, "range", ["--base", base, "--report", report]);
+  assert.equal(
+    run(env, "finish", "--repo", d, "--rc", "0", "--result", result("before-malformed", [])).out,
+    "APPROVED=1",
+  );
+  git(d, "checkout", "-q", "main");
+  writeFileSync(report, valid.replace('"claims":[]', '"claims":BROKEN'));
+  git(d, "commit", "-qam", "bad historical report");
+  git(d, "update-ref", "refs/remotes/origin/main", "HEAD");
+  git(d, "checkout", "-q", "work");
+  git(d, "merge", "--no-edit", "main");
+  writeFileSync(report, valid.replace('"base":"HEAD"', `"base":"${base}"`));
+  const b = begin(env, d, "range", ["--base", base, "--report", report]);
+  assert.equal(b.rc, 0, b.err);
+  assert.doesNotMatch(b.out, /^REVIEW_BUCKET=merge$/m, "malformed historical metadata grants no new allowance");
+});
+
+test("a user-named contract item cannot stand in for the implicit contract's own check", () => {
+  const d = repo("contract-id-product"),
+    wb = repo("contract-id-source"),
+    env = owner("contract-id-product");
+  const report = join(wb, "projects/p/specs/001-x/report.md"),
+    spec = join(dirname(report), "spec.md");
+  mkdirSync(dirname(report), { recursive: true });
+  writeFileSync(
+    report,
+    `<!-- review-coverage:v1 -->\n${JSON.stringify({ base: "HEAD", scope: ".agents/skills/demo", entryPoints: [], dependencies: [], claims: [{ id: "REVIEW_CONTRACT", claim: "a constant", inapplicable: "a constant" }] })}\n<!-- /review-coverage -->\n`,
+  );
+  writeFileSync(spec, "contract one\n");
+  writeFileSync(join(d, ".agents/skills/demo/a.ts"), "export const a = 2;\n");
+  begin(env, d, "range", ["--report", report]);
+  const userCheck = { id: "REVIEW_CONTRACT", status: "checked", evidence: ["the declared constant only"] };
+  assert.equal(
+    run(env, "finish", "--repo", d, "--rc", "0", "--result", result("contract-id-original", [], [userCheck])).out,
+    "APPROVED=1",
+  );
+  const tree = snap(d);
+  writeFileSync(spec, "contract two\n");
+  begin(env, d, "since", ["--since", tree, "--report", report]);
+  const f = run(env, "finish", "--repo", d, "--rc", "0", "--result", result("contract-id-unread", [], [userCheck]));
+  assert.equal(f.out, "APPROVED=0", "checking a user item must not clear an unread implicit contract");
+});
+
+test("a failed companion snapshot keeps prior evidence but cannot approve changed source", () => {
+  const d = repo("snapshot-failure-product"),
+    wb = repo("snapshot-failure-source"),
+    env = owner("snapshot-failure-product");
+  const report = join(d, "projects/p/specs/001-x/report.md");
+  mkdirSync(dirname(report), { recursive: true });
+  writeFileSync(
+    report,
+    `<!-- review-coverage:v1 -->\n${JSON.stringify({ base: "HEAD", scope: ".agents/skills/demo", entryPoints: [], dependencies: [{ id: "D1", repo: wb, path: ".agents/skills/demo/a.ts", why: "shared source" }], claims: [] })}\n<!-- /review-coverage -->\n`,
+  );
+  writeFileSync(join(d, ".agents/skills/demo/a.ts"), "export const a = 2;\n");
+  begin(env, d, "range", ["--report", report]);
+  assert.equal(
+    run(
+      env,
+      "finish",
+      "--repo",
+      d,
+      "--rc",
+      "0",
+      "--result",
+      result("snapshot-failure-approved", [], [{ id: "D1", status: "checked", evidence: ["shared source"] }]),
+    ).out,
+    "APPROVED=1",
+  );
+  const before = JSON.parse(stateBytes("snapshot-failure-product")).repos[d].receipt.companionTrees;
+  writeFileSync(join(d, ".agents/skills/demo/a.ts"), "export const a = 3;\n");
+  renameSync(join(wb, ".git"), join(wb, "unavailable-git"));
+  const b = begin(env, d, "range", ["--report", report]);
+  assert.equal(b.rc, 1);
+  assert.match(b.err, /could not snapshot declared companion/);
+  assert.deepEqual(JSON.parse(stateBytes("snapshot-failure-product")).repos[d].receipt.companionTrees, before);
+  assert.equal(
+    run(env, "check", "--owner", "snapshot-failure-product", d).rc,
+    1,
+    "stale prior evidence never approves the changed product",
+  );
+});
+
+test("upstream changes to a covered behavior contract or declaration get integration allowance", () => {
+  for (const changed of ["spec.md", "report.md"]) {
+    const d = repo(`merge-${changed}`),
+      env = owner(`merge-${changed}`);
+    const report = join(d, "projects/p/specs/001-x/report.md");
+    const contract = join(dirname(report), "spec.md");
+    mkdirSync(dirname(report), { recursive: true });
+    const declaration = { base: "HEAD", scope: ".agents/skills/demo", entryPoints: [], dependencies: [], claims: [] };
+    writeFileSync(report, `<!-- review-coverage:v1 -->\n${JSON.stringify(declaration)}\n<!-- /review-coverage -->\n`);
+    writeFileSync(contract, "contract one\n");
+    git(d, "add", "-A");
+    git(d, "commit", "-qm", "contract");
+    const base = git(d, "rev-parse", "HEAD");
+    git(d, "update-ref", "refs/remotes/origin/main", base);
+    git(d, "checkout", "-qb", "work");
+    writeFileSync(join(d, ".agents/skills/demo/a.ts"), "export const a = 2;\n");
+    git(d, "commit", "-qam", "own code");
+    begin(env, d, "range", ["--base", base, "--report", report]);
+    assert.equal(
+      run(env, "finish", "--repo", d, "--rc", "0", "--result", result(`contract-${changed}`, [])).out,
+      "APPROVED=1",
+    );
+    git(d, "checkout", "-q", "main");
+    if (changed === "spec.md") writeFileSync(contract, "contract two\n");
+    else {
+      declaration.base = base;
+      writeFileSync(report, `<!-- review-coverage:v1 -->\n${JSON.stringify(declaration)}\n<!-- /review-coverage -->\n`);
+    }
+    git(d, "commit", "-qam", "upstream behavior");
+    git(d, "update-ref", "refs/remotes/origin/main", "HEAD");
+    git(d, "checkout", "-q", "work");
+    git(d, "merge", "--no-edit", "main");
+    assert.match(
+      begin(env, d, "range", ["--base", base, "--report", report]).out,
+      /^REVIEW_BUCKET=merge$/m,
+      changed + " is covered even though it is stored as a record",
+    );
+  }
+});
+
+test("an interrupted review retries from the last completed review, not its unfinished snapshot", () => {
+  const d = repo("retry-scope");
+  const env = owner("retry-scope");
+  writeFileSync(join(d, ".agents/skills/demo/a.ts"), "export const a = 2;\n");
+  approve(env, d);
+  const original = snap(d);
+  writeFileSync(join(d, ".agents/skills/demo/a.ts"), "export const a = 3;\n");
+  begin(env, d, "since", ["--since", original]);
+  const unfinished = snap(d);
+  const retry = begin(env, d, "since", ["--since", unfinished]);
+  assert.match(retry.out, new RegExp(`^REVIEW_SINCE=${original}$`, "m"));
+  assert.equal(run(env, "finish", "--repo", d, "--rc", "0", "--result", result("retry-clean", [])).out, "APPROVED=1");
+});
+
+test("a coverage declaration beside another repo is reviewed explicitly in a focused follow-up", () => {
+  const d = repo("declaration-product");
+  const wb = repo("declaration-workbench");
+  const env = owner("declaration-product");
+  const report = join(wb, "projects/p/specs/001-x/report.md");
+  mkdirSync(dirname(report), { recursive: true });
+  const declaration = { base: "HEAD", scope: "s", entryPoints: [], dependencies: [], claims: [] };
+  const put = () =>
+    writeFileSync(report, `<!-- review-coverage:v1 -->\n${JSON.stringify(declaration)}\n<!-- /review-coverage -->\n`);
+  put();
+  writeFileSync(join(d, ".agents/skills/demo/a.ts"), "export const a = 2;\n");
+  begin(env, d, "range", ["--report", report]);
+  assert.equal(
+    run(env, "finish", "--repo", d, "--rc", "0", "--result", result("declaration-initial", [])).out,
+    "APPROVED=1",
+  );
+  const previous = snap(d);
+  declaration.base = git(d, "rev-parse", "HEAD");
+  put();
+  const b = begin(env, d, "since", ["--since", previous, "--report", report]);
+  const items = JSON.parse(readFileSync(b.out.match(/^ITEMS_FILE=(.*)$/m)![1], "utf8"));
+  assert.ok(items.items.some((i: { id: string }) => i.id === "@review-declaration"));
+  assert.ok(items.changedCoverage.some((p: string) => p.includes("coverage declaration")));
+  const f = run(
+    env,
+    "finish",
+    "--repo",
+    d,
+    "--rc",
+    "0",
+    "--result",
+    result(
+      "declaration-followup",
+      [],
+      [{ id: "@review-declaration", status: "checked", evidence: ["read the new base and scope"] }],
+    ),
+  );
+  assert.equal(f.out, "APPROVED=1", f.err);
+});
+
+test("an upstream merge in a declared companion gets an integration review without rereading the product", () => {
+  const product = repo("companion-product");
+  const wb = repo("companion-source");
+  const env = owner("companion-product");
+  const initial = "export const a = 1;\n" + "// context\n".repeat(10) + "export const tail = 1;\n";
+  writeFileSync(join(wb, ".agents/skills/demo/a.ts"), initial);
+  git(wb, "commit", "-qam", "fixture");
+  const base = git(wb, "rev-parse", "HEAD");
+  git(wb, "update-ref", "refs/remotes/origin/main", base);
+  git(wb, "checkout", "-qb", "work");
+  const report = join(product, "projects/p/specs/001-x/report.md");
+  mkdirSync(dirname(report), { recursive: true });
+  writeFileSync(
+    report,
+    `<!-- review-coverage:v1 -->\n${JSON.stringify({ base: "HEAD", scope: ".agents/skills/demo", entryPoints: [], dependencies: [{ id: "D1", repo: wb, path: ".agents/skills/demo/a.ts", why: "shared contract" }], claims: [] })}\n<!-- /review-coverage -->\n`,
+  );
+  writeFileSync(join(product, ".agents/skills/demo/a.ts"), "export const a = 2;\n");
+  const tree = snap(product);
+  const checked = [{ id: "D1", status: "checked", evidence: ["shared contract read"] }];
+  writeFileSync(join(wb, ".agents/skills/demo/b.ts"), "export const b = 9;\n");
+  assert.equal(piece(env, product, [".agents/skills/demo/a.ts"], [], { report, coverage: checked }).out, "APPROVED=1");
+  const saved = JSON.parse(stateBytes("companion-product")).repos[product];
+  assert.ok(saved.receipt.companionTrees?.[wb], "combined pieces must retain companion source provenance");
+  git(wb, "checkout", "-q", "main");
+  writeFileSync(join(wb, ".agents/skills/demo/a.ts"), initial.replace("tail = 1", "tail = 2"));
+  git(wb, "commit", "-qam", "upstream contract");
+  git(wb, "update-ref", "refs/remotes/origin/main", "HEAD");
+  git(wb, "checkout", "-q", "work");
+  git(wb, "merge", "--no-edit", "--no-ff", "main");
+  const b = begin(env, product, "range", ["--report", report]);
+  assert.match(b.out, /^REVIEW_BUCKET=merge$/m);
+  assert.match(b.out, new RegExp(`^REVIEW_SINCE=${tree}$`, "m"));
+  assert.equal(
+    run(env, "check", "--owner", "companion-product", product).rc,
+    1,
+    "an empty product delta never approves changed dependencies by itself",
+  );
+  assert.equal(
+    run(env, "finish", "--repo", product, "--rc", "0", "--result", result("companion-integrated", [], checked)).out,
+    "APPROVED=1",
+  );
+});
+
 test("a trailer is a record, never proof of review", () => {
   const d = repo("trailer");
   const env = owner("trailer");
@@ -155,6 +752,58 @@ test("a trailer is a record, never proof of review", () => {
   const noLoop = run({ WORKBENCH_THREAD_ID: "trailer-thread" }, "mark", "implement-audit: x", "--repo", d);
   assert.equal(noLoop.rc, 1, noLoop.err);
   assert.match(noLoop.err, /a trailer is a record, not proof of review/);
+});
+
+test("a contract-only upstream merge beside a product is checked without a full product reread", () => {
+  const d = repo("implicit-contract-product"),
+    wb = repo("implicit-contract-source"),
+    env = owner("implicit-contract-product");
+  const report = join(wb, "projects/p/specs/001-x/report.md"),
+    spec = join(dirname(report), "spec.md");
+  mkdirSync(dirname(report), { recursive: true });
+  writeFileSync(
+    report,
+    `<!-- review-coverage:v1 -->\n${JSON.stringify({ base: "HEAD", scope: ".agents/skills/demo", entryPoints: [], dependencies: [], claims: [] })}\n<!-- /review-coverage -->\n`,
+  );
+  writeFileSync(spec, "contract one\n");
+  git(wb, "add", "-A");
+  git(wb, "commit", "-qm", "contract");
+  git(wb, "update-ref", "refs/remotes/origin/main", "HEAD");
+  git(wb, "checkout", "-qb", "work");
+  writeFileSync(join(d, ".agents/skills/demo/a.ts"), "export const a = 2;\n");
+  begin(env, d, "range", ["--report", report]);
+  assert.equal(
+    run(env, "finish", "--repo", d, "--rc", "0", "--result", result("implicit-contract-initial", [])).out,
+    "APPROVED=1",
+  );
+  git(wb, "checkout", "-q", "main");
+  writeFileSync(spec, "contract two\n");
+  git(wb, "commit", "-qam", "upstream contract");
+  git(wb, "update-ref", "refs/remotes/origin/main", "HEAD");
+  git(wb, "checkout", "-q", "work");
+  git(wb, "merge", "--no-edit", "--no-ff", "main");
+  const b = begin(env, d, "range", ["--report", report]);
+  assert.match(b.out, /^REVIEW_BUCKET=merge$/m);
+  const items = JSON.parse(readFileSync(b.out.match(/^ITEMS_FILE=(.*)$/m)![1], "utf8"));
+  assert.ok(
+    items.items.some((i: { id: string }) => i.id === "@review-contract"),
+    "the implicit behavior contract needs an explicit checked item",
+  );
+  const f = run(
+    env,
+    "finish",
+    "--repo",
+    d,
+    "--rc",
+    "0",
+    "--result",
+    result(
+      "implicit-contract-final",
+      [],
+      [{ id: "@review-contract", status: "checked", evidence: ["read contract two"] }],
+    ),
+  );
+  assert.equal(f.out, "APPROVED=1", f.err);
 });
 
 test("begin, finish, status and mark: one approved receipt for the reviewed content", () => {
@@ -249,6 +898,54 @@ test("a failed or interrupted attempt never inherits success, and blockers are n
   assert.equal(conv.out, "APPROVED=0", "an empty delta manufactures no approval");
   assert.match(conv.err, /1 must-fix\/should-fix finding\(s\) unresolved/);
   assert.equal(run(env, "finish", "--repo", d, "--rc", "0").rc, 1, "finish with no open attempt is refused");
+});
+
+// A reviewer that writes its findings as links,
+// "[run.ts:266](/abs/…/run.ts:266): …", and the file it named was read as
+// "[run.ts", which no delta ever holds — the blocker could never close.
+test("a blocker written as a link stays open until a round shown it does not re-raise it", () => {
+  const d = repo("link");
+  const env = owner("link");
+  writeFileSync(join(d, ".agents/skills/demo/a.ts"), "export const a = 2;\n");
+  approve(env, d);
+  writeFileSync(join(d, ".agents/skills/demo/a.ts"), "export const a = 3;\n");
+  begin(env, d, "since", ["--since", snap(d)]);
+  const abs = join(d, ".agents/skills/demo/a.ts");
+  const blocked = run(
+    env,
+    "finish",
+    "--repo",
+    d,
+    "--rc",
+    "0",
+    "--result",
+    result("lnk", [`[must-fix] [a.ts:1](${abs}:1): x — y — z`]),
+  );
+  assert.equal(blocked.out, "APPROVED=0");
+  // A round not shown it leaves it open, whatever its delta.
+  const t1 = snap(d);
+  writeFileSync(join(d, ".agents/skills/demo/b.ts"), "export const b = 1;\n");
+  begin(env, d, "since", ["--since", t1]);
+  const other = run(env, "finish", "--repo", d, "--rc", "0", "--result", result("lnk2", []));
+  assert.equal(other.out, "APPROVED=0");
+  assert.match(other.err, /1 must-fix\/should-fix finding\(s\) unresolved/);
+  // A round shown it that does not re-report it closes it.
+  const t2 = snap(d);
+  writeFileSync(join(d, ".agents/skills/demo/a.ts"), "export const a = 4;\n");
+  begin(env, d, "since", ["--since", t2]);
+  assert.equal(
+    run(
+      env,
+      "finish",
+      "--repo",
+      d,
+      "--rc",
+      "0",
+      "--result",
+      shownResult("lnk3", [], [`[must-fix] [a.ts:1](${abs}:1): x — y — z`]),
+    ).out,
+    "APPROVED=1",
+  );
 });
 
 test("a follow-up round approves only what its delta covered", () => {
@@ -406,6 +1103,27 @@ test("check: an ad-hoc change, a record-only change and a landed branch need no 
   mkdirSync(join(r, "journal"), { recursive: true });
   writeFileSync(join(r, "journal/x.md"), "notes\n");
   assert.equal(run({}, "check", "--owner", "records", r).rc, 0, "only records differ from the base");
+  // A spec folder's evidence and mockups are records, whatever their extension.
+  mkdirSync(join(r, "projects/ops/p/specs/005-x/evidence"), { recursive: true });
+  writeFileSync(join(r, "projects/ops/p/specs/005-x/mockup.html"), "<p>mock</p>\n");
+  writeFileSync(join(r, "projects/ops/p/specs/005-x/evidence/page-1.png"), "png\n");
+  writeFileSync(join(r, "projects/ops/p/specs/005-x/evidence/live.json"), "{}\n");
+  assert.equal(run({}, "check", "--owner", "records", r).rc, 0, "spec evidence and mockups are records");
+  // A project's source is not, whatever its extension: scripts, their fixtures, prompts.
+  for (const src of [
+    "projects/ops/p/scripts/x.ts",
+    "projects/ops/p/scripts/fixtures/good/intune.md",
+    "projects/ops/p/scripts/fixtures/inventory.json",
+    "projects/ops/p/harness/prompts/judge.txt",
+    "projects/ops/p/specs/005-x/tests/fixtures/in.json",
+    "projects/ops/p/ninja/health.ps1",
+    "projects/ops/p/rig/config.yaml",
+  ]) {
+    mkdirSync(dirname(join(r, src)), { recursive: true });
+    writeFileSync(join(r, src), "x\n");
+    assert.equal(run({}, "check", "--owner", "records", r).rc, 1, `${src} needs the review`);
+    rmSync(join(r, src));
+  }
   const req = repo("required");
   writeFileSync(join(req, ".agents/skills/demo/a.ts"), "export const a = 2;\n");
   const report = join(req, "projects/p/specs/001-x/report.md");
@@ -414,6 +1132,22 @@ test("check: an ad-hoc change, a record-only change and a landed branch need no 
   const c = run({}, "check", "--owner", "required", req);
   assert.equal(c.rc, 1, "a report carrying a coverage block marks implementation work");
   assert.match(c.err, /no review receipt for implementation source \(\.agents\/skills\/demo\/a\.ts\)/);
+  // A project fixture alone is implementation source too: no bypass.
+  git(req, "checkout", "-q", "--", ".agents/skills");
+  mkdirSync(join(req, "projects/ops/p/scripts/fixtures"), { recursive: true });
+  writeFileSync(join(req, "projects/ops/p/scripts/fixtures/inventory.json"), "{}\n");
+  const fx = run({}, "check", "--owner", "required", req);
+  assert.equal(fx.rc, 1, "a fixture-only change in implementation work needs a receipt");
+  assert.match(
+    fx.err,
+    /no review receipt for implementation source \(projects\/ops\/p\/scripts\/fixtures\/inventory\.json\)/,
+  );
+  rmSync(join(req, "projects/ops/p/scripts"), { recursive: true, force: true });
+  mkdirSync(join(req, "projects/ops/p/ninja"), { recursive: true });
+  writeFileSync(join(req, "projects/ops/p/ninja/health.ps1"), "Write-Output 1\n");
+  const ps = run({}, "check", "--owner", "required", req);
+  assert.equal(ps.rc, 1, "a project's PowerShell script in implementation work needs a receipt");
+  assert.match(ps.err, /no review receipt for implementation source \(projects\/ops\/p\/ninja\/health\.ps1\)/);
 });
 
 // ── Round-1 audit findings ───────────────────────────────────────────────
@@ -912,6 +1646,178 @@ test("a spec beside a product is reviewed through the declared item that names i
   assert.equal(f.out, "APPROVED=1", f.err);
 });
 
+// A recorded run is a record: rerunning it rewrites its bytes, and that alone
+// no longer sends the claim back to the reviewer. It must still exist.
+test("a claim beside a product names its recorded run in the other repo, bound by presence", () => {
+  const prod = repo("claim-evidence-product");
+  const wb = repo("claim-evidence-wb");
+  const env = owner("claim-evidence-product");
+  writeFileSync(join(prod, ".agents/skills/demo/a.ts"), "export const a = 2;\n");
+  const report = join(wb, "projects/p/specs/001-x/report-product.md");
+  const log = "projects/p/specs/001-x/evidence/c1.log";
+  mkdirSync(join(wb, dirname(log)), { recursive: true });
+  writeFileSync(join(wb, log), "red, then green\n");
+  const block = (repoField: string): string =>
+    `<!-- review-coverage:v1 -->\n${JSON.stringify({ base: "HEAD", scope: "s", entryPoints: [], dependencies: [], claims: [{ id: "C1", claim: "a is 2", negativeTest: { trigger: "a set to 1", expected: "the test fails", evidence: [log], repo: repoField } }] })}\n<!-- /review-coverage -->\n`;
+  writeFileSync(report, block("claim-evidence-wb"));
+  const bad = begin(env, prod, "range", ["--report", report]);
+  assert.match(bad.err, /claim C1: repo must be an absolute path/, "a relative repo is refused by name");
+  writeFileSync(report, block(wb));
+  const cov = [{ id: "C1", status: "checked", evidence: ["c1.log shows the red run, then green"] }];
+  const b = begin(env, prod, "range", ["--report", report]);
+  assert.equal(b.rc, 0, b.err);
+  assert.doesNotMatch(b.err, /does not exist|unknown key/, "the log is read in the repo the claim names");
+  assert.equal(run(env, "finish", "--repo", prod, "--rc", "0", "--result", result("ce0", [], cov)).out, "APPROVED=1");
+  writeFileSync(join(wb, log), "rewritten after the review\n");
+  const t = snap(prod);
+  writeFileSync(join(prod, ".agents/skills/demo/b.ts"), "export const b = 2;\n");
+  begin(env, prod, "since", ["--since", t, "--report", report]);
+  const f = run(env, "finish", "--repo", prod, "--rc", "0", "--result", result("ce1", [], []));
+  assert.equal(f.out, "APPROVED=1", `a rerun recorded run keeps the claim checked: ${f.err}`);
+  assert.doesNotMatch(f.err, /c1\.log/, "the rerun log is not named as unreviewed");
+});
+
+// ── A replaced companion evidence file leaves the change ──────────
+//
+// A two-repo build that replaces its red-run logs in the companion repo, and each deleted log stayed a "not
+// reviewed" gap on every later receipt. A companion path the declaration no
+// longer names and that no longer exists has left the change; one still on
+// disk, or still declared, is judged as before.
+
+interface Companion {
+  prod: string;
+  wb: string;
+  env: NodeJS.ProcessEnv;
+  report: string;
+  c1: string;
+  c2: string;
+  declare: (evidence: string) => void;
+  checkC1: { id: string; status: string; evidence: string[] }[];
+}
+/** A product build approved with claim C1's red-run log c1.log kept in the companion repo. */
+function companion(name: string): Companion {
+  const prod = repo(`${name}-product`);
+  const wb = repo(`${name}-wb`);
+  const env = owner(name);
+  writeFileSync(join(prod, ".agents/skills/demo/a.ts"), "export const a = 2;\n");
+  const report = join(wb, "projects/p/specs/001-x/report-product.md");
+  const c1 = "projects/p/specs/001-x/evidence/c1.log";
+  const c2 = "projects/p/specs/001-x/evidence/c2.log";
+  mkdirSync(join(wb, dirname(c1)), { recursive: true });
+  writeFileSync(join(wb, c1), "red, then green\n");
+  const declare = (evidence: string): void =>
+    writeFileSync(
+      report,
+      `<!-- review-coverage:v1 -->\n${JSON.stringify({ base: "HEAD", scope: "s", entryPoints: [], dependencies: [], claims: [{ id: "C1", claim: "a is 2", negativeTest: { trigger: "a set to 1", expected: "the test fails", evidence: [evidence], repo: wb } }] })}\n<!-- /review-coverage -->\n`,
+    );
+  declare(c1);
+  const checkC1 = [{ id: "C1", status: "checked", evidence: ["the log shows the red run, then green"] }];
+  const b = begin(env, prod, "range", ["--report", report]);
+  assert.equal(b.rc, 0, b.err);
+  assert.equal(
+    run(env, "finish", "--repo", prod, "--rc", "0", "--result", result(`${name}-0`, [], checkC1)).out,
+    "APPROVED=1",
+  );
+  return { prod, wb, env, report, c1, c2, declare, checkC1 };
+}
+/** Delete c1.log, record c2.log and point the claim at it, as a redesign does. */
+function replaceEvidence(c: Companion): void {
+  rmSync(join(c.wb, c.c1));
+  writeFileSync(join(c.wb, c.c2), "red, then green, after the redesign\n");
+  c.declare(c.c2);
+}
+const withDeclaration = (c: Companion) => [
+  ...c.checkC1,
+  { id: "@review-declaration", status: "checked", evidence: ["C1 now names c2.log"] },
+];
+
+test("a replaced companion evidence file leaves the change", () => {
+  const c = companion("replaced-evidence");
+  const t = snap(c.prod);
+  replaceEvidence(c);
+  writeFileSync(join(c.prod, ".agents/skills/demo/b.ts"), "export const b = 2;\n");
+  const b = begin(c.env, c.prod, "since", ["--since", t, "--report", c.report]);
+  assert.equal(b.rc, 0, b.err);
+  const f = run(c.env, "finish", "--repo", c.prod, "--rc", "0", "--result", result("re1", [], withDeclaration(c)));
+  assert.equal(f.out, "APPROVED=1", f.err);
+  assert.doesNotMatch(f.out + f.err, /c1\.log/, "the deleted log is not named as unreviewed");
+});
+
+test("a rerun companion log leaves no gap, and a replaced one leaves the change", () => {
+  const c = companion("carried-evidence");
+  writeFileSync(join(c.wb, c.c1), "rewritten after the review\n");
+  const t1 = snap(c.prod);
+  writeFileSync(join(c.prod, ".agents/skills/demo/b.ts"), "export const b = 2;\n");
+  begin(c.env, c.prod, "since", ["--since", t1, "--report", c.report]);
+  const rerun = run(c.env, "finish", "--repo", c.prod, "--rc", "0", "--result", result("ca1", [], []));
+  assert.equal(rerun.out, "APPROVED=1", rerun.err);
+  assert.doesNotMatch(rerun.err, /not reviewed/, "a rerun log is no gap");
+  const t2 = snap(c.prod);
+  replaceEvidence(c);
+  writeFileSync(join(c.prod, ".agents/skills/demo/b.ts"), "export const b = 3;\n");
+  begin(c.env, c.prod, "since", ["--since", t2, "--report", c.report]);
+  const f = run(c.env, "finish", "--repo", c.prod, "--rc", "0", "--result", result("ca2", [], withDeclaration(c)));
+  assert.equal(f.out, "APPROVED=1", f.err);
+  assert.doesNotMatch(f.out + f.err, /c1\.log/, "the carried gap on the deleted log is dropped");
+});
+
+test("a receipt saved with a log's bytes before 2026-11-20 reads as bound by presence", () => {
+  const c = companion("legacy-evidence");
+  const f = join(HOME, ".cache/workbench/threads/legacy-evidence/review.json");
+  const st = JSON.parse(readFileSync(f, "utf8")) as {
+    repos: Record<string, Record<string, { covered?: Record<string, string> } | undefined>>;
+  };
+  let saved = 0;
+  for (const rs of Object.values(st.repos))
+    for (const r of [rs.receipt, rs.last, rs.approvedReceipt])
+      for (const k of Object.keys(r?.covered ?? {}))
+        if (k.endsWith("c1.log") && r?.covered) {
+          r.covered[k] = "legacy-bytes";
+          saved++;
+        }
+  assert.ok(saved > 0, "the saved receipt names the log");
+  writeFileSync(f, JSON.stringify(st));
+  writeFileSync(join(c.wb, c.c1), "rewritten after the review\n");
+  const ck = run(c.env, "check", "--owner", "legacy-evidence", c.prod);
+  assert.equal(ck.rc, 0, `a rerun log does not stale an older receipt: ${ck.err}`);
+});
+
+test("a companion file dropped from the declaration but still on disk stays a gap", () => {
+  const c = companion("dropped-evidence");
+  const t = snap(c.prod);
+  writeFileSync(join(c.wb, c.c2), "red, then green, after the redesign\n");
+  c.declare(c.c2);
+  writeFileSync(join(c.prod, ".agents/skills/demo/b.ts"), "export const b = 2;\n");
+  const b = begin(c.env, c.prod, "since", ["--since", t, "--report", c.report]);
+  assert.equal(b.rc, 0, b.err);
+  const f = run(c.env, "finish", "--repo", c.prod, "--rc", "0", "--result", result("de1", [], withDeclaration(c)));
+  assert.equal(f.out, "APPROVED=0", "evidence undeclared while still on disk is not let go unreviewed");
+  assert.match(f.err, /not reviewed: .*dropped-evidence-wb::projects\/p\/specs\/001-x\/evidence\/c1\.log/);
+});
+
+test("a companion path left as a dangling symlink once undeclared is still there, and stays a gap", () => {
+  const c = companion("dangling-evidence");
+  const t = snap(c.prod);
+  replaceEvidence(c);
+  symlinkSync("no-such-run.log", join(c.wb, c.c1));
+  writeFileSync(join(c.prod, ".agents/skills/demo/b.ts"), "export const b = 2;\n");
+  const b = begin(c.env, c.prod, "since", ["--since", t, "--report", c.report]);
+  assert.equal(b.rc, 0, b.err);
+  const f = run(c.env, "finish", "--repo", c.prod, "--rc", "0", "--result", result("dl1", [], withDeclaration(c)));
+  assert.equal(f.out, "APPROVED=0", "a path that still holds a symlink has not left the change");
+  assert.match(f.err, /not reviewed: .*dangling-evidence-wb::projects\/p\/specs\/001-x\/evidence\/c1\.log/);
+});
+
+test("a declared companion file that is deleted is reported missing", () => {
+  const c = companion("deleted-declared-evidence");
+  rmSync(join(c.wb, c.c1));
+  writeFileSync(join(c.prod, ".agents/skills/demo/b.ts"), "export const b = 2;\n");
+  const b = begin(c.env, c.prod, "since", ["--since", snap(c.prod), "--report", c.report]);
+  assert.equal(b.rc, 1, "begin refuses before any review call");
+  assert.match(b.err, /declared path .*c1\.log does not exist/);
+  assert.doesNotMatch(b.out, /RECEIPT=review/, "no review is opened over the missing log");
+});
+
 test("check: a project's own code is implementation source a receipt must cover", () => {
   const p = repo("project-code");
   const code = join(p, "projects/web/demo/scripts/main.ts");
@@ -1031,9 +1937,8 @@ test("a fallback's blocker stays open until a round shown it leaves it out, and 
 });
 
 // The fresh-context fallback of a follow-up round is handed the open
-// findings (the items file) like a vendor: a clean reply closes them, and a
-// finding beside one of them prints the same REPEAT SPOT warning code-review.ts
-// prints for a vendor's answer. The fallback path once skipped the detector.
+// findings (the items file) like a vendor: a clean reply closes them, and one
+// it re-reports stays open, as a vendor's "open" verdict keeps it.
 function pendingFollowUp(tag: string, blocker: string): { d: string; env: NodeJS.ProcessEnv } {
   const d = repo(tag);
   const env = owner(tag);
@@ -1052,46 +1957,24 @@ test("a follow-up's fallback closes an open blocker it leaves out", () => {
   const f = run(env, "finish", "--repo", d, "--fallback", reply);
   assert.equal(f.out, "APPROVED=1", `a clean fallback shown the blocker closes it: ${f.err}`);
 });
-test("a follow-up's fallback finding beside an open one is a repeat spot", () => {
+// A fallback that re-reports a blocker it was shown keeps it open, and one
+// judged open twice in a row prints STILL OPEN: the approach, not the patch,
+// is wrong. A fallback that leaves it out closes it (above).
+test("a follow-up's fallback that re-reports an open blocker keeps it open, and twice prints STILL OPEN", () => {
   const open = "[must-fix] .agents/skills/demo/b.ts:10: the save races — fix — breaks";
-  const near = pendingFollowUp("fb-repeat", open);
-  const reply = join(TMP, "fb-repeat.txt");
-  writeFileSync(reply, "1. **still racy**: `.agents/skills/demo/b.ts:20` — x — verdict: **fix-now** — failure: y — fix it\n");
-  const f = run(near.env, "finish", "--repo", near.d, "--fallback", reply);
+  const { d, env } = pendingFollowUp("fb-still", open);
+  const reply = join(TMP, "fb-still.txt");
+  writeFileSync(reply, `${open}\n`);
+  const f = run(env, "finish", "--repo", d, "--fallback", reply);
   assert.equal(f.out, "APPROVED=0", f.err);
-  assert.match(
-    f.err,
-    /REPEAT SPOT: \.agents\/skills\/demo\/b\.ts:20 — the last review flagged \.agents\/skills\/demo\/b\.ts:10 too/,
-  );
-  const far = pendingFollowUp("fb-far", open);
-  const farReply = join(TMP, "fb-far.txt");
-  writeFileSync(farReply, "[must-fix] .agents/skills/demo/b.ts:90: a new hole — x — y\n");
-  assert.doesNotMatch(run(far.env, "finish", "--repo", far.d, "--fallback", farReply).err, /REPEAT SPOT/);
-});
-
-// A quoted location runs to its closing backtick, a space in the name
-// included: cut at the space it was `.agents/skills/demo/my`, which has no
-// line, so a finding beside it printed no warning.
-test("a fallback finding at `my file.ts:20` beside one at `my file.ts:10` is a repeat spot", () => {
-  const d = repo("fb-spaced");
-  const env = owner("fb-spaced");
-  const t0 = snap(d);
-  assert.match(begin(env, d).out, /RECEIPT=review/);
+  assert.doesNotMatch(`${f.out}\n${f.err}`, /STILL OPEN/, "once open is not yet a pattern");
+  const t1 = snap(d);
+  writeFileSync(join(d, ".agents/skills/demo/b.ts"), "export const b = 3;\n");
+  assert.match(begin(env, d, "since", ["--since", t1]).out, /RECEIPT=review/);
   run(env, "finish", "--repo", d, "--rc", "3");
-  const first = join(TMP, "fb-spaced-1.txt");
-  writeFileSync(first, "1. **racy**: `.agents/skills/demo/my file.ts:10` — x — verdict: **fix-now** — failure: y — fix it\n");
-  assert.equal(run(env, "finish", "--repo", d, "--fallback", first).out, "APPROVED=0");
-  writeFileSync(join(d, ".agents/skills/demo/b.ts"), "export const b = 2;\n");
-  assert.match(begin(env, d, "since", ["--since", t0]).out, /RECEIPT=review/);
-  run(env, "finish", "--repo", d, "--rc", "3");
-  const again = join(TMP, "fb-spaced-2.txt");
-  writeFileSync(again, "1. **still racy**: `.agents/skills/demo/my file.ts:20` — x — verdict: **fix-now** — failure: y — fix it\n");
-  const f = run(env, "finish", "--repo", d, "--fallback", again);
-  assert.equal(f.out, "APPROVED=0", f.err);
-  assert.match(
-    f.err,
-    /REPEAT SPOT: \.agents\/skills\/demo\/my file\.ts:20 — the last review flagged \.agents\/skills\/demo\/my file\.ts:10 too/,
-  );
+  const g = run(env, "finish", "--repo", d, "--fallback", reply);
+  assert.equal(g.out.split("\n").at(-1), "APPROVED=0", g.err);
+  assert.match(g.out, /^STILL OPEN: F[0-9a-f]{6} .*the save races/m);
 });
 
 // A fallback finding is rewritten location first, the shape a vendor's
@@ -1320,11 +2203,20 @@ function piece(
   dir: string,
   paths: string[],
   findings: string[] = [],
-  o: PieceOpts & { coverage?: unknown[]; vendor?: string } = {},
+  o: PieceOpts & { coverage?: unknown[]; vendor?: string; expectedItems?: string[] } = {},
 ): R {
   const b = beginPiece(env, dir, paths, o);
   assert.equal(b.rc, 0, b.err);
   assert.match(b.out, /RECEIPT=review/, b.err);
+  if (o.expectedItems) {
+    const file = b.out.match(/^ITEMS_FILE=(.*)$/m)![1];
+    const { items } = JSON.parse(readFileSync(file, "utf8")) as { items: { id: string }[] };
+    assert.deepEqual(
+      items.map((item) => item.id),
+      o.expectedItems,
+      "send only relevant, outstanding checks to this piece",
+    );
+  }
   return run(
     env,
     "finish",
@@ -1547,27 +2439,44 @@ test("pieces: a declared item counts from the piece that checked it, and not aft
     mkdirSync(dirname(report), { recursive: true });
     writeFileSync(
       report,
-      `<!-- review-coverage:v1 -->\n${JSON.stringify({ base: "HEAD", scope: ".agents/skills/demo", entryPoints: [{ id: "E1", path: A }], dependencies: [{ id: "D1", path: C, why: "a reads it" }], claims: [] })}\n<!-- /review-coverage -->\n`,
+      `<!-- review-coverage:v1 -->\n${JSON.stringify({
+        base: "HEAD",
+        scope: ".agents/skills/demo",
+        entryPoints: [
+          { id: "E1", path: A },
+          { id: "E2", path: B },
+        ],
+        dependencies: [{ id: "D1", path: C, why: "a reads it" }],
+        claims: [],
+      })}\n<!-- /review-coverage -->\n`,
     );
     return { d, env: owner(name), report };
   };
-  const cov = (e1: string, d1: string) => [
-    { id: "E1", status: e1, evidence: ["x"] },
-    { id: "D1", status: d1, evidence: ["x"] },
+  const cov = (checked: string[], unchecked: string[] = []) => [
+    ...checked.map((id) => ({ id, status: "checked", evidence: ["x"] })),
+    ...unchecked.map((id) => ({ id, status: "unchecked", evidence: ["x"] })),
   ];
   const ok = mk("pc-items");
-  piece(ok.env, ok.d, [A], [], { report: ok.report, coverage: cov("checked", "unchecked") });
-  const f = piece(ok.env, ok.d, [B], [], { report: ok.report, coverage: cov("unchecked", "checked") });
+  piece(ok.env, ok.d, [A], [], { report: ok.report, coverage: cov(["E1", "D1"]), expectedItems: ["E1", "D1"] });
+  const f = piece(ok.env, ok.d, [B], [], { report: ok.report, coverage: cov(["E2"]), expectedItems: ["E2"] });
   assert.match(f.out, /^APPROVED=1$/m, f.err);
   const moved = mk("pc-items-moved");
-  piece(moved.env, moved.d, [A], [], { report: moved.report, coverage: cov("checked", "checked") });
+  piece(moved.env, moved.d, [A], [], { report: moved.report, coverage: cov(["E1", "D1"]) });
   edit(moved.d, [C], 5);
-  const g = piece(moved.env, moved.d, [B, C], [], { report: moved.report, coverage: cov("unchecked", "unchecked") });
+  const g = piece(moved.env, moved.d, [B, C], [], {
+    report: moved.report,
+    coverage: cov(["E2"], ["D1"]),
+    expectedItems: ["E2", "D1"],
+  });
   assert.match(g.out, /^APPROVED=0$/m);
   assert.match(g.err, /no piece checked D1 at its current content/);
   const none = mk("pc-items-none");
-  piece(none.env, none.d, [A], [], { report: none.report, coverage: cov("checked", "unchecked") });
-  const h = piece(none.env, none.d, [B], [], { report: none.report, coverage: cov("checked", "unchecked") });
+  piece(none.env, none.d, [A], [], { report: none.report, coverage: cov(["E1"], ["D1"]) });
+  const h = piece(none.env, none.d, [B], [], {
+    report: none.report,
+    coverage: cov(["E2"], ["D1"]),
+    expectedItems: ["E2", "D1"],
+  });
   assert.match(h.out, /^APPROVED=0$/m);
   assert.match(h.err, /no piece checked D1/);
 });
@@ -1718,13 +2627,13 @@ test("pieces: claims sharing one evidence file each stay bound to it", () => {
     { id: "C1", status: c1, evidence: ["x"] },
     { id: "C2", status: c2, evidence: ["x"] },
   ];
-  // Piece 1 checks C1 against the evidence as it was; the evidence then moves,
-  // and piece 2 checks only C2 against the new bytes.
+  // Piece 1 checks C1; the shared evidence is then rerun, and piece 2 checks
+  // only C2. A rerun is a record rewritten, so C1's check still stands.
   piece(env, d, [A], [], { report, coverage: cov("checked", "unchecked") });
   writeFileSync(join(d, ev), "red then green, rewritten\n");
   const f = piece(env, d, [B], [], { report, coverage: cov("unchecked", "checked") });
-  assert.match(f.out, /^APPROVED=0$/m, "C1 was checked against evidence that has since moved");
-  assert.match(f.err, /no piece checked C1 at its current content/);
+  assert.match(f.out, /^APPROVED=1$/m, `C1's check survives a rerun of its evidence: ${f.err}`);
+  assert.doesNotMatch(f.err, /no piece checked C1/);
 });
 
 test("pieces: a piece whose result names no reviewer is not kept and reads nothing", () => {
@@ -1740,4 +2649,575 @@ test("pieces: a piece whose result names no reviewer is not kept and reads nothi
   const second = piece(env, d, [B]);
   assert.match(second.out, /^APPROVED=0$/m, "the anonymous piece's file is still unread");
   assert.match(second.out, /^unread: \.agents\/skills\/demo\/a\.ts$/m);
+});
+
+// land.ts merges the trunk and, on a conflict, leaves the merge uncommitted;
+// the close's re-run asks `check` before committing it. Measured from HEAD's
+// merge-base, the trunk's own landed spec report and source read as this
+// thread's implementation work, and the close would demand a review of them.
+test("check: an uncommitted trunk merge does not make the trunk's work this thread's", () => {
+  const d = repo("uncommitted-trunk-merge"),
+    env = owner("uncommitted-trunk-merge");
+  git(d, "update-ref", "refs/remotes/origin/main", "HEAD");
+  git(d, "checkout", "-qb", "work");
+  mkdirSync(join(d, "journal"), { recursive: true });
+  writeFileSync(join(d, "journal/entry.md"), "# a records-only session\n");
+  git(d, "add", "-A");
+  git(d, "commit", "-qm", "records only");
+  git(d, "checkout", "-q", "main");
+  mkdirSync(join(d, "projects/x/specs/001-y"), { recursive: true });
+  writeFileSync(join(d, "projects/x/specs/001-y/report.md"), "# report\n<!-- review-coverage:v1 -->\n");
+  writeFileSync(join(d, ".agents/skills/demo/a.ts"), "export const a = 2;\n");
+  git(d, "add", "-A");
+  git(d, "commit", "-qm", "another thread's reviewed build lands");
+  git(d, "update-ref", "refs/remotes/origin/main", "HEAD");
+  git(d, "checkout", "-q", "work");
+  git(d, "merge", "-q", "--no-commit", "--no-ff", "main");
+  const r = run(env, "check", "--owner", "uncommitted-trunk-merge", d);
+  assert.equal(r.rc, 0, r.err);
+  assert.doesNotMatch(r.err, /no review receipt/);
+});
+
+test("a full review after the bound build has landed starts the repo's record afresh", () => {
+  const d = repo("landed-report"),
+    env = owner("landed-report");
+  const stateFile = join(HOME, ".cache/workbench/threads/landed-report/review.json");
+  const bound = (): unknown => {
+    const s = JSON.parse(readFileSync(stateFile, "utf8")) as { repos: Record<string, { report: string | null }> };
+    return Object.values(s.repos)[0]?.report ?? null;
+  };
+  git(d, "update-ref", "refs/remotes/origin/main", git(d, "rev-parse", "HEAD"));
+  git(d, "checkout", "-qb", "work");
+  const report = join(d, "projects/ops/p/specs/001-x/report.md");
+  mkdirSync(dirname(report), { recursive: true });
+  writeFileSync(
+    report,
+    `<!-- review-coverage:v1 -->\n${JSON.stringify({ base: "HEAD", scope: ".agents/skills/demo", entryPoints: [{ id: "E1", path: ".agents/skills/demo/a.ts" }], dependencies: [], claims: [] })}\n<!-- /review-coverage -->\n`,
+  );
+  writeFileSync(join(d, ".agents/skills/demo/a.ts"), "export const a = 2;\n");
+  // The build, unlanded: its report binds, and the review leaves a finding open.
+  const b1 = begin(env, d, "range", ["--report", report]);
+  assert.equal(b1.rc, 0, b1.err);
+  assert.equal(bound(), report, "an unlanded report binds");
+  assert.equal(
+    run(
+      env,
+      "finish",
+      "--repo",
+      d,
+      "--rc",
+      "0",
+      "--result",
+      result("landed-1", ["[should-fix] .agents/skills/demo/a.ts:1: a finding about the build"]),
+    ).out,
+    "APPROVED=0",
+  );
+  // The build lands: the trunk holds the report as the worktree does.
+  git(d, "add", "-A");
+  git(d, "commit", "-qm", "land the build");
+  git(d, "update-ref", "refs/remotes/origin/main", git(d, "rev-parse", "HEAD"));
+  // A follow-up round still compares with the receipt it follows: kept.
+  const before = snap(d);
+  writeFileSync(join(d, ".agents/skills/demo/b.ts"), "export const b = 2;\n");
+  assert.equal(begin(env, d, "since", ["--since", before]).rc, 0);
+  assert.equal(bound(), report, "a follow-up round keeps the binding");
+  run(env, "finish", "--repo", d, "--rc", "0", "--result", result("landed-since", []));
+  // A full review of the later work, no --report: a fresh record.
+  const b2 = begin(env, d);
+  assert.equal(b2.rc, 0, b2.err);
+  assert.equal(bound(), null, "the landed report no longer binds");
+  const items = b2.out.match(/^ITEMS_FILE=(.*)$/m)?.[1] ?? "";
+  assert.ok(items !== "" && existsSync(items), b2.out);
+  assert.doesNotMatch(readFileSync(items, "utf8"), /coverage declaration|"E1"/, "no landed item is asked for again");
+  assert.equal(
+    run(env, "finish", "--repo", d, "--rc", "0", "--result", result("landed-2", [])).out,
+    "APPROVED=1",
+    "the landed build's open finding does not hold the later work",
+  );
+  // An explicit --report binds whatever its state.
+  const b3 = begin(env, d, "range", ["--report", report]);
+  assert.equal(b3.rc, 0, b3.err);
+  assert.equal(bound(), report, "an explicit report binds");
+});
+
+// ── Two writers under one owner ────────────────
+// A workbench review and a product review can run at once under one audit
+// owner; a command that read the record at its start and wrote the whole of it
+// back would erase the other repo's entry.
+
+/** Run the program in the background; resolves when it exits. */
+function runAsync(env: NodeJS.ProcessEnv, ...args: string[]): { child: ChildProcess; done: Promise<R> } {
+  const child = spawn(process.execPath, ["--experimental-strip-types", SUT, ...args], {
+    env: { ...baseEnv, ...env },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  let out = "";
+  let err = "";
+  child.stdout?.on("data", (d: Buffer) => {
+    out += d.toString();
+  });
+  child.stderr?.on("data", (d: Buffer) => {
+    err += d.toString();
+  });
+  const done = new Promise<R>((ok) =>
+    child.on("close", (rc) => ok({ out: out.replace(/\n+$/, ""), err: err.replace(/\n+$/, ""), rc })),
+  );
+  return { child, done };
+}
+const pause = (ms: number): Promise<void> => new Promise((ok) => setTimeout(ok, ms));
+async function until(what: string, ok: () => boolean, ms = 30_000): Promise<void> {
+  const end = Date.now() + ms;
+  while (!ok()) {
+    if (Date.now() > end) throw new Error(`timed out waiting for ${what}`);
+    await pause(20);
+  }
+}
+const record = (id: string): State => JSON.parse(stateBytes(id)) as State;
+interface State {
+  repos: Record<string, Record<string, unknown> & { receipt?: Record<string, unknown> }>;
+}
+const real = (d: string): string => git(d, "rev-parse", "--show-toplevel");
+/**
+ * Writer A runs `aArgs` held at its first record write; once it is waiting,
+ * writer B runs `bArgs` to completion; then A is let go. Returns both results
+ * and the record as B left it.
+ */
+async function interleave(
+  env: NodeJS.ProcessEnv,
+  id: string,
+  aArgs: string[],
+  bArgs: string[],
+): Promise<{ a: R; b: R; afterB: State | null }> {
+  const barrier = join(TMP, `barrier-${id}-${Math.random()}`);
+  const a = runAsync({ ...env, AUDIT_DEDUPE_TEST_WRITE_BARRIER: barrier }, ...aArgs);
+  let aExited = false;
+  void a.done.then(() => {
+    aExited = true;
+  });
+  await until("writer A to reach its write", () => existsSync(`${barrier}.waiting`) || aExited);
+  if (aExited) assert.fail(`writer A ended before its write: ${JSON.stringify(await a.done)}`);
+  const b = run(env, ...bArgs);
+  const afterB = stateBytes(id) === "" ? null : record(id);
+  writeFileSync(barrier, "");
+  return { a: await a.done, b, afterB };
+}
+function beginArgs(dir: string): string[] {
+  return [
+    "begin",
+    "--repo",
+    dir,
+    "--tree",
+    snap(dir),
+    "--mode",
+    "range",
+    "--bucket",
+    "build",
+    "--base",
+    "HEAD",
+    "--scope",
+    ".agents/skills/demo",
+  ];
+}
+function bothKept(after: State, x: string, y: string, afterB: State | null): void {
+  assert.ok(after.repos[real(y)], `repo Y (${real(y)}) is missing from the record`);
+  assert.ok(after.repos[real(x)], `repo X (${real(x)}) is missing from the record`);
+  assert.deepEqual(after.repos[real(y)], afterB?.repos[real(y)], "Y's entry is as its own writer left it");
+}
+
+test("two writers for two repos under one owner keep both entries: begin against begin", async () => {
+  const id = "pair-begin";
+  const env = owner(id);
+  const x = repo("pair-begin-x");
+  const y = repo("pair-begin-y");
+  writeFileSync(join(x, ".agents/skills/demo/a.ts"), "export const a = 2;\n");
+  writeFileSync(join(y, ".agents/skills/demo/a.ts"), "export const a = 3;\n");
+  const { a, b, afterB } = await interleave(env, id, beginArgs(x), beginArgs(y));
+  assert.equal(b.rc, 0, b.err);
+  assert.equal(a.rc, 0, a.err);
+  const after = record(id);
+  bothKept(after, x, y, afterB);
+  const rx = after.repos[real(x)];
+  assert.equal(rx.receipt?.status, "incomplete");
+  assert.equal(rx.receipt?.mode, "range");
+  assert.deepEqual(rx.spendInit, { build: true, qa: true });
+  assert.equal(rx.base, "HEAD");
+  assert.equal(rx.scope, ".agents/skills/demo");
+});
+
+test("two writers for two repos under one owner keep both entries: finish against begin", async () => {
+  const id = "pair-finish";
+  const env = owner(id);
+  const x = repo("pair-finish-x");
+  const y = repo("pair-finish-y");
+  writeFileSync(join(x, ".agents/skills/demo/a.ts"), "export const a = 2;\n");
+  writeFileSync(join(y, ".agents/skills/demo/a.ts"), "export const a = 3;\n");
+  const bx = begin(env, x);
+  assert.match(bx.out, /RECEIPT=review/, bx.err);
+  const finish = ["finish", "--repo", x, "--rc", "0", "--result", result("pair-finish", [])];
+  const { a, b, afterB } = await interleave(env, id, finish, beginArgs(y));
+  assert.equal(b.rc, 0, b.err);
+  assert.equal(a.out, "APPROVED=1", a.err);
+  const after = record(id);
+  bothKept(after, x, y, afterB);
+  const rx = after.repos[real(x)];
+  assert.equal(rx.receipt?.approved, true);
+  assert.ok(rx.approvedReceipt, "X keeps its approval");
+});
+
+test("two writers for two repos under one owner keep both entries: mark against begin", async () => {
+  const id = "pair-mark";
+  const env = owner(id);
+  const x = repo("pair-mark-x");
+  const y = repo("pair-mark-y");
+  writeFileSync(join(x, ".agents/skills/demo/a.ts"), "export const a = 2;\n");
+  writeFileSync(join(y, ".agents/skills/demo/a.ts"), "export const a = 3;\n");
+  assert.equal(approve(env, x).out, "APPROVED=1");
+  const trailer = "implement-audit: round-1; zero findings; APPROVE";
+  const { a, b, afterB } = await interleave(env, id, ["mark", trailer, "--repo", x], beginArgs(y));
+  assert.equal(b.rc, 0, b.err);
+  assert.equal(a.rc, 0, a.err);
+  const after = record(id);
+  bothKept(after, x, y, afterB);
+  assert.equal(after.repos[real(x)].receipt?.trailer, trailer);
+});
+
+test("a third repo's entry is untouched by two writers for the other two", async () => {
+  const id = "pair-third";
+  const env = owner(id);
+  const x = repo("pair-third-x");
+  const y = repo("pair-third-y");
+  const z = repo("pair-third-z");
+  for (const [d, v] of [
+    [x, 2],
+    [y, 3],
+    [z, 4],
+  ] as const)
+    writeFileSync(join(d, ".agents/skills/demo/a.ts"), `export const a = ${v};\n`);
+  assert.equal(approve(env, z).out, "APPROVED=1");
+  const zBefore = JSON.stringify(record(id).repos[real(z)], null, 1);
+  const { a, b, afterB } = await interleave(env, id, beginArgs(x), beginArgs(y));
+  assert.equal(a.rc, 0, a.err);
+  assert.equal(b.rc, 0, b.err);
+  const after = record(id);
+  bothKept(after, x, y, afterB);
+  assert.equal(JSON.stringify(after.repos[real(z)], null, 1), zBefore, "Z is byte-for-byte as it was");
+});
+
+const ownerFolder = (id: string): string => join(HOME, ".cache/workbench/threads", id);
+const lockOf = (id: string): string => join(ownerFolder(id), "review.json.lock");
+/** Hold the owner's record lock from another process until the returned release is called. */
+async function holdLock(id: string): Promise<() => Promise<void>> {
+  mkdirSync(ownerFolder(id), { recursive: true });
+  // -o: the sleep does not inherit the lock, so killing flock alone releases it.
+  const c = spawn("flock", ["-o", "-x", lockOf(id), "sleep", "60"], { stdio: "ignore", detached: true });
+  await until("the suite to hold the lock", () => spawnSync("flock", ["-n", lockOf(id), "true"]).status === 1);
+  return async () => {
+    if (c.pid !== undefined) process.kill(-c.pid, "SIGKILL");
+    await new Promise<void>((ok) => (c.exitCode !== null || c.signalCode !== null ? ok() : c.on("exit", () => ok())));
+  };
+}
+const shortWait = (env: NodeJS.ProcessEnv): NodeJS.ProcessEnv => ({ ...env, AUDIT_DEDUPE_LOCK_WAIT_SECONDS: "1" });
+
+test("a write that cannot take the record's lock refuses, naming it, and leaves the record as it was", async () => {
+  const id = "lock-held";
+  const env = owner(id);
+  const z = repo("lock-held-z");
+  const x = repo("lock-held-x");
+  writeFileSync(join(z, ".agents/skills/demo/a.ts"), "export const a = 2;\n");
+  writeFileSync(join(x, ".agents/skills/demo/a.ts"), "export const a = 3;\n");
+  assert.equal(approve(env, z).out, "APPROVED=1");
+  const before = stateBytes(id);
+  const release = await holdLock(id);
+  try {
+    const b = begin(shortWait(env), x);
+    assert.equal(b.rc, 1, b.out);
+    assert.ok(b.err.includes(lockOf(id)), `names the lock: ${b.err}`);
+    assert.match(b.err, /could not record the attempt: cannot lock .* past the 1s wait/);
+    assert.equal(stateBytes(id), before, "the record is byte-identical");
+  } finally {
+    await release();
+  }
+});
+
+test("a record made unreadable while a writer waits is refused on the locked re-read, and left as it is", async () => {
+  const id = "lock-corrupt";
+  const env = owner(id);
+  const x = repo("lock-corrupt-x");
+  writeFileSync(join(x, ".agents/skills/demo/a.ts"), "export const a = 2;\n");
+  const barrier = join(TMP, "barrier-lock-corrupt");
+  const a = runAsync({ ...env, AUDIT_DEDUPE_TEST_WRITE_BARRIER: barrier }, ...beginArgs(x));
+  await until("writer A to reach its write", () => existsSync(`${barrier}.waiting`));
+  mkdirSync(ownerFolder(id), { recursive: true });
+  writeFileSync(join(ownerFolder(id), "review.json"), "{nope");
+  writeFileSync(barrier, "");
+  const r = await a.done;
+  assert.equal(r.rc, 1, r.out);
+  assert.match(r.err, /refusing rather than reading it as no review/);
+  assert.equal(stateBytes(id), "{nope", "nothing was written over it");
+});
+
+test("finish under a held lock reports APPROVED=0 and names the lock, on its result and convergence writes", async () => {
+  const id = "lock-finish";
+  const env = owner(id);
+  const x = repo("lock-finish-x");
+  writeFileSync(join(x, ".agents/skills/demo/a.ts"), "export const a = 2;\n");
+  // The result write.
+  assert.match(begin(env, x).out, /RECEIPT=review/);
+  let before = stateBytes(id);
+  let release = await holdLock(id);
+  try {
+    const f = run(shortWait(env), "finish", "--repo", x, "--rc", "0", "--result", result("lock-finish", []));
+    assert.equal(f.rc, 1);
+    assert.equal(f.out, "APPROVED=0");
+    assert.ok(f.err.includes(lockOf(id)), f.err);
+    assert.match(f.err, /could not record the review: cannot lock/);
+    assert.equal(stateBytes(id), before);
+  } finally {
+    await release();
+  }
+  // The convergence write: an earlier complete receipt, then a round with nothing to review.
+  assert.equal(run(env, "finish", "--repo", x, "--rc", "0", "--result", result("lock-finish-2", [])).out, "APPROVED=1");
+  writeFileSync(join(x, ".agents/skills/demo/a.ts"), "export const a = 3;\n");
+  assert.match(begin(env, x, "since", ["--since", snap(x)]).out, /RECEIPT=review/);
+  before = stateBytes(id);
+  release = await holdLock(id);
+  try {
+    const c = run(shortWait(env), "finish", "--repo", x, "--rc", "4");
+    assert.equal(c.rc, 1);
+    assert.equal(c.out, "APPROVED=0");
+    assert.ok(c.err.includes(lockOf(id)), c.err);
+    assert.equal(stateBytes(id), before);
+  } finally {
+    await release();
+  }
+});
+
+test("the first write for an owner with no folder creates the folder, the lock file and the record", () => {
+  const id = "lock-first";
+  const x = repo("lock-first-x");
+  writeFileSync(join(x, ".agents/skills/demo/a.ts"), "export const a = 2;\n");
+  assert.equal(existsSync(ownerFolder(id)), false);
+  const b = begin(owner(id), x);
+  assert.equal(b.rc, 0, b.err);
+  assert.ok(existsSync(lockOf(id)), "the lock file");
+  assert.ok(record(id).repos[real(x)], "the record holds the repo");
+});
+
+test("a follow-up keeps an earlier check of a declared item nothing it names has moved under", () => {
+  const mk = (
+    name: string,
+  ): { d: string; env: NodeJS.ProcessEnv; report: string; declare: (extra?: string) => void } => {
+    const d = repo(name);
+    writeFileSync(join(d, ".agents/skills/demo/c.ts"), "export const c = 1;\n");
+    git(d, "add", "-A");
+    git(d, "commit", "-qm", "c");
+    const report = join(d, "projects/p/specs/001-x/report.md");
+    const evidence = "projects/p/specs/001-x/red-green.log";
+    mkdirSync(dirname(report), { recursive: true });
+    writeFileSync(join(d, evidence), "red, then green\n");
+    const declare = (extra = "") =>
+      writeFileSync(
+        report,
+        `<!-- review-coverage:v1 -->\n${JSON.stringify({
+          base: "HEAD",
+          scope: ".agents/skills/demo",
+          entryPoints: [{ id: "E1", path: A }],
+          dependencies: [{ id: "D1", path: C, why: `a reads it${extra}` }],
+          claims: [
+            { id: "P1", claim: "copy reads true", inapplicable: "copy, not code" },
+            {
+              id: "P2",
+              claim: "rejects bad input",
+              negativeTest: { trigger: "bad input", expected: "rejected", evidence: [evidence] },
+            },
+          ],
+        })}\n<!-- /review-coverage -->\n`,
+      );
+    declare();
+    edit(d, [A]);
+    return { d, env: owner(name), report, declare };
+  };
+  const all = (status: string) => ["E1", "D1", "P1", "P2"].map((id) => ({ id, status, evidence: ["x"] }));
+  const first = (o: ReturnType<typeof mk>, unchecked?: string): string => {
+    const b = begin(o.env, o.d, "range", ["--report", o.report]);
+    assert.equal(b.rc, 0, b.err);
+    const f = run(
+      o.env,
+      "finish",
+      "--repo",
+      o.d,
+      "--rc",
+      "0",
+      "--result",
+      result(
+        `fu-${Math.random()}`,
+        [],
+        all("checked").map((item) => (item.id === unchecked ? { ...item, status: "unchecked" } : item)),
+      ),
+    );
+    assert.equal(f.out, unchecked ? "APPROVED=0" : "APPROVED=1", f.err);
+    return snap(o.d);
+  };
+  const followUp = (o: ReturnType<typeof mk>, since: string, expected: string[], status = "unchecked"): R => {
+    const b = begin(o.env, o.d, "since", ["--since", since, "--report", o.report]);
+    assert.equal(b.rc, 0, b.err);
+    const file = b.out.match(/^ITEMS_FILE=(.*)$/m)![1];
+    const { items } = JSON.parse(readFileSync(file, "utf8")) as { items: { id: string }[] };
+    assert.deepEqual(
+      items.map((item) => item.id),
+      expected,
+      "send only outstanding checks to the reviewer",
+    );
+    return run(
+      o.env,
+      "finish",
+      "--repo",
+      o.d,
+      "--rc",
+      "0",
+      "--result",
+      result(
+        `fu-${Math.random()}`,
+        [],
+        all(status).filter((item) => expected.includes(item.id)),
+      ),
+    );
+  };
+  // A source edit still needs entry-point, dependency and pathless claim checks.
+  const kept = mk("fu-kept");
+  const t1 = first(kept);
+  edit(kept.d, [B]);
+  const k = followUp(kept, t1, ["E1", "D1", "P1"], "checked");
+  assert.equal(k.out, "APPROVED=1", k.err);
+  // An unchanged item still needs review if the first reviewer left it open.
+  const pending = mk("fu-pending");
+  const tPending = first(pending, "P2");
+  edit(pending.d, [B]);
+  const p = followUp(pending, tPending, ["E1", "D1", "P1", "P2"]);
+  assert.equal(p.out, "APPROVED=0");
+  assert.match(p.err, /did not check P2/);
+  // A moved dependency must be checked again; the recorded run can still be reused.
+  const moved = mk("fu-moved");
+  const t2 = first(moved);
+  edit(moved.d, [C], 5);
+  const m = followUp(moved, t2, ["E1", "D1", "P1"]);
+  assert.equal(m.out, "APPROVED=0");
+  assert.match(m.err, /did not check D1/);
+  assert.doesNotMatch(m.err, /did not check P2/);
+  // A changed declaration carries nothing over.
+  const redeclared = mk("fu-redeclared");
+  const t3 = first(redeclared);
+  redeclared.declare(", and its default");
+  edit(redeclared.d, [B]);
+  const r = followUp(redeclared, t3, ["E1", "D1", "P1", "P2"]);
+  assert.equal(r.out, "APPROVED=0");
+  assert.match(r.err, /did not check P1/);
+});
+
+test("an undeclared companion file whose folder cannot be read is not taken as deleted: it stays a gap", () => {
+  const c = companion("unreadable-evidence");
+  const t0 = snap(c.prod);
+  writeFileSync(join(c.wb, c.c2), "red, then green, after the redesign\n");
+  c.declare(c.c2);
+  writeFileSync(join(c.prod, ".agents/skills/demo/b.ts"), "export const b = 2;\n");
+  const folder = join(c.wb, dirname(c.c1));
+  const b = begin(c.env, c.prod, "since", ["--since", t0, "--report", c.report]);
+  assert.equal(b.rc, 0, b.err);
+  chmodSync(folder, 0o000);
+  let f: R;
+  try {
+    f = run(c.env, "finish", "--repo", c.prod, "--rc", "0", "--result", result("ue1", [], withDeclaration(c)));
+  } finally {
+    chmodSync(folder, 0o755);
+  }
+  assert.equal(f.out, "APPROVED=0", "a file that may still be there is not let go unreviewed");
+  assert.match(f.err, /not reviewed: .*unreadable-evidence-wb::projects\/p\/specs\/001-x\/evidence\/c1\.log/);
+});
+
+test("a writer may answer only under the user's recorded reviewer override, naming them and the date", () => {
+  const ok = repo("ov-ok");
+  const env = { ...owner("ov-ok"), POLICY_CHAIN_AUTHOR_VENDORS: "claude" };
+  edit(ok, [A, B]);
+  const words = 'claude/opus (reviewer override: "override: use claude" — Robin, 2026-11-19)';
+  const f = piece(env, ok, [A, B], [], { vendor: words });
+  assert.match(f.out, /^APPROVED=1$/m, f.err);
+  for (const [name, vendor] of [
+    ["ov-plain", "claude/opus"],
+    ["ov-nodate", "claude/opus (reviewer override: use claude — Robin)"],
+    ["ov-noname", 'claude/opus (reviewer override: "use claude" — 2026-11-19)'],
+  ]) {
+    const d = repo(name);
+    const e = { ...owner(name), POLICY_CHAIN_AUTHOR_VENDORS: "claude" };
+    edit(d, [A, B]);
+    const r = piece(e, d, [A, B], [], { vendor });
+    assert.match(r.out, /^APPROVED=0$/m, `${vendor}: ${r.out}`);
+    assert.match(r.err, /is one of the writers/, vendor);
+  }
+});
+
+// ── Ideas, notes, verdicts ──
+// code-review.ts writes a round's ideas (improvements nobody asked for) and its
+// notes (findings outside this build's change) beside the findings; neither
+// holds the build, each is printed for the report's § Not built, and a later
+// round keeps them. A receipt saved before 2026-11-22 called them deferred.
+test("ideas and notes never hold the build, are printed, and survive a clean round; a saved deferral is an idea", () => {
+  const d = repo("ideas-notes");
+  const env = owner("ideas-notes");
+  writeFileSync(join(d, ".agents/skills/demo/a.ts"), "export const a = 2;\n");
+  assert.equal(begin(env, d, "range").rc, 0);
+  assert.equal(run(env, "finish", "--repo", d, "--rc", "0", "--result", result("in0", [])).out, "APPROVED=1");
+  const t1 = snap(d);
+  writeFileSync(join(d, ".agents/skills/demo/a.ts"), "export const a = 3;\n");
+  begin(env, d, "since", ["--since", t1]);
+  const f1 = join(TMP, "in1.json");
+  writeFileSync(
+    f1,
+    JSON.stringify({
+      vendor: "grok/grok-4",
+      findings: [],
+      coverage: [],
+      shown: [],
+      ideas: ["[idea] .agents/skills/demo/a.ts: show the count too"],
+      noted: ["[must-fix] other/b.ts:4: another project's bug"],
+      deferred: ["[deferred] .agents/skills/demo/a.ts:1: an older round's leftover"],
+    }),
+  );
+  const r1 = run(env, "finish", "--repo", d, "--rc", "0", "--result", f1);
+  assert.match(r1.out, /^APPROVED=1$/m, r1.err);
+  assert.match(r1.out, /^IDEA: \[idea\] \.agents\/skills\/demo\/a\.ts: show the count too$/m);
+  assert.match(r1.out, /^IDEA: \[deferred\] \.agents\/skills\/demo\/a\.ts:1: an older round's leftover$/m);
+  assert.match(r1.out, /^NOTED: \[must-fix\] other\/b\.ts:4: another project's bug$/m);
+  const t2 = snap(d);
+  writeFileSync(join(d, ".agents/skills/demo/a.ts"), "export const a = 4;\n");
+  begin(env, d, "since", ["--since", t2]);
+  const r2 = run(env, "finish", "--repo", d, "--rc", "0", "--result", result("in2", []));
+  assert.match(r2.out, /^APPROVED=1$/m, r2.err);
+  assert.match(r2.out, /^IDEA: \[idea\] \.agents\/skills\/demo\/a\.ts: show the count too$/m, "a later clean round keeps the idea");
+  assert.match(r2.out, /^NOTED: \[must-fix\] other\/b\.ts:4: another project's bug$/m, "and the note");
+});
+
+test("a follow-up's verdicts decide: none keeps a blocker open, disproved closes it with its evidence, open twice is STILL OPEN", () => {
+  const BUG = "[must-fix] .agents/skills/demo/a.ts:1: reads the bathroom digit as bedrooms — witness: 2 bd 1 ba → 1 bedroom";
+  const d = repo("verdicts");
+  const env = owner("verdicts");
+  writeFileSync(join(d, ".agents/skills/demo/a.ts"), "export const a = 2;\n");
+  assert.equal(begin(env, d, "range").rc, 0);
+  assert.equal(run(env, "finish", "--repo", d, "--rc", "0", "--result", result("vd0", [BUG])).out, "APPROVED=0");
+  const step = (name: string, left: "fixed" | "disproved" | "open" | null, v: number): R => {
+    const t = snap(d);
+    writeFileSync(join(d, ".agents/skills/demo/a.ts"), `export const a = ${v};\n`);
+    begin(env, d, "since", ["--since", t]);
+    return run(env, "finish", "--repo", d, "--rc", "0", "--result", shownResult(name, [], [BUG], left));
+  };
+  const none = step("vd1", null, 3);
+  assert.equal(none.out, "APPROVED=0", "shown with no verdict, it stays open: an omission is not a judgment");
+  const open1 = step("vd2", "open", 4);
+  assert.equal(open1.out, "APPROVED=0", "judged open, it stays open");
+  assert.doesNotMatch(open1.out, /STILL OPEN/, "once is a repair that missed");
+  const open2 = step("vd3", "open", 5);
+  assert.match(open2.out, new RegExp(`^STILL OPEN: ${fid(BUG)} `, "m"), "twice in a row: change the approach");
+  assert.match(open2.out, /change the approach/);
+  const gone = step("vd4", "disproved", 6);
+  assert.match(gone.out, /^APPROVED=1$/m, gone.err);
+  assert.match(gone.out, new RegExp(`^DISPROVED: ${fid(BUG)} .*reads the bathroom digit.* — read the repair$`, "m"));
 });

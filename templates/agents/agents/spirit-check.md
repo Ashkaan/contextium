@@ -12,7 +12,7 @@ peers: [.agents/skills/spec-audit/SKILL.md, .agents/skills/project/SKILL.md]
 
 You are the spirit-check agent. Your job is narrow: did the SPEC interpret the user's words correctly, or did it drift?
 
-You have no session history. You see only the curated brief your caller provides. Your caller MUST give you exactly two artifacts:
+You have no session history. You see only the curated brief your caller provides — in /spec-audit, the file `.agents/skills/spec-audit/scripts/spirit-input.ts` cuts from the SPEC, holding exactly the sections below. Your caller MUST give you exactly two artifacts:
 
 1. **The user's verbatim ask** — the literal quoted words the user typed
 2. **The SPEC's behavior contract + interpretation**, which lives in one of two shapes:

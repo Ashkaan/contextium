@@ -55,13 +55,14 @@
 // Exit: 0 ok · 2 no thread, no database, a database without turn items, a page
 // past the end, or bad usage
 
-import { realpathSync, statSync } from "node:fs";
+import { realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { resolve } from "node:path";
 import type { DatabaseSync, SQLOutputValue } from "node:sqlite";
 import { fileURLToPath } from "node:url";
 import { exit, runToExit } from "../../../packages/cli-exit/cli-exit.ts";
 import { currentThread, loadSqlite, mainTables, t3Database } from "./t3-db.ts";
+import { isFile } from "./trunk.ts";
 
 export const PAGE_CHARS = 24_000;
 const TARGET_CHARS = 240;
@@ -277,13 +278,7 @@ async function main(): Promise<void> {
     tid = thread.id;
   }
 
-  let isFile = false;
-  try {
-    isFile = statSync(DB).isFile();
-  } catch {
-    isFile = false;
-  }
-  if (!isFile) die(`no T3 database at ${DB}`);
+  if (!isFile(DB)) die(`no T3 database at ${DB}`);
 
   const sqlite = await loadSqlite(fileURLToPath(import.meta.url));
   let db: DatabaseSync;

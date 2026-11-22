@@ -147,7 +147,7 @@
 //                   test suite replaces it; nothing in production does.
 //   VERIFY_IMPORTER_CAP — how many importer apps may be RUN in the fallback pass
 //                   before they are named unverified instead. Default 8.
-//   VERIFY_SKILLS_TIMEOUT — seconds one suite of any unit may take. Default 180.
+//   VERIFY_SKILLS_TIMEOUT — seconds one suite of any unit may take. Default 480.
 //                   Enforced by a watchdog in this process (the suite runs in a
 //                   process group of its own, TERMed at the limit and KILLed 5s
 //                   later), not by timeout(1), which stock macOS does not have.
@@ -160,6 +160,8 @@
 // Exit: 0 all green (or nothing to verify) · 1 at least one FAIL · 2 no thread
 //       --stamped: 0 stamped, or nothing changed · 1 not stamped · 2 no thread
 
+import { authorizedBy } from "../../review/authorized-by.ts";
+import { siblingDirEnv } from "./sibling-env.ts";
 import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
@@ -183,6 +185,7 @@ import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { exit, runToExit } from "../../../packages/cli-exit/cli-exit.ts";
 import { importerClosure, sharedUnit } from "./importers.ts";
+import { isDir, isFile } from "./trunk.ts";
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const THREAD = join(SCRIPT_DIR, "thread.ts");
@@ -191,30 +194,17 @@ const WRITE_ROOT = join(SCRIPT_DIR, "write-root.sh");
 // The review receipt's reader, run as a program.
 const AUDIT = join(SCRIPT_DIR, "../../implement-audit/scripts/audit-dedupe.ts");
 const RUNNER = process.env.VERIFY_RUNNER || "npm run";
-// Seconds one suite may take, whatever unit it belongs to.
-const SUITE_TIMEOUT = process.env.VERIFY_SKILLS_TIMEOUT || "180";
+// Seconds one suite may take, whatever unit it belongs to. 480, not 180: on a
+// busy machine the close's own land suites can each take over 180 s, so every
+// close that touched .agents/skills/close would fail on suites that pass. Still a bound that
+// catches a hung suite, at more than twice the slowest measured.
+const SUITE_TIMEOUT = process.env.VERIFY_SKILLS_TIMEOUT || "480";
 
 let FAILED = 0;
 
 const say = (line: string): void => {
   process.stdout.write(`${line}\n`);
 };
-
-function isDir(p: string): boolean {
-  try {
-    return statSync(p).isDirectory();
-  } catch {
-    return false;
-  }
-}
-
-function isFile(p: string): boolean {
-  try {
-    return statSync(p).isFile();
-  } catch {
-    return false;
-  }
-}
 
 /** Run a command; stdout back with `$(…)`'s trailing newlines removed, stderr dropped. */
 function out(cmd: string, args: string[], cwd?: string): { ok: boolean; stdout: string } {
@@ -292,7 +282,12 @@ function listChangedPaths(wt: string): string[] {
   if (vtrunk !== "" && hasTrunk()) {
     all.push(...read(["diff", "-z", `origin/${vtrunk}...HEAD`, "--name-only"]));
   }
-  all.push(...read(["diff", "-z", "HEAD", "--name-only"]));
+  // A trunk merge land.ts left uncommitted on a conflict: against HEAD, the
+  // tree differs by everything the trunk brought in — other threads' landed
+  // work — so it is measured against the merged trunk commit instead, which
+  // leaves this thread's edits and its conflict resolutions.
+  const merging = out("git", ["-C", wt, "rev-parse", "-q", "--verify", "MERGE_HEAD"]).ok;
+  all.push(...read(["diff", "-z", merging ? "MERGE_HEAD" : "HEAD", "--name-only"]));
   all.push(...read(["ls-files", "-z", "--others", "--exclude-standard"]));
   return sortUnique(all);
 }
@@ -759,7 +754,7 @@ async function verifySkillUnit(logs: string, timeout: string, wt: string, unit: 
   // that traps TERM and exits cleanly hands back 0 — which would report a hung
   // suite as green, the one outcome this bound exists to prevent. Wall time
   // cannot be forged. A suite that takes the whole budget is called a timeout
-  // whatever it returned; at 180s that is a suite worth looking at either way.
+  // whatever it returned; at 480s that is a suite worth looking at either way.
   const runSuite = async (argv: string[], rel: string, rerun: string): Promise<boolean> => {
     // The WHOLE repo-relative path is flattened, not the filename taken: suites
     // recurse (`.agents/skills/qa/scripts/tests/lib.test.sh`) and two folders can each
@@ -989,6 +984,17 @@ function reviewReceipts(tid: string, rows: LedgerRow[]): { ok: boolean; lines: s
       .map((l) => `FAIL ${l}`),
   ];
   if (r.status === 0) return { ok: true, lines };
+  // The user's override for this landing, in their words with their name and
+  // the date, passes what the review does not cover, named (land.ts reads it too).
+  const overriddenBy = (process.env.CLOSE_REVIEW_OVERRIDDEN_BY ?? "").trim();
+  if (r.status === 1 && lines.some((l) => l.startsWith("FAIL ")) && authorizedBy(overriddenBy))
+    return {
+      ok: true,
+      lines: [
+        ...lines.map((l) => l.replace(/^FAIL /, "overridden ")),
+        `ok review overridden for this landing — ${overriddenBy}`,
+      ],
+    };
   if (r.status === 1 && lines.some((l) => l.startsWith("FAIL "))) return { ok: false, lines };
   const why = (r.stderr ?? r.error?.message ?? "").trim().split("\n").pop() || `exited ${r.status}`;
   return { ok: false, lines: [...lines, `FAIL review — the receipt check could not run: ${why}`] };
@@ -1115,6 +1121,9 @@ async function main(): Promise<void> {
 
   mkdirSync(LOGS, { recursive: true });
   const rows = ledgerRows(LEDGER);
+  // Every suite below reads its sibling repos at this thread's worktrees of
+  // them, not the shared checkouts the change has not reached (sibling-env.ts).
+  Object.assign(process.env, siblingDirEnv(rows, process.env));
   const SEEN: string[] = [];
   // The integrations and packages pass 1 verified, so pass 2 runs none twice.
   const SHARED_SEEN = new Set<string>();

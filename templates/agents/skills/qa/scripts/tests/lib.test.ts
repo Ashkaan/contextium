@@ -23,6 +23,9 @@ import { fileURLToPath } from "node:url";
 import {
   cksum,
   qaAccessHeaders,
+  qaSendsAccess,
+  qaSignAccess,
+  qaSignedHeaders,
   qaAccessIssuer,
   qaBrowsers,
   qaCfAccountCache,
@@ -36,6 +39,7 @@ import {
   qaResolvePages,
   qaSlugRoute,
   qaWranglerVar,
+  type QaPausedRequest,
   QA_TOUCH_BROWSER_ARGS,
   QA_TOUCH_MAX_WIDTH,
 } from "../lib.ts";
@@ -352,6 +356,135 @@ test("headers: the token alone, the pair alone, and nothing", () => {
     "X-Portal-Act-As": "probe@example.com",
   });
   assert.equal(qaAccessHeaders(undefined, "probe@example.com"), undefined);
+});
+test("the Access headers go to the base URL's own origin only", () => {
+  assert.equal(qaSendsAccess("https://dashboard.example.com/trader", "https://dashboard.example.com"), true);
+  assert.equal(qaSendsAccess("https://dashboard.example.com/_astro/a.css", "https://dashboard.example.com/trader"), true);
+  assert.equal(qaSendsAccess(new URL("http://localhost:8814/x"), "http://localhost:8814"), true);
+  // Another host, another port or another scheme is another origin.
+  assert.equal(qaSendsAccess("https://api.fontshare.com/v2/css", "https://dashboard.example.com"), false);
+  assert.equal(qaSendsAccess("http://localhost:9000/f.woff2", "http://localhost:8814"), false);
+  assert.equal(qaSendsAccess("http://dashboard.example.com/", "https://dashboard.example.com"), false);
+  assert.equal(qaSendsAccess("https://evil.dashboard.example.com.example/", "https://dashboard.example.com"), false);
+  // An unreadable URL or base sends nothing.
+  assert.equal(qaSendsAccess("data:text/css,", "https://dashboard.example.com"), false);
+  assert.equal(qaSendsAccess("https://dashboard.example.com/", "not a url"), false);
+  // A base with no origin (file:, data:) shares it with nothing.
+  assert.equal(qaSendsAccess("file:///tmp/b", "file:///tmp/a"), false);
+});
+test("signed headers: the request's own kept, the Access headers added once under any spelling", () => {
+  assert.deepEqual(
+    qaSignedHeaders(
+      { accept: "*/*", "cf-access-client-id": "stale", "CF-ACCESS-CLIENT-SECRET": "old", referer: "https://s/" },
+      { "CF-Access-Client-Id": "ID", "CF-Access-Client-Secret": "SECRET" },
+    ),
+    [
+      { name: "accept", value: "*/*" },
+      { name: "referer", value: "https://s/" },
+      { name: "CF-Access-Client-Id", value: "ID" },
+      { name: "CF-Access-Client-Secret", value: "SECRET" },
+    ],
+  );
+  assert.deepEqual(qaSignedHeaders({}, {}), []);
+});
+// qaSignAccess against a recorded DevTools session: what it pauses and how it
+// continues each paused request. The real-browser half, redirects included, is
+// interaction-check.browser.test.ts.
+async function signAccess(base: string, headers: Record<string, string> | undefined) {
+  const sent: { method: string; params?: Record<string, unknown> }[] = [];
+  let paused: ((e: QaPausedRequest) => void) | undefined;
+  let sessions = 0;
+  const cookies: unknown[] = [];
+  const page = {
+    context: () => ({
+      addCookies: async (c: unknown[]) => void cookies.push(...c),
+      newCDPSession: async (p: unknown) => {
+        assert.equal(p, page);
+        sessions++;
+        return {
+          send: async (method: string, params?: Record<string, unknown>) => void sent.push({ method, params }),
+          on: (_event: string, h: (e: QaPausedRequest) => void) => void (paused = h),
+        };
+      },
+    }),
+  };
+  await qaSignAccess(page, base, headers);
+  const pause = async (requestId: string, url: string) => {
+    paused?.({ requestId, request: { url, headers: { accept: "*/*" } } });
+    await new Promise((r) => setImmediate(r));
+  };
+  return { sent, pause, sessions: () => sessions, cookies };
+}
+test("sign access: a local run's own token is also set as Access's cookie on the site; a service token is not", async () => {
+  const local = await signAccess("http://127.0.0.1:8813/start", {
+    "Cf-Access-Jwt-Assertion": "J.1",
+    "X-Portal-Act-As": "a@b.co",
+  });
+  assert.deepEqual(local.cookies, [
+    { name: "CF_Authorization", value: "J.1", url: "http://127.0.0.1:8813", httpOnly: true, sameSite: "Lax" },
+  ]);
+  const live = await signAccess("https://site.example", {
+    "CF-Access-Client-Id": "ID",
+    "CF-Access-Client-Secret": "S",
+  });
+  assert.deepEqual(live.cookies, []);
+});
+test("sign access: only the site's origin is paused, and its requests continue with the headers", async () => {
+  const s = await signAccess("https://site.example:8443/start?x=1", { "CF-Access-Client-Id": "ID" });
+  assert.deepEqual(s.sent, [
+    {
+      method: "Fetch.enable",
+      params: { patterns: [{ urlPattern: "https://site.example:8443/*", requestStage: "Request" }] },
+    },
+  ]);
+  await s.pause("a", "https://site.example:8443/next");
+  assert.deepEqual(s.sent[1], {
+    method: "Fetch.continueRequest",
+    params: {
+      requestId: "a",
+      headers: [
+        { name: "accept", value: "*/*" },
+        { name: "CF-Access-Client-Id", value: "ID" },
+      ],
+    },
+  });
+});
+test("sign access: a paused request off the site (a pattern wildcard's reach) continues untouched", async () => {
+  const s = await signAccess("https://site.example", { "CF-Access-Client-Id": "ID" });
+  await s.pause("b", "https://site.example.cdn.example/x.css");
+  await s.pause("c", "http://site.example/");
+  assert.deepEqual(s.sent.slice(1), [
+    { method: "Fetch.continueRequest", params: { requestId: "b" } },
+    { method: "Fetch.continueRequest", params: { requestId: "c" } },
+  ]);
+});
+test("sign access: no headers opens no session; a base with no origin is refused", async () => {
+  const none = await signAccess("https://site.example", undefined);
+  assert.equal(none.sessions(), 0);
+  assert.deepEqual(none.sent, []);
+  await assert.rejects(signAccess("file:///tmp/site/", { "CF-Access-Client-Id": "ID" }), /has no origin to sign/);
+});
+test("sign access: a request that can no longer be continued does not throw out of the handler", async () => {
+  let paused: ((e: QaPausedRequest) => void) | undefined;
+  const page = {
+    context: () => ({
+      addCookies: async () => {},
+      newCDPSession: async () => ({
+        send: async (method: string) => {
+          if (method === "Fetch.continueRequest") throw new Error("Invalid InterceptionId.");
+        },
+        on: (_e: string, h: (e: QaPausedRequest) => void) => void (paused = h),
+      }),
+    }),
+  };
+  await qaSignAccess(page, "https://site.example", { "CF-Access-Client-Id": "ID" });
+  const unhandled: unknown[] = [];
+  const note = (e: unknown) => void unhandled.push(e);
+  process.on("unhandledRejection", note);
+  paused?.({ requestId: "z", request: { url: "https://site.example/", headers: {} } });
+  await new Promise((r) => setTimeout(r, 10));
+  process.off("unhandledRejection", note);
+  assert.deepEqual(unhandled, []);
 });
 test("the token file: none named, named and read, named but missing or empty", () => {
   const f = join(LOCAL, "t.jwt");

@@ -33,6 +33,9 @@
 //                        list of the changed files this piece reviews, over
 //                        the same --base and --head as the set's other pieces.
 //                        Only with --phase review --base/--head, never --since
+//   --rebuttal <file>    with --since: the builder's evidence that an open
+//                        finding is not a bug, one `<F-id>: <evidence>` line
+//                        each; the round judges it even with no source change
 //   --targets-file PATH  the QA_TARGETS list (one absolute path per line)
 //   --tree <sha>         the tree every target's QA marker must be keyed on
 //   --report <path>      the spec's report.md, whose `test-failure-observed:`
@@ -215,6 +218,8 @@ async function main(): Promise<void> {
   let TREE = "";
   let REPORT = "";
   let SLICE = "";
+  /** `--rebuttal <file>`: the builder's evidence that an open finding is not a bug, one `<F-id>: <evidence>` line each. */
+  let REBUTTAL = "";
   let REQUIRE_QA = false;
   let FALLBACK_FILE = "";
   let REPO_DIR = process.env.CLAUDE_PROJECT_DIR ?? "";
@@ -261,6 +266,9 @@ async function main(): Promise<void> {
         break;
       case "--slice":
         SLICE = resolve(value());
+        break;
+      case "--rebuttal":
+        REBUTTAL = resolve(value());
         break;
       case "--repo":
         REPO_DIR = value();
@@ -397,6 +405,20 @@ async function main(): Promise<void> {
     return [...new Set(kept)].sort((a, b) => Buffer.compare(Buffer.from(a), Buffer.from(b)));
   };
 
+  // The receipt keeper's REVIEW_PATHS_FILE (NUL-separated), or null when it
+  // cannot be read — a list that silently read as empty would validate nothing.
+  const readListedPaths = (file: string): Set<string> | null => {
+    try {
+      return new Set(
+        readFileSync(file, "utf8")
+          .split("\0")
+          .filter((p) => p !== ""),
+      );
+    } catch {
+      return null;
+    }
+  };
+
   // Layers 1 and 2, in that order, with layer 1 gating layer 2 — type errors mask
   // runtime errors, so a failing typecheck makes a test result meaningless.
   //
@@ -453,12 +475,25 @@ async function main(): Promise<void> {
     out: string;
     approved: boolean | null;
     items: string;
+    validationFailed?: boolean;
+    layeredAt?: string;
     /** A piece whose set is not complete: the changed files still unread, and whether anything else already blocks it. */
     pending?: { unread: number; lines: string[]; blocked: boolean };
   };
-  const runReview = (bucket: "build" | "qa", tree: string): Reviewed => {
+  // `checksBase`: the base the review phase's deterministic checks read;
+  // `layerSince`: the caller's own follow-up delta still owed layers 1+2. Both
+  // run here, after the keeper has answered and before any vendor call, so an
+  // upstream-merge review's path list applies to them too; run before, a
+  // merged-in file the trunk left failing a lint blocked this branch's review
+  // (implement-audit, 2026-11-07).
+  const runReview = (bucket: "build" | "qa", tree: string, layerSince = "", checksBase = ""): Reviewed => {
     const mode = SINCE !== "" ? "since" : "range";
+    let reviewSince = SINCE;
+    let reviewBucket: string = bucket;
     let itemsFile = "";
+    // Set only for an upstream-merge review: the keeper's list of this branch's
+    // files and the covered ones that moved (audit-dedupe.ts mergeReviewPaths).
+    let pathsFile = "";
     const keep = isFile(AUDIT);
     if (!keep) err(`validate: WARN no receipt keeper at ${AUDIT} — this review cannot be reused or satisfy a close`);
     else {
@@ -474,26 +509,77 @@ async function main(): Promise<void> {
       if (statusOf(b) === 2) return { rc: 2, out: "", approved: false, items: "" };
       if (statusOf(b) !== 0) {
         err("validate: the review could not be bound to its content (above) — no review call was made.");
-        return { rc: 1, out: "", approved: false, items: "" };
+        return { rc: 1, out: "", approved: false, items: "", validationFailed: true };
       }
       if (said.includes("RECEIPT=reuse")) {
         for (const l of said.split("\n")) if (l.startsWith("NOTE:")) out(l);
         return { rc: 0, out: "", approved: true, items: "" };
       }
       itemsFile = said.match(/^ITEMS_FILE=(.*)$/m)?.[1] ?? "";
+      pathsFile = said.match(/^REVIEW_PATHS_FILE=(.*)$/m)?.[1] ?? "";
+      reviewSince = said.match(/^REVIEW_SINCE=(.*)$/m)?.[1] ?? SINCE;
+      reviewBucket = said.match(/^REVIEW_BUCKET=(.*)$/m)?.[1] ?? bucket;
+      if (reviewBucket === "merge")
+        out("NOTE: reviewing the upstream merge since the last completed review, with its own bounded allowance");
+    }
+    // Receipt recovery can widen the caller's delta. Validate that selected
+    // source before dispatch, not merely the newer snapshot the caller supplied.
+    let selectedLayeredAt: string | undefined;
+    const widened = reviewSince !== "" && reviewSince !== SINCE;
+    const checkFrom = widened ? reviewSince : checksBase;
+    if (checkFrom !== "" && !isFile(AUTOMATED_CHECKS)) err(`validate: WARN no automated checks at ${AUTOMATED_CHECKS}`);
+    if (checkFrom !== "" && isFile(AUTOMATED_CHECKS)) {
+      // MANDATORY, not optional. These are the six deterministic checks; skipping
+      // them to save a few seconds is how a dangling rule ref reaches a vendor call.
+      const checks = runTs(
+        AUTOMATED_CHECKS,
+        ["--session-base", checkFrom, "--repo-dir", REPO_DIR, ...(pathsFile !== "" ? ["--paths-file", pathsFile] : [])],
+        { env: withRepo() },
+      );
+      if (statusOf(checks) !== 0) {
+        err(
+          widened
+            ? "validate: the automated checks failed for the receipt-selected changes — no review call was made."
+            : "validate: the automated checks reported a FAIL — fix those before spending a vendor call.",
+        );
+        return { rc: 1, out: "", approved: false, validationFailed: true };
+      }
+    }
+    const layerFrom = widened ? reviewSince : layerSince;
+    if (layerFrom !== "") {
+      NEED_E2E = 1;
+      const selected = filesSince(layerFrom);
+      const listed = pathsFile !== "" ? readListedPaths(pathsFile) : null;
+      if (pathsFile !== "" && listed === null) {
+        err(`validate: the review's path list ${pathsFile} could not be read — no review call was made.`);
+        return { rc: 1, out: "", approved: false, validationFailed: true };
+      }
+      if (!runLayers12(selected && listed ? selected.filter((p) => listed.has(p)) : selected)) {
+        err(
+          widened
+            ? "validate: the receipt-selected changes fail layers 1+2 — no review call was made."
+            : "validate: this round's fixes fail layers 1+2 — fix them and re-run before they are reviewed.",
+        );
+        return { rc: 1, out: "", approved: false, validationFailed: true };
+      }
+      selectedLayeredAt = tree;
     }
     const dir = mkdtempSync(join(tmpdir(), "validate-review-"));
     const resultFile = join(dir, "result.json");
     try {
-      const env: NodeJS.ProcessEnv = { ...process.env, CODEX_REVIEW_REPO: REPO_DIR, CODE_REVIEW_BUCKET: bucket };
+      const env: NodeJS.ProcessEnv = { ...process.env, CODEX_REVIEW_REPO: REPO_DIR, CODE_REVIEW_BUCKET: reviewBucket };
       if (keep) {
         env.CODE_REVIEW_RESULT_FILE = resultFile;
         if (itemsFile !== "") env.CODE_REVIEW_COVERAGE_FILE = itemsFile;
+        if (pathsFile !== "") env.CODE_REVIEW_PATHS_FILE = pathsFile;
       }
+      if (REBUTTAL !== "") env.CODE_REVIEW_REBUTTAL_FILE = REBUTTAL;
       const call = (extra: string[]) =>
         runTs(
           REVIEW,
-          SINCE !== "" ? ["--since", SINCE, ...extra] : [BASE, HEAD_REF, ...(SLICE !== "" ? ["--slice", SLICE] : [])],
+          reviewSince !== ""
+            ? ["--since", reviewSince, ...extra]
+            : [BASE, HEAD_REF, ...(SLICE !== "" ? ["--slice", SLICE] : [])],
           { env, capture: true },
         );
       let review = call([]);
@@ -501,7 +587,7 @@ async function main(): Promise<void> {
       // At the ceiling, the fixes made since the last round still get their one
       // review: `--final`, once per loop and bucket. Its findings count
       // like a round's; a second ceiling — the final pass already spent — stands.
-      if (rc === 5 && SINCE !== "") {
+      if (rc === 5 && reviewSince !== "") {
         const fin = call(["--final"]);
         if (statusOf(fin) !== 5) {
           out(
@@ -520,6 +606,11 @@ async function main(): Promise<void> {
         if (rc === 0 && isFile(resultFile)) fargs.push("--result", resultFile);
         const f = runTs(AUDIT, fargs, { env: withRepo(), capture: true });
         approved = /^APPROVED=1$/m.test(f.stdout ?? "");
+        // What does not hold the build, and the blockers that survived two
+        // repairs (audit-dedupe finish): the build lists the first three in its
+        // report's § Not built and changes its approach for the last.
+        for (const l of (f.stdout ?? "").split("\n"))
+          if (/^(?:IDEA|NOTED|DISPROVED|STILL OPEN): /.test(l)) out(l);
         const sp = (f.stdout ?? "").match(/^SLICE_PENDING=(\d+)$/m);
         if (sp)
           pending = {
@@ -532,7 +623,7 @@ async function main(): Promise<void> {
           if (rc === 0) rc = 1;
         } else if (rc === 0 || rc === 4) out(`RECEIPT: ${approved ? "approved" : "not approved (reasons above)"}`);
       }
-      return { rc, out: review.stdout ?? "", approved, items: itemsFile, ...(pending ? { pending } : {}) };
+      return { rc, out: review.stdout ?? "", approved, items: itemsFile, layeredAt: selectedLayeredAt, ...(pending ? { pending } : {}) };
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -722,42 +813,22 @@ async function main(): Promise<void> {
     }
     out(`PRE_TREE=${PRE}`);
 
-    // MANDATORY, not optional. These are the six deterministic checks; skipping
-    // them to save a few seconds is how a dangling rule ref reaches a vendor call.
-    if (isFile(AUTOMATED_CHECKS)) {
-      const checks = runTs(AUTOMATED_CHECKS, ["--session-base", BASE || "HEAD", "--repo-dir", REPO_DIR], {
-        env: withRepo(),
-      });
-      if (statusOf(checks) !== 0) {
-        err("validate: the automated checks reported a FAIL — fix those before spending a vendor call.");
-        NEED_FIX = 1;
-        emitFields();
-        exit(1);
-      }
-    } else {
-      err(`validate: WARN no automated checks at ${AUTOMATED_CHECKS}`);
-    }
-
     if (SINCE === "" && (BASE === "" || HEAD_REF === "")) {
       err("validate: --phase review needs --base and --head (round 1) or --since <tree> (rounds 2+)");
       exit(2);
     }
     // A follow-up round's fixes are what no layer has seen. They run layers 1+2
-    // BEFORE the review, which records a receipt: run after it, a fix that does
-    // not type-check held an approval the next begin reused (the peer of the
-    // post-QA case, Contextium v9.2.0 review).
-    let layeredAt = "";
-    if (SINCE !== "" && PRE !== SINCE) {
-      NEED_E2E = 1;
-      if (!runLayers12(filesSince(SINCE))) {
-        err("validate: this round's fixes fail layers 1+2 — fix them and re-run before they are reviewed.");
-        NEED_FIX = 1;
-        emitFields();
-        exit(1);
-      }
-      layeredAt = PRE;
+    // BEFORE the vendor call, which records a receipt: run after it, a fix that
+    // does not type-check held an approval the next begin reused (the peer of the
+    // post-QA case, Contextium v9.2.0 review). runReview runs them once the
+    // keeper has said whether an upstream-merge path list applies.
+    const reviewed = runReview("build", PRE, SINCE !== "" && PRE !== SINCE ? SINCE : "", BASE || "HEAD");
+    const layeredAt = reviewed.layeredAt ?? "";
+    if (reviewed.validationFailed) {
+      NEED_FIX = 1;
+      emitFields();
+      exit(1);
     }
-    const reviewed = runReview("build", PRE);
     const reviewRc = reviewed.rc;
     const reviewOut = reviewed.out;
 
@@ -795,9 +866,7 @@ async function main(): Promise<void> {
     // Only exit 0 carries findings; 4 and 5 print none by construction.
     if (reviewRc === 0) {
       process.stdout.write(reviewOut);
-      // A [nit] is held for the end of the loop, never a reason to re-enter it —
-      // nits are an unbounded supply and re-reviewing after fixing one is how the
-      // loop finds the next one forever.
+      // Cosmetic suggestions are reported but do not require a fix round.
       if (/^\[(must-fix|should-fix)\]/m.test(reviewOut)) NEED_FIX = 1;
     }
     // A review that completed but did not approve — an unchecked declared item,
@@ -946,6 +1015,11 @@ async function main(): Promise<void> {
       exit(1);
     }
     const reviewed = runReview("qa", POST);
+    if (reviewed.validationFailed) {
+      NEED_FIX = 1;
+      emitFields();
+      exit(1);
+    }
     const review = { stdout: reviewed.out };
     const reviewRc = reviewed.rc;
     if ((reviewRc === 0 || reviewRc === 4) && reviewed.approved === false) NEED_FIX = 1;

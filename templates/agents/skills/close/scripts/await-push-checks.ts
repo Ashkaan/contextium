@@ -56,13 +56,16 @@
 //     whose push trigger was removed since expects nothing; a filter or an
 //     `on:` this cannot read expects one. A status alone expects nothing: it marks a
 //     build, it does not start one.
-//   - A CANCEL OR AN ERRORED MARK. A newer push cancels an older run still
-//     building (a workflow's concurrency group), and a status in state
-//     `error` is a marker that could not judge (a deployer's "internal
-//     error"), which it may never re-mark once a newer build is live. When those are the only problems and the trunk tip contains this
-//     commit, the tip's checks decide, since its deploy carries this commit
-//     too; re-polling would refuse forever. A `failure` is a verdict and is
-//     never settled this way.
+//   - A CANCEL, OR A MARK THAT ERRORED OR REFUSED. A newer push cancels an
+//     older run still building (a workflow's concurrency group); a status in
+//     state `error` is a marker that could not judge (a deployer's "internal
+//     error"), and one in state `failure` refused the build — and a deployer
+//     may re-mark neither once a newer build is live. When those are the only
+//     problems and the trunk tip contains this commit, the tip's checks
+//     decide, and the tip owes the same mark as a success: its deploy carries
+//     this commit too, so re-polling would refuse forever. A failed CHECK RUN
+//     (a build or CI job) is a verdict on this commit and is never settled
+//     this way.
 //
 // Caller: .agents/skills/close/scripts/land.ts (`pollDeploy`), the only one.
 // Test: await-push-checks.test.ts, the program against a fake GitHub.
@@ -511,6 +514,11 @@ async function changedFiles(repo: string, base: string, head: string): Promise<R
   return { ok: true, value: list.length >= 300 ? null : files };
 }
 
+/** A commit status (no app) that errored or refused: a deployer that
+ *  marks only the newest build leaves it, so a later trunk commit carrying the same mark
+ *  as a success settles it. */
+const isMarkProblem = (c: Check): boolean => c.app === "" && (c.outcome === "error" || c.outcome === "failure");
+
 /** The trunk tip when it contains <sha>, is not it, and reported checks of
  *  its own; else null. */
 async function laterTip(repo: string, sha: string): Promise<string | null> {
@@ -601,12 +609,13 @@ async function watch(o: Opts, sha: string, say: (line: string) => void, owed: Ch
           return {
             kind: "fail",
             line: bad.map((c) => `${label(c, all)} ${c.outcome}`).join("; "),
-            // A cancelled run, or a mark that errored rather than judged.
-            supersedable: bad.every(
-              (c) => (c.app !== "" && c.outcome === "cancelled") || (c.app === "" && c.outcome === "error"),
-            ),
-            // A mark that errored is still owed by the commit that settles it.
-            owed: [...missing, ...bad.filter((c) => c.app === "" && c.outcome === "error")],
+            // A cancelled run, or a mark (a commit status: a
+            // deployer's) that errored or refused. A failed check run is a
+            // verdict on this commit's own build and is never superseded.
+            supersedable: bad.every((c) => (c.app !== "" && c.outcome === "cancelled") || isMarkProblem(c)),
+            // A mark that errored or refused is still owed by the commit that
+            // settles it, and must pass there.
+            owed: [...missing, ...bad.filter(isMarkProblem)],
           };
         }
         if (missing.length === 0) return { kind: "pass" };

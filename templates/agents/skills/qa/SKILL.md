@@ -1,6 +1,6 @@
 ---
 name: qa
-description: See the real running product of any app in your workbench, find its design problems, fix them, and explain what changed. Use after a UI change, before/after committing, when asked to QA, screenshot, fix, or visually verify a web app, or to confirm a portal renders correctly at desktop/tablet/phone. CLI/library targets capture stdout instead of screenshots.
+description: Looks at the real running product of any app in your workbench, finds its design problems, fixes them, and explains what changed. Use after a UI change, when asked to QA, screenshot, fix or visually verify a web app, or to confirm a portal renders correctly at desktop, tablet and phone.
 metadata:
   peers: ".agents/skills/qa/scripts/detect-app.ts .agents/skills/qa/scripts/discover-routes.ts .agents/skills/qa/scripts/serve.ts .agents/skills/qa/scripts/static-serve.ts .agents/skills/qa/scripts/screenshot.ts .agents/skills/qa/scripts/sight-check.ts .agents/skills/qa/scripts/sight-stamp.ts .agents/skills/qa/scripts/sight-validate.ts .agents/skills/qa/scripts/a11y.ts .agents/skills/qa/scripts/gen-design-md.ts .agents/skills/qa/scripts/design-authority.ts .agents/skills/qa/scripts/design-frontmatter.ts .agents/skills/qa/scripts/element-scan.ts .agents/skills/qa/scripts/interaction-check.ts .agents/skills/qa/scripts/interaction-check.browser.ts .agents/skills/qa/scripts/system-drift.ts .agents/skills/qa/scripts/impeccable-detect.ts .agents/skills/qa/scripts/lib.ts .agents/skills/qa/scripts/ensure-playwright.ts .agents/skills/qa/scripts/mark-qa-done.ts .agents/skills/qa/scripts/qa-targets.ts .agents/skills/qa/scripts/import-map.ts .agents/skills/qa/references/server-lifecycle.md .agents/skills/qa/references/review-rubric.md .agents/skills/review/policy-review.ts .agents/skills/close/references/auto-close-gate.md"
 ---
@@ -9,7 +9,7 @@ metadata:
 
 ## Critical
 
-- **`/implement` REQUIRES this, and will not close without it.** `/implement` phase-4.8 runs `scripts/qa-targets.ts` over its diff. Every web target it prints gets a full `/qa` — impeccable on `@latest` (step-2.6), its fixes (step-2.7), screenshots, sight-check, fresh-context visual review — and `validate.ts --require-qa` then refuses the close until each one has a marker for the tree that is about to ship. "Fully" is not a posture here, it is the gate's definition: a `/qa` that stopped after impeccable writes no marker, and the session does not close. `scripts/mark-qa-done.ts --tree <sha>` writes that marker, only at step-6-teardown, only after the review passed — never by hand, and never early.
+- **`/implement` REQUIRES this, and will not close without it.** `/implement` phase-4.8 runs `scripts/qa-targets.ts` over its diff. Every web target it prints gets a full `/qa` — impeccable on `@latest` (step-2.6), its fixes (step-2.7), screenshots, sight-check, fresh-context visual review; an email target gets the user's check of a delivered copy instead (step-5c-email) — and `validate.ts --require-qa` then refuses the close until each one has a marker for the tree that is about to ship. "Fully" is not a posture here, it is the gate's definition: a `/qa` that stopped after impeccable writes no marker, and the session does not close. `scripts/mark-qa-done.ts --tree <sha>` writes that marker, only at step-6-teardown, only after the review passed — never by hand, and never early.
 - **The automatic trigger is `/implement`, not a hook.** Phase 4.8 runs `validate.ts --phase qa-list` and `--require-qa`, so a session that changed a web app cannot close without a finished `/qa`. Invoking `/qa` by hand is the manual override.
 - **Tools install on first use; a missing tool is a skip, never a pass.** Playwright and Chromium (`ensure-playwright.ts`), impeccable (`impeccable-detect.ts`, which also upgrades it when a newer version is published) and the axe packages for `--a11y` install the first time they are needed — nothing at install time. When one cannot be installed (offline, no npm, `QA_NO_INSTALL=1`), the script prints `qa: skipped — Playwright unavailable (<reason>)` or `impeccable: detector unavailable — <reason>`; repeat that line to the user word for word and write no marker. The sight stamp uses ImageMagick (`magick`) when installed and Playwright otherwise, so it needs nothing extra. Node 22.18+ is assumed (every script here is TypeScript that Node runs directly).
 - **A design authority that contains no design is a P1, not a pass.** `/qa` delegates the entire look question to the app's own `DESIGN.md` — correct — but a delegated file can hold no design. `gen-design-md.ts` writes a token inventory on a repo's first run, the `design-system-*` checks run against it, and the result is clean forever; that is how a portal passes `/qa` while its owner finds it plainly bad. `design-authority.ts` (step-2.5) now raises the missing system as the run's first finding, and `system-drift.ts` (step-2.6b) counts how far the source has drifted from whatever the app DID declare. Neither adds a design opinion to this skill: the rubric still prescribes no type ramp, palette or spacing scale.
@@ -51,13 +51,14 @@ node --experimental-strip-types "$S/detect-app.ts" "$TARGET"   # read TYPE= from
 
 An undetectable type stops here. Surface the exact message; do NOT invent a command. `/qa` is zero-config — there is no `.qa.json`; the non-convention types declare themselves with a `qa:*` script in their own `package.json`.
 
-**Branch on `TYPE` BEFORE anything else** — `detect-app.ts` returns `astro-cf | astro | next | vite | static | node-server | render | cli | unknown`:
+**Branch on `TYPE` BEFORE anything else** — `detect-app.ts` returns `astro-cf | astro | next | vite | static | node-server | email | render | cli | unknown`:
+- `email` → skip serve + screenshot; go to `step-5c-email` (the app emails clients, declared by its `qa:email` script). **Route discovery does NOT apply.**
 - `render` → skip serve + screenshot; go to `step-5b-render` (the repo's `qa:render` script produces the PNGs). The universal hatch — TRMNL Liquid, HTML-to-image, anything non-served. **Route discovery does NOT apply.**
 - `cli` → skip to `step-5-cli` (stdout is the evidence). **Route discovery does NOT apply.**
 - `astro-cf` on a CF-Access-gated portal → see **§ Cloudflare portal recipe** before choosing `--before` vs `--live`.
 - everything else → `step-2-serve`.
 
-For `cli` and `render`, first create the managed evidence directory without a
+For `cli`, `render` and `email`, first create the managed evidence directory without a
 server:
 
 ```bash
@@ -272,7 +273,7 @@ Read the manifest's output directory as `$CAPTURE_DIR` for stamping and review.
 For the initial pass it is `QA_CAPTURE_DIR`; a replacement pass has its own
 nested directory, as step 4.5 describes.
 
-Before each shot the page is scroll-walked, its late-loading images are switched to load at once, and the shot waits up to 10 s for every image to load and decode; an image still missing then is named on stderr (`still loading`), because it will show as an empty box. Without that wait, a home page's lazy-loaded photos were shot as white boxes. Prints the manifest table (route · width · path · bytes · http-status). A page taller than 3,000px comes back as `-part1`, `-part2`, … shots, top to bottom, because the reviewer's image reader shrinks a picture to about 2,000px on its long side: a 20,000px page reached it at a tenth of its size, text and sight code unreadable. The reviewer reads the parts as one page; a run of more than about 20 shots goes to several fresh reviewers, each given a share, and their replies are joined into one file for `sight-check.ts verify`. Label the block with `QA_LABEL` (`working tree` / `HEAD worktree` / `live URL <url>`) so the user knows which revision they're seeing.
+Before each shot the page is scroll-walked, its late-loading images are switched to load at once, and the shot waits up to 10 s for every image to load and decode; an image still missing then is named on stderr (`still loading`), because it will show as an empty box. Without that wait, a home page's lazy-loaded photos were shot as white boxes. Before the motion burst, and again after the scroll-walk and before the page is measured, the shot waits up to 5 s for the web fonts the page is using. A font that failed to download or parse, a font stylesheet that failed, a font still loading at the deadline, or a font state the browser could not report becomes a `font: <route> @<width> <motion|still> — typography may differ: …` line after the manifest table and a `fontNotes` list on that row of `manifest.json` or `motion/manifest.json`; the shot is kept, drawn in whatever the browser could show. Without that line, phone shots drawn in a machine's fallback font led a reviewer to judge line breaks the page never has. Prints the manifest table (route · width · path · bytes · http-status). A page taller than 3,000px comes back as `-part1`, `-part2`, … shots, top to bottom, because the reviewer's image reader shrinks a picture to about 2,000px on its long side: a 20,000px page reached it at a tenth of its size, text and sight code unreadable. The reviewer reads the parts as one page; a run of more than about 20 shots goes to several fresh reviewers, each given a share, and their replies are joined into one file for `sight-check.ts verify`. Label the block with `QA_LABEL` (`working tree` / `HEAD worktree` / `live URL <url>`) so the user knows which revision they're seeing.
 
 Every run also writes `motion/` — see `step-3.6-motion`. The stills are the
 settled end state; they are not evidence about motion and never were.
@@ -475,6 +476,12 @@ MOTION. `<run-dir>/motion/manifest.json` lists what each route DECLARED
 a frame burst at 0/120/260/520ms with animations running. Work the rubric's
 Motion section against both; its severities are the only ones that apply.
 
+FONT EVIDENCE. These shots may be drawn in a fallback font, by route, width and
+capture phase (motion frames or the settled still). Work the rubric's Font
+evidence section for each one listed; every other shot was captured with its
+fonts loaded.
+<paste every `font:` line the screenshot run printed, or "none">
+
 Design intent: <paste the SPEC/design or describe the page's purpose>.
 
 The deterministic layer (contrast, tells, token drift) was already scanned AND
@@ -512,9 +519,9 @@ node --experimental-strip-types .agents/skills/review/policy-review.ts adversari
 node --experimental-strip-types "$S/sight-check.ts" verify --codes "$QA_SIGHT_CODES" --response /tmp/qa-review-$RUN_ID.txt
 ```
 
-The brief file carries the same text as the subagent brief above — rubric, sight-code instruction, design intent, and the absolute path of every PNG to open — and still never the codes. Max **8 images per call**; a bigger run is batched — each batch's list file names only its own PNGs — and each batch is checked against a codes file holding only its own shots' rows (`grep` them out of `$QA_SIGHT_CODES`, and pass that file as `QA_SIGHT_CODES` to both commands). A vendor that cannot open an image cannot return the codes, so the same gate refuses its answer: when no reviewer in the chain can see, the chain exits non-zero with an empty reply, the review HALTS, and the report says the visual review did not happen.
+The brief file carries the same text as the subagent brief above — rubric, sight-code instruction, font evidence, design intent, and the absolute path of every PNG to open — and still never the codes. A run split between reviewers or batches gives each one that same filled brief, its font evidence included. Max **8 images per call**; a bigger run is batched — each batch's list file names only its own PNGs — and each batch is checked against a codes file holding only its own shots' rows (`grep` them out of `$QA_SIGHT_CODES`, and pass that file as `QA_SIGHT_CODES` to both commands). A vendor that cannot open an image cannot return the codes, so the same gate refuses its answer: when no reviewer in the chain can see, the chain exits non-zero with an empty reply, the review HALTS, and the report says the visual review did not happen.
 
-Adjudicate every finding against the app’s actual design intent. Fix each confirmed, ready finding in this session, including P2/P3. Reject a false positive or unsupported taste suggestion with its reason; severity alone is not a deferral.
+Adjudicate every finding against the app’s actual design intent. Fix each confirmed, ready finding in this session, including P2/P3. Reject a false positive or unsupported taste suggestion with its reason; severity alone is not a deferral. Under `/implement` every confirmed finding goes back to the row being built and is fixed there before it lands — never to a new roadmap row such as "fixes from R4's QA"; a finding on a page outside that row's outcome follows `.agents/skills/implement/SKILL.md` § findings-stay-in-row. A standalone `/qa` adds no row either: it fixes what it confirms in this session.
 
 **A clean run is a floor, not a verdict.** A generic font at a flat type scale passes every numeric threshold in the rubric. Say what the rubric could not check (focus order, screen-reader output, perceived performance) rather than letting a green report imply it was covered. Motion is no longer on that list — it is captured and graded (step-3.6); if you find yourself writing "motion cannot be checked from a still", the motion evidence went unread.
 
@@ -580,6 +587,34 @@ the MOTION paragraph: a render pass writes no `motion/` directory. This is how
 `/qa` guarantees it can always render the thing it's working on: if a target
 can't be served, it declares how to render itself.
 
+## step-5c-email
+
+For `email` targets — an app that emails clients or customers declares a
+`qa:email` script (a newsletter, a survey); an email only the user or their
+team reads does not. A local render at phone width is not enough: a phone mail
+client in dark mode can split text mid-word and hide a logo that every local
+render showed. So an email is QA'd on a delivered copy.
+
+An email app also declares `qa:email-render` (`node --experimental-strip-types <file>`), a
+program that prints its email for a fixed sample. `qa-targets.ts` builds it at
+the change's base and now, and a change that leaves the email byte-for-byte the
+same owes no delivered copy: only an email that itself comes out different
+does. A new email app gets both scripts.
+
+```bash
+npm --prefix "$TARGET" run --silent qa:email > "$QA_CAPTURE_DIR/email-test-send.txt"
+```
+
+Read the file: the app prints how a test copy is sent (a button only the user
+presses, say) and where it arrives. Then ask the user, as one numbered question with lettered choices, to send
+the test copy and look at it on their phone's mail app with dark mode on, and on
+a computer: a. it looks right; b. what is wrong (their words). Halt for the
+answer. A problem they name is fixed in this run and asked again with a new test
+copy. Only "looks right", in their words, finishes the target: pass them to
+`mark-qa-done.ts --delivered "<their words>"` with `--tree` (step-6), which
+refuses an email target without them. No server, screenshot or interaction
+check applies.
+
 ## Cloudflare portal recipe
 
 A Cloudflare-hosted site behind Cloudflare Access is not a dead end. Three doors, pick by the question:
@@ -611,15 +646,21 @@ well after the comparison review; do not lose its runfile when switching to the
 candidate's output fields. The step-4.7 plain-English summary is the result the
 user sees, not the PNGs.
 
-After the review completes and fix-now findings are handled, write the marker:
+During initial implementation QA, if QA changed source, finish the implementation
+skill's check and coverage-evidence updates before taking the final interaction
+evidence and writing the marker. After the visual review completes and fix-now
+findings are handled, write the marker:
 
 ```bash
 # Standalone run: no gate reads this form; it records the run only.
 node --experimental-strip-types "$S/mark-qa-done.ts" "$TARGET"
 
-# Under /implement phase-4.8, pass the tree the gate will check against — the
-# snapshot taken AFTER this /qa finished, so the marker names the bytes that ship:
+# Under /implement, snapshot the owned repo root containing TARGET after all QA fixes.
+POST_QA=$(CODE_REVIEW_LOOP_ID="<audit-owner thread id>" CODEX_REVIEW_REPO="<owned repo root>" node --experimental-strip-types .agents/skills/review/code-review.ts --snapshot)
 node --experimental-strip-types .agents/skills/qa/scripts/mark-qa-done.ts --tree "$POST_QA" "$TARGET"
+
+# An email target adds the user's words on the delivered copy (step-5c-email):
+node --experimental-strip-types .agents/skills/qa/scripts/mark-qa-done.ts --tree "$POST_QA" --delivered "<the user's words>" "$TARGET"
 ```
 
 With `--tree` it writes `/tmp/qa-done/<slug>-<tree-sha>`, which is what `validate.ts --require-qa` reads. The change-set key both forms also write is legacy and unread. The tree key exists because a tree SHA names the bytes QA looked at, survives the commit, and moves when a later `/qa` edits source, so an earlier target's marker stops matching and that target runs again.
@@ -657,7 +698,7 @@ capture cleanup; do not leave the user only paths to deleted files.
 | `build failed` | the repo's `npm run build` is red | fix the build in the target repo first |
 | `server never came up` | slow boot / crash | check the printed `server.log` tail. A busy default port is no longer a cause — with no `--port`, `serve.ts` scans upward from 8813 for a free one |
 | `the listener is NOT this run's process group` | a server from another repo or session already holds the port and answers 200 | stop that process or pass `--port <free-port>`. `/qa` refuses it deliberately: accepting it means an entire review pass grades a different application |
-| `qa: BLANK CAPTURES` (exit 8) | the shot is (near-)uniform — almost always sections that fade in on scroll, since a `fullPage` shot does not scroll | the capture now scroll-walks the page and forces `[data-animate]`/`[data-aos]`/`[data-reveal]`/`.reveal`/`.fade-in`/`.animate-on-scroll` visible before shooting; if a site hides content under some OTHER selector, add it to that rule in `scripts/screenshot.ts`. A genuinely near-empty page (bare 404, one-line confirmation) is the false positive — re-run with `QA_INK_FLOOR=0`. Never review a shot the gate rejected: a reviewer handed a white image critiques the whitespace and returns confident findings about nothing. |
+| `qa: BLANK CAPTURES` (exit 8) | the shot is (near-)uniform — almost always sections that fade in on scroll, since a `fullPage` shot does not scroll | the capture now scroll-walks the page and forces `[data-animate]`/`[data-aos]`/`[data-reveal]`/`.reveal`/`.fade-in`/`.animate-on-scroll` visible before shooting, and draws content the browser skips until scrolled to (`content-visibility: auto`), so a list that scrolls in its own box low on the page is drawn; if a site hides content under some OTHER selector, add it to that rule in `scripts/screenshot.ts`. A genuinely near-empty page (bare 404, one-line confirmation) is the false positive — re-run with `QA_INK_FLOOR=0`. Never review a shot the gate rejected: a reviewer handed a white image critiques the whitespace and returns confident findings about nothing. |
 | blank screenshots that survive the gate | SPA needs a wait/selector | the Node capture uses `networkidle`; add a mask or raise the timeout |
 | `qa: IDENTICAL SHOTS` (exit 6) | every route rendered the same image — auth wall, dead client routing, or a catch-all | `curl -sI <url>/<route> \| head -3` to see the redirect. On `--live`, attach an Access service token (§ Cloudflare portal recipe) — otherwise `--before` bypasses the gate. Never review the shots as-is. |
 | `qa: UNSUCCESSFUL RESPONSES` (exit 9) | a route answered 4xx/5xx or not at all — a gated app's machine 403 carries a full page of ink, so the blank and identical-shot gates cannot see it | a 403 on a gated app: pass `--auth-act-as` (the "service tokens cannot access this page" row below); anything else: fix the route. Never review the shots |

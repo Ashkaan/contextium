@@ -2,6 +2,7 @@
 // Run: node --test --experimental-strip-types .agents/skills/spec-audit/scripts/format-trailer.test.ts
 //
 // Pins the one line /spec-audit writes into plan.md for each of the four modes,
+// the follow-up count included,
 // and every refusal: a missing or unknown mode, a missing argument, a vendor
 // that is not a plain lowercase token (the value lands verbatim in the record),
 // a spirit verdict outside MATCH | DRIFT | AMBIGUOUS, and a non-material reason
@@ -46,21 +47,34 @@ test("round-1", () => {
   );
 });
 
-// ── 2. round-2 ────────────────────────────────────────────────────────────
-test("round-2", () => {
-  let r = run("round-2", "codex", "2", "1", "MATCH");
-  assert.equal(r.rc, 0, "round-2 exits 0");
+// ── 2. follow-up ──────────────────────────────────────────────────────────
+// The trailer names how many follow-up rounds the spec took (at most 3 after
+// round 1, .agents/skills/review/spec-audit.ts), so plan.md records the review depth.
+test("follow-up", () => {
+  let r = run("follow-up", "codex", "2", "1", "0", "MATCH");
+  assert.equal(r.rc, 0, `follow-up exits 0: ${r.err}`);
   assert.equal(
     r.out,
-    "spec-audit: codex round-2 (2 accepted by codex, 1 escalated); spirit MATCH; user-ask-verbatim in spec.md Input",
-    "round-2 line",
+    "spec-audit: codex round-1 + 2 follow-ups (1 pushback accepted by codex, 0 escalated); spirit MATCH; user-ask-verbatim in spec.md Input",
+    "follow-up line names the round count",
   );
-  r = run("round-2", "grok", "0", "0", "MATCH");
+  r = run("follow-up", "grok", "1", "0", "2", "DRIFT");
   assert.equal(
     r.out,
-    "spec-audit: grok round-2 (0 accepted by grok, 0 escalated); spirit MATCH; user-ask-verbatim in spec.md Input",
-    "round-2 with zero counts still renders both",
+    "spec-audit: grok round-1 + 1 follow-up (0 pushbacks accepted by grok, 2 escalated); spirit DRIFT; user-ask-verbatim in spec.md Input",
+    "one follow-up and one pushback read in the singular",
   );
+  for (const bad of ["0", "4", "x", "1.5", "-1"]) {
+    r = run("follow-up", "codex", bad, "0", "0", "MATCH");
+    assert.equal(r.rc, 1, `follow-up count '${bad}' is refused`);
+    assert.ok(r.err.includes(`invalid follow-up count '${bad}'`), `follow-up count '${bad}' is named: ${r.err}`);
+  }
+  for (const bad of ["x", "-1", "1.5"]) {
+    assert.equal(run("follow-up", "codex", "1", bad, "0", "MATCH").rc, 1, `accepted count '${bad}' is refused`);
+    assert.equal(run("follow-up", "codex", "1", "0", bad, "MATCH").rc, 1, `escalated count '${bad}' is refused`);
+  }
+  r = run("round-2", "codex", "2", "1", "MATCH");
+  assert.equal(r.rc, 1, "the retired round-2 mode is refused");
 });
 
 // ── 3. skipped modes ──────────────────────────────────────────────────────
@@ -89,7 +103,7 @@ test("mode errors", () => {
   let r = run();
   assert.equal(r.rc, 1, "no mode exits 1");
   assert.ok(
-    r.err.includes("mode required: round-1 | round-2 | skipped-user | skipped-non-material"),
+    r.err.includes("mode required: round-1 | follow-up | skipped-user | skipped-non-material"),
     "no mode names the four modes",
   );
   assert.equal(r.out, "", "no mode prints nothing on stdout");
@@ -113,11 +127,13 @@ test("missing arguments", () => {
     r.err.includes("spirit verdict required: MATCH | DRIFT | AMBIGUOUS"),
     "round-1 without spirit lists the verdicts",
   );
-  r = run("round-2", "codex", "1");
-  assert.equal(r.rc, 1, "round-2 without escalated count exits 1");
-  assert.ok(r.err.includes("escalated-to-user count required"), "round-2 without escalated count names it");
-  r = run("round-2", "codex", "1", "0");
-  assert.equal(r.rc, 1, "round-2 without spirit exits 1");
+  r = run("follow-up", "codex", "1", "1");
+  assert.equal(r.rc, 1, "follow-up without escalated count exits 1");
+  assert.ok(r.err.includes("escalated-to-user count required"), "follow-up without escalated count names it");
+  r = run("follow-up", "codex", "1", "1", "0");
+  assert.equal(r.rc, 1, "follow-up without spirit exits 1");
+  r = run("follow-up", "codex");
+  assert.ok(r.err.includes("follow-up count required"), "follow-up without its round count names it");
   r = run("skipped-user");
   assert.equal(r.rc, 1, "skipped-user without a quote exits 1");
   assert.ok(r.err.includes("verbatim user authorization quote required"), "skipped-user without a quote asks for it");
@@ -140,8 +156,8 @@ test("bad values", () => {
   assert.equal(run("round-1", "", "MATCH").rc, 1, "empty vendor is refused");
   assert.equal(run("round-1", "-codex", "MATCH").rc, 1, "vendor starting with a dash is refused");
   assert.equal(run("round-1", "gpt-6-sol", "MATCH").rc, 0, "vendor with digits and dashes after a letter is accepted");
-  assert.equal(run("round-2", "co dex", "1", "0", "MATCH").rc, 1, "round-2 validates the vendor too");
-  assert.equal(run("round-2", "codex", "1", "0", "NOPE").rc, 1, "round-2 validates the spirit verdict too");
+  assert.equal(run("follow-up", "co dex", "1", "1", "0", "MATCH").rc, 1, "follow-up validates the vendor too");
+  assert.equal(run("follow-up", "codex", "1", "1", "0", "NOPE").rc, 1, "follow-up validates the spirit verdict too");
   r = run("skipped-non-material", "rewrite");
   assert.equal(r.rc, 1, "unknown non-material reason exits 1");
   assert.ok(r.err.includes("invalid non-material reason 'rewrite'"), "unknown non-material reason is named");
@@ -160,9 +176,9 @@ test("the fresh-context fallback is never recorded as independent", () => {
     "round-1 fallback carries its caveat",
   );
   assert.equal(
-    run("round-2", "claude-fallback", "1", "0", "DRIFT").out,
-    "spec-audit: claude-fallback (fresh context, NOT independent) round-2 (1 accepted by claude-fallback, 0 escalated); spirit DRIFT; user-ask-verbatim in spec.md Input",
-    "round-2 fallback carries its caveat",
+    run("follow-up", "claude-fallback", "1", "1", "0", "DRIFT").out,
+    "spec-audit: claude-fallback (fresh context, NOT independent) round-1 + 1 follow-up (1 pushback accepted by claude-fallback, 0 escalated); spirit DRIFT; user-ask-verbatim in spec.md Input",
+    "follow-up fallback carries its caveat",
   );
 });
 

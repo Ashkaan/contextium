@@ -92,15 +92,19 @@ const isDir = (p: string): boolean => {
 };
 
 /**
- * The node_modules a build in `from` resolves from: the nearest at or above it,
- * stopping short of $HOME and the root. An --after worktree under /tmp has none
- * beside it or above it, so its build finds no dependencies at all (`vite: not
- * found` on an app whose packages live beside its checkout).
+ * The node_modules a build in `from` resolves from: the nearest at or above it
+ * that holds a package, stopping short of $HOME and the root. An --after
+ * worktree under /tmp has none beside it or above it, so its build finds no
+ * dependencies at all (`vite: not found` on an app whose packages live beside
+ * its checkout). One holding only dot-folders is a tool's cache, not
+ * dependencies: a vitest run in a worktree leaves node_modules/.vite there, and
+ * a build that linked it would find no vite, so the search goes on above it.
  */
 function nearestNodeModules(from: string): string | undefined {
   const home = process.env.HOME ?? "";
   for (let d = resolve(from); d !== dirname(d) && d !== home; d = dirname(d)) {
-    if (isDir(join(d, "node_modules"))) return join(d, "node_modules");
+    const nm = join(d, "node_modules");
+    if (isDir(nm) && readdirSync(nm).some((e) => !e.startsWith("."))) return nm;
   }
   return undefined;
 }
@@ -708,7 +712,7 @@ async function doUp(args: string[]): Promise<void> {
   const QA_SERVE = field("QA_SERVE");
   const SERVE_DIR = field("SERVE_DIR");
 
-  if (TYPE === "cli" || TYPE === "render") {
+  if (TYPE === "cli" || TYPE === "render" || TYPE === "email") {
     qaErr(`serve up: ${TYPE} target has no server — run it directly (see SKILL ${TYPE} path)`);
     cleanupWorktree();
     exit(2);
@@ -851,10 +855,20 @@ async function doUp(args: string[]): Promise<void> {
       // fallback below eventually catches it, but only after the pages attempt burns its full
       // health-check window, and the fallback has no CF bindings — so a whole QA pass runs
       // against a server with no data bindings, for a repo that would have served fine.
+      //
+      // wrangler also opens a devtools port. Left to itself it probes for a free one
+      // from 9229 (get-port) and binds it later, after bundling. A QA run died with
+      // EADDRINUSE on 127.0.0.1:9229 while another session's QA server was starting;
+      // its own setting and timing were not recorded, so the cause is inferred: two
+      // servers probing 9229 at once. A plain
+      // `wrangler dev` with 9229 already held moved to 9230, which rules out a fixed
+      // port. `--inspector-port 0` has the system assign a free port at the bind
+      // itself, which nothing can take in between (checked with wrangler 4.152.0,
+      // both shapes).
       if (qaWranglerDeclaresMain(buildDir)) {
-        serveCmd = `npx wrangler dev --port ${port} --persist-to ${persist}`;
+        serveCmd = `npx wrangler dev --port ${port} --persist-to ${persist} --inspector-port 0`;
       } else {
-        serveCmd = `npx wrangler pages dev dist --port ${port} --persist-to ${persist} --compatibility-date 2025-09-01`;
+        serveCmd = `npx wrangler pages dev dist --port ${port} --persist-to ${persist} --compatibility-date 2025-09-01 --inspector-port 0`;
       }
       break;
     case "astro":

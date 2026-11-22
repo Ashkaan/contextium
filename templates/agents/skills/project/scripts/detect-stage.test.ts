@@ -28,7 +28,7 @@ delete baseEnv.CLAUDE_SESSION_ID;
 delete baseEnv.CLAUDE_CODE_SESSION_ID;
 delete baseEnv.CONTEXTIUM_CLOSE_SCRIPTS;
 delete baseEnv.DETECT_STAGE_ROWS_TAKEN;
-// No real T3 database: rows another open thread is building come from the
+// No real T3 database: rows another open thread holds come from the
 // DETECT_STAGE_ROWS_TAKEN stub below, never from this machine's live threads.
 baseEnv.T3CODE_HOME = join(tmp, "no-t3");
 
@@ -98,7 +98,7 @@ test("specs and reports count folders only", () => {
   touch(`${p}/specs/001-a/report.md`, "---\nspec: 001-a\nspec-status: complete\n---\n");
   assert.equal(
     run(p),
-    "stage: all-specs-reported\nstatus: active\nspecs: 1\nreports: 1\nactive-spec: \nnext-row: \nplan-row: \nmanual-row: ",
+    "stage: all-specs-reported\nstatus: active\nspecs: 1\nreports: 1\nactive-spec: \nnext-row: \nplan-row: \nplan-rows: \nmanual-row: ",
     "exact output shape",
   );
 });
@@ -169,11 +169,7 @@ test("plan-row and manual-row name the first of each kind, even behind a row to 
   );
 
   // A spec still carrying an open question after the build row is planning work.
-  roadmap(
-    p,
-    "| R1 | a | i | s | — | planned | `specs/001-a/` |",
-    "| R6 | f | i | s | — | planned | `specs/006-f/` |",
-  );
+  roadmap(p, "| R1 | a | i | s | — | planned | `specs/001-a/` |", "| R6 | f | i | s | — | planned | `specs/006-f/` |");
   touch(`${p}/specs/006-f/spec.md`, "# spec\n\n[NEEDS CLARIFICATION: which vendor?]\n");
   assert.equal(
     ["stage", "next-row", "plan-row", "manual-row"].map((f) => field(p, f)).join("|"),
@@ -184,6 +180,56 @@ test("plan-row and manual-row name the first of each kind, even behind a row to 
   // Nothing but the build: both lanes empty.
   roadmap(p, "| R1 | a | i | s | — | planned | `specs/001-a/` |");
   assert.equal(`${field(p, "plan-row")}|${field(p, "manual-row")}`, "|", "no planning or manual row prints both empty");
+});
+
+// The plan lane, once open, designs every row owed
+// planning, including rows still behind an unbuilt Depends on.
+test("plan-rows lists every free open row owed planning, ready or behind its Depends on", () => {
+  const p = mk("rm-plan-rows", "active");
+  roadmap(
+    p,
+    "| R1 | a | i | s | — | planned | `specs/001-a/` |",
+    "| R2 | b | i | s | R1 | planned | — |",
+    "| R3 | c | i | s | — | blocked: until 2026-12-01 a result | — |",
+    "| R5 | e | i | s | — | planned | manual |",
+    "| R6 | f | i | s | — | done | — |",
+    "| R7 | g | i | s | — | in-progress | — |",
+    "| R8 | h | i | s | R1 | planned | manual |",
+  );
+  touch(`${p}/specs/001-a/spec.md`);
+  assert.equal(
+    field(p, "plan-rows"),
+    "R7 R2",
+    "in-progress first, then planned; R2 behind unbuilt R1 is listed; blocked, done and manual rows are not",
+  );
+});
+
+test("plan-rows lists a spec behind an unbuilt row only while it carries an open question", () => {
+  const p = mk("rm-plan-rows-q", "active");
+  roadmap(p, "| R1 | a | i | s | — | planned | `specs/001-a/` |", "| R4 | d | i | s | R1 | planned | `specs/004-d/` |");
+  touch(`${p}/specs/001-a/spec.md`);
+  touch(`${p}/specs/004-d/spec.md`, "# spec\n");
+  assert.equal(field(p, "plan-rows"), "", "a settled spec behind R1 waits for its build, not for planning");
+  touch(`${p}/specs/004-d/spec.md`, "# spec\n\n[NEEDS CLARIFICATION: which vendor?]\n");
+  assert.equal(field(p, "plan-rows"), "R4", "an open question behind R1 is planning work");
+});
+
+test("a row behind an unbuilt one does not open a plan lane or change the stage", () => {
+  const p = mk("rm-plan-row-ready", "active");
+  roadmap(p, "| R1 | a | i | s | — | planned | `specs/001-a/` |", "| R2 | b | i | s | R1 | planned | — |");
+  touch(`${p}/specs/001-a/spec.md`);
+  assert.equal(
+    ["stage", "next-row", "plan-row", "plan-rows"].map((f) => field(p, f)).join("|"),
+    "ready-to-implement|R1||R2",
+    "plan-row stays empty, so open active opens no plan lane for R2 alone",
+  );
+});
+
+test("a held row is not in plan-rows", () => {
+  const p = mk("rm-plan-rows-held", "active");
+  roadmap(p, "| R2 | b | i | s | — | in-progress | — |", "| R3 | c | i | s | R2 | planned | — |");
+  const env = takenStub("plan-rows", [held("R2")]);
+  assert.equal(`${field(p, "plan-row", env)}|${field(p, "plan-rows", env)}`, "|R3", "R2 is held; R3 is behind it");
 });
 
 test("row with a folder spec", () => {
@@ -326,7 +372,7 @@ test("failing helpers: every line printed, exit 0", () => {
   const r = exec(p, { CONTEXTIUM_CLOSE_SCRIPTS: broken });
   assert.equal(
     `${r.out.split("\n").join("|")}|rc=${r.rc}`,
-    "stage: unknown|status: active|specs: 1|reports: 0|active-spec: |spec-state-error: spec-state.ts exited 1|next-row: |plan-row: |manual-row: |roadmap-error: roadmap.ts exited 3|rc=0",
+    "stage: unknown|status: active|specs: 1|reports: 0|active-spec: |spec-state-error: spec-state.ts exited 1|next-row: |plan-row: |plan-rows: |manual-row: |roadmap-error: roadmap.ts exited 3|rc=0",
   );
 });
 
@@ -433,7 +479,7 @@ test("no status field is unknown", () => {
   );
 });
 
-// ── Rows another open thread is building ─────────────────────────────────
+// ── Rows another open thread holds ────────────────────────────────────────
 // rows-taken.ts is replaced by a stub that prints its lines; its own reading of
 // T3 and the other worktrees is covered in rows-taken.test.ts.
 function takenStub(name: string, lines: string[], code = 0): Record<string, string> {
@@ -597,4 +643,49 @@ test("a held row after the next free one is still printed", () => {
   const env = takenStub("after", [held("R3")]);
   assert.equal(field(p, "next-row", env), "R2");
   assert.equal(field(p, "taken", env), 'R3 by "Other thread" (/w/other)');
+});
+
+// ── behindMain, the one freshness check ─────
+// open-active imports it to check every folder of a close's set; detect-stage's
+// own behind-main line calls it too.
+test("behindMain: files origin/main changed in a folder after HEAD; a folder only main has counts", async () => {
+  const { behindMain } = await import("./detect-stage.ts");
+  const repo = mkdtempSync(join(tmpdir(), "detect-stage-behind-"));
+  const env = {
+    ...process.env,
+    GIT_AUTHOR_NAME: "t",
+    GIT_AUTHOR_EMAIL: "t@t",
+    GIT_COMMITTER_NAME: "t",
+    GIT_COMMITTER_EMAIL: "t@t",
+    GIT_CONFIG_GLOBAL: "/dev/null",
+    GIT_CONFIG_NOSYSTEM: "1",
+  };
+  const git = (...args: string[]): void => {
+    const r = spawnSync("git", ["-C", repo, ...args], { encoding: "utf8", env });
+    assert.equal(r.status, 0, r.stderr);
+  };
+  const put = (rel: string): void => {
+    mkdirSync(dirname(join(repo, rel)), { recursive: true });
+    writeFileSync(join(repo, rel), `${rel}\n`);
+  };
+  try {
+    git("init", "-q");
+    put("projects/t/2026-01-01_still/README.md");
+    put("projects/t/2026-01-01_moved/README.md");
+    git("add", "-A");
+    git("commit", "-q", "-m", "cut");
+    put("projects/t/2026-01-01_moved/a.md");
+    put("projects/t/2026-01-01_moved/b.md");
+    put("projects/t/2026-01-01_new/ROADMAP.md");
+    git("add", "-A");
+    git("commit", "-q", "-m", "landed after the cut");
+    git("update-ref", "refs/remotes/origin/main", "HEAD");
+    git("reset", "-q", "--hard", "HEAD~1");
+    assert.equal(behindMain("projects/t/2026-01-01_still", repo), 0, "a folder main did not touch");
+    assert.equal(behindMain("projects/t/2026-01-01_moved", repo), 2, "its changed file count");
+    assert.ok(behindMain("projects/t/2026-01-01_new", repo) > 0, "a folder this checkout lacks but main has");
+    assert.equal(behindMain("projects/t/2026-01-01_moved", join(tmp, "not-a-repo")), 0, "a failing git reads 0");
+  } finally {
+    rmSync(repo, { recursive: true, force: true });
+  }
 });

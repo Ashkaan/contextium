@@ -18,33 +18,48 @@
 //
 // THE RULES, in order:
 //   0. A harness not in COVERED, or a missing --harness: allow.
+//   0a. A review-chain vendor subprocess (WORKBENCH_REVIEW_SLOT): allow.
+//   0b. A helper's turn: the payload's session id (`session_id`, else Grok's
+//      `sessionId`) is one T3 records on a thread other than the folder's
+//      (t3-db.ts sessionThread). A delegated helper works in its parent's
+//      worktree, so the folder names the parent; refusing it would turn a
+//      helper's answer into "run /close". Allowed and logged in the thread's
+//      own log, no marker touched. Looked up only once the thread has a state
+//      folder; an absent, unknown or own-thread id, or a failed read (logged),
+//      leaves rules 1–7 as they are.
 //   1. The reply carries the saved report's last line → `report-delivered`.
-//   2. `paused` exists → remove it, remembering its question.
+//   2. `paused` holds a recorded question → a reply that carries it
+//      (whitespace collapsed), at either stop, writes `asked`, ends the pause
+//      and is allowed; a first stop without it is refused, naming it, and the
+//      pause is kept for the retry; a second stop without it ends the pause
+//      unasked and is allowed. Before the hold below, so a held close's
+//      question is checked too.
 //   3. The second stop of a turn → allow.
 //   4. `held` (a close waiting on its live checks) → allow.
-//   5. A question was just taken from `paused` → allow when the reply carries
-//      it (whitespace collapsed); else refuse, naming it.
-//   6. `reopened` (a close paused for the user's answer) → refuse until a new
+//   5. `reopened` (a session paused for the user's answer) → refuse until a new
 //      close lands; land.ts removes it when it writes `closed`.
-//   7. `report` saved and not delivered → refuse: paste it.
-//   8. `closed` (or `closed-once`, which a refused later landing keeps) and
+//   6. `report` saved and not delivered → refuse: paste it.
+//   7. `closed` (or `closed-once`, which a refused later landing keeps) and
 //      ledger work not landed (land.ts unlandedWork) → refuse:
 //      run /close.
 // Anything that goes wrong allows the reply and logs a line: a broken check
 // must not trap every reply. A refusal says how to ask the user a question.
 //
-// A QUESTION AFTER A CLOSE. The AI may need to ask the user something after a
-// finished close; the question pauses the close until it is answered and dealt
-// with:
+// A QUESTION FOR THE USER. The AI may need to ask the user something; the
+// question pauses the close until it is answered and dealt with:
 //   end-of-turn.ts --pause "<question>"
-// records the question (`paused`) and pauses the close (`reopened`). The
-// turn that asks it passes when the reply carries the words; every later turn
-// end is refused until a new close lands, or the AI pauses again.
+// records the question (`paused`) and pauses the session (`reopened`), at
+// any point: after a close, while one is held, or before any. The turn that
+// asks it passes when the reply carries the words, and only then is `asked`
+// written: the record that a question reached the user, and when, which a
+// per-session monitor can read.
+// Every later turn end is refused until a new close lands, or the AI pauses
+// again.
 //
 // STATE, under ~/.cache/workbench/threads/<thread id>/ (land.ts writes the
 // first three): `report` (the close's final block), `closed`, `held`,
 // the ledger `worktrees`; this script's own `report-delivered`, `paused`,
-// `reopened` and `end-of-turn.log`. Errors with no thread go to
+// `reopened`, `asked` and `end-of-turn.log`. Errors with no thread go to
 // ~/.cache/workbench/end-of-turn.log.
 //
 // Usage:
@@ -66,18 +81,10 @@
 // Exit: 0 allow (or a pause recorded) · 2 refuse (or a --pause refused)
 
 import { spawnSync } from "node:child_process";
-import {
-  appendFileSync,
-  existsSync,
-  mkdirSync,
-  readFileSync,
-  realpathSync,
-  rmSync,
-  statSync,
-  writeFileSync,
-} from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { isFile } from "./trunk.ts";
 
 const SCRIPT = fileURLToPath(import.meta.url);
 const THREAD = join(dirname(SCRIPT), "thread.ts");
@@ -87,11 +94,13 @@ const HARNESSES = ["claude", "codex", "grok", "antigravity"] as const;
 type Harness = (typeof HARNESSES)[number];
 
 /** The harnesses whose end-of-turn hook was measured blocking a reply and
- *  passing its second stop, in three of three runs each. Not covered:
- *  Antigravity (its workspace asks to trust its hooks first) and Grok Build
- *  (not measured). The harness comes from --harness, which each manifest
- *  passes — Claude Code and Codex send the same fields. */
-export const COVERED: readonly Harness[] = ["claude", "codex"];
+ *  passing its second stop, in three of three runs each: Claude Code, Codex,
+ *  and Grok Build, whose Stop payload `senderOf` tells apart from the handler
+ *  it runs (Claude Code's or Codex's), so no handler of Grok's own is added.
+ *  Not covered: Antigravity (its workspace asks to trust its hooks first).
+ *  The harness comes from --harness, which each manifest passes — Claude Code
+ *  and Codex send the same fields. */
+export const COVERED: readonly Harness[] = ["claude", "codex", "grok"];
 
 const covered = (): readonly string[] =>
   process.env.END_OF_TURN_TEST_COVERED === undefined
@@ -110,14 +119,6 @@ function logTo(file: string, line: string): void {
     // Nowhere to say it; the reply is allowed either way.
   }
 }
-
-const isFile = (p: string): boolean => {
-  try {
-    return statSync(p).isFile();
-  } catch {
-    return false;
-  }
-};
 
 /** Collapse whitespace, so a reply that rewraps a line still carries it. */
 const flat = (s: string): string => s.replace(/\s+/g, " ").trim();
@@ -148,7 +149,13 @@ interface Turn {
   cwd: string;
   second: boolean;
   reply: string;
+  /** The harness's own session id, or "" when the payload carries none. */
+  session: string;
 }
+
+/** `session_id` (Claude Code, Codex, and Grok's copy), else Grok's `sessionId`. */
+const sessionOf = (o: Record<string, unknown>): string =>
+  typeof o.session_id === "string" && o.session_id ? o.session_id : typeof o.sessionId === "string" ? o.sessionId : "";
 
 const str = (o: Record<string, unknown>, k: string): string => {
   if (typeof o[k] !== "string") throw new Allow(`payload field ${k} is ${o[k] === null ? "null" : typeof o[k]}`);
@@ -213,7 +220,8 @@ function readTurn(h: Harness, o: Record<string, unknown>): Turn {
   if (h === "grok") {
     const second = bool(o, "stopHookActive");
     const cwd = str(o, "cwd");
-    if (typeof o.lastAssistantMessage === "string") return { cwd, second, reply: o.lastAssistantMessage };
+    const session = sessionOf(o);
+    if (typeof o.lastAssistantMessage === "string") return { cwd, second, reply: o.lastAssistantMessage, session };
     const path = str(o, "transcriptPath");
     let text: string;
     try {
@@ -221,12 +229,17 @@ function readTurn(h: Harness, o: Record<string, unknown>): Turn {
     } catch (e) {
       throw new Allow(`transcript unreadable: ${e instanceof Error ? e.message : String(e)}`);
     }
-    return { cwd, second, reply: grokTranscriptReply(text) };
+    return { cwd, second, reply: grokTranscriptReply(text), session };
   }
   if (h === "antigravity") throw new Allow("no reading of Antigravity's end-of-turn payload is measured");
   // Claude Code and Codex: `last_assistant_message` is null on Codex when the
   // turn has no assistant message — no reply of this turn to read.
-  return { cwd: str(o, "cwd"), second: bool(o, "stop_hook_active"), reply: str(o, "last_assistant_message") };
+  return {
+    cwd: str(o, "cwd"),
+    second: bool(o, "stop_hook_active"),
+    reply: str(o, "last_assistant_message"),
+    session: sessionOf(o),
+  };
 }
 
 // ── The decision ───────────────────────────────────────────────────────────
@@ -248,24 +261,29 @@ async function decide(state: string, turn: Turn, log: (l: string) => void): Prom
   }
   // 1. A reply carrying the line delivers it, whichever stop it is.
   if (proof && !isFile(delivered) && flat(turn.reply).includes(flat(proof))) writeFileSync(delivered, "");
-  // 2. A pause is consumed by the very next turn end, allowed or not.
-  let asked: string | null = null;
+  // 2. A recorded question is settled by the reply that asks it, whichever
+  //    stop; a refused first stop keeps it, so the retry is checked too.
   if (isFile(paused)) {
-    asked = readFileSync(paused, "utf8").trim();
-    rmSync(paused, { force: true });
+    const question = readFileSync(paused, "utf8").trim();
+    if (question && flat(turn.reply).includes(flat(question))) {
+      writeFileSync(join(state, "asked"), "");
+      rmSync(paused, { force: true });
+      return null;
+    }
+    if (turn.second) {
+      rmSync(paused, { force: true });
+      return null;
+    }
+    return `You recorded a question for the user with --pause, but this reply does not ask it. Ask it in these words: "${question}"`;
   }
-  // 3, 4.
+  // 3.
   if (turn.second) return null;
+  // 4.
   if (isFile(join(state, "held"))) return null;
   // 5.
-  if (asked !== null) {
-    if (asked && flat(turn.reply).includes(flat(asked))) return null;
-    return `You recorded a question for the user with --pause, but this reply does not ask it. Ask it in these words: "${asked}"`;
-  }
-  // 6.
   if (isFile(join(state, "reopened")))
     return `This close is paused for the user's answer: deal with it and close again (/close), or run \`node --experimental-strip-types ${SCRIPT} --pause "<question>"\` to ask another question.`;
-  // 7.
+  // 6.
   if (isFile(report) && !isFile(delivered)) {
     if (!proof) {
       log(`${report} is empty: nothing to compare the reply with`);
@@ -275,7 +293,7 @@ async function decide(state: string, turn: Turn, log: (l: string) => void): Prom
     // could not read it.
     return `This thread closed, and your reply does not carry its close report. Paste the close report (saved at ${report}) verbatim, ending with its last line:\n\n${block}\n\n${PAUSE_HINT}`;
   }
-  // 8.
+  // 7.
   const ledger = join(state, "worktrees");
   // `closed-once` too: a later landing removes `closed` when it starts, and
   // one that is then refused must not switch this check off.
@@ -323,6 +341,16 @@ async function hook(h: string | undefined): Promise<void> {
     const dir = join(CACHE, "threads", tid);
     if (!existsSync(dir)) process.exit(0); // a thread that never closed or held
     state = dir;
+    // 0b. A helper's turn. Loaded here, not at the top, for the same
+    // reason as land.ts below; and only now, so a thread with no state folder
+    // never opens T3's database.
+    if (turn.session) {
+      const { sessionThread } = await import("./t3-db.ts");
+      const owner = sessionThread(turn.session);
+      if (typeof owner === "string" && owner !== tid)
+        throw new Allow(`a helper's turn (${owner}), not thread ${tid}'s`);
+      if (owner !== null && typeof owner === "object") log(`session id not looked up: ${owner.error}`);
+    }
     const why = await decide(state, turn, log);
     if (why) refuse(harness, why);
   } catch (e) {
@@ -346,14 +374,11 @@ function pause(question: string | undefined): void {
     process.exit(2);
   }
   const state = join(CACHE, "threads", tid);
-  // Either marker: a refused later landing clears `closed` and keeps
-  // `closed-once`, and its refusal tells the AI it may pause to ask.
-  if (!isFile(join(state, "closed")) && !isFile(join(state, "closed-once"))) {
-    process.stderr.write(
-      "end-of-turn: no close has finished in this thread, so nothing checks the reply — ask the question without --pause\n",
-    );
-    process.exit(2);
-  }
+  // At any point in the session: the state folder this makes is what has the
+  // hook check the asking reply. A new question is not asked until its reply
+  // passes, so an earlier question's `asked` goes.
+  mkdirSync(state, { recursive: true });
+  rmSync(join(state, "asked"), { force: true });
   writeFileSync(join(state, "paused"), `${question.trim()}\n`);
   writeFileSync(join(state, "reopened"), "");
   process.stdout.write(

@@ -24,6 +24,10 @@
 // Usage:
 //   mark-qa-done.ts <repo-dir>                       change-set marker only
 //   mark-qa-done.ts --tree <sha> <repo-dir>          both markers
+//   mark-qa-done.ts --tree <sha> --delivered "<the user's words>" <repo-dir>
+//                                                    an email target: both
+//                                                    markers, the tree one holding
+//                                                    the user's words on the delivered copy
 //   mark-qa-done.ts --marker-path --tree <sha> <repo-dir>
 //                                                    print the tree marker's
 //                                                    path; write nothing
@@ -39,10 +43,11 @@
 //   .agents/skills/qa/scripts/tests/qa-targets.test.ts
 //
 // Exit:  0 marked (or path printed); 2 usage; 3 --tree on a served app whose
-//        interaction check has not passed on that tree.
+//        interaction check has not passed on that tree, or on an email target
+//        with no --delivered (the user's check of a delivered copy on a phone).
 
 import { spawnSync } from "node:child_process";
-import { closeSync, mkdirSync, openSync, readFileSync, statSync, utimesSync } from "node:fs";
+import { closeSync, mkdirSync, openSync, readFileSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { qaChangeHash, qaErr, qaInteractionStampPath, qaRepoSlug } from "./lib.ts";
@@ -53,6 +58,7 @@ async function main(): Promise<void> {
 
   let TREE = "";
   let PRINT_ONLY = false;
+  let DELIVERED: string | null = null;
   let REPO = "";
 
   const argv = process.argv.slice(2);
@@ -65,14 +71,21 @@ async function main(): Promise<void> {
       }
       TREE = argv[1] ?? "";
       argv.splice(0, 2);
+    } else if (a === "--delivered") {
+      if (argv.length < 2 || (argv[1] ?? "").trim() === "") {
+        qaErr("mark-qa-done: --delivered needs the user's words on the delivered copy");
+        exit(2);
+      }
+      DELIVERED = (argv[1] ?? "").trim();
+      argv.splice(0, 2);
     } else if (a === "--marker-path") {
       PRINT_ONLY = true;
       argv.shift();
     } else if (a === "-h" || a === "--help") {
-      // The header comment above, lines 2-40, is the help text.
+      // The header comment above, lines 2-48, is the help text.
       const lines = readFileSync(fileURLToPath(import.meta.url), "utf8")
         .split("\n")
-        .slice(1, 40);
+        .slice(1, 48);
       process.stderr.write(`${lines.join("\n")}\n`);
       exit(0);
     } else if (a.startsWith("--")) {
@@ -151,7 +164,17 @@ async function main(): Promise<void> {
       stdio: ["ignore", "pipe", "ignore"],
     });
     const type = /^TYPE=(.*)$/m.exec(det.stdout ?? "")?.[1] ?? "";
-    if (type !== "cli" && type !== "render") {
+    // An email target has no server and no buttons: it is QA'd by the user's
+    // look at a delivered test copy on a phone's mail app in dark mode, which
+    // finds what Chromium at phone width does not.
+    if (type === "email" && DELIVERED === null) {
+      qaErr(
+        "mark-qa-done: refusing — an email target needs the user's check of a delivered copy on a phone (mail app, dark mode).",
+      );
+      qaErr("  Run step-5c-email, then mark again with --delivered \"<the user's words>\".");
+      exit(3);
+    }
+    if (type !== "cli" && type !== "render" && type !== "email") {
       const stamp = qaInteractionStampPath(REPO, TREE);
       if (!exists(stamp)) {
         qaErr(`mark-qa-done: refusing — no clean interaction check for tree ${TREE.slice(0, 12)} (${stamp}).`);
@@ -162,6 +185,7 @@ async function main(): Promise<void> {
       }
     }
     touch(`${DONE_DIR}/${treeSlug}-${TREE}`);
+    if (DELIVERED !== null) writeFileSync(`${DONE_DIR}/${treeSlug}-${TREE}`, `delivered: ${DELIVERED}\n`);
     process.stdout.write(
       `qa: marked ${treeSlug} QA'd for tree ${TREE.slice(0, 12)} (${DONE_DIR}/${treeSlug}-${TREE})\n`,
     );

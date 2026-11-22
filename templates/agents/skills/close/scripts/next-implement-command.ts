@@ -32,10 +32,12 @@
 // both. A project with no ROADMAP.md gets `/project <slug>`, which scaffolds
 // one.
 //
-// A ready row another open T3 thread is building (rows-taken.ts) gets no command:
+// A ready row another open T3 thread holds (rows-taken.ts) gets no command:
 // pasting it would build the row twice, and the second thread would learn it
 // only when its landing conflicted. It is named instead, one line per
-// holder: `# <ID> is being built in thread "<title>"`. A rows-taken.ts that
+// holder: `# <ID> is being built in thread "<title>"`, or for a `manual` or `—`
+// row, which a hands-on thread holds and nothing builds, `# <ID> is being
+// worked in thread "<title>"`. A rows-taken.ts that
 // fails prints as without the check. NEXT_IMPLEMENT_ROWS_TAKEN points at another
 // copy of the helper (a test seam).
 //
@@ -44,29 +46,16 @@
 //   .agents/skills/close/SKILL.md (step-5-reiterate-implement)
 
 import { spawnSync } from "node:child_process";
-import { readFileSync, realpathSync, statSync } from "node:fs";
+import { readFileSync, realpathSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { exit, runToExit } from "../../../packages/cli-exit/cli-exit.ts";
+import { isDir, isFile } from "./trunk.ts";
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 
 const err = (msg: string): void => {
   process.stderr.write(`Error: ${msg}\n`);
-};
-const isDir = (p: string): boolean => {
-  try {
-    return statSync(p).isDirectory();
-  } catch {
-    return false;
-  }
-};
-const isFile = (p: string): boolean => {
-  try {
-    return statSync(p).isFile();
-  } catch {
-    return false;
-  }
 };
 
 /** Run a sibling TypeScript program; stdout with trailing newlines dropped, as `$(…)` reads it. */
@@ -294,7 +283,7 @@ async function main(): Promise<void> {
   process.stderr.write(rt.err);
   if (rt.rc === 0)
     for (const [id = "", title = ""] of hereLines(rt.out).map((l) => l.split("\t"))) {
-      if (id !== "") heldBy.set(id, [...(heldBy.get(id) ?? []), `# ${id} is being built in thread "${title}"`]);
+      if (id !== "") heldBy.set(id, [...(heldBy.get(id) ?? []), title]);
     }
   else process.stderr.write(`next-implement-command: rows-taken.ts exited ${rt.rc}; printed as without it\n`);
   const rowFields = hereLines(rows).map((l) => l.split("\t"));
@@ -307,7 +296,8 @@ async function main(): Promise<void> {
     if (id === "") continue;
     const holders = heldBy.get(id);
     if (holders !== undefined) {
-      comments.push(...holders);
+      const doing = sub.startsWith("specs/") ? "being built" : "being worked";
+      comments.push(...holders.map((title) => `# ${id} is ${doing} in thread "${title}"`));
       continue;
     }
     if (sub === "manual") {

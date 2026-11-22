@@ -457,6 +457,131 @@ export function qaAccessHeaders(
 }
 
 /**
+ * Whether a request to `url` carries the Access headers: only when it goes to
+ * the site under test's own origin (`base`'s scheme, host and port). An
+ * unreadable URL or base, or one with no origin (file:, data:), carries nothing.
+ */
+export function qaSendsAccess(url: string | URL, base: string): boolean {
+  try {
+    const origin = new URL(base).origin;
+    return origin !== "null" && new URL(url).origin === origin;
+  } catch {
+    return false;
+  }
+}
+
+/** The slice of a Chrome DevTools Protocol session that `qaSignAccess` uses. */
+export interface QaCdpSession {
+  send(method: string, params?: Record<string, unknown>): Promise<unknown>;
+  on(event: "Fetch.requestPaused", handler: (e: QaPausedRequest) => void): unknown;
+}
+
+/** The part of a `Fetch.requestPaused` event that `qaSignAccess` reads. */
+export interface QaPausedRequest {
+  requestId: string;
+  request: { url: string; headers: Record<string, string> };
+}
+
+/** The slice of a Playwright page that `qaSignAccess` uses. */
+export interface QaSignablePage {
+  context(): {
+    // `any`: Playwright's Page, which this library does not import.
+    newCDPSession(page: any): Promise<QaCdpSession>;
+    addCookies(
+      cookies: { name: string; value: string; url: string; httpOnly: boolean; sameSite: "Lax" }[],
+    ): Promise<void>;
+  };
+}
+
+/**
+ * A request's own headers with `access` added, as the protocol's name/value
+ * list. A header the request already carries under any spelling of an Access
+ * header's name is replaced, never sent twice.
+ */
+export function qaSignedHeaders(
+  own: Record<string, string>,
+  access: Record<string, string>,
+): { name: string; value: string }[] {
+  const names = new Set(Object.keys(access).map((k) => k.toLowerCase()));
+  return [...Object.entries(own).filter(([k]) => !names.has(k.toLowerCase())), ...Object.entries(access)].map(
+    ([name, value]) => ({ name, value: String(value) }),
+  );
+}
+
+/**
+ * Sends `headers` (qaAccessHeaders) on every request `page` makes to `base`'s
+ * origin and on no other, each hop of a redirect decided on its own. Call it
+ * before the page's first request; a page opened later (a popup) is not signed
+ * unless it is passed here too.
+ *
+ * Riding Playwright's `extraHTTPHeaders`, the headers go EVERYWHERE: a font a
+ * page loads from a CDN (api.fontshare.com, say) is a CORS request, custom headers make it a preflight the
+ * CDN refuses, and the page was captured and judged in a fallback font — a
+ * live check read a 670px phone fit where the page measured 640. They also
+ * handed the probe's secret to every third party a page calls.
+ *
+ * Playwright's own routes cannot do it: they see only the first URL of a
+ * redirect chain, and headers set there ride every later hop, off-site ones
+ * included. Chromium's Fetch domain pauses each hop as its own request, so a
+ * session of our own pauses only the site's requests and adds the headers to
+ * each. Measured 2026-11-05 on Chromium for Playwright 1.62, and pinned by
+ * sign-access.browser.test.ts: a hop Chromium does not pause carries no
+ * header set on an earlier one, cookies still go with signed requests, and this
+ * session runs before any route Playwright registers, so a route that stops a
+ * write still stops it (it sees the headers, the site never does).
+ *
+ * WEBSOCKETS carry no headers from here. Chromium does not pause a socket's
+ * handshake in the Fetch domain, and its one way to add a header to one,
+ * Network.setExtraHTTPHeaders, adds it to every request too: the CDN font's
+ * CORS request then needs the preflight the CDN refuses, even with the header
+ * stripped at the Fetch pause (both measured 2026-11-05). A socket to the site
+ * is the browser's own, so it gets in the way a visitor's does: Cloudflare
+ * Access answers the first signed request with its CF_Authorization cookie, and
+ * the browser sends that cookie on the handshake: a site behind Access sets the
+ * cookie for the probe's token, and a live socket
+ * (wss://portal.example.com/api/live/socket) opens on it. A local run has no Access in front to set that cookie,
+ * so when the headers carry the token /qa minted for it (Cf-Access-Jwt-Assertion,
+ * qaLocalAccess), it is set here as CF_Authorization on the site, as Access
+ * would; the portal reads that cookie when no header came (its
+ * src/access/jwt.ts). The token is signed by
+ * the run's own key, so it opens nothing but that local server. What a socket
+ * still does not get is X-Portal-Act-As: the portal admits the probe's socket
+ * as the probe (the walk above). A bridge that connected the socket from here, signed, was tried and
+ * dropped the same day: Playwright's stand-in for a held socket tells the page
+ * it got the first subprotocol it asked for whatever the site picks, and hides
+ * the socket from Playwright's `websocket` event.
+ *
+ * Not signed, and so answered as a visitor without the token, never leaked
+ * to: a service worker's own requests and a cross-site frame's, which belong
+ * to other DevTools targets.
+ */
+export async function qaSignAccess(
+  page: QaSignablePage,
+  base: string,
+  headers: Record<string, string> | undefined,
+): Promise<void> {
+  if (headers === undefined) return;
+  const origin = new URL(base).origin;
+  if (origin === "null") throw new Error(`qaSignAccess: ${base} has no origin to sign`);
+  const cdp = await page.context().newCDPSession(page);
+  cdp.on("Fetch.requestPaused", (e) => {
+    // The pattern below already holds the pause to the site; this re-check means
+    // a pattern wildcard can never widen who gets the headers.
+    const params = qaSendsAccess(e.request.url, base)
+      ? { requestId: e.requestId, headers: qaSignedHeaders(e.request.headers, headers) }
+      : { requestId: e.requestId };
+    // A request whose page closed meanwhile cannot be continued; that is not news.
+    cdp.send("Fetch.continueRequest", params).catch(() => {});
+  });
+  await cdp.send("Fetch.enable", { patterns: [{ urlPattern: `${origin}/*`, requestStage: "Request" }] });
+  const jwt = Object.entries(headers).find(([k]) => k.toLowerCase() === "cf-access-jwt-assertion")?.[1];
+  if (jwt)
+    await page
+      .context()
+      .addCookies([{ name: "CF_Authorization", value: jwt, url: origin, httpOnly: true, sameSite: "Lax" }]);
+}
+
+/**
  * The token in the file `--auth-jwt-file` names, or "" when no file was named.
  * A named file that is missing or empty is an error, not an anonymous run: the
  * caller stops, because every page would answer 401 and grade as a login wall.

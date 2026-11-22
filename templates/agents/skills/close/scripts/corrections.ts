@@ -42,6 +42,13 @@
 // like a typed turn. The journal may quote a bare row verbatim; a `[chose] ` row
 // is reported as a choice the user made, never as something they said.
 //
+// WHAT IS BLANKED: anything shaped like a key, token, password or sign-in code,
+// in the user's words and in the reply each one answered (packages/redact-secrets).
+// Every mode's output leaves the thread — into a journal /close commits, and in
+// window mode into whatever prompt is built from it, which would otherwise carry
+// every token the user pasted in chat there. The words
+// around a value stay, with what kind of thing it was; T3's record is untouched.
+//
 // WHAT IS NOT DROPPED: the judgment about which rows are corrections. That
 // stays with the skill (`references/journal-entry.md` § Corrections) — keep the
 // rows where the user corrected, redirected or rejected something; drop the ones
@@ -60,9 +67,9 @@
 //                                 { since, until, threads: [{ thread_id, title,
 //                                 harness, deleted, items: [{ at, text,
 //                                 reply_to }] }] }. `text` is the --full turn
-//                                 with real newlines; `reply_to` is the first
-//                                 600 characters of the latest assistant message
-//                                 in that thread before it, or null. Threads with
+//                                 with real newlines; `reply_to` is the END
+//                                 of the latest assistant message in that thread
+//                                 before it (see REPLY_QUOTE below), or null. Threads with
 //                                 nothing kept are omitted; deleted threads are
 //                                 kept and marked, because what the user said in
 //                                 a thread they later threw away is still what
@@ -88,18 +95,22 @@
 //   .agents/skills/close/scripts/corrections.test.ts
 //   .agents/skills/close/scripts/transcripts.ts   (a session T3 does not know)
 //   .agents/skills/close/references/journal-entry.md  (the keep/drop rule)
+//   packages/redact-secrets/redact-secrets.ts  (what is blanked)
 //
 // Exit: 0 ok (rows on stdout; none is a normal outcome) · 2 no thread, no db,
 // or bad usage (including a window bound that is not a date)
 
-import { statSync, realpathSync } from "node:fs";
+import { realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { spawnSync } from "node:child_process";
 import { dirname, join, resolve } from "node:path";
 import type { DatabaseSync, SQLOutputValue } from "node:sqlite";
 import { fileURLToPath } from "node:url";
 import { exit, runToExit } from "../../../packages/cli-exit/cli-exit.ts";
+import { redactSecrets } from "../../../packages/redact-secrets/redact-secrets.ts";
 import { currentThread, legacyViews, loadSqlite, mainTables, t3Database } from "./t3-db.ts";
+import { isFile } from "./trunk.ts";
+import { isCalendarDay } from "../../../packages/calendar-day/calendar-day.ts";
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const TRANSCRIPTS = join(SCRIPT_DIR, "transcripts.ts");
@@ -122,14 +133,6 @@ function parse(json: SQLOutputValue | undefined): unknown {
     return JSON.parse(typeof json === "string" ? json : "");
   } catch {
     return null;
-  }
-}
-
-function isFileAt(p: string): boolean {
-  try {
-    return statSync(p).isFile();
-  } catch {
-    return false;
   }
 }
 
@@ -247,10 +250,10 @@ function said(db: DatabaseSync, tid: string | null): Entry[] {
 
   for (const row of rows) {
     const raw = str(row.text);
+    // Redacted before it is split, so a key block spanning lines goes whole.
     const kept = [
-      ...commentsIn(raw),
-      ...raw
-        .replace(CITATION_LINK, "")
+      ...commentsIn(raw).map(redactSecrets),
+      ...redactSecrets(raw.replace(CITATION_LINK, ""))
         .split("\n")
         .map((line) => line.trim())
         .filter((line) => line !== ""),
@@ -279,7 +282,7 @@ function said(db: DatabaseSync, tid: string | null): Entry[] {
       out.push({
         thread_id: str(row.thread_id),
         created_at: row.created_at ?? null,
-        answer: labels.has(answer) ? `[chose] ${answer}` : answer,
+        answer: labels.has(answer) ? `[chose] ${answer}` : redactSecrets(answer),
       });
     }
   }
@@ -318,19 +321,26 @@ function threadMode(db: DatabaseSync, tid: string, full: boolean): void {
 // fail. The Y-M-D as typed must survive as a real day.
 function instant(flag: string, value: string): string {
   const at = new Date(value);
-  const ymd = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(value));
-  if (Number.isNaN(at.getTime()) || !ymd) die(`${flag} is not a date: ${value}`);
-  const y = Number(ymd[1]);
-  const m = Number(ymd[2]);
-  const d = Number(ymd[3]);
-  const day = new Date(Date.UTC(y, m - 1, d));
-  if (day.getUTCFullYear() !== y || day.getUTCMonth() !== m - 1 || day.getUTCDate() !== d) {
-    die(`${flag} is not a date: ${value}`);
-  }
+  if (Number.isNaN(at.getTime()) || !isCalendarDay(String(value).slice(0, 10))) die(`${flag} is not a date: ${value}`);
   return at.toISOString();
 }
 
 type Item = { at: SQLOutputValue; text: string; reply_to: string | null };
+
+// WHAT THE USER WAS ANSWERING IS QUOTED FROM ITS END. An AI reply ends with
+// its question or proposal, so a short answer — "1a", "yes", an option the
+// user picked — makes sense only beside that end: in a measured window the question a short answer answered sat in the reply's last 600
+// characters 230 times out of 320, and in its first 600 only 74. The quote used
+// to be the first 600, which also filled 80% of a 240,000-character prompt block
+// and left out 267 of the user's 615 messages; at these lengths all 615 fit.
+const SHORT_ANSWER_CHARS = 40;
+const REPLY_QUOTE = { shortAnswer: 300, longer: 120 };
+
+/** The last `n` characters of `text`, marked `…` when anything was cut. */
+function quoteEnd(text: string, n: number): string {
+  const chars = [...text.trim()];
+  return chars.length <= n ? chars.join("") : `…${chars.slice(-n).join("")}`;
+}
 type Thread = { thread_id: string; title: SQLOutputValue; harness: SQLOutputValue; deleted: boolean; items: Item[] };
 
 function windowMode(db: DatabaseSync, arg1: string, arg2: string): void {
@@ -372,11 +382,16 @@ function windowMode(db: DatabaseSync, arg1: string, arg2: string): void {
     }
 
     const reply: Row | undefined = replyRow.get(entry.thread_id, "assistant", entry.created_at);
+    // The --full body with its newlines left real: JSON escapes them itself.
+    const text = (entry.kept ? entry.kept.join("\n") : (entry.answer ?? "")).trim();
+    const shortAnswer = text.startsWith("[chose] ") || [...text].length <= SHORT_ANSWER_CHARS;
     thread.items.push({
       at: entry.created_at,
-      // The --full body with its newlines left real: JSON escapes them itself.
-      text: (entry.kept ? entry.kept.join("\n") : (entry.answer ?? "")).trim(),
-      reply_to: reply ? str(reply.text).slice(0, 600) : null,
+      text,
+      // Redacted before the cut, so a key straddling it cannot leave a piece.
+      reply_to: reply
+        ? quoteEnd(redactSecrets(str(reply.text)), shortAnswer ? REPLY_QUOTE.shortAnswer : REPLY_QUOTE.longer)
+        : null,
     });
   }
 
@@ -443,7 +458,7 @@ async function main(): Promise<void> {
     // override, always means T3. "Knows" is a definite answer — a database that
     // cannot be read is reported below, not routed around.
     let known = (process.env.WORKBENCH_THREAD_ID ?? "") !== "";
-    if (!known && isFileAt(DB)) {
+    if (!known && isFile(DB)) {
       const sqlite = await loadSqlite(fileURLToPath(import.meta.url));
       try {
         const probe = new sqlite.DatabaseSync(DB, { readOnly: true });
@@ -467,7 +482,7 @@ async function main(): Promise<void> {
     }
   }
 
-  if (!isFileAt(DB)) die(`no T3 database at ${DB}`);
+  if (!isFile(DB)) die(`no T3 database at ${DB}`);
 
   const sqlite = await loadSqlite(fileURLToPath(import.meta.url));
   let db: DatabaseSync;
